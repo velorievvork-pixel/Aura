@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: aura
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./schema:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    ports:
+      - "5432:5432"
+
+  ai:
+    build:
+      context: ./ai
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AURA_MEMORY_BACKEND: postgres
+      AURA_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres/aura
+      AURA_AI_TOKEN: ${AURA_AI_TOKEN}
+      AURA_LLM_PROVIDER: ${AURA_LLM_PROVIDER:-mock}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AURA_HOST: 0.0.0.0
+      AURA_PORT: 8000
+      AURA_CORS_ORIGINS: http://server:9000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    ports:
+      - "8000:8000"
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    depends_on:
+      ai:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      AURA_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres/aura
+      AURA_AI_URL: http://ai:8000
+      AURA_JWT_SECRET: ${AURA_JWT_SECRET}
+      AURA_2FA_KEY: ${AURA_2FA_KEY}
+      AURA_HOST: 0.0.0.0
+      AURA_PORT: 9000
+      AURA_MAX_CONNECTIONS: ${AURA_MAX_CONNECTIONS:-1024}
+      AURA_PUSH_DRIVER: ${AURA_PUSH_DRIVER:-dev}
+      AURA_PUSH_WEBHOOK_URL: ${AURA_PUSH_WEBHOOK_URL:-}
+      AURA_LOG_LEVEL: ${AURA_LOG_LEVEL:-info}
+    ports:
+      - "9000:9000"
+
+volumes:
+  pgdata:

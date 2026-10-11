@@ -1,11 +1,15 @@
 import QtQuick
 import QtQuick.Controls
+import Aura
+import "../icons/Icons.js" as Icons
 
 /*
-  GlassField — стеклянное поле ввода с плавающей подсказкой.
+  GlassField — поле ввода v3: тёмное стекло с тонкой рамкой, сиреневое кольцо
+  в фокусе, иконка справа (конверт, замок) или кликабельное действие (глаз).
 
-  v3: icon — глиф слева (например «✉» / «🔒»), action — глиф справа
-  (например «👁» показа пароля); клик по action даёт сигнал actionClicked.
+  label — плавающая подпись внутри поля (экраны настроек); на экранах входа
+  подпись стоит над полем отдельным Text, а label пустой.
+  icon/action принимают имя иконки Lucide или старый текстовый глиф.
 */
 TextField {
     id: control
@@ -14,12 +18,18 @@ TextField {
     property bool invalid: false
     property string icon: ""
     property string action: ""
+    property bool filled: false   // светлая заливка без рамки (поле «С чем помогать»)
     signal actionClicked()
 
-    implicitHeight: 52
+    readonly property string rightIcon: {
+        const name = action.length > 0 ? action : icon
+        return Icons.paths[name] !== undefined ? name : Icons.iconFor(name)
+    }
+
+    implicitHeight: label.length > 0 ? 54 : 48
     implicitWidth: 240
-    leftPadding: control.icon.length > 0 ? AuraTheme.spaceMd + 24 : AuraTheme.spaceMd
-    rightPadding: control.action.length > 0 ? AuraTheme.spaceMd + 24 : AuraTheme.spaceMd
+    leftPadding: AuraTheme.spaceMd
+    rightPadding: rightIcon.length > 0 ? AuraTheme.spaceMd + 26 : AuraTheme.spaceMd
     topPadding: label.length > 0 ? 20 : 0
     bottomPadding: label.length > 0 ? 6 : 0
     font.family: AuraTheme.fontFamily
@@ -31,29 +41,28 @@ TextField {
     verticalAlignment: TextInput.AlignVCenter
     focusPolicy: Qt.StrongFocus
 
-    background: Rectangle {
-        radius: AuraTheme.radiusField
-        color: Qt.rgba(1, 1, 1, control.activeFocus ? AuraTheme.glassFillPressed : AuraTheme.glassFill)
-        border.width: 1
-        border.color: control.invalid
-                      ? AuraTheme.danger
-                      : (control.activeFocus ? AuraTheme.accentA(0.7) : Qt.rgba(1, 1, 1, AuraTheme.glassBorder))
-
-        Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
-        Behavior on border.color { ColorAnimation { duration: AuraTheme.pressMs } }
-
-        // Блик сверху
+    background: Item {
+        // Кольцо фокуса
         Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: 1
-            height: parent.height * 0.45
-            radius: parent.radius
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.10) }
-                GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.0) }
-            }
+            anchors.fill: parent
+            anchors.margins: -4
+            radius: AuraTheme.radiusField + 4
+            color: "transparent"
+            border.width: 4
+            border.color: AuraTheme.accentA(control.activeFocus ? 0.18 : 0)
+            Behavior on border.color { ColorAnimation { duration: AuraTheme.pressMs } }
+        }
+        Rectangle {
+            anchors.fill: parent
+            radius: AuraTheme.radiusField
+            color: control.filled ? Qt.rgba(1, 1, 1, control.activeFocus ? 0.12 : 0.09)
+                                  : Qt.rgba(0.04, 0.03, 0.07, control.activeFocus ? 0.6 : 0.45)
+            border.width: control.filled && !control.activeFocus && !control.invalid ? 0 : 1
+            border.color: control.invalid ? AuraTheme.danger
+                          : control.activeFocus ? AuraTheme.accentA(0.8)
+                          : Qt.rgba(1, 1, 1, 0.16)
+            Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
+            Behavior on border.color { ColorAnimation { duration: AuraTheme.pressMs } }
         }
     }
 
@@ -64,35 +73,29 @@ TextField {
         text: control.label
         font.family: AuraTheme.fontFamily
         font.pixelSize: AuraTheme.fontMicro
-        color: control.activeFocus ? AuraTheme.accent : AuraTheme.textMuted
+        font.weight: Font.DemiBold
+        color: control.activeFocus ? AuraTheme.lilac : AuraTheme.textMuted
         visible: control.label.length > 0
         Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
     }
 
-    // Иконка слева (конверт, замок…)
-    Text {
-        x: AuraTheme.spaceSm + 4
+    // Иконка или действие справа
+    Icon {
+        id: trailing
+        x: control.width - AuraTheme.spaceMd - size
         anchors.verticalCenter: parent.verticalCenter
-        text: control.icon
-        font.pixelSize: 14
-        color: control.activeFocus ? AuraTheme.accent : AuraTheme.textMuted
-        visible: control.icon.length > 0
-        Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
-    }
-
-    // Действие справа (глаз показа пароля…)
-    Text {
-        x: control.width - control.rightPadding + 4
-        anchors.verticalCenter: parent.verticalCenter
-        text: control.action
-        font.pixelSize: 14
-        color: control.activeFocus ? AuraTheme.lilac : AuraTheme.textMuted
-        visible: control.action.length > 0
+        name: control.rightIcon
+        size: 18
+        color: control.action.length > 0 && hit.containsMouse ? AuraTheme.textPrimary : AuraTheme.textSecondary
+        visible: control.rightIcon.length > 0
 
         MouseArea {
+            id: hit
             anchors.fill: parent
             anchors.margins: -8
-            cursorShape: Qt.PointingHandCursor
+            enabled: control.action.length > 0
+            hoverEnabled: true
+            cursorShape: enabled ? Qt.PointingHandCursor : Qt.IBeamCursor
             onClicked: control.actionClicked()
         }
     }

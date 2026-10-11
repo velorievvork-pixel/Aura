@@ -31,27 +31,48 @@ qt_add_qml_module(aura-client
     QML_FILES
         qml/Main.qml
         qml/LoginPage.qml
-        qml/ChatsPage.qml
-        qml/ChatPage.qml
         qml/OnboardingPage.qml
-        qml/SettingsPage.qml
         qml/DesktopShell.qml
         qml/HomePage.qml
-        qml/ContactsPage.qml
+        qml/MyAuraPage.qml
         qml/NegotiationsPage.qml
+        qml/TasksPage.qml
+        qml/ContactsPage.qml
+        qml/ChatPage.qml
+        qml/SettingsPage.qml
+        qml/InboxPage.qml
+        qml/Format.js
+        qml/icons/Icons.js
         qml/theme/AuraTheme.qml
+        qml/components/AuraBackground.qml
         qml/components/GlassSurface.qml
         qml/components/GlassPanel.qml
         qml/components/GlassButton.qml
         qml/components/GlassField.qml
+        qml/components/GlassComboBox.qml
+        qml/components/Icon.qml
+        qml/components/LinkText.qml
+        qml/components/Chip.qml
+        qml/components/Bubble.qml
+        qml/components/AgentCard.qml
         qml/components/AuraEmblem.qml
-        qml/components/ChatBubble.qml
+        qml/components/AuraOrb.qml
         qml/components/AuraAvatar.qml
+        qml/components/ChatBubble.qml
         qml/components/VoicePanel.qml
         qml/components/ConfirmationPanel.qml
-        qml/components/TasksPanel.qml
-        qml/components/ChatList.qml
         qml/components/NotificationsPanel.qml
+)
+
+# Manrope (SIL OFL 1.1, fonts/OFL.txt) — шрифт макетов, встроен в клиент.
+qt_add_resources(aura-client "fonts"
+    PREFIX "/"
+    FILES
+        fonts/Manrope-Regular.ttf
+        fonts/Manrope-Medium.ttf
+        fonts/Manrope-SemiBold.ttf
+        fonts/Manrope-Bold.ttf
+        fonts/Manrope-ExtraBold.ttf
 )
 
 target_link_libraries(aura-client PRIVATE

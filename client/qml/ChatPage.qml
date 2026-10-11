@@ -4,278 +4,167 @@ import QtQuick.Layouts
 import Aura
 
 /*
-  ChatPage — диалог с человеком и с его Аурой.
+  ChatPage — переписка с человеком (открывается из «Контактов»).
 
-  Обычное сообщение уходит в чат (chat.send), а «Спросить Ауру» отправляет
-  запрос агенту (agent.ask): он сам напишет собеседнику и договорится о встрече.
+  Шапка с собеседником, лента сообщений (сообщения Аур — agent_reply/agent_action —
+  со значком Ауры) и одна строка ввода: микрофон, текст, «Спросить Ауру» (agent.ask
+  в этом чате — Аура сама предложит переговоры) или обычная отправка.
 */
 Item {
     id: page
 
     property int chatId: 0
-    // true — страница встроена в desktop-оболочку (master-detail): без кнопок
-    // «назад»/«настройки» (навигация — через рельс оболочки).
     property bool embedded: false
+    property bool toAura: false
 
     signal back()
     signal openSettings()
 
-    // История чата грузится при открытии и при смене выбранного чата
-    // (раньше selectChat не вызывался — существующие чаты открывались пустыми).
     Component.onCompleted: if (page.chatId > 0) App.selectChat(page.chatId)
     onChatIdChanged: if (page.chatId > 0) App.selectChat(page.chatId)
 
+    function send() {
+        const text = input.text.trim()
+        if (!text || !App || App.busy) return
+        if (page.toAura) App.askAgent(page.chatId, text)
+        else App.sendMessage(page.chatId, text)
+        input.text = ""
+    }
+
+    Connections {
+        target: App
+        function onMessagesChanged() { Qt.callLater(() => messageList.positionViewAtEnd()) }
+        function onTranscriptChanged() { if (App.transcript) input.text = App.transcript }
+    }
+
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: AuraTheme.spaceLg
-        spacing: AuraTheme.spaceMd
+        anchors.margins: 20
+        spacing: 14
 
-        // -------------------------------------------------------- шапка
-        GlassPanel {
+        // ---------------------------------------------------------- шапка
+        RowLayout {
             Layout.fillWidth: true
-            padding: AuraTheme.spaceMd
-            backdrop: page.Window.window ? page.Window.window.contentItem : null
-
-            RowLayout {
-                anchors.fill: parent
-                spacing: AuraTheme.spaceMd
-
-                GlassButton {
-                    visible: !page.embedded
-                    variant: "quiet"
-                    text: ""
-                    glyph: "←"
-                    implicitWidth: 44
-                    implicitHeight: 40
-                    onClicked: page.back()
-                }
-
-                AuraAvatar {
-                    name: App ? App.chatTitle : ""
-                    size: 40
-                }
-
-                ColumnLayout {
+            spacing: 12
+            GlassButton {
+                variant: "quiet"
+                implicitWidth: 36; implicitHeight: 36
+                glyphSize: 16
+                symbol: "arrow-left"
+                onClicked: page.back()
+            }
+            AuraAvatar { name: App ? App.chatTitle : ""; size: 40; online: App ? App.peerOnline : false }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 1
+                Text {
                     Layout.fillWidth: true
-                    spacing: 2
-                    Text {
-                        text: App ? App.chatTitle : "Чат"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontTitle
-                        font.weight: Font.DemiBold
-                        color: AuraTheme.textPrimary
-                    }
-                    Text {
-                        text: App && App.peerOnline ? "в сети · Аура активна" : "не в сети"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: App && App.peerOnline ? AuraTheme.online : AuraTheme.textMuted
-                    }
+                    text: App ? App.chatTitle : ""
+                    font.family: AuraTheme.fontFamily
+                    font.pixelSize: AuraTheme.fontLead
+                    font.weight: Font.Bold
+                    color: AuraTheme.textPrimary
+                    elide: Text.ElideRight
                 }
-
-                GlassButton {
-                    visible: !page.embedded
-                    variant: "quiet"
-                    glyph: "⚙"
-                    text: ""
-                    implicitWidth: 44
-                    implicitHeight: 40
-                    onClicked: page.openSettings()
+                Text {
+                    Layout.fillWidth: true
+                    text: App && App.peerOnline ? "в сети" : "не в сети — Аура ответит за него"
+                    font.family: AuraTheme.fontFamily
+                    font.pixelSize: AuraTheme.fontMicro + 1
+                    color: App && App.peerOnline ? AuraTheme.success : AuraTheme.textMuted
                 }
             }
         }
 
-        // ------------------------------------------------------ сообщения
-        GlassPanel {
+        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Qt.rgba(1, 1, 1, 0.08) }
+
+        // ---------------------------------------------------------- лента
+        ListView {
+            id: messageList
             Layout.fillWidth: true
             Layout.fillHeight: true
-            padding: AuraTheme.spaceMd
-            backdrop: page.Window.window ? page.Window.window.contentItem : null
+            clip: true
+            spacing: AuraTheme.spaceMd
+            model: App ? App.messages : []
+            boundsBehavior: Flickable.StopAtBounds
 
-            ListView {
-                id: messageList
-                anchors.fill: parent
-                clip: true
-                spacing: AuraTheme.spaceMd
-                model: App ? App.messages : []
-                boundsBehavior: Flickable.StopAtBounds
+            Text {
+                anchors.centerIn: parent
+                visible: messageList.count === 0
+                width: parent.width
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
+                text: "Сообщений пока нет. Напишите или попросите Ауру договориться о встрече."
+                font.family: AuraTheme.fontFamily
+                font.pixelSize: AuraTheme.fontSmall
+                color: AuraTheme.textMuted
+            }
 
+            delegate: ChatBubble {
+                width: messageList.width
+                text: modelData ? String(modelData.body || "") : ""
+                senderName: modelData ? String(modelData.sender_name || "") : ""
+                timestamp: modelData ? String(modelData.created_at || "").substring(11, 16) : ""
+                mine: modelData ? modelData.sender_id === App.userId : false
+                agent: modelData ? String(modelData.kind || "").indexOf("agent") === 0 : false
+                maxBubbleWidth: Math.max(220, messageList.width * 0.78)
+            }
+
+            footer: Item {
+                width: messageList.width
+                height: App && App.busy ? 30 : 0
+                visible: App && App.busy
                 Text {
-                    anchors.centerIn: parent
-                    visible: messageList.count === 0
-                    width: parent.width
-                    horizontalAlignment: Text.AlignHCenter
-                    text: "Напишите сообщение или попросите Ауру договориться о встрече."
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Аура думает…"
                     font.family: AuraTheme.fontFamily
                     font.pixelSize: AuraTheme.fontSmall
-                    color: AuraTheme.textMuted
-                }
-
-                delegate: ChatBubble {
-                    width: messageList.width
-                    text: modelData ? String(modelData.body || "") : ""
-                    senderName: modelData ? String(modelData.sender_name || "") : ""
-                    timestamp: modelData ? String(modelData.created_at || "").substring(11, 16) : ""
-                    mine: modelData ? modelData.sender_id === App.userId : false
-                    agent: modelData ? String(modelData.kind || "").indexOf("agent") === 0 : false
-                    maxBubbleWidth: Math.max(220, messageList.width * 0.68)
-                }
-
-                // «Аура думает…» (v3): три пульсирующие точки, пока идёт запрос
-                footer: Item {
-                    width: messageList.width
-                    height: visible ? 36 : 0
-                    visible: App && App.busy
-
-                    Row {
-                        anchors.left: parent.left
-                        anchors.leftMargin: AuraTheme.spaceXs
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 5
-
-                        Repeater {
-                            model: 3
-                            Rectangle {
-                                required property int index
-                                width: 8
-                                height: 8
-                                radius: 4
-                                color: AuraTheme.accentSoft
-                                SequentialAnimation on opacity {
-                                    loops: Animation.Infinite
-                                    NumberAnimation { to: 0.25; duration: 550; easing.type: Easing.InOutSine }
-                                    NumberAnimation { to: 1.0; duration: 550; easing.type: Easing.InOutSine }
-                                    // небольшая задержка старта создаёт «волну»
-                                    PauseAnimation { duration: index * 160 }
-                                }
-                            }
-                        }
-
-                        Text {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: "Аура думает…"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textSecondary
-                        }
-                    }
-                }
-
-                onCountChanged: Qt.callLater(positionViewAtEnd)
-            }
-        }
-
-        // ------------------------------------------ подтверждение действий Ауры
-        ConfirmationPanel {
-            Layout.fillWidth: true
-            backdrop: page.Window.window ? page.Window.window.contentItem : null
-        }
-
-        // -------------------------------- чипы быстрых ответов (v3)
-        Flow {
-            Layout.fillWidth: true
-            spacing: AuraTheme.spaceSm
-            visible: page.chatId > 0 && !(App && App.busy)
-
-            Repeater {
-                model: ["Договориться о встрече", "Напомнить мне об этом", "Что ты умеешь?"]
-                delegate: GlassButton {
-                    required property var modelData
-                    text: modelData
-                    variant: "glass"
-                    implicitHeight: 34
-                    onClicked: composer.text = modelData
+                    color: AuraTheme.textSecondary
                 }
             }
         }
 
-        // ------------------------------------------------------- ввод
-        GlassPanel {
+        // ---------------------------------------------------------- ввод
+        RowLayout {
             Layout.fillWidth: true
-            padding: AuraTheme.spaceSm
-            backdrop: page.Window.window ? page.Window.window.contentItem : null
-
-            RowLayout {
-                anchors.fill: parent
-                spacing: AuraTheme.spaceSm
-
-                GlassField {
-                    id: composer
-                    Layout.fillWidth: true
-                    implicitHeight: 48
-                    placeholderText: "Сообщение…"
-                    enabled: !(App && App.busy)
-                    onAccepted: sendButton.clicked()
-                }
-
-                GlassButton {
-                    id: sendButton
-                    text: ""
-                    glyph: "➤"
-                    implicitWidth: 52
-                    implicitHeight: 48
-                    enabled: composer.text.trim().length > 0 && !(App && App.busy)
-                    onClicked: {
-                        App.sendMessage(page.chatId, composer.text)
-                        composer.text = ""
-                    }
-                }
+            spacing: 10
+            Chip {
+                text: "Обычное"
+                active: !page.toAura
+                onClicked: page.toAura = false
             }
+            Chip {
+                text: "Спросить Ауру"
+                active: page.toAura
+                onClicked: page.toAura = true
+            }
+            Item { Layout.fillWidth: true }
         }
-
-        // ------------------------------------------------- голосовой ввод
-        VoicePanel {
+        RowLayout {
             Layout.fillWidth: true
-            backdrop: page.Window.window ? page.Window.window.contentItem : null
-        }
-
-        // ------------------------------------------------- запрос к Ауре
-        GlassPanel {
-            Layout.fillWidth: true
-            padding: AuraTheme.spaceMd
-            fill: AuraTheme.accentFill * 0.5
-            backdrop: page.Window.window ? page.Window.window.contentItem : null
-
-            RowLayout {
-                anchors.fill: parent
-                spacing: AuraTheme.spaceMd
-
-                Rectangle {
-                    Layout.preferredWidth: 34
-                    Layout.preferredHeight: 34
-                    radius: 17
-                    color: AuraTheme.accentA(0.2)
-                    border.width: 1
-                    border.color: AuraTheme.accentA(0.45)
-                    Text {
-                        anchors.centerIn: parent
-                        text: "✦"
-                        color: AuraTheme.accent
-                        font.pixelSize: 15
-                    }
-                }
-
-                GlassField {
-                    id: agentField
-                    Layout.fillWidth: true
-                    implicitHeight: 48
-                    placeholderText: "Хочу встретиться с Аней в эти выходные, чтобы обсудить стартап"
-                    enabled: !(App && App.busy)
-                    onAccepted: agentButton.clicked()
-                }
-
-                GlassButton {
-                    id: agentButton
-                    variant: "accent"
-                    text: "Спросить Ауру"
-                    glyph: "✦"
-                    implicitHeight: 48
-                    busy: App ? App.busy : false
-                    onClicked: {
-                        App.askAgent(page.chatId, agentField.text)
-                        agentField.text = ""
-                    }
-                }
+            spacing: 10
+            GlassButton {
+                implicitWidth: 44; implicitHeight: 44
+                glyphSize: 18
+                symbol: App && App.voiceState === "listening" ? "square" : "mic"
+                busy: App ? App.voiceState === "processing" : false
+                enabled: App ? App.micAvailable : false
+                onClicked: App.voiceState === "listening" ? App.stopListening() : App.startListening()
+            }
+            GlassField {
+                id: input
+                Layout.fillWidth: true
+                placeholderText: page.toAura ? "Например: договорись о встрече на выходных" : "Сообщение…"
+                onAccepted: page.send()
+            }
+            GlassButton {
+                variant: "accent"
+                implicitWidth: 46; implicitHeight: 46
+                glyphSize: 18
+                symbol: page.toAura ? "sparkles" : "send-horizontal"
+                busy: App ? App.busy : false
+                enabled: input.text.trim().length > 0 && App && !App.busy
+                onClicked: page.send()
             }
         }
     }

@@ -2,264 +2,380 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import Aura
+import "Format.js" as F
 
 /*
-  ContactsPage — контакты и их Ауры (v3).
+  ContactsPage — люди и их Ауры (макет Contacts).
 
-  Слева — список собеседников (те же chat.list данные), справа — детальная
-  карточка выбранного контакта: написать, запустить A2A-переговоры.
-  В компактной ширине — только список, карточка раскрывается под ним.
+  Слева — поиск, фильтры и список собеседников (из чатов; новые находятся
+  через users.search и добавляются chat.open). Справа — карточка человека:
+  последнее сообщение, что вашей Ауре разрешено делать, «Начать переговоры»
+  (agent.negotiate) и «Открыть чат» — переписка открывается в этой же колонке.
 */
 Item {
     id: page
 
-    signal openChat(int chatId)
-    // Пользователь нажал «Переговоры» — уводим на экран Negotiations с целью.
-    signal startNegotiation(string target)
+    signal navigate(string to)
 
-    property int selectedChatId: -1
-    readonly property var contacts: App ? App.chats : []
-    readonly property var backdropRef: page.Window.window ? page.Window.window.contentItem : null
+    readonly property var contacts: F.contactsFrom(App ? App.chats : [], App ? App.userId : 0)
+    property string filter: "all"
+    property string query: ""
+    property var selected: null
+    property bool chatOpen: false
 
-    readonly property var selected: {
-        const list = page.contacts
-        for (let i = 0; i < list.length; ++i) {
-            if (list[i].id === page.selectedChatId) return list[i]
-        }
-        return null
+    readonly property var visibleContacts: contacts.filter(c => {
+        if (filter === "recent" && !c.lastAt) return false
+        const q = query.trim().toLowerCase()
+        return !q || c.name.toLowerCase().indexOf(q) >= 0 || (c.email || "").toLowerCase().indexOf(q) >= 0
+    })
+    // Найденные на сервере, которых ещё нет в контактах
+    readonly property var found: (App ? App.userResults : []).filter(u =>
+        u.id !== (App ? App.userId : 0) && !contacts.some(c => c.id === u.id))
+
+    function permission(tool) {
+        const item = (App ? App.toolPermissions : []).find(p => p.tool === tool)
+        return item ? item.mode : ""
+    }
+    readonly property var modeLabel: ({ allow: "сама", ask: "с вашего подтверждения", deny: "запрещено" })
+
+    onContactsChanged: if (!selected && contacts.length) selected = contacts[0]
+    Component.onCompleted: if (App) App.loadPermissions()
+
+    Timer {
+        id: searchDelay
+        interval: 300
+        onTriggered: App.searchUsers(page.query)
     }
 
-    Component.onCompleted: if (App && page.contacts.length > 0 && page.selectedChatId < 0)
-                               page.selectedChatId = page.contacts[0].id
+    // Декоративные сферы, как в макете
+    component Sphere: Rectangle {
+        radius: width / 2
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.32) }
+            GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.03) }
+        }
+        border.width: 1
+        border.color: Qt.rgba(1, 1, 1, 0.25)
+    }
 
     RowLayout {
         anchors.fill: parent
-        anchors.margins: AuraTheme.spaceLg
-        spacing: AuraTheme.spaceMd
+        anchors.margins: 40
+        spacing: 36
 
-        // ------------------------------------------------------- список
-        GlassPanel {
+        // ============================================================ список
+        ColumnLayout {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.maximumWidth: 420
-            padding: AuraTheme.spaceMd
-            backdrop: page.backdropRef
+            spacing: 18
 
+            Text {
+                text: "Контакты"
+                font.family: AuraTheme.fontFamily
+                font.pixelSize: 38
+                font.weight: Font.Bold
+                color: AuraTheme.textPrimary
+            }
+
+            // Поиск — подчёркнутая строка
             ColumnLayout {
-                anchors.fill: parent
-                spacing: AuraTheme.spaceSm
-
+                Layout.fillWidth: true
+                spacing: 0
                 RowLayout {
                     Layout.fillWidth: true
-                    Text {
+                    spacing: 10
+                    Icon { name: "search"; size: 18 }
+                    TextField {
+                        id: search
                         Layout.fillWidth: true
-                        text: "Контакты"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontTitle
-                        font.weight: Font.DemiBold
+                        background: null
+                        placeholderText: "Искать людей или Ауры"
+                        placeholderTextColor: AuraTheme.textMuted
                         color: AuraTheme.textPrimary
-                    }
-                    Text {
-                        text: page.contacts.length + ""
                         font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textMuted
+                        font.pixelSize: AuraTheme.fontLead
+                        onTextChanged: { page.query = text; searchDelay.restart() }
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Qt.rgba(1, 1, 1, search.activeFocus ? 0.4 : 0.18) }
+            }
+
+            RowLayout {
+                spacing: 10
+                Repeater {
+                    model: [{ k: "all", l: "Все" }, { k: "recent", l: "Недавние" }]
+                    delegate: Chip {
+                        required property var modelData
+                        text: modelData.l
+                        active: page.filter === modelData.k
+                        onClicked: page.filter = modelData.k
+                    }
+                }
+            }
+
+            ListView {
+                id: list
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                spacing: 4
+                model: page.visibleContacts
+                boundsBehavior: Flickable.StopAtBounds
+
+                delegate: Rectangle {
+                    id: row
+                    required property var modelData
+                    readonly property bool active: page.selected && page.selected.id === modelData.id
+                    width: list.width
+                    height: 70
+                    radius: 16
+                    color: active ? AuraTheme.accentA(0.12) : (rowArea.containsMouse ? Qt.rgba(1, 1, 1, 0.04) : "transparent")
+                    border.width: active ? 1 : 0
+                    border.color: AuraTheme.lilacA(0.3)
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 14
+                        anchors.rightMargin: 18
+                        spacing: 16
+                        AuraAvatar { name: row.modelData.name; size: 46 }
+                        Text {
+                            text: row.modelData.name
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontBody
+                            font.weight: Font.Bold
+                            color: AuraTheme.textPrimary
+                        }
+                        Rectangle { implicitWidth: 50; implicitHeight: 1; color: AuraTheme.textMuted }
+                        Text {
+                            Layout.fillWidth: true
+                            text: row.modelData.lastMessage ? row.modelData.lastMessage : "Аура доступна"
+                            elide: Text.ElideRight
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontSmall
+                            color: AuraTheme.textSecondary
+                        }
+                        Rectangle {
+                            implicitWidth: 10; implicitHeight: 10; radius: 5
+                            color: AuraTheme.accentSoft  // «Аура доступна»; онлайн-статус виден в чате
+                        }
+                    }
+                    MouseArea {
+                        id: rowArea
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: { page.selected = row.modelData; page.chatOpen = false }
                     }
                 }
 
-                ListView {
-                    id: contactList
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    clip: true
-                    spacing: AuraTheme.spaceSm
-                    model: page.contacts
-
+                footer: ColumnLayout {
+                    width: list.width
+                    spacing: 6
                     Text {
-                        anchors.centerIn: parent
-                        visible: contactList.count === 0
-                        width: parent.width
-                        horizontalAlignment: Text.AlignHCenter
-                        text: "Пока никого. Чаты с собеседниками появляются здесь —\nили начните переговоры по email."
+                        visible: page.visibleContacts.length === 0 && page.found.length === 0
+                        Layout.topMargin: 10
+                        text: page.query ? "Никого не нашли" : "Пока нет собеседников. Найдите человека по имени или email."
                         font.family: AuraTheme.fontFamily
                         font.pixelSize: AuraTheme.fontSmall
                         color: AuraTheme.textMuted
-                        lineHeight: 1.4
                     }
-
-                    delegate: Rectangle {
-                        id: row
-                        required property var modelData
-                        width: contactList.width
-                        height: 64
-                        radius: AuraTheme.radiusField
-
-                        readonly property bool selected: page.selectedChatId === row.modelData.id
-
-                        color: row.selected ? AuraTheme.accentA(0.14)
-                                            : (contactArea.containsMouse ? Qt.rgba(1, 1, 1, 0.10)
-                                                                         : Qt.rgba(1, 1, 1, 0.05))
-                        border.width: 1
-                        border.color: row.selected ? AuraTheme.accentA(0.45)
-                                                   : Qt.rgba(1, 1, 1, AuraTheme.glassBorder)
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: AuraTheme.spaceSm
-                            anchors.rightMargin: AuraTheme.spaceSm
-                            spacing: AuraTheme.spaceSm
-
-                            AuraAvatar {
-                                name: row.modelData ? String(row.modelData.title || "?") : "?"
-                                agent: true
-                                size: 38
-                            }
-
+                    Text {
+                        visible: page.found.length > 0
+                        Layout.topMargin: 14
+                        text: "Найдено в Aura"
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontSmall
+                        font.weight: Font.Bold
+                        color: AuraTheme.textSecondary
+                    }
+                    Repeater {
+                        model: page.found
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 14
+                            spacing: 14
+                            AuraAvatar { name: modelData.display_name || modelData.email; size: 38 }
                             ColumnLayout {
                                 Layout.fillWidth: true
-                                spacing: 2
-                                Text {
-                                    Layout.fillWidth: true
-                                    elide: Text.ElideRight
-                                    text: row.modelData ? String(row.modelData.title || "Без названия") : ""
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontBody
-                                    font.weight: Font.DemiBold
-                                    color: AuraTheme.textPrimary
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    elide: Text.ElideRight
-                                    text: row.modelData ? String(row.modelData.last_message_body || "Аура на связи") : ""
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontMicro
-                                    color: AuraTheme.textSecondary
-                                }
+                                spacing: 0
+                                Text { text: modelData.display_name || ""; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontBody; font.weight: Font.DemiBold; color: AuraTheme.textPrimary }
+                                Text { text: modelData.email || ""; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontMicro; color: AuraTheme.textMuted }
                             }
-
-                            // Статусная точка (v3): активен/ждёт
-                            Rectangle {
-                                Layout.preferredWidth: 8
-                                Layout.preferredHeight: 8
-                                radius: 4
-                                color: row.selected ? AuraTheme.success : AuraTheme.warning
+                            GlassButton {
+                                text: "Добавить"
+                                symbol: "user-plus"
+                                implicitHeight: 36
+                                onClicked: { App.openChat(modelData.email); search.text = "" }
                             }
-                        }
-
-                        MouseArea {
-                            id: contactArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: page.selectedChatId = row.modelData.id
                         }
                     }
                 }
             }
+
+            GlassButton {
+                text: "Пригласить в Aura"
+                symbol: "user-plus"
+                implicitHeight: 50
+                leftPadding: 30
+                rightPadding: 30
+                ToolTip.visible: hovered
+                ToolTip.text: "Найдите человека по email — если у него есть Аура, он появится в списке"
+                onClicked: search.forceActiveFocus()
+            }
         }
 
-        // ----------------------------------------------- детальная карточка
-        GlassPanel {
-            Layout.fillWidth: true
+        // ============================================================ карточка
+        Item {
+            Layout.preferredWidth: page.chatOpen ? Math.min(560, page.width * 0.5) : 340
             Layout.fillHeight: true
-            Layout.minimumWidth: 300
-            padding: AuraTheme.spaceLg
-            backdrop: page.backdropRef
 
-            ColumnLayout {
-                anchors.fill: parent
-                spacing: AuraTheme.spaceMd
+            Sphere { width: 120; height: 120; x: -70; y: -20; visible: !page.chatOpen }
+            Sphere { width: 22; height: 22; x: -90; y: 150; visible: !page.chatOpen }
 
-                Item { Layout.fillHeight: page.selected === null }  // пустое состояние — по центру
-
-                AuraAvatar {
-                    Layout.alignment: Qt.AlignHCenter
-                    visible: page.selected !== null
-                    name: page.selected ? String(page.selected.title || "?") : "?"
-                    agent: true
-                    size: 72
+            // Профиль
+            Rectangle {
+                id: profile
+                visible: !page.chatOpen && page.selected !== null
+                width: parent.width
+                height: Math.min(parent.height, profileCol.implicitHeight + 60)
+                radius: 30
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: Qt.rgba(0.43, 0.43, 0.47, 0.55) }
+                    GradientStop { position: 1.0; color: Qt.rgba(0.24, 0.23, 0.27, 0.6) }
                 }
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
-                    visible: page.selected !== null
-                    text: page.selected ? String(page.selected.title || "") : ""
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontTitle
-                    font.weight: Font.DemiBold
-                    color: AuraTheme.textPrimary
-                }
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    visible: page.selected !== null
-                    text: "Аура доступна"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    color: AuraTheme.online
-                }
+                border.width: 1
+                border.color: Qt.rgba(1, 1, 1, 0.28)
 
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: page.selected !== null
-                    spacing: AuraTheme.spaceSm
+                    id: profileCol
+                    x: 26
+                    y: 34
+                    width: parent.width - 52
+                    spacing: 22
 
-                    Text {
-                        Layout.fillWidth: true
-                        text: "Последнее сообщение"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        font.weight: Font.DemiBold
-                        color: AuraTheme.textSecondary
-                    }
-                    Text {
-                        Layout.fillWidth: true
-                        wrapMode: Text.WordWrap
-                        text: page.selected
-                              ? String(page.selected.last_message_body || "Сообщений пока нет")
-                              : ""
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textPrimary
-                        lineHeight: 1.3
-                    }
-                }
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: AuraTheme.spaceSm
-                    visible: page.selected === null
-
-                    Text {
+                    ColumnLayout {
                         Layout.alignment: Qt.AlignHCenter
+                        spacing: 4
+                        AuraAvatar {
+                            Layout.alignment: Qt.AlignHCenter
+                            name: page.selected ? page.selected.name : ""
+                            size: 100
+                            ring: true
+                        }
+                        Text {
+                            Layout.alignment: Qt.AlignHCenter
+                            Layout.topMargin: 12
+                            text: page.selected ? page.selected.name : ""
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontTitle
+                            font.weight: Font.Bold
+                            color: AuraTheme.textPrimary
+                        }
+                        Text {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: "Аура доступна · " + (page.selected ? page.selected.email : "")
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontSmall
+                            color: AuraTheme.textSecondary
+                        }
+                    }
+
+                    component InfoBlock: ColumnLayout {
+                        id: block
+                        property string icon: ""
+                        property string title: ""
+                        property var lines: []
                         Layout.fillWidth: true
-                        horizontalAlignment: Text.AlignHCenter
-                        text: "Выберите контакт слева"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textMuted
+                        spacing: 8
+                        RowLayout {
+                            spacing: 10
+                            Rectangle {
+                                implicitWidth: 28; implicitHeight: 28; radius: 14
+                                color: AuraTheme.accent
+                                Icon { anchors.centerIn: parent; name: block.icon; size: 14; color: "#FFFFFF" }
+                            }
+                            Text {
+                                text: block.title
+                                font.family: AuraTheme.fontFamily
+                                font.pixelSize: AuraTheme.fontBody
+                                font.weight: Font.Bold
+                                color: AuraTheme.textPrimary
+                            }
+                        }
+                        Repeater {
+                            model: block.lines
+                            delegate: Text {
+                                required property string modelData
+                                Layout.leftMargin: 38
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: modelData
+                                font.family: AuraTheme.fontFamily
+                                font.pixelSize: AuraTheme.fontSmall + 1
+                                font.weight: Font.DemiBold
+                                color: AuraTheme.textPrimary
+                            }
+                        }
+                    }
+
+                    InfoBlock {
+                        icon: "calendar-days"
+                        title: "Последнее в переписке"
+                        lines: page.selected && page.selected.lastMessage
+                               ? ["«" + page.selected.lastMessage + "»", F.dayPhrase(page.selected.lastAt) + ", " + F.time(page.selected.lastAt)]
+                               : ["Пока ничего"]
+                    }
+                    InfoBlock {
+                        icon: "lock"
+                        title: "Что может ваша Аура"
+                        lines: [
+                            "Писать: " + (page.modeLabel[page.permission("send_message")] || "—"),
+                            "Бронировать: " + (page.modeLabel[page.permission("book_table")] || "—"),
+                            "Делиться: только свободными окнами"
+                        ]
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+                        GlassButton {
+                            Layout.fillWidth: true
+                            implicitHeight: 50
+                            text: "Начать переговоры"
+                            symbol: "handshake"
+                            busy: App ? App.busy : false
+                            onClicked: {
+                                App.negotiateAgent(page.selected.email, "", 60, F.windowHours("weekend"))
+                                page.navigate("negotiations")
+                            }
+                        }
+                        GlassButton {
+                            Layout.fillWidth: true
+                            implicitHeight: 46
+                            variant: "quiet"
+                            text: "Открыть чат"
+                            symbol: "message-circle"
+                            onClicked: page.chatOpen = true
+                        }
                     }
                 }
+            }
 
-                Item { Layout.fillHeight: true }
-
-                GlassButton {
-                    Layout.fillWidth: true
-                    visible: page.selected !== null
-                    variant: "accent"
-                    text: "Написать"
-                    glyph: "→"
-                    onClicked: page.openChat(page.selected ? page.selected.id : 0)
-                }
-
-                GlassButton {
-                    Layout.fillWidth: true
-                    visible: page.selected !== null
-                    text: "Начать переговоры"
-                    glyph: "✦"
-                    onClicked: page.startNegotiation(page.selected ? String(page.selected.title || "") : "")
+            // Переписка
+            GlassPanel {
+                anchors.fill: parent
+                visible: page.chatOpen && page.selected !== null
+                radius: 28
+                padding: 0
+                backdrop: null
+                base: 0.55
+                ChatPage {
+                    anchors.fill: parent
+                    embedded: true
+                    chatId: page.chatOpen && page.selected ? page.selected.chatId : 0
+                    onBack: page.chatOpen = false
                 }
             }
         }

@@ -4,11 +4,12 @@ import QtQuick.Layouts
 import Aura
 
 /*
-  LoginPage — вход, регистрация, подтверждение email и восстановление пароля.
+  LoginPage — вход (макет Welcome) и регистрация (макет Create your Aura),
+  плюс шаги auth v3: код из письма, двухфакторный вход, восстановление и сброс.
 
-  Потоки (auth v3):
     Вход / Регистрация → (регистрация) Код подтверждения → Вход
     Вход с неподтверждённым email → Код подтверждения → Вход
+    Вход с 2FA → Код TOTP или резервный код → Вход
     «Забыли пароль?» → Код сброса → Новый пароль → Вход
 */
 Item {
@@ -17,501 +18,445 @@ Item {
     signal loggedIn()
 
     readonly property bool busy: App ? App.busy : false
-    // flow: "auth" (вход/регистрация) | "verify" (код email) | "forgot" | "reset"
-    property string flow: "auth"
-    readonly property bool registerMode: modeSwitch.currentIndex === 1
-
-    function backToAuth() {
-        flow = "auth";
+    // flow: "login" | "register" | "verify" | "twofactor" | "forgot" | "reset"
+    property string flow: "login"
+    // Email из регистрации/входа — подставляется в форму входа после подтверждения кода.
+    property string lastEmail: ""
+    readonly property bool wideCard: flow === "login"
+    readonly property string timezone: {
+        const m = -new Date().getTimezoneOffset()
+        const h = Math.floor(Math.abs(m) / 60), mm = Math.abs(m) % 60
+        return "UTC " + (m >= 0 ? "+" : "−") + h + ":" + (mm < 10 ? "0" : "") + mm
     }
 
-    // Центрируем карточку и мягко двигаем её при переключении режима
+    // Подпись над полем (макет: «Email», «Password»)
+    component FieldLabel: Text {
+        font.family: AuraTheme.fontFamily
+        font.pixelSize: AuraTheme.fontSmall
+        font.weight: Font.DemiBold
+        color: AuraTheme.textPrimary
+    }
+    component Note: Text {
+        Layout.fillWidth: true
+        horizontalAlignment: Text.AlignHCenter
+        wrapMode: Text.WordWrap
+        font.family: AuraTheme.fontFamily
+        font.pixelSize: AuraTheme.fontSmall
+        color: AuraTheme.textSecondary
+    }
+
+    // ---------------------------------------------- регистрация: орбиты и пятна
+    Item {
+        anchors.centerIn: card
+        width: card.width * 1.55
+        height: card.height * 1.25
+        visible: page.flow === "register"
+        Canvas {
+            anchors.fill: parent
+            onPaint: {
+                if (width <= 0 || height <= 0) return
+                const ctx = getContext("2d")
+                ctx.reset()
+                ctx.lineWidth = 1.2
+                const ellipse = (rot, rx, ry, color) => {
+                    ctx.save()
+                    ctx.translate(width / 2, height / 2)
+                    ctx.rotate(rot)
+                    ctx.scale(1, ry / rx)
+                    ctx.beginPath()
+                    ctx.arc(0, 0, rx, 0, Math.PI * 2)
+                    ctx.restore()
+                    ctx.strokeStyle = color
+                    ctx.stroke()
+                }
+                ellipse(-0.45, width * 0.48, height * 0.2, "rgba(190,160,255,0.45)")
+                ellipse(0.5, width * 0.46, height * 0.23, "rgba(160,170,255,0.35)")
+            }
+            onWidthChanged: requestPaint()
+        }
+        Repeater {
+            model: [{ x: 0.12, y: 0.32 }, { x: 0.86, y: 0.78 }]
+            delegate: Canvas {
+                required property var modelData
+                width: 260; height: 260
+                x: parent.width * modelData.x - width / 2
+                y: parent.height * modelData.y - height / 2
+                onPaint: {
+                if (width <= 0 || height <= 0) return
+                    const ctx = getContext("2d")
+                    const g = ctx.createRadialGradient(130, 130, 0, 130, 130, 130)
+                    g.addColorStop(0, "rgba(124,58,237,0.75)")
+                    g.addColorStop(1, "rgba(124,58,237,0)")
+                    ctx.fillStyle = g
+                    ctx.fillRect(0, 0, width, height)
+                }
+            }
+        }
+    }
+
     GlassPanel {
         id: card
         anchors.centerIn: parent
-        width: Math.min(430, parent.width - AuraTheme.spaceXl * 2)
+        width: Math.min(page.wideCard ? 720 : 460, parent.width - 32)
+        radius: page.wideCard ? 40 : 34
+        padding: page.wideCard ? 56 : 34
         backdrop: page.Window.window ? page.Window.window.contentItem : null
-        padding: AuraTheme.spaceXl
+        Behavior on width { NumberAnimation { duration: AuraTheme.moveMs; easing.type: AuraTheme.ease } }
+
+        // Внутреннее фиолетовое сияние за формой (макет Welcome)
+        Canvas {
+            anchors.fill: parent
+            anchors.margins: -card.padding
+            visible: page.wideCard
+            onPaint: {
+                if (width <= 0 || height <= 0) return
+                const ctx = getContext("2d")
+                ctx.reset()
+                const g = ctx.createRadialGradient(width * 0.55, height * 0.45, 0, width * 0.55, height * 0.45, width * 0.42)
+                g.addColorStop(0, "rgba(124,58,237,0.42)")
+                g.addColorStop(1, "rgba(124,58,237,0)")
+                ctx.fillStyle = g
+                ctx.fillRect(0, 0, width, height)
+            }
+            onWidthChanged: requestPaint()
+        }
+
+        // Точки «окна» (макет регистрации)
+        Row {
+            visible: page.flow === "register"
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.topMargin: -16
+            anchors.rightMargin: -14
+            spacing: 6
+            Repeater {
+                model: [0.55, 0.55, 0.3]
+                delegate: Rectangle { required property real modelData; width: 11; height: 11; radius: 5.5; color: Qt.rgba(1, 1, 1, modelData) }
+            }
+        }
 
         ColumnLayout {
-            anchors.fill: parent
-            spacing: AuraTheme.spaceMd
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: card.width - card.padding * 2
+            spacing: 16
+            // Поля широкой карточки входа — узкой колонкой по центру, как в макете.
+            readonly property real formWidth: page.wideCard ? Math.min(340, width) : width
 
-            // Эмблема v3: ядро + кольцо лучей со свечением
+            // ----------------------------------------------------- шапка
             AuraEmblem {
+                visible: page.flow !== "register"
                 Layout.alignment: Qt.AlignHCenter
-                Layout.topMargin: AuraTheme.spaceSm
-                size: 72
+                Layout.bottomMargin: 8
+                size: page.wideCard ? 84 : 64
+            }
+            RowLayout {
+                visible: page.flow === "register"
+                Layout.alignment: Qt.AlignHCenter
+                Layout.bottomMargin: 12
+                spacing: 10
+                Canvas {
+                    implicitWidth: 30; implicitHeight: 30
+                    onPaint: {
+                if (width <= 0 || height <= 0) return
+                        const ctx = getContext("2d")
+                        ctx.reset()
+                        ctx.fillStyle = "#FFFFFF"
+                        ctx.beginPath()
+                        ctx.moveTo(15, 2); ctx.lineTo(28, 27); ctx.lineTo(20, 27); ctx.lineTo(15, 17)
+                        ctx.lineTo(10, 27); ctx.lineTo(2, 27); ctx.closePath(); ctx.fill()
+                    }
+                }
+                Text { text: "Aura"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontTitle; font.weight: Font.Bold; color: AuraTheme.textPrimary }
             }
 
             Text {
-                Layout.alignment: Qt.AlignHCenter
                 Layout.fillWidth: true
-                horizontalAlignment: Text.AlignHCenter
-                text: page.flow === "auth"
-                      ? (page.registerMode ? "Create your Aura" : "Welcome to Aura")
-                      : (page.flow === "verify" ? "Подтверждение email"
-                        : page.flow === "forgot" ? "Восстановление пароля"
-                        : page.flow === "twofactor" ? "Двухфакторный вход"
-                        : "Новый пароль")
+                horizontalAlignment: page.flow === "register" ? Text.AlignLeft : Text.AlignHCenter
+                text: ({ login: "Добро пожаловать в Aura", register: "Создайте свою Ауру", verify: "Подтверждение email",
+                         twofactor: "Двухфакторный вход", forgot: "Восстановление пароля", reset: "Новый пароль" })[page.flow]
                 font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontHero
-                font.weight: Font.DemiBold
+                font.pixelSize: page.flow === "register" ? 26 : AuraTheme.fontHero
+                font.weight: Font.Bold
                 color: AuraTheme.textPrimary
+                wrapMode: Text.WordWrap
+            }
+            Note {
+                visible: page.flow !== "register"
+                Layout.bottomMargin: 10
+                text: ({ login: "Ваша персональная сеть ИИ-агентов", verify: "Введите код из письма",
+                         twofactor: "Код из приложения-аутентификатора или резервный код",
+                         forgot: "Отправим код сброса на email", reset: "Придумайте новый пароль" })[page.flow] || ""
             }
 
-            Text {
-                Layout.alignment: Qt.AlignHCenter
-                Layout.fillWidth: true
-                horizontalAlignment: Text.AlignHCenter
-                text: page.flow === "auth"
-                      ? (page.registerMode ? "Ваша личная сеть ИИ-агентов"
-                                           : "Ваша личная сеть ИИ-агентов")
-                      : (page.flow === "verify" ? "Введите код из письма"
-                        : page.flow === "forgot" ? "Отправим код сброса на email"
-                        : page.flow === "twofactor" ? "Код из приложения-аутентификатора"
-                        : "Придумайте новый пароль")
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontSmall
-                color: AuraTheme.textSecondary
-                lineHeight: 1.3
-            }
-
-            Item { Layout.preferredHeight: AuraTheme.spaceXs; visible: page.flow === "auth" }
-
-            // ============================ Поток «вход / регистрация» ============================
+            // ======================================================= вход
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: AuraTheme.spaceMd
-                visible: page.flow === "auth"
+                Layout.maximumWidth: parent.formWidth
+                Layout.alignment: Qt.AlignHCenter
+                visible: page.flow === "login"
+                spacing: 8
 
-                // Скрытый хранитель индекса режима: 0 — вход, 1 — регистрация.
-                // Переключение — ссылкой внизу карточки (v3, без пилюли).
-                QtObject {
-                    id: modeSwitch
-                    property int currentIndex: 0
-                }
-
+                FieldLabel { text: "Email" }
                 GlassField {
-                    id: nameField
+                    id: loginEmail
                     Layout.fillWidth: true
-                    label: "Имя"
-                    icon: "👤"
-                    placeholderText: "Как вас зовут"
-                    visible: page.registerMode
-                    enabled: !page.busy
-                }
-
-                GlassField {
-                    id: emailField
-                    Layout.fillWidth: true
-                    label: "Email"
-                    icon: "✉"
-                    placeholderText: "you@example.com"
+                    placeholderText: "Введите email"
+                    icon: "mail"
                     inputMethodHints: Qt.ImhEmailCharactersOnly
                     enabled: !page.busy
+                    onAccepted: loginPassword.forceActiveFocus()
                 }
-
+                FieldLabel { text: "Пароль"; Layout.topMargin: 8 }
                 GlassField {
-                    id: passwordField
+                    id: loginPassword
                     Layout.fillWidth: true
-                    label: "Пароль"
-                    icon: "🔒"
-                    action: "👁"
-                    placeholderText: page.registerMode ? "минимум 8 символов, буквы и цифры" : "••••••••"
-                    echoMode: revealPassword.checked ? TextInput.Normal : TextInput.Password
+                    placeholderText: "••••••••"
+                    icon: "lock"
+                    echoMode: TextInput.Password
                     enabled: !page.busy
-                    onAccepted: submitButton.clicked()
-                    onActionClicked: revealPassword.toggle()
-
-                    // «Глаз»: показать/скрыть пароль (v3)
-                    CheckBox {
-                        id: revealPassword
-                        visible: false
-                        function toggle() { checked = !checked }
-                    }
+                    onAccepted: signIn.clicked()
                 }
-
-                Text {
-                    Layout.fillWidth: true
-                    visible: page.registerMode
-                    text: "Пароль хранится как Argon2id (RFC 9106), сессия — JWT + refresh-ротация."
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontMicro
-                    color: AuraTheme.textMuted
-                    wrapMode: Text.WordWrap
+                LinkText {
+                    Layout.alignment: Qt.AlignRight
+                    Layout.topMargin: 4
+                    text: "Забыли пароль?"
+                    normalColor: AuraTheme.textPrimary
+                    onClicked: { forgotEmail.text = loginEmail.text; page.flow = "forgot" }
                 }
-
                 GlassButton {
-                    id: submitButton
+                    id: signIn
                     Layout.fillWidth: true
+                    Layout.topMargin: 14
                     variant: "accent"
-                    text: page.registerMode ? "Создать аккаунт" : "Войти"
-                    glyph: page.registerMode ? "✦" : "→"
+                    text: "Войти"
                     busy: page.busy
                     enabled: !page.busy
-                    onClicked: {
-                        if (page.registerMode) {
-                            App.registerUser(nameField.text, emailField.text, passwordField.text)
-                        } else {
-                            App.login(emailField.text, passwordField.text)
-                        }
-                    }
+                    onClicked: { page.lastEmail = loginEmail.text; App.login(loginEmail.text, loginPassword.text) }
                 }
-
-                // Google OAuth: сервер ещё не отдаёт вход через Google
-                // (только интеграции) — кнопка честно неактивна.
+                // Вход через Google сервер пока не поддерживает (OAuth есть только
+                // для интеграций) — кнопка честно неактивна.
                 GlassButton {
                     Layout.fillWidth: true
-                    text: "Continue with Google"
+                    Layout.topMargin: 10
+                    text: "Продолжить с Google"
                     glyph: "G"
                     enabled: false
                     ToolTip.visible: hovered
-                    ToolTip.delay: 400
-                    ToolTip.text: "Появится после настройки Google OAuth на сервере"
+                    ToolTip.text: "Появится, когда сервер начнёт принимать вход через Google"
                 }
-
-                // Забыли пароль? · Сменить режим (v3: вместо пилюли)
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: AuraTheme.spaceSm
-
-                    Text {
-                        text: "Забыли пароль?"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.accentSoft
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                                forgotEmailField.text = emailField.text;
-                                page.flow = "forgot";
-                            }
-                        }
-                    }
-                    Item { Layout.fillWidth: true }
-                    Text {
-                        text: page.registerMode ? "Уже есть аккаунт? Войти"
-                                                : "Нет аккаунта? Создать Ауру"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.accentSoft
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: modeSwitch.currentIndex = page.registerMode ? 0 : 1
-                        }
-                    }
+                LinkText {
+                    Layout.alignment: Qt.AlignRight
+                    Layout.topMargin: 4
+                    text: "Создать аккаунт"
+                    normalColor: AuraTheme.textPrimary
+                    onClicked: page.flow = "register"
                 }
             }
 
-            // ============================ Поток «код подтверждения» ============================
+            // =================================================== регистрация
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: AuraTheme.spaceMd
-                visible: page.flow === "verify"
+                Layout.maximumWidth: parent.formWidth
+                Layout.alignment: Qt.AlignHCenter
+                visible: page.flow === "register"
+                spacing: 7
 
-                Text {
+                FieldLabel { text: "Полное имя" }
+                GlassField { id: regName; Layout.fillWidth: true; placeholderText: "Введите имя и фамилию"; enabled: !page.busy }
+                FieldLabel { text: "Email"; Layout.topMargin: 6 }
+                GlassField { id: regEmail; Layout.fillWidth: true; placeholderText: "Введите email"; inputMethodHints: Qt.ImhEmailCharactersOnly; enabled: !page.busy }
+                FieldLabel { text: "Пароль"; Layout.topMargin: 6 }
+                GlassField {
+                    id: regPassword
                     Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
-                    text: "Код отправлен на " + (App ? App.pendingEmail : "")
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    color: AuraTheme.textSecondary
+                    placeholderText: "Минимум 8 символов, буквы и цифры"
+                    property bool reveal: false
+                    action: reveal ? "eye-off" : "eye"
+                    echoMode: reveal ? TextInput.Normal : TextInput.Password
+                    enabled: !page.busy
+                    onActionClicked: reveal = !reveal
                 }
-
-                Text {
+                FieldLabel { text: "Часовой пояс"; Layout.topMargin: 6 }
+                GlassField {
                     Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
+                    text: page.timezone + " · по системе"
+                    readOnly: true
+                    icon: "clock"
+                }
+                FieldLabel { text: "С чем должна помогать ваша Аура?"; Layout.topMargin: 6 }
+                GlassField { id: regFocus; Layout.fillWidth: true; filled: true; placeholderText: "например, встречи, продуктивность, код"; enabled: !page.busy }
+                GlassButton {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 14
+                    variant: "accent"
+                    text: "Создать аккаунт"
+                    busy: page.busy
+                    enabled: !page.busy
+                    onClicked: {
+                        page.lastEmail = regEmail.text
+                        App.setPendingFocus(regFocus.text)
+                        App.registerUser(regName.text, regEmail.text, regPassword.text)
+                    }
+                }
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.topMargin: 4
+                    spacing: 14
+                    Text { text: "Пароль — Argon2id, сессия — JWT"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontMicro; color: AuraTheme.textMuted }
+                }
+                LinkText {
+                    Layout.alignment: Qt.AlignRight
+                    text: "Уже есть аккаунт?"
+                    normalColor: AuraTheme.textPrimary
+                    onClicked: page.flow = "login"
+                }
+            }
+
+            // ============================================= код подтверждения
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.maximumWidth: parent.formWidth
+                Layout.alignment: Qt.AlignHCenter
+                visible: page.flow === "verify"
+                spacing: 12
+                Note { text: "Код отправлен на " + (App ? App.pendingEmail : "") }
+                Note {
                     visible: App && App.devEmailCode !== ""
                     text: "Режим разработки — код: " + (App ? App.devEmailCode : "")
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    font.weight: Font.DemiBold
                     color: AuraTheme.warning
+                    font.weight: Font.DemiBold
                 }
-
-                GlassField {
-                    id: codeField
-                    Layout.fillWidth: true
-                    label: "Код из письма"
-                    placeholderText: "6 цифр"
-                    inputMethodHints: Qt.ImhDigitsOnly
-                    enabled: !page.busy
-                    onAccepted: verifyButton.clicked()
-                }
-
+                GlassField { id: verifyCode; Layout.fillWidth: true; placeholderText: "6 цифр"; inputMethodHints: Qt.ImhDigitsOnly; enabled: !page.busy; onAccepted: verifyButton.clicked() }
                 GlassButton {
                     id: verifyButton
                     Layout.fillWidth: true
                     variant: "accent"
                     text: "Подтвердить"
-                    glyph: "✓"
                     busy: page.busy
                     enabled: !page.busy
-                    onClicked: App.verifyEmail(App.pendingEmail, codeField.text)
+                    onClicked: App.verifyEmail(App.pendingEmail, verifyCode.text)
                 }
-
                 RowLayout {
                     Layout.fillWidth: true
-                    Text {
-                        text: "Отправить код ещё раз"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.accentSoft
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: App.resendCode(App.pendingEmail)
-                        }
-                    }
+                    LinkText { text: "Отправить код ещё раз"; onClicked: App.resendCode(App.pendingEmail) }
                     Item { Layout.fillWidth: true }
-                    Text {
-                        text: "Назад"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textSecondary
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: page.backToAuth()
-                        }
-                    }
+                    LinkText { text: "Назад ко входу"; onClicked: page.flow = "login" }
                 }
             }
 
-            // ============================ Поток «двухфакторная аутентификация» ============================
+            // ============================================= двухфакторный вход
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: AuraTheme.spaceMd
+                Layout.maximumWidth: parent.formWidth
+                Layout.alignment: Qt.AlignHCenter
                 visible: page.flow === "twofactor"
-
-                Text {
-                    Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
-                    text: "Двухфакторная аутентификация"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontBody
-                    font.weight: Font.DemiBold
-                    color: AuraTheme.textPrimary
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
-                    text: "Введите 6-значный код из приложения-аутентификатора\nили резервный код вида XXXXX-XXXXX"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    color: AuraTheme.textSecondary
-                }
-
-                GlassField {
-                    id: twoFactorCodeField
-                    Layout.fillWidth: true
-                    label: "Код подтверждения"
-                    placeholderText: "123456 или XXXXX-XXXXX"
-                    enabled: !page.busy
-                    onAccepted: twoFactorButton.clicked()
-                }
-
+                spacing: 12
+                GlassField { id: totp; Layout.fillWidth: true; placeholderText: "123456 или XXXXX-XXXXX"; enabled: !page.busy; onAccepted: totpButton.clicked() }
                 CheckBox {
-                    id: trustDeviceCheck
-                    Layout.fillWidth: true
-                    text: "Запомнить это устройство (90 дней)"
+                    id: trustDevice
+                    text: "Доверять этому устройству 90 дней"
                     font.family: AuraTheme.fontFamily
                     font.pixelSize: AuraTheme.fontSmall
-                    contentItem: Text {
-                        leftPadding: trustDeviceCheck.indicator.width + AuraTheme.spaceSm
-                        text: trustDeviceCheck.text
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textSecondary
-                        verticalAlignment: Text.AlignVCenter
-                    }
+                    palette.windowText: AuraTheme.textSecondary
                 }
-
                 GlassButton {
-                    id: twoFactorButton
+                    id: totpButton
                     Layout.fillWidth: true
                     variant: "accent"
-                    text: "Подтвердить"
-                    glyph: "✓"
+                    text: "Войти"
                     busy: page.busy
                     enabled: !page.busy
-                    onClicked: App.login2fa(twoFactorCodeField.text, trustDeviceCheck.checked)
+                    onClicked: App.login2fa(totp.text, trustDevice.checked)
                 }
-
-                Text {
-                    Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
-                    text: "Назад"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    color: AuraTheme.textSecondary
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            App.cancelTwoFactor();
-                            page.backToAuth();
-                        }
-                    }
-                }
+                LinkText { Layout.alignment: Qt.AlignHCenter; text: "Отмена"; onClicked: { App.cancelTwoFactor(); page.flow = "login" } }
             }
 
-            // ============================ Поток «забыли пароль» ============================
+            // ============================================= забыли пароль
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: AuraTheme.spaceMd
+                Layout.maximumWidth: parent.formWidth
+                Layout.alignment: Qt.AlignHCenter
                 visible: page.flow === "forgot"
-
-                GlassField {
-                    id: forgotEmailField
-                    Layout.fillWidth: true
-                    label: "Email аккаунта"
-                    placeholderText: "you@example.com"
-                    inputMethodHints: Qt.ImhEmailCharactersOnly
-                    enabled: !page.busy
-                    onAccepted: forgotButton.clicked()
-                }
-
+                spacing: 12
+                GlassField { id: forgotEmail; Layout.fillWidth: true; placeholderText: "Email"; icon: "mail"; enabled: !page.busy; onAccepted: forgotButton.clicked() }
                 GlassButton {
                     id: forgotButton
                     Layout.fillWidth: true
                     variant: "accent"
-                    text: "Отправить код сброса"
-                    glyph: "→"
+                    text: "Отправить код"
                     busy: page.busy
                     enabled: !page.busy
-                    onClicked: App.forgotPassword(forgotEmailField.text)
+                    onClicked: App.forgotPassword(forgotEmail.text)
                 }
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "Назад ко входу"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    color: AuraTheme.textSecondary
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: page.backToAuth()
-                    }
-                }
+                LinkText { Layout.alignment: Qt.AlignHCenter; text: "Назад ко входу"; onClicked: page.flow = "login" }
             }
 
-            // ============================ Поток «новый пароль» ============================
+            // ============================================= новый пароль
             ColumnLayout {
                 Layout.fillWidth: true
-                spacing: AuraTheme.spaceMd
+                Layout.maximumWidth: parent.formWidth
+                Layout.alignment: Qt.AlignHCenter
                 visible: page.flow === "reset"
-
-                Text {
-                    Layout.fillWidth: true
-                    horizontalAlignment: Text.AlignHCenter
+                spacing: 12
+                Note {
                     visible: App && App.devResetCode !== ""
                     text: "Режим разработки — код: " + (App ? App.devResetCode : "")
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    font.weight: Font.DemiBold
                     color: AuraTheme.warning
-                    wrapMode: Text.WordWrap
+                    font.weight: Font.DemiBold
                 }
-
+                GlassField { id: resetCode; Layout.fillWidth: true; placeholderText: "Код из письма"; enabled: !page.busy }
                 GlassField {
-                    id: resetCodeField
+                    id: newPassword
                     Layout.fillWidth: true
-                    label: "Код сброса"
-                    placeholderText: "код из письма"
-                    enabled: !page.busy
-                }
-
-                GlassField {
-                    id: newPasswordField
-                    Layout.fillWidth: true
-                    label: "Новый пароль"
-                    placeholderText: "минимум 8 символов, буквы и цифры"
+                    placeholderText: "Новый пароль"
                     echoMode: TextInput.Password
+                    icon: "lock"
                     enabled: !page.busy
                     onAccepted: resetButton.clicked()
                 }
-
                 GlassButton {
                     id: resetButton
                     Layout.fillWidth: true
                     variant: "accent"
-                    text: "Установить пароль"
-                    glyph: "✓"
+                    text: "Сменить пароль"
                     busy: page.busy
                     enabled: !page.busy
-                    onClicked: App.resetPassword(App.pendingEmail, resetCodeField.text, newPasswordField.text)
+                    onClicked: App.resetPassword(App.pendingEmail, resetCode.text, newPassword.text)
                 }
-
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "Назад ко входу"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    color: AuraTheme.textSecondary
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: page.backToAuth()
-                    }
-                }
+                LinkText { Layout.alignment: Qt.AlignHCenter; text: "Назад ко входу"; onClicked: page.flow = "login" }
             }
 
-            // Строка состояния/подсказки
-            Text {
-                id: statusLine
-                Layout.fillWidth: true
-                horizontalAlignment: Text.AlignHCenter
-                text: App ? App.statusMessage : ""
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontMicro
-                color: AuraTheme.textSecondary
-                wrapMode: Text.WordWrap
-                visible: text !== ""
-            }
-
+            // Статус соединения
             Text {
                 Layout.fillWidth: true
+                Layout.topMargin: 6
                 horizontalAlignment: Text.AlignHCenter
+                visible: !App || !App.connected
                 text: App ? App.connectionLabel : ""
                 font.family: AuraTheme.fontFamily
                 font.pixelSize: AuraTheme.fontMicro
-                color: App && App.connected ? AuraTheme.textSecondary : AuraTheme.warning
+                color: AuraTheme.warning
             }
         }
     }
 
     Connections {
         target: App
-        function onAuthenticatedChanged() {
-            if (App.authenticated) page.loggedIn()
-        }
-        function onVerificationRequested() {
-            page.flow = "verify";
-        }
-        function onResetFlowRequested() {
-            page.flow = "reset";
-        }
+        function onAuthenticatedChanged() { if (App.authenticated) page.loggedIn() }
+        function onVerificationRequested() { page.flow = "verify" }
+        function onResetFlowRequested() { page.flow = "reset" }
         function onTwoFactorRequiredChanged() {
-            // Вход потребовал код 2FA — переключаемся на шаг ввода кода.
-            if (App.twoFactorRequired) {
-                page.flow = "twofactor";
-            } else if (page.flow === "twofactor") {
-                page.flow = "auth";
-            }
+            if (App.twoFactorRequired) page.flow = "twofactor"
+            else if (page.flow === "twofactor") page.flow = "login"
         }
         function onStatusMessageChanged() {
-            // После удачного подтверждения/сброса возвращаемся ко входу.
-            if (App.statusMessage.indexOf("подтверждён") !== -1 ||
-                App.statusMessage.indexOf("Пароль изменён — войдите") !== -1) {
-                if (page.flow !== "auth") {
-                    page.flow = "auth";
-                    modeSwitch.currentIndex = 0;
+            // После удачного подтверждения/сброса — снова вход.
+            if (App.statusMessage.indexOf("подтверждён") !== -1
+                    || App.statusMessage.indexOf("Пароль изменён — войдите") !== -1) {
+                if (page.flow !== "login") {
+                    loginEmail.text = App.pendingEmail || page.lastEmail
+                    page.flow = "login"
+                    loginPassword.forceActiveFocus()
                 }
             }
         }

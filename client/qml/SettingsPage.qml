@@ -37,9 +37,85 @@ Item {
         }
     }
 
+    // Раздел настроек; навигация слева — как в макете (сиреневый индикатор у активного).
+    property string section: "profile"
+    readonly property var sections: [
+        { key: "profile", label: "Профиль и Аура", icon: "user" },
+        { key: "permissions", label: "Разрешения", icon: "shield" },
+        { key: "security", label: "Безопасность", icon: "lock" },
+        { key: "voice", label: "Голос", icon: "mic" },
+        { key: "integrations", label: "Интеграции", icon: "calendar-days" },
+        { key: "memory", label: "Память", icon: "brain" }
+    ]
+
+    Text {
+        visible: page.embedded
+        x: 48
+        y: 40
+        text: "Настройки"
+        font.family: AuraTheme.fontFamily
+        font.pixelSize: 38
+        font.weight: Font.Bold
+        color: AuraTheme.textPrimary
+    }
+
+    Column {
+        id: sectionNav
+        visible: page.embedded
+        x: 34
+        y: 112
+        width: 200
+        spacing: 4
+        Repeater {
+            model: page.sections
+            delegate: Rectangle {
+                required property var modelData
+                readonly property bool active: page.section === modelData.key
+                width: sectionNav.width
+                height: 44
+                radius: AuraTheme.radiusSmall
+                color: active ? AuraTheme.accentA(0.14) : (navArea.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent")
+                Rectangle {
+                    visible: parent.active
+                    width: 3; height: 22; radius: 1.5
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: AuraTheme.lilac
+                }
+                Row {
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: 16
+                    spacing: 11
+                    Icon { name: modelData.icon; size: 17; color: parent.parent.active ? AuraTheme.textPrimary : AuraTheme.textSecondary; anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        text: modelData.label
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontBody - 1
+                        font.weight: parent.parent.active ? Font.Bold : Font.Medium
+                        color: parent.parent.active ? AuraTheme.textPrimary : AuraTheme.textSecondary
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+                }
+                MouseArea {
+                    id: navArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        page.section = modelData.key
+                        if (modelData.key === "permissions") App.loadPermissions()
+                        if (modelData.key === "integrations") App.loadIntegrations()
+                        if (modelData.key === "security") { App.loadSessions(); App.loadTwoFactorStatus() }
+                        if (modelData.key === "memory") App.refreshMemory()
+                    }
+                }
+            }
+        }
+    }
+
     Flickable {
         anchors.fill: parent
-        anchors.margins: AuraTheme.spaceLg
+        anchors.margins: AuraTheme.spaceXl
+        anchors.leftMargin: page.embedded ? sectionNav.x + sectionNav.width + 24 : AuraTheme.spaceXl
         contentHeight: column.height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
@@ -66,10 +142,11 @@ Item {
 
                 Text {
                     Layout.fillWidth: true
-                    text: "Настройки"
+                    // Во встроенном режиме заголовок «Настройки» стоит над навигацией слева.
+                    text: page.embedded ? "" : "Настройки"
                     font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontTitle
-                    font.weight: Font.DemiBold
+                    font.pixelSize: 30
+                    font.weight: Font.Bold
                     color: AuraTheme.textPrimary
                 }
 
@@ -87,6 +164,7 @@ Item {
 
             // -------------------------------------------------- профиль
             GlassPanel {
+                visible: page.section === "profile"
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
 
@@ -99,7 +177,14 @@ Item {
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 3
-                    SectionTitle { title: "Разрешения инструментов"; titleSize: AuraTheme.fontTitle }
+                        Text {
+                            Layout.fillWidth: true
+                            text: App ? App.userName : ""
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontTitle
+                            font.weight: Font.Bold
+                            color: AuraTheme.textPrimary
+                        }
                         Text {
                             text: App ? App.userEmail : ""
                             font.family: AuraTheme.fontFamily
@@ -118,6 +203,7 @@ Item {
 
             // --------------------------------------------- предпочтения
             GlassPanel {
+                visible: page.section === "profile"
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
 
@@ -185,7 +271,9 @@ Item {
                                     Text {
                                         id: chipText
                                         anchors.centerIn: parent
-                                        text: modelData
+                                        // Значения — как ждёт AI-сервис, подписи — по-русски.
+                                        text: ({ vegan: "веган", vegetarian: "вегетарианец", gluten_free: "без глютена",
+                                                 halal: "халяль" })[modelData] || modelData
                                         font.family: AuraTheme.fontFamily
                                         font.pixelSize: AuraTheme.fontSmall
                                         color: chip.on ? AuraTheme.textPrimary : AuraTheme.textSecondary
@@ -284,6 +372,7 @@ Item {
 
             // -------------------------------------------------- память
             GlassPanel {
+                visible: page.section === "memory"
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
 
@@ -359,6 +448,7 @@ Item {
 
             // ------------------------------------------- Голос и озвучка
             GlassPanel {
+                visible: page.section === "voice"
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
 
@@ -366,7 +456,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceMd
 
-                        SectionTitle { title: "Долговременная память" }
+                    SectionTitle { title: "Голос и озвучка" }
 
                     // --- Язык распознавания речи ---
                     RowLayout {
@@ -379,7 +469,7 @@ Item {
                             font.pixelSize: AuraTheme.fontSmall
                             color: AuraTheme.textSecondary
                         }
-                        ComboBox {
+                        GlassComboBox {
                             id: micLangBox
                             Layout.preferredWidth: 140
                             model: ["auto", "ru", "en"]
@@ -426,7 +516,7 @@ Item {
                             font.pixelSize: AuraTheme.fontSmall
                             color: AuraTheme.textSecondary
                         }
-                        ComboBox {
+                        GlassComboBox {
                             id: voiceBox
                             Layout.preferredWidth: 220
                             model: App ? App.ttsVoices : []
@@ -518,6 +608,7 @@ Item {
 
             // ------------------------------------------- Активные сессии
             GlassPanel {
+                visible: page.section === "security"
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
 
@@ -573,6 +664,7 @@ Item {
                                     Layout.fillWidth: true
                                     spacing: 2
                                     Text {
+                                        Layout.fillWidth: true
                                         text: (modelData.device || "устройство") +
                                               (modelData.current ? "  ·  это устройство" : "")
                                         font.family: AuraTheme.fontFamily
@@ -581,6 +673,7 @@ Item {
                                         color: modelData.current ? AuraTheme.accentSoft : AuraTheme.textPrimary
                                     }
                                     Text {
+                                        Layout.fillWidth: true
                                         text: (modelData.remote_addr || "") + "  ·  с " +
                                               String(modelData.created_at || "").replace("T", " ").substring(0, 16)
                                         font.family: AuraTheme.fontFamily
@@ -613,6 +706,7 @@ Item {
 
             // ---------------------------------------------- Безопасность
             GlassPanel {
+                visible: page.section === "security"
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
 
@@ -620,7 +714,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceSm
 
-                    SectionTitle { title: "Голос и озвучка" }
+                    SectionTitle { title: "Смена пароля" }
 
                     Text {
                         Layout.fillWidth: true
@@ -662,6 +756,7 @@ Item {
 
             // ---------------------------------------------- Двухфакторная аутентификация (TOTP)
             GlassPanel {
+                visible: page.section === "security"
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
                 Component.onCompleted: App.loadTwoFactorStatus()
@@ -670,7 +765,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceSm
 
-                    SectionTitle { title: "Безопасность" }
+                    SectionTitle { title: "Двухфакторная аутентификация (TOTP)" }
 
                     Text {
                         Layout.fillWidth: true
@@ -924,6 +1019,7 @@ Item {
 
             // --------------------------------------- Разрешения инструментов (этап 8)
             GlassPanel {
+                visible: page.section === "permissions"
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
 
@@ -931,7 +1027,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceMd
 
-                    SectionTitle { title: "Двухфакторная аутентификация (TOTP)" }
+                    SectionTitle { title: "Разрешения инструментов"; titleSize: AuraTheme.fontTitle }
                     Text {
                         Layout.fillWidth: true
                         text: "Аура лишь формирует намерение — исполняет сервер. "
@@ -958,7 +1054,16 @@ Item {
 
                                 RowLayout {
                                     spacing: AuraTheme.spaceXs
-                    SectionTitle { title: "Интеграции"; titleSize: AuraTheme.fontTitle }
+                                    Text {
+                                        text: ({ send_message: "Сообщения", create_note: "Заметки", create_reminder: "Напоминания",
+                                                 send_email: "Письма", find_cafe: "Подбор мест", book_table: "Бронирование",
+                                                 check_calendar: "Календарь", suggest_time: "Подбор времени" })[toolRow.modelData.tool]
+                                              || toolRow.modelData.tool
+                                        font.family: AuraTheme.fontFamily
+                                        font.pixelSize: AuraTheme.fontSmall
+                                        font.weight: Font.DemiBold
+                                        color: AuraTheme.textPrimary
+                                    }
                                     Rectangle {
                                         visible: toolRow.modelData.dangerous === true
                                         radius: AuraTheme.radiusPill
@@ -1014,6 +1119,7 @@ Item {
 
             // --------------------------------------------- Интеграции (этап 9)
             GlassPanel {
+                visible: page.section === "integrations"
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
 
@@ -1021,7 +1127,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceMd
 
-                        SectionTitle { title: "Активные сессии" }
+                        SectionTitle { title: "Интеграции"; titleSize: AuraTheme.fontTitle }
                     Text {
                         Layout.fillWidth: true
                         text: "Подключите Google Календарь и Gmail через официальный OAuth. "

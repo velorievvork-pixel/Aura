@@ -1,98 +1,79 @@
 import QtQuick
+import QtQuick.Effects
+import Aura
 
 /*
-  AuraEmblem — круглая светящаяся эмблема-логотип (v3, макеты 30.09.2026).
-
-  Кольцо из коротких лучей вокруг ядра; лучи медленно вращаются, свечение
-  пульсирует. Используется на LoginPage (размер 64+) и в рельсе оболочки.
+  AuraEmblem — логотип Aura: кольцо из 12 изогнутых штрихов-«лепестков»
+  с сиреневым свечением (экран входа). Геометрия та же, что у иконки
+  приложения; штрихи медленно вращаются, свечение дышит.
 */
 Item {
     id: root
 
-    property int size: 64
-    property int rays: 12
+    property int size: 72
+    property int dashes: 12
     property bool animate: true
-    property color coreColor: AuraTheme.accentSoft
+    property real glow: 1.0
 
-    width: size
-    height: size
+    implicitWidth: size
+    implicitHeight: size
 
-    // Мягкое свечение за эмблемой
-    Rectangle {
-        anchors.centerIn: parent
-        width: root.size * 1.35
-        height: width
-        radius: width / 2
-        color: AuraTheme.accentGlow
-        opacity: root.animate ? glowPulse.value : 0.8
-
-        QtObject {
-            id: glowPulse
-            property real value: 0.8
-        }
-    }
-
-    SequentialAnimation {
-        running: root.animate
-        loops: Animation.Infinite
-        NumberAnimation { target: glowPulse; property: "value"; to: 0.35; duration: 2400; easing.type: Easing.InOutSine }
-        NumberAnimation { target: glowPulse; property: "value"; to: 0.9; duration: 2400; easing.type: Easing.InOutSine }
-    }
-
-    // Кольцо лучей
     Canvas {
-        id: raysCanvas
+        id: swirl
         anchors.fill: parent
-        rotation: root.animate ? raysSpin.angle : 0
-
-        QtObject {
-            id: raysSpin
-            property real angle: 0
-        }
-
+        antialiasing: true
         onPaint: {
             const ctx = getContext("2d")
-            ctx.clearRect(0, 0, width, height)
-            const cx = width / 2
-            const cy = height / 2
-            const outer = width * 0.48
-            const inner = width * 0.38
-            ctx.strokeStyle = root.coreColor
-            ctx.lineWidth = Math.max(1.5, width / 42)
-            for (let i = 0; i < root.rays; ++i) {
-                const a = (2 * Math.PI * i) / root.rays
+            const s = width / 100
+            ctx.reset()
+            ctx.lineCap = "round"
+            ctx.lineWidth = 5 * s
+            const grad = ctx.createLinearGradient(0, 0, width, height)
+            grad.addColorStop(0, "#F6E6FF")
+            grad.addColorStop(1, "#B18CFF")
+            ctx.strokeStyle = grad
+            for (let i = 0; i < root.dashes; ++i) {
+                ctx.save()
+                ctx.translate(50 * s, 50 * s)
+                ctx.rotate(2 * Math.PI * i / root.dashes)
+                ctx.translate(-50 * s, -50 * s)
                 ctx.beginPath()
-                ctx.moveTo(cx + Math.cos(a) * inner, cy + Math.sin(a) * inner)
-                ctx.lineTo(cx + Math.cos(a) * outer, cy + Math.sin(a) * outer)
+                ctx.moveTo(50 * s, 9 * s)
+                ctx.quadraticCurveTo(60 * s, 9.5 * s, 66 * s, 19 * s)
                 ctx.stroke()
+                ctx.restore()
             }
-            // Тонкое внешнее кольцо
-            ctx.beginPath()
-            ctx.arc(cx, cy, width * 0.34, 0, 2 * Math.PI)
-            ctx.strokeStyle = Qt.rgba(AuraTheme.accentSoft.r, AuraTheme.accentSoft.g,
-                                      AuraTheme.accentSoft.b, 0.35)
-            ctx.lineWidth = 1
-            ctx.stroke()
+        }
+        onWidthChanged: requestPaint()
+
+        layer.enabled: true
+        layer.effect: MultiEffect {
+            autoPaddingEnabled: true
+            shadowEnabled: true
+            shadowColor: AuraTheme.lilac
+            shadowBlur: 0.9 * root.glow
+            shadowOpacity: breath.value
+            shadowHorizontalOffset: 0
+            shadowVerticalOffset: 0
+            blurMax: 32
         }
 
-        Component.onCompleted: requestPaint()
+        RotationAnimation on rotation {
+            running: root.animate
+            from: 0; to: 360
+            duration: 60000
+            loops: Animation.Infinite
+        }
     }
 
-    SequentialAnimation {
-        running: root.animate
-        loops: Animation.Infinite
-        NumberAnimation { target: raysSpin; property: "angle"; to: 360; duration: 48000; easing.type: Easing.Linear }
-    }
-
-    // Ядро
-    Rectangle {
-        anchors.centerIn: parent
-        width: root.size * 0.20
-        height: width
-        radius: width / 2
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: "#FFFFFF" }
-            GradientStop { position: 1.0; color: root.coreColor }
+    QtObject {
+        id: breath
+        property real value: 0.9
+        SequentialAnimation on value {
+            running: root.animate
+            loops: Animation.Infinite
+            NumberAnimation { to: 0.55; duration: 2200; easing.type: Easing.InOutSine }
+            NumberAnimation { to: 0.95; duration: 2200; easing.type: Easing.InOutSine }
         }
     }
 }

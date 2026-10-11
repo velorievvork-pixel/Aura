@@ -2,345 +2,555 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import Aura
+import "Format.js" as F
 
 /*
-  NegotiationsPage — A2A-переговоры двух Аур (v3).
+  NegotiationsPage — переговоры Аур (макет Meeting arrangement).
 
-  Форма запуска agent.negotiate (цель, тема, длительность, окно) и карточка
-  результата: accepted / слот / место / встречные предложения. Правило
-  продукта: максимум 5 раундов, затем эскалация человеку — подпись внизу.
+  Один вызов agent.negotiate = один раунд «предложение → ответ». Шаги в центре
+  строятся из ответа сервера: окно моей Ауры, проверка календаря собеседника,
+  место (или встречные варианты), принятие. Итог бронируется только по кнопке
+  пользователя (book_table, режим «запретить» уважается). После 5 раундов —
+  эскалация: решает человек (правило A2A_PROTOCOL.md).
 */
 Item {
     id: page
 
-    // Цель, предзаполненная из ContactsPage.
-    property string initialTarget: ""
+    signal navigate(string to)
 
-    readonly property var backdropRef: page.Window.window ? page.Window.window.contentItem : null
+    readonly property int maxRounds: 5
     readonly property var result: App ? App.negotiation : ({})
+    readonly property bool hasResult: result && result.target !== undefined
+    readonly property bool accepted: hasResult && !!result.accepted
+    readonly property bool booked: hasResult && !!result.booking
+    readonly property int round: hasResult ? (result.round || 1) : 0
+    readonly property var contacts: F.contactsFrom(App ? App.chats : [], App ? App.userId : 0)
+    readonly property string myName: F.firstName(App ? App.userName : "")
+    readonly property string theirName: hasResult ? F.firstName(F.nameFor(result.target, App ? App.chats : [], App ? App.userId : 0)) : ""
+    property bool composing: !hasResult
+    property int revealed: 0
 
-    onInitialTargetChanged: if (initialTarget.length > 0) targetField.text = initialTarget
+    // Шаги текущего раунда — из данных ответа.
+    readonly property var steps: {
+        if (!hasResult) return []
+        const me = "Аура " + F.genitive(myName)
+        const them = "Аура " + F.genitive(theirName)
+        const hours = result.window_hours || 96
+        const out = [{ who: "me", text: me + " предложила встречу: " + (result.duration_minutes || 60) + " мин",
+                       detail: "окно — ближайшие " + hours + " " + F.plural(hours, "час", "часа", "часов")
+                               + (result.topic ? " · " + result.topic : "") }]
+        if (accepted) {
+            out.push({ who: "them", text: them + " проверила календарь " + F.genitive(theirName),
+                       detail: "общее окно: " + F.dayPhrase(result.slot.start, true) + " в " + F.time(result.slot.start) })
+            const tags = result.place && result.place.tags ? result.place.tags.join(", ") : ""
+            out.push({ who: "them", text: them + " предложила " + (result.place ? result.place.name : "место"),
+                       detail: [result.place && result.place.city, tags, result.place && result.place.rating ? "★ " + result.place.rating : ""]
+                               .filter(x => x).join(" · ") })
+            out.push({ who: "me", done: true, text: me + " приняла место и время", detail: result.message || "" })
+        } else {
+            out.push({ who: "them", text: them + " проверила календарь " + F.genitive(theirName),
+                       detail: "в этом окне общего времени нет" })
+            const n = (result.counter_slots || []).length
+            out.push({ who: "them", fail: true, text: n ? "Встречные варианты: " + n : "Встречных вариантов нет",
+                       detail: result.message || "нужно ваше решение" })
+        }
+        return out
+    }
+
+    // Шаги «проигрываются» только для нового раунда; бронь того же раунда
+    // меняет ответ, но анимацию не перезапускает.
+    property string shownRound: ""
+    onResultChanged: {
+        // hasResult здесь может быть ещё не пересчитан — проверяем ответ напрямую.
+        if (!result || result.target === undefined || result.at === shownRound) return
+        shownRound = result.at
+        revealed = 0
+        composing = false
+        revealTimer.restart()
+    }
+    Component.onCompleted: {
+        shownRound = hasResult ? result.at : ""
+        revealed = steps.length
+    }
+
+    Timer {
+        id: revealTimer
+        interval: 900
+        repeat: true
+        onTriggered: {
+            if (page.revealed < page.steps.length) page.revealed++
+            else stop()
+        }
+    }
 
     Flickable {
         anchors.fill: parent
-        anchors.margins: AuraTheme.spaceLg
-        contentHeight: column.height
+        contentHeight: body.implicitHeight + 80
         clip: true
         boundsBehavior: Flickable.StopAtBounds
 
         ColumnLayout {
-            id: column
-            width: parent.width
-            spacing: AuraTheme.spaceMd
+            id: body
+            x: 44
+            y: 40
+            width: parent.width - 88
+            spacing: 26
 
+            // ------------------------------------------------------------ шапка
             RowLayout {
                 Layout.fillWidth: true
+                spacing: 16
                 Text {
-                    Layout.fillWidth: true
-                    text: "Переговоры Аур"
+                    text: "Организация встречи"
                     font.family: AuraTheme.fontFamily
-                    font.pixelSize: 30
-                    font.weight: Font.DemiBold
+                    font.pixelSize: 26
+                    font.weight: Font.Bold
                     color: AuraTheme.textPrimary
                 }
                 Rectangle {
-                    width: roundLabel.width + 16
-                    height: 22
-                    radius: AuraTheme.radiusPill
-                    color: AuraTheme.accentA(0.18)
+                    visible: page.hasResult || (App && App.busy)
+                    implicitHeight: 30
+                    implicitWidth: badge.implicitWidth + 26
+                    radius: 15
+                    color: "transparent"
                     border.width: 1
-                    border.color: AuraTheme.accentA(0.35)
+                    border.color: page.booked ? Qt.alpha(AuraTheme.success, 0.5)
+                                  : page.hasResult && !page.accepted ? Qt.alpha(AuraTheme.warning, 0.5)
+                                  : AuraTheme.lilacA(0.55)
                     Text {
-                        id: roundLabel
+                        id: badge
                         anchors.centerIn: parent
-                        text: "до 5 раундов"
+                        text: App && App.busy ? "Идут" : page.booked ? "Забронировано"
+                              : page.accepted ? "Ждёт решения" : "Нужен ваш выбор"
                         font.family: AuraTheme.fontFamily
-                        font.pixelSize: 10
-                        font.weight: Font.DemiBold
-                        color: AuraTheme.lilac
+                        font.pixelSize: AuraTheme.fontSmall - 1
+                        font.weight: Font.Bold
+                        color: page.booked ? AuraTheme.success : page.hasResult && !page.accepted ? AuraTheme.warning : AuraTheme.lilac
                     }
+                }
+                Item { Layout.fillWidth: true }
+                Rectangle {
+                    visible: page.hasResult
+                    implicitHeight: 40
+                    implicitWidth: roundText.implicitWidth + 36
+                    radius: 20
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Qt.rgba(1, 1, 1, 0.2)
+                    Text {
+                        id: roundText
+                        anchors.centerIn: parent
+                        text: "Раунд " + page.round + " из " + page.maxRounds
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontSmall + 1
+                        font.weight: Font.DemiBold
+                        color: AuraTheme.textPrimary
+                    }
+                }
+                GlassButton {
+                    visible: page.hasResult && !page.composing
+                    text: "Новые"
+                    symbol: "plus"
+                    implicitHeight: 40
+                    onClicked: page.composing = true
                 }
             }
 
-            // ------------------------------------------- карточки агентов
+            // ------------------------------------------------- сцена переговоров
             RowLayout {
                 Layout.fillWidth: true
-                spacing: AuraTheme.spaceMd
+                visible: page.hasResult && !page.composing
+                spacing: 24
 
-                GlassPanel {
-                    Layout.fillWidth: true
-                    padding: AuraTheme.spaceMd
-                    backdrop: page.backdropRef
-
-                    ColumnLayout {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        spacing: AuraTheme.spaceSm
-
-                        // «Звуковая волна» агента (v3): пульсирующие столбики
-                        Row {
-                            Layout.alignment: Qt.AlignHCenter
-                            spacing: 3
-                            Repeater {
-                                model: 7
-                                Rectangle {
-                                    required property int index
-                                    width: 3
-                                    radius: 2
-                                    color: AuraTheme.accent
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    height: 6 + ((index * 5) % 14)
-                                    SequentialAnimation on opacity {
-                                        loops: Animation.Infinite
-                                        NumberAnimation { to: 0.35; duration: 600 + index * 120; easing.type: Easing.InOutSine }
-                                        NumberAnimation { to: 1.0; duration: 600 + index * 120; easing.type: Easing.InOutSine }
-                                    }
-                                }
-                            }
-                        }
-
-                        AuraAvatar {
-                            Layout.alignment: Qt.AlignHCenter
-                            name: App ? App.userName : ""
-                            size: 56
-                        }
-                        Text {
-                            Layout.alignment: Qt.AlignHCenter
-                            text: App ? App.userName : "Вы"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontBody
-                            font.weight: Font.DemiBold
-                            color: AuraTheme.textPrimary
-                        }
-                        Text {
-                            Layout.alignment: Qt.AlignHCenter
-                            text: "ваша Аура"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textMuted
-                        }
-                    }
+                AgentCard {
+                    Layout.preferredWidth: 250
+                    Layout.alignment: Qt.AlignTop
+                    name: page.myName
+                    auraName: "Аура " + F.genitive(page.myName)
+                    talking: revealTimer.running && page.revealed < page.steps.length
+                             && page.steps[page.revealed].who === "me"
+                    facts: [
+                        { icon: "utensils", text: App && App.preferences.diet && App.preferences.diet.length
+                                                  ? App.preferences.diet.join(", ") : "без ограничений в еде" },
+                        { icon: "clock", text: "делится только свободными окнами" }
+                    ]
                 }
-
-                Text {
-                    text: "⇄"
-                    font.pixelSize: 22
-                    color: AuraTheme.lilac
-                }
-
-                GlassPanel {
-                    Layout.fillWidth: true
-                    padding: AuraTheme.spaceMd
-                    backdrop: page.backdropRef
-
-                    ColumnLayout {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        spacing: AuraTheme.spaceSm
-
-                        Row {
-                            Layout.alignment: Qt.AlignHCenter
-                            spacing: 3
-                            Repeater {
-                                model: 7
-                                Rectangle {
-                                    required property int index
-                                    width: 3
-                                    radius: 2
-                                    color: AuraTheme.accentSoft
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    height: 6 + ((index * 7) % 14)
-                                    SequentialAnimation on opacity {
-                                        loops: Animation.Infinite
-                                        NumberAnimation { to: 0.35; duration: 700 + index * 110; easing.type: Easing.InOutSine }
-                                        NumberAnimation { to: 1.0; duration: 700 + index * 110; easing.type: Easing.InOutSine }
-                                    }
-                                }
-                            }
-                        }
-
-                        AuraAvatar {
-                            Layout.alignment: Qt.AlignHCenter
-                            name: targetField.text.length > 0 ? targetField.text : "?"
-                            agent: true
-                            size: 56
-                        }
-                        Text {
-                            Layout.alignment: Qt.AlignHCenter
-                            text: targetField.text.length > 0 ? targetField.text : "собеседник"
-                            elide: Text.ElideRight
-                            Layout.maximumWidth: 220
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontBody
-                            font.weight: Font.DemiBold
-                            color: AuraTheme.textPrimary
-                        }
-                        Text {
-                            Layout.alignment: Qt.AlignHCenter
-                            text: "Аура собеседника"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textMuted
-                        }
-                    }
-                }
-            }
-
-            // ------------------------------------------------ форма запуска
-            GlassPanel {
-                Layout.fillWidth: true
-                padding: AuraTheme.spaceMd
-                glow: true
-                fill: AuraTheme.accentFill * 0.4
-                backdrop: page.backdropRef
 
                 ColumnLayout {
-                    anchors.fill: parent
-                    spacing: AuraTheme.spaceSm
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignTop
+                    spacing: 14
 
-                    GlassField {
-                        id: targetField
+                    Text {
                         Layout.fillWidth: true
-                        label: "Собеседник (email или имя)"
-                        icon: "👤"
-                        placeholderText: "anya@example.com"
-                        enabled: !(App && App.busy)
+                        horizontalAlignment: Text.AlignHCenter
+                        visible: page.hasResult && !!page.result.topic
+                        text: "Тема: " + (page.result.topic || "")
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontSmall
+                        color: AuraTheme.textMuted
                     }
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: AuraTheme.spaceSm
-
-                        GlassField {
-                            id: topicField
-                            Layout.fillWidth: true
-                            label: "Тема (необязательно)"
-                            placeholderText: "встреча на выходных"
-                            enabled: !(App && App.busy)
-                        }
-
-                        GlassField {
-                            id: durationField
-                            Layout.preferredWidth: 120
-                            label: "Длит., мин"
-                            placeholderText: "60"
-                            validator: IntValidator { bottom: 15; top: 480 }
-                            enabled: !(App && App.busy)
-                        }
-
-                        GlassField {
-                            id: windowField
-                            Layout.preferredWidth: 110
-                            label: "Окно, ч"
-                            placeholderText: "48"
-                            validator: IntValidator { bottom: 1; top: 336 }
-                            enabled: !(App && App.busy)
-                        }
-                    }
-
-                    GlassButton {
-                        Layout.fillWidth: true
-                        variant: "accent"
-                        text: "Запустить переговоры"
-                        glyph: "✦"
-                        busy: App ? App.busy : false
-                        enabled: targetField.text.trim().length > 0 && !(App && App.busy)
-                        onClicked: App.negotiateAgent(targetField.text.trim(),
-                                                      topicField.text.trim(),
-                                                      parseInt(durationField.text) || 0,
-                                                      parseInt(windowField.text) || 0)
-                    }
-                }
-            }
-
-            // ---------------------------------------------- результат (таймлайн)
-            GlassPanel {
-                Layout.fillWidth: true
-                padding: AuraTheme.spaceMd
-                visible: page.result && Object.keys(page.result).length > 0
-                backdrop: page.backdropRef
-
-                ColumnLayout {
-                    anchors.fill: parent
-                    spacing: AuraTheme.spaceSm
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Text {
-                            Layout.fillWidth: true
-                            text: page.result && page.result.accepted === true
-                                  ? "Ауры договорились" : "Не сошлись"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontBody
-                            font.weight: Font.DemiBold
-                            color: page.result && page.result.accepted === true
-                                   ? AuraTheme.success : AuraTheme.warning
-                        }
-                    }
-
-                    // Таймлайн раундов (v3): номер + карточка
                     Repeater {
-                        model: {
-                            const lines = []
-                            const r = page.result
-                            if (!r) return lines
-                            if (r.slot) {
-                                lines.push({ n: 1, text: "Найден общий слот: " + String(r.slot).replace("T", " ").substring(0, 16), done: true })
-                            }
-                            if (r.place) {
-                                lines.push({ n: lines.length + 1, text: "Место: " + String(r.place), done: true })
-                            }
-                            const counters = r.counter_slots
-                            if (counters && counters.length > 0) {
-                                lines.push({ n: lines.length + 1, text: "Встречных предложений: " + counters.length, done: true })
-                            }
-                            if (r.message) {
-                                lines.push({ n: lines.length + 1, text: String(r.message), done: r.accepted === true })
-                            }
-                            return lines
-                        }
-
+                        model: page.steps
                         delegate: RowLayout {
+                            id: step
                             required property var modelData
+                            required property int index
                             Layout.fillWidth: true
-                            spacing: AuraTheme.spaceSm
+                            visible: index < page.revealed
+                            opacity: visible ? 1 : 0
+                            layoutDirection: modelData.who === "them" ? Qt.RightToLeft : Qt.LeftToRight
+                            spacing: 12
+                            Behavior on opacity { NumberAnimation { duration: AuraTheme.slowMs } }
 
                             Rectangle {
-                                Layout.preferredWidth: 26
-                                Layout.preferredHeight: 26
-                                radius: 13
-                                color: modelData.done ? AuraTheme.accent : AuraTheme.accentA(0.2)
-                                border.width: 1
-                                border.color: modelData.done ? "transparent" : AuraTheme.accentA(0.5)
+                                implicitWidth: 34; implicitHeight: 34; radius: 17
+                                color: step.modelData.fail ? Qt.alpha(AuraTheme.danger, 0.15) : AuraTheme.accentA(0.15)
+                                border.width: 1.5
+                                border.color: step.modelData.fail ? AuraTheme.danger : AuraTheme.accentSoft
                                 Text {
                                     anchors.centerIn: parent
-                                    text: modelData.done ? "✓" : modelData.n
+                                    visible: !step.modelData.done
+                                    text: step.index + 1
                                     font.family: AuraTheme.fontFamily
-                                    font.pixelSize: 11
+                                    font.pixelSize: AuraTheme.fontBody
                                     font.weight: Font.Bold
-                                    color: modelData.done ? AuraTheme.textOnAccent : AuraTheme.textPrimary
+                                    color: AuraTheme.textPrimary
+                                }
+                                Icon { anchors.centerIn: parent; visible: !!step.modelData.done; name: "check"; size: 16; color: AuraTheme.textPrimary }
+                            }
+                            Rectangle {
+                                Layout.maximumWidth: 380
+                                implicitWidth: Math.min(380, stepCol.implicitWidth + 36)
+                                implicitHeight: stepCol.implicitHeight + 18
+                                radius: 22
+                                color: Qt.rgba(1, 1, 1, 0.05)
+                                border.width: 1
+                                border.color: Qt.rgba(1, 1, 1, 0.18)
+                                ColumnLayout {
+                                    id: stepCol
+                                    anchors.centerIn: parent
+                                    width: parent.width - 36
+                                    spacing: 1
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: step.modelData.text
+                                        wrapMode: Text.WordWrap
+                                        horizontalAlignment: step.modelData.who === "them" ? Text.AlignRight : Text.AlignLeft
+                                        font.family: AuraTheme.fontFamily
+                                        font.pixelSize: AuraTheme.fontSmall + 1
+                                        font.weight: Font.DemiBold
+                                        color: AuraTheme.textPrimary
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        visible: text.length > 0
+                                        text: step.modelData.detail
+                                        wrapMode: Text.WordWrap
+                                        horizontalAlignment: step.modelData.who === "them" ? Text.AlignRight : Text.AlignLeft
+                                        font.family: AuraTheme.fontFamily
+                                        font.pixelSize: AuraTheme.fontMicro + 1
+                                        color: AuraTheme.textMuted
+                                    }
                                 }
                             }
+                            Item { Layout.fillWidth: true }
+                        }
+                    }
+                }
 
-                            Text {
-                                Layout.fillWidth: true
-                                wrapMode: Text.WordWrap
-                                text: modelData.text
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontSmall
-                                color: AuraTheme.textSecondary
+                AgentCard {
+                    Layout.preferredWidth: 250
+                    Layout.alignment: Qt.AlignTop
+                    them: true
+                    name: page.theirName
+                    auraName: "Аура " + F.genitive(page.theirName)
+                    talking: revealTimer.running && page.revealed < page.steps.length
+                             && page.steps[page.revealed].who === "them"
+                    facts: [{ icon: "clock", text: "делится только свободными окнами" }]
+                }
+            }
+
+            // ------------------------------------------------------------ итог
+            Rectangle {
+                Layout.fillWidth: true
+                visible: page.accepted && !page.composing && page.revealed >= page.steps.length
+                implicitHeight: resultRow.implicitHeight + 56
+                radius: 26
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: Qt.rgba(0.47, 0.39, 1, 0.18) }
+                    GradientStop { position: 1.0; color: Qt.rgba(0.24, 0.47, 1, 0.12) }
+                }
+                border.width: 1
+                border.color: page.booked ? Qt.alpha(AuraTheme.success, 0.45) : AuraTheme.accentA(0.45)
+
+                RowLayout {
+                    id: resultRow
+                    anchors.fill: parent
+                    anchors.margins: 28
+                    spacing: 24
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            Layout.fillWidth: true
+                            text: page.accepted ? F.dayTitle(page.result.slot.start) + ", " + F.time(page.result.slot.start)
+                                                  + "\n" + (page.result.place ? page.result.place.name : "") : ""
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: 28
+                            font.weight: Font.Bold
+                            lineHeight: 1.1
+                            color: AuraTheme.textPrimary
+                            wrapMode: Text.WordWrap
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: 18
+                            Repeater {
+                                model: !page.accepted ? [] : [
+                                    { icon: "users", text: "Двое" },
+                                    { icon: "clock", text: "до " + F.time(page.result.slot.end) },
+                                    { icon: "map-pin", text: page.result.place ? [page.result.place.city, page.result.place.address].filter(x => x).join(", ") : "" },
+                                    { icon: "star", text: page.result.place && page.result.place.rating ? "рейтинг " + page.result.place.rating : "" }
+                                ].filter(x => x.text)
+                                delegate: Row {
+                                    required property var modelData
+                                    spacing: 6
+                                    Icon { name: modelData.icon; size: 15; anchors.verticalCenter: parent.verticalCenter }
+                                    Text {
+                                        text: modelData.text
+                                        font.family: AuraTheme.fontFamily
+                                        font.pixelSize: AuraTheme.fontSmall
+                                        color: AuraTheme.textSecondary
+                                    }
+                                }
                             }
+                        }
+                        Text {
+                            visible: page.booked
+                            text: page.booked ? "Столик забронирован" + (page.result.booking.confirmation ? " · код " + page.result.booking.confirmation : "")
+                                                + " · встреча в задачах" : ""
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontSmall
+                            font.weight: Font.DemiBold
+                            color: AuraTheme.success
+                        }
+                    }
+                    GlassButton {
+                        visible: !page.booked
+                        variant: "accent"
+                        text: "Подтвердить и забронировать"
+                        implicitHeight: 52
+                        busy: App ? App.bookingBusy : false
+                        enabled: App && !App.bookingBusy
+                        onClicked: App.bookNegotiation()
+                    }
+                    GlassButton {
+                        visible: !page.booked
+                        variant: "quiet"
+                        text: "Остановить"
+                        implicitHeight: 52
+                        onClicked: page.composing = true
+                    }
+                    GlassButton {
+                        visible: page.booked
+                        text: "Открыть задачи"
+                        symbol: "square-check"
+                        implicitHeight: 48
+                        onClicked: page.navigate("tasks")
+                    }
+                }
+            }
+
+            // ------------------------------------- не договорились: следующий раунд
+            GlassPanel {
+                Layout.fillWidth: true
+                visible: page.hasResult && !page.accepted && !page.composing && page.revealed >= page.steps.length
+                radius: 24
+                backdrop: null
+                base: 0.5
+                ColumnLayout {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    spacing: 12
+                    Text {
+                        text: page.round >= page.maxRounds ? "Лимит раундов исчерпан" : "Встречные варианты собеседника"
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontLead
+                        font.weight: Font.Bold
+                        color: AuraTheme.textPrimary
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: page.round >= page.maxRounds
+                              ? "Ауры провели " + page.maxRounds + " раундов без согласия. Дальше решаете вы: напишите собеседнику напрямую."
+                              : "Аура не договаривается дальше без вас. Выберите, как продолжить: следующий раунд с другим окном или чат."
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontSmall
+                        color: AuraTheme.textSecondary
+                    }
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Repeater {
+                            model: page.hasResult ? (page.result.counter_slots || []) : []
+                            delegate: Chip {
+                                required property var modelData
+                                text: F.dayPhrase(modelData.start, false) + ", " + F.time(modelData.start)
+                                enabled: false
+                            }
+                        }
+                    }
+                    RowLayout {
+                        spacing: 10
+                        GlassButton {
+                            visible: page.round < page.maxRounds
+                            variant: "accent"
+                            text: "Следующий раунд: неделя"
+                            onClicked: App.negotiateAgent(page.result.target, page.result.topic || "", page.result.duration_minutes || 60, 168)
+                        }
+                        GlassButton {
+                            text: "Написать собеседнику"
+                            symbol: "message-circle"
+                            onClicked: { App.openChat(page.result.target); page.navigate("contacts") }
                         }
                     }
                 }
             }
 
-            Text {
+            // -------------------------------------------------------- новый запрос
+            GlassPanel {
                 Layout.fillWidth: true
-                text: "Переговоры ограничены пятью раундами; если Ауры не сошлись —\nвопрос эскалируется вам, а опасные действия требуют подтверждения."
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontMicro
-                color: AuraTheme.textMuted
-                horizontalAlignment: Text.AlignHCenter
-                lineHeight: 1.4
+                visible: page.composing
+                radius: 26
+                backdrop: null
+                base: 0.45
+                padding: 28
+
+                ColumnLayout {
+                    id: form
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    spacing: 16
+                    property string target: page.contacts.length ? page.contacts[0].email : ""
+                    property int duration: 60
+                    property string window: "weekend"
+
+                    Text {
+                        text: "С кем договориться?"
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontLead
+                        font.weight: Font.Bold
+                        color: AuraTheme.textPrimary
+                    }
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Repeater {
+                            model: page.contacts
+                            delegate: Chip {
+                                required property var modelData
+                                text: modelData.name
+                                active: form.target === modelData.email
+                                onClicked: { form.target = modelData.email; other.text = "" }
+                            }
+                        }
+                    }
+                    GlassField {
+                        id: other
+                        Layout.fillWidth: true
+                        Layout.maximumWidth: 460
+                        placeholderText: "или email собеседника"
+                        icon: "mail"
+                        onTextChanged: if (text.length) form.target = text
+                    }
+                    GlassField {
+                        id: topic
+                        Layout.fillWidth: true
+                        Layout.maximumWidth: 460
+                        placeholderText: "Тема, например «обсудить стартап»"
+                    }
+                    RowLayout {
+                        spacing: 8
+                        Text { text: "Когда:"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontSmall; color: AuraTheme.textSecondary; Layout.preferredWidth: 90 }
+                        Repeater {
+                            model: [{ k: "tomorrow", l: "сегодня–завтра" }, { k: "weekend", l: "в эти выходные" }, { k: "week", l: "на неделе" }]
+                            delegate: Chip {
+                                required property var modelData
+                                text: modelData.l
+                                active: form.window === modelData.k
+                                onClicked: form.window = modelData.k
+                            }
+                        }
+                    }
+                    RowLayout {
+                        spacing: 8
+                        Text { text: "Длительность:"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontSmall; color: AuraTheme.textSecondary; Layout.preferredWidth: 90 }
+                        Repeater {
+                            model: [30, 60, 90]
+                            delegate: Chip {
+                                required property int modelData
+                                text: modelData + " мин"
+                                active: form.duration === modelData
+                                onClicked: form.duration = modelData
+                            }
+                        }
+                    }
+                    RowLayout {
+                        Layout.topMargin: 6
+                        spacing: 12
+                        GlassButton {
+                            variant: "accent"
+                            text: "Начать переговоры"
+                            symbol: "handshake"
+                            busy: App ? App.busy : false
+                            enabled: form.target.length > 0 && App && !App.busy
+                            onClicked: App.negotiateAgent(form.target, topic.text, form.duration, F.windowHours(form.window))
+                        }
+                        GlassButton {
+                            visible: page.hasResult
+                            variant: "quiet"
+                            text: "Отмена"
+                            onClicked: page.composing = false
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: "Ауры сверят свободное время и подберут место с учётом питания обоих. Бронь — только после вашего подтверждения."
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontMicro + 1
+                        color: AuraTheme.textMuted
+                    }
+                }
+            }
+
+            // ------------------------------------------------------- история
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: App && App.negotiationHistory.length > 1
+                spacing: 8
+                Text {
+                    text: "Раунды за сессию"
+                    font.family: AuraTheme.fontFamily
+                    font.pixelSize: AuraTheme.fontBody
+                    font.weight: Font.Bold
+                    color: AuraTheme.textPrimary
+                }
+                Repeater {
+                    model: App ? App.negotiationHistory.slice(1) : []
+                    delegate: Text {
+                        required property var modelData
+                        text: F.time(modelData.at) + " · " + F.nameFor(modelData.target, App.chats, App.userId) + " · раунд " + modelData.round
+                              + " — " + (modelData.accepted ? "согласовано: " + (modelData.place ? modelData.place.name : "") : "без согласия")
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontSmall
+                        color: AuraTheme.textSecondary
+                    }
+                }
             }
         }
     }

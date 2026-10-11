@@ -1,8 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import "components"
-import "theme"
+import Aura
 
 /*
   OnboardingPage — опрос после регистрации (день рождения, аллергии, диета,
@@ -10,41 +9,51 @@ import "theme"
   (флаг ставит сервер при сохранении анкеты). Всё необязательное:
   «Пропустить» скрывает анкету до конца сессии.
 */
-Rectangle {
+Item {
     id: page
 
-    color: AuraTheme.bgDeep
     property bool busy: false
 
+    // Карточка по центру окна; если выше окна — прокручивается целиком.
     Flickable {
         anchors.fill: parent
-        contentHeight: card.implicitHeight + 2 * AuraTheme.spaceXl
+        contentHeight: card.height + 2 * AuraTheme.spaceXl
         clip: true
+        boundsBehavior: Flickable.StopAtBounds
 
         GlassPanel {
             id: card
-            anchors.centerIn: parent
-            width: Math.min(parent.width - 2 * AuraTheme.spaceLg, 520)
-            implicitHeight: column.implicitHeight + 2 * AuraTheme.spaceLg
+            x: (parent.width - width) / 2
+            y: Math.max(AuraTheme.spaceXl, (page.height - height) / 2)
+            width: Math.min(page.width - 2 * AuraTheme.spaceLg, 540)
+            height: implicitHeight
+            radius: 34
+            padding: 34
+            backdrop: page.Window.window ? page.Window.window.contentItem : null
 
             ColumnLayout {
                 id: column
-                anchors.fill: parent
-                anchors.margins: AuraTheme.spaceLg
+                anchors.left: parent.left
+                anchors.right: parent.right
                 spacing: AuraTheme.spaceMd
 
+                AuraEmblem { Layout.alignment: Qt.AlignHCenter; size: 56 }
                 Text {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
                     text: "Расскажите о себе"
                     font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontTitle
+                    font.pixelSize: 26
+                    font.weight: Font.Bold
                     color: AuraTheme.textPrimary
                 }
                 Text {
                     Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
                     text: "Аура использует это для мест, времени и рекомендаций. Всё необязательно и меняется в настройках."
                     font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontMicro
-                    color: AuraTheme.textMuted
+                    font.pixelSize: AuraTheme.fontSmall
+                    color: AuraTheme.textSecondary
                     wrapMode: Text.WordWrap
                 }
 

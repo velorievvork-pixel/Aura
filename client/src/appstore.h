@@ -87,6 +87,13 @@ class AppStore : public QObject {
     // v3: Home-дашборд — ответ Ауры без чата; последний результат A2A-переговоров.
     Q_PROPERTY(QString homeReply READ homeReply NOTIFY homeReplyChanged)
     Q_PROPERTY(QVariantMap negotiation READ negotiation NOTIFY negotiationChanged)
+    // v3: диалог с Аурой («Моя Аура»): реплики пользователя и ответы с действиями.
+    Q_PROPERTY(QVariantList auraDialog READ auraDialog NOTIFY auraDialogChanged)
+    // v3: раунды переговоров за сессию (свежие первыми), бронирование итога.
+    Q_PROPERTY(QVariantList negotiationHistory READ negotiationHistory NOTIFY negotiationChanged)
+    Q_PROPERTY(bool bookingBusy READ bookingBusy NOTIFY negotiationChanged)
+    // v3: поиск людей для контактов (users.search).
+    Q_PROPERTY(QVariantList userResults READ userResults NOTIFY userResultsChanged)
 
 public:
     explicit AppStore(QObject* parent = nullptr);
@@ -163,6 +170,10 @@ public:
     // v3
     QString homeReply() const { return homeReply_; }
     QVariantMap negotiation() const { return negotiation_; }
+    QVariantList auraDialog() const { return auraDialog_; }
+    QVariantList negotiationHistory() const { return negotiationHistory_; }
+    bool bookingBusy() const { return bookingBusy_; }
+    QVariantList userResults() const { return userResults_; }
 
 public slots:
     void login(const QString& email, const QString& password);
@@ -196,6 +207,14 @@ public slots:
     // v3: A2A-переговоры (agent.negotiate): цель, тема, длительность и окно в минутах/часах.
     void negotiateAgent(const QString& target, const QString& topic,
                         int durationMinutes, int windowHours);
+    // v3: забронировать место из последних переговоров (book_table) и
+    // поставить встречу в задачи. Режим «запретить» для book_table уважается.
+    void bookNegotiation();
+    void clearAuraDialog();
+    // Ответ «С чем помогать?» из регистрации: сохраняется в память Ауры
+    // (memory.add) при первом входе — до подтверждения email сессии ещё нет.
+    void setPendingFocus(const QString& text);
+    void searchUsers(const QString& query);
     void savePreferences(const QVariantMap& preferences);
     void refreshMemory();
     // Голосовой ввод (STT): запись с микрофона → /v1/speech/transcribe → текст.
@@ -225,7 +244,10 @@ public slots:
     // Этап 8: задачи и напоминания.
     void loadTasks();
     void createTask(const QString& title, const QString& notes, const QString& remindAt);
+    // v3: задача со сроком (due_at) и напоминанием, ISO 8601; пустые — не задавать.
+    void createTaskAt(const QString& title, const QString& dueAt, const QString& remindAt);
     void completeTask(qint64 taskId);
+    void reopenTask(qint64 taskId);
     void cancelTask(qint64 taskId);
     void deleteTask(qint64 taskId);
     // Этап 9: интеграции (Google OAuth: системный браузер + loopback-редирект).
@@ -286,6 +308,8 @@ signals:
     // v3: Home и переговоры
     void homeReplyChanged();
     void negotiationChanged();
+    void auraDialogChanged();
+    void userResultsChanged();
 
 private:
     void handleEvent(const QString& name, const QJsonObject& payload);
@@ -387,6 +411,13 @@ private:
     // v3: Home-дашборд и A2A-переговоры
     QString homeReply_;                  // последний ответ Ауры с Home (chat_id=0)
     QVariantMap negotiation_;            // последний результат agent.negotiate
+    QVariantList auraDialog_;            // «Моя Аура»: реплики и ответы за сессию
+    QVariantList negotiationHistory_;    // раунды agent.negotiate, свежие первыми
+    bool bookingBusy_ = false;
+    QVariantList userResults_;           // результаты users.search
+    qint64 dialogSeq_ = 0;
+    void appendDialog(QVariantMap entry);
+    QString toolMode(const QString& tool) const;
 };
 
 }  // namespace aura

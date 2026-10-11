@@ -1,6 +1,7 @@
 // client/src/appstore.cpp
 #include "appstore.h"
 
+#include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSettings>
@@ -36,6 +37,7 @@ constexpr const char* kTokenKey = "aura/token";
 constexpr const char* kRefreshKey = "aura/refresh_token";
 constexpr const char* kServerKey = "aura/server";
 constexpr const char* kDeviceIdKey = "aura/device_id";
+constexpr const char* kPendingFocusKey = "aura/pending_focus";
 // Голосовой ввод и озвучка.
 constexpr const char* kAutoSendVoiceKey = "aura/voice/auto_send";
 constexpr const char* kMicLanguageKey = "aura/voice/language";
@@ -97,6 +99,9 @@ void AppStore::start() {
     QSettings settings;
     token_ = settings.value(QLatin1String(kTokenKey)).toString();
     refreshToken_ = settings.value(QLatin1String(kRefreshKey)).toString();
+    // Сохранённый токен уходит в рукопожатие: без него сессия неавторизована,
+    // и первые запросы (prefs.get, chat.list) получают отказ.
+    client_->setToken(token_);
     // Стабильный идентификатор устройства — для доверенных устройств 2FA.
     deviceId_ = settings.value(QLatin1String(kDeviceIdKey)).toString();
     if (deviceId_.isEmpty()) {
@@ -141,7 +146,11 @@ void AppStore::setError(const QString& message) {
 }
 
 void AppStore::applyAuth(const QJsonObject& payload) {
-    const QJsonObject user = payload.value(QStringLiteral("user")).toObject();
+    // auth.login/refresh/token кладут пользователя в поле user,
+    // а auth.me возвращает его прямо в payload.
+    const QJsonObject user = payload.contains(QStringLiteral("user"))
+                                 ? payload.value(QStringLiteral("user")).toObject()
+                                 : payload;
     const bool firstTime = userId_ == 0;
 
     if (!payload.value(QStringLiteral("token")).toString().isEmpty()) {
@@ -176,6 +185,21 @@ void AppStore::applyAuth(const QJsonObject& payload) {
 
     emit profileChanged();
     if (firstTime) emit authenticatedChanged();
+    // Ответ из регистрации «С чем помогать?» — в память Ауры, один раз.
+    {
+        QSettings settings;
+        const QString focus = settings.value(QLatin1String(kPendingFocusKey)).toString();
+        if (!focus.isEmpty() && userId_ != 0) {
+            settings.remove(QLatin1String(kPendingFocusKey));
+            QJsonObject memory;
+            memory.insert(QStringLiteral("text"), QStringLiteral("Просит помогать с: %1").arg(focus));
+            memory.insert(QStringLiteral("kind"), QStringLiteral("preference"));
+            client_->sendRequest(QStringLiteral("memory.add"), memory,
+                                 [this](const QJsonObject&, const QString& error) {
+                                     if (error.isEmpty()) loadMemory();
+                                 });
+        }
+    }
     // Этап 8: сразу подтягиваем разрешения, отложенные подтверждения и задачи.
     loadPermissions();
     loadConfirmations();
@@ -366,6 +390,10 @@ void AppStore::tryRefresh() {
                              }
                              applyAuth(response.value(QStringLiteral("payload")).toObject());
                              client_->setToken(token_);
+                             // Запросы, отправленные до продления, получили отказ — повторяем.
+                             loadChats();
+                             loadPreferences();
+                             loadMemory();
                              setStatus(QStringLiteral("Сессия продлена"));
                          });
 }
@@ -724,6 +752,8 @@ void AppStore::askAgentGlobal(const QString& message) {
     }
     setBusy(true);
     setStatus(QStringLiteral("Аура думает…"));
+    appendDialog({{QStringLiteral("from"), QStringLiteral("user")},
+                  {QStringLiteral("text"), message.trimmed()}});
     QJsonObject payload;
     payload.insert(QStringLiteral("message"), message.trimmed());
     payload.insert(QStringLiteral("execute"), true);
@@ -732,12 +762,34 @@ void AppStore::askAgentGlobal(const QString& message) {
                          [this](const QJsonObject& response, const QString& error) {
                              setBusy(false);
                              if (!error.isEmpty()) {
+                                 appendDialog({{QStringLiteral("from"), QStringLiteral("aura")},
+                                               {QStringLiteral("text"), error},
+                                               {QStringLiteral("error"), true}});
                                  setError(error);
                                  return;
                              }
                              const QJsonObject body = response.value(QStringLiteral("payload")).toObject();
                              homeReply_ = body.value(QStringLiteral("reply")).toString();
                              emit homeReplyChanged();
+                             // Ответ в диалог: опасные действия, ждущие подтверждения,
+                             // становятся кнопками «Подтвердить / Отклонить» под репликой.
+                             QVariantList actions;
+                             for (const QJsonValue& item : body.value(QStringLiteral("results")).toArray()) {
+                                 const QJsonObject result = item.toObject();
+                                 if (!result.value(QStringLiteral("requires_confirmation")).toBool()) continue;
+                                 actions.append(QVariantMap{
+                                     {QStringLiteral("id"), result.value(QStringLiteral("confirmation_id")).toVariant()},
+                                     {QStringLiteral("summary"), result.value(QStringLiteral("summary")).toString()},
+                                     {QStringLiteral("tool"), result.value(QStringLiteral("tool")).toString()}});
+                             }
+                             QVariantMap entry{
+                                 {QStringLiteral("from"), QStringLiteral("aura")},
+                                 {QStringLiteral("text"), homeReply_.isEmpty() ? QStringLiteral("Готово") : homeReply_},
+                                 {QStringLiteral("intent"), body.value(QStringLiteral("intent")).toString()},
+                                 {QStringLiteral("actions"), actions}};
+                             const QJsonValue a2a = body.value(QStringLiteral("a2a"));
+                             if (a2a.isObject()) entry.insert(QStringLiteral("a2a"), a2a.toObject().toVariantMap());
+                             appendDialog(entry);
                              setStatus(homeReply_.isEmpty() ? QStringLiteral("Аура выполнила задачу")
                                                             : homeReply_);
                              speakImportant(homeReply_.isEmpty() ? QStringLiteral("Готово") : homeReply_);
@@ -761,7 +813,7 @@ void AppStore::negotiateAgent(const QString& target, const QString& topic,
     if (windowHours > 0) payload.insert(QStringLiteral("window_hours"), windowHours);
 
     client_->sendRequest(QStringLiteral("agent.negotiate"), payload,
-                         [this](const QJsonObject& response, const QString& error) {
+                         [this, payload](const QJsonObject& response, const QString& error) {
                              setBusy(false);
                              if (!error.isEmpty()) {
                                  setError(error);
@@ -769,6 +821,24 @@ void AppStore::negotiateAgent(const QString& target, const QString& topic,
                              }
                              negotiation_ =
                                  response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                             // Запрос рядом с ответом: экран показывает, с кем и о чём
+                             // договаривались, и считает раунды с этим собеседником.
+                             const QString target = payload.value(QStringLiteral("target")).toString();
+                             int round = 1;
+                             for (const QVariant& item : negotiationHistory_) {
+                                 if (item.toMap().value(QStringLiteral("target")).toString() != target) break;
+                                 ++round;
+                             }
+                             negotiation_.insert(QStringLiteral("target"), target);
+                             negotiation_.insert(QStringLiteral("topic"), payload.value(QStringLiteral("topic")).toString());
+                             negotiation_.insert(QStringLiteral("duration_minutes"),
+                                                 payload.value(QStringLiteral("duration_minutes")).toInt(60));
+                             negotiation_.insert(QStringLiteral("window_hours"),
+                                                 payload.value(QStringLiteral("window_hours")).toInt(96));
+                             negotiation_.insert(QStringLiteral("round"), round);
+                             negotiation_.insert(QStringLiteral("at"),
+                                                 QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+                             negotiationHistory_.prepend(negotiation_);
                              emit negotiationChanged();
                              const bool accepted = negotiation_.value(QStringLiteral("accepted")).toBool();
                              setStatus(accepted ? QStringLiteral("Ауры договорились")
@@ -1607,6 +1677,136 @@ void AppStore::revokePushDevice(qint64 deviceId) {
                              }
                              setStatus(QStringLiteral("Push-устройство отозвано"));
                              loadPushDevices();
+                         });
+}
+
+// ============================================================ v3: диалог, бронь, люди
+void AppStore::appendDialog(QVariantMap entry) {
+    entry.insert(QStringLiteral("id"), ++dialogSeq_);
+    entry.insert(QStringLiteral("at"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    auraDialog_.append(entry);
+    emit auraDialogChanged();
+}
+
+void AppStore::setPendingFocus(const QString& text) {
+    QSettings settings;
+    if (text.trimmed().isEmpty()) settings.remove(QLatin1String(kPendingFocusKey));
+    else settings.setValue(QLatin1String(kPendingFocusKey), text.trimmed());
+}
+
+void AppStore::clearAuraDialog() {
+    auraDialog_.clear();
+    emit auraDialogChanged();
+}
+
+QString AppStore::toolMode(const QString& tool) const {
+    for (const QVariant& item : toolPermissions_) {
+        const QVariantMap entry = item.toMap();
+        if (entry.value(QStringLiteral("tool")).toString() == tool) {
+            return entry.value(QStringLiteral("mode")).toString();
+        }
+    }
+    return QString();
+}
+
+void AppStore::bookNegotiation() {
+    const QVariantMap slot = negotiation_.value(QStringLiteral("slot")).toMap();
+    const QVariantMap place = negotiation_.value(QStringLiteral("place")).toMap();
+    const QString placeName = place.value(QStringLiteral("name")).toString();
+    if (!negotiation_.value(QStringLiteral("accepted")).toBool() || placeName.isEmpty()) {
+        setError(QStringLiteral("Нет согласованного места для брони"));
+        return;
+    }
+    // Пользователь запретил Ауре бронировать — не обходим его выбор.
+    if (toolMode(QStringLiteral("book_table")) == QLatin1String("deny")) {
+        setError(QStringLiteral("Бронирование запрещено в настройках разрешений"));
+        return;
+    }
+    bookingBusy_ = true;
+    emit negotiationChanged();
+
+    QJsonObject args;
+    args.insert(QStringLiteral("place"), placeName);
+    args.insert(QStringLiteral("at"), slot.value(QStringLiteral("start")).toString());
+    args.insert(QStringLiteral("people"), 2);
+    QJsonObject payload;
+    payload.insert(QStringLiteral("tool"), QStringLiteral("book_table"));
+    payload.insert(QStringLiteral("args"), args);
+
+    client_->sendRequest(QStringLiteral("tool.run"), payload,
+                         [this, slot, placeName](const QJsonObject& response, const QString& error) {
+                             bookingBusy_ = false;
+                             if (!error.isEmpty()) {
+                                 emit negotiationChanged();
+                                 setError(error);
+                                 return;
+                             }
+                             negotiation_.insert(QStringLiteral("booking"),
+                                                 response.value(QStringLiteral("payload")).toObject().toVariantMap());
+                             if (!negotiationHistory_.isEmpty()) negotiationHistory_[0] = negotiation_;
+                             emit negotiationChanged();
+
+                             // Встреча — в задачи, с напоминанием за полчаса.
+                             const QDateTime start = QDateTime::fromString(
+                                 slot.value(QStringLiteral("start")).toString(), Qt::ISODate);
+                             const QString topic = negotiation_.value(QStringLiteral("topic")).toString();
+                             createTaskAt(QStringLiteral("Встреча: %1 — %2")
+                                              .arg(topic.isEmpty() ? QStringLiteral("переговоры") : topic, placeName),
+                                          start.isValid() ? start.toUTC().toString(Qt::ISODate) : QString(),
+                                          start.isValid() ? start.addSecs(-30 * 60).toUTC().toString(Qt::ISODate)
+                                                          : QString());
+                             setStatus(QStringLiteral("Столик забронирован: %1").arg(placeName));
+                         });
+}
+
+void AppStore::searchUsers(const QString& query) {
+    if (query.trimmed().length() < 2) {
+        userResults_.clear();
+        emit userResultsChanged();
+        return;
+    }
+    QJsonObject payload;
+    payload.insert(QStringLiteral("query"), query.trimmed());
+    payload.insert(QStringLiteral("limit"), 10);
+    client_->sendRequest(QStringLiteral("users.search"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) return;
+                             userResults_ = response.value(QStringLiteral("payload")).toObject()
+                                                .value(QStringLiteral("users")).toArray().toVariantList();
+                             emit userResultsChanged();
+                         });
+}
+
+void AppStore::createTaskAt(const QString& title, const QString& dueAt, const QString& remindAt) {
+    if (title.trimmed().isEmpty()) {
+        setError(QStringLiteral("Введите название задачи"));
+        return;
+    }
+    QJsonObject payload;
+    payload.insert(QStringLiteral("title"), title.trimmed());
+    if (!dueAt.trimmed().isEmpty()) payload.insert(QStringLiteral("due_at"), dueAt.trimmed());
+    if (!remindAt.trimmed().isEmpty()) payload.insert(QStringLiteral("remind_at"), remindAt.trimmed());
+    client_->sendRequest(QStringLiteral("tasks.create"), payload,
+                         [this](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             setStatus(QStringLiteral("Задача добавлена"));
+                             loadTasks();
+                         });
+}
+
+void AppStore::reopenTask(qint64 taskId) {
+    QJsonObject payload;
+    payload.insert(QStringLiteral("id"), static_cast<double>(taskId));
+    client_->sendRequest(QStringLiteral("tasks.reopen"), payload,
+                         [this](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             loadTasks();
                          });
 }
 

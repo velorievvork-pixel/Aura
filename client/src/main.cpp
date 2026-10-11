@@ -1,6 +1,8 @@
 // client/src/main.cpp — точка входа Qt-клиента Aura.
 //
 //   AURA_SERVER_URL=ws://127.0.0.1:9000 ./aura-client
+#include <QDirIterator>
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QQmlApplicationEngine>
@@ -15,6 +17,10 @@ int main(int argc, char* argv[]) {
     QGuiApplication::setOrganizationName(QStringLiteral("Aura"));
     QGuiApplication::setApplicationName(QStringLiteral("Aura"));
     QGuiApplication::setApplicationDisplayName(QStringLiteral("Aura — сеть ИИ-агентов"));
+
+    // Manrope из ресурсов — шрифт макетов на любой системе.
+    QDirIterator fonts(QStringLiteral(":/fonts"), {QStringLiteral("*.ttf")});
+    while (fonts.hasNext()) QFontDatabase::addApplicationFont(fonts.next());
 
     // Свой дизайн полностью на QML (графит + стекло), стандартный стиль не нужен.
     QQuickStyle::setStyle(QStringLiteral("Basic"));

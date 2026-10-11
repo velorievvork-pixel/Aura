@@ -84,6 +84,9 @@ class AppStore : public QObject {
     Q_PROPERTY(QVariantList notifications READ notifications NOTIFY notificationsChanged)
     Q_PROPERTY(int unreadNotifications READ unreadNotifications NOTIFY notificationsChanged)
     Q_PROPERTY(QVariantList pushDevices READ pushDevices NOTIFY pushDevicesChanged)
+    // v3: Home-дашборд — ответ Ауры без чата; последний результат A2A-переговоров.
+    Q_PROPERTY(QString homeReply READ homeReply NOTIFY homeReplyChanged)
+    Q_PROPERTY(QVariantMap negotiation READ negotiation NOTIFY negotiationChanged)
 
 public:
     explicit AppStore(QObject* parent = nullptr);
@@ -157,6 +160,9 @@ public:
     QVariantList notifications() const { return notifications_; }
     int unreadNotifications() const { return unreadNotifications_; }
     QVariantList pushDevices() const { return pushDevices_; }
+    // v3
+    QString homeReply() const { return homeReply_; }
+    QVariantMap negotiation() const { return negotiation_; }
 
 public slots:
     void login(const QString& email, const QString& password);
@@ -185,6 +191,11 @@ public slots:
     void selectChat(qint64 chatId);
     void sendMessage(qint64 chatId, const QString& text);
     void askAgent(qint64 chatId, const QString& message);
+    // v3: запрос к Ауре с Home-дашборда — без привязки к чату (chat_id=0).
+    void askAgentGlobal(const QString& message);
+    // v3: A2A-переговоры (agent.negotiate): цель, тема, длительность и окно в минутах/часах.
+    void negotiateAgent(const QString& target, const QString& topic,
+                        int durationMinutes, int windowHours);
     void savePreferences(const QVariantMap& preferences);
     void refreshMemory();
     // Голосовой ввод (STT): запись с микрофона → /v1/speech/transcribe → текст.
@@ -272,6 +283,9 @@ signals:
     // Этап 13: уведомления
     void notificationsChanged();
     void pushDevicesChanged();
+    // v3: Home и переговоры
+    void homeReplyChanged();
+    void negotiationChanged();
 
 private:
     void handleEvent(const QString& name, const QJsonObject& payload);
@@ -370,6 +384,9 @@ private:
     QVariantList notifications_;         // «входящая»: свежие первыми
     int unreadNotifications_ = 0;        // счётчик непрочитанных (бейдж)
     QVariantList pushDevices_;           // зарегистрированные push-устройства
+    // v3: Home-дашборд и A2A-переговоры
+    QString homeReply_;                  // последний ответ Ауры с Home (chat_id=0)
+    QVariantMap negotiation_;            // последний результат agent.negotiate
 };
 
 }  // namespace aura

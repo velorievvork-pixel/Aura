@@ -17,6 +17,26 @@ Item {
 
     property var prefs: App ? App.preferences : ({})
 
+    // v3: заголовок секции с lilac-индикатором слева (как в макете Settings)
+    component SectionTitle: RowLayout {
+        property string title: ""
+        property int titleSize: AuraTheme.fontBody
+        spacing: AuraTheme.spaceSm
+        Rectangle {
+            Layout.preferredWidth: 3
+            Layout.preferredHeight: titleSize + 2
+            radius: 2
+            color: AuraTheme.lilac
+        }
+        Text {
+            text: title
+            font.family: AuraTheme.fontFamily
+            font.pixelSize: titleSize
+            font.weight: Font.DemiBold
+            color: AuraTheme.textPrimary
+        }
+    }
+
     Flickable {
         anchors.fill: parent
         anchors.margins: AuraTheme.spaceLg
@@ -79,13 +99,7 @@ Item {
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 3
-                        Text {
-                            text: App ? App.userName : ""
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontTitle
-                            font.weight: Font.DemiBold
-                            color: AuraTheme.textPrimary
-                        }
+                    SectionTitle { title: "Разрешения инструментов"; titleSize: AuraTheme.fontTitle }
                         Text {
                             text: App ? App.userEmail : ""
                             font.family: AuraTheme.fontFamily
@@ -111,13 +125,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceMd
 
-                    Text {
-                        text: "Что знает ваша Аура"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontBody
-                        font.weight: Font.DemiBold
-                        color: AuraTheme.textPrimary
-                    }
+                    SectionTitle { title: "Что знает ваша Аура" }
 
                     RowLayout {
                         Layout.fillWidth: true
@@ -358,13 +366,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceMd
 
-                    Text {
-                        text: "Голос и озвучка"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontBody
-                        font.weight: Font.DemiBold
-                        color: AuraTheme.textPrimary
-                    }
+                        SectionTitle { title: "Долговременная память" }
 
                     // --- Язык распознавания речи ---
                     RowLayout {
@@ -618,13 +620,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceSm
 
-                    Text {
-                        text: "Безопасность"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontBody
-                        font.weight: Font.DemiBold
-                        color: AuraTheme.textPrimary
-                    }
+                    SectionTitle { title: "Голос и озвучка" }
 
                     Text {
                         Layout.fillWidth: true
@@ -674,13 +670,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceSm
 
-                    Text {
-                        text: "Двухфакторная аутентификация (TOTP)"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontBody
-                        font.weight: Font.DemiBold
-                        color: AuraTheme.textPrimary
-                    }
+                    SectionTitle { title: "Безопасность" }
 
                     Text {
                         Layout.fillWidth: true
@@ -941,13 +931,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceMd
 
-                    Text {
-                        text: "Разрешения инструментов"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontTitle
-                        font.weight: Font.DemiBold
-                        color: AuraTheme.textPrimary
-                    }
+                    SectionTitle { title: "Двухфакторная аутентификация (TOTP)" }
                     Text {
                         Layout.fillWidth: true
                         text: "Аура лишь формирует намерение — исполняет сервер. "
@@ -974,13 +958,7 @@ Item {
 
                                 RowLayout {
                                     spacing: AuraTheme.spaceXs
-                                    Text {
-                                        text: toolRow.modelData.tool
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontSmall
-                                        font.weight: Font.DemiBold
-                                        color: AuraTheme.textPrimary
-                                    }
+                    SectionTitle { title: "Интеграции"; titleSize: AuraTheme.fontTitle }
                                     Rectangle {
                                         visible: toolRow.modelData.dangerous === true
                                         radius: AuraTheme.radiusPill
@@ -1043,13 +1021,7 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceMd
 
-                    Text {
-                        text: "Интеграции"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontTitle
-                        font.weight: Font.DemiBold
-                        color: AuraTheme.textPrimary
-                    }
+                        SectionTitle { title: "Активные сессии" }
                     Text {
                         Layout.fillWidth: true
                         text: "Подключите Google Календарь и Gmail через официальный OAuth. "

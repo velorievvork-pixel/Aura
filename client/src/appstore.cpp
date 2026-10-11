@@ -717,6 +717,67 @@ void AppStore::askAgent(qint64 chatId, const QString& message) {
                          });
 }
 
+void AppStore::askAgentGlobal(const QString& message) {
+    if (message.trimmed().isEmpty()) {
+        setError(QStringLiteral("Опишите, что сделать"));
+        return;
+    }
+    setBusy(true);
+    setStatus(QStringLiteral("Аура думает…"));
+    QJsonObject payload;
+    payload.insert(QStringLiteral("message"), message.trimmed());
+    payload.insert(QStringLiteral("execute"), true);
+
+    client_->sendRequest(QStringLiteral("agent.ask"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             setBusy(false);
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             const QJsonObject body = response.value(QStringLiteral("payload")).toObject();
+                             homeReply_ = body.value(QStringLiteral("reply")).toString();
+                             emit homeReplyChanged();
+                             setStatus(homeReply_.isEmpty() ? QStringLiteral("Аура выполнила задачу")
+                                                            : homeReply_);
+                             speakImportant(homeReply_.isEmpty() ? QStringLiteral("Готово") : homeReply_);
+                             loadNotifications();
+                             loadConfirmations();
+                         });
+}
+
+void AppStore::negotiateAgent(const QString& target, const QString& topic,
+                              int durationMinutes, int windowHours) {
+    if (target.trimmed().isEmpty()) {
+        setError(QStringLiteral("Укажите собеседника (email или имя)"));
+        return;
+    }
+    setBusy(true);
+    setStatus(QStringLiteral("Ауры договариваются…"));
+    QJsonObject payload;
+    payload.insert(QStringLiteral("target"), target.trimmed());
+    if (!topic.trimmed().isEmpty()) payload.insert(QStringLiteral("topic"), topic.trimmed());
+    if (durationMinutes > 0) payload.insert(QStringLiteral("duration_minutes"), durationMinutes);
+    if (windowHours > 0) payload.insert(QStringLiteral("window_hours"), windowHours);
+
+    client_->sendRequest(QStringLiteral("agent.negotiate"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             setBusy(false);
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             negotiation_ =
+                                 response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                             emit negotiationChanged();
+                             const bool accepted = negotiation_.value(QStringLiteral("accepted")).toBool();
+                             setStatus(accepted ? QStringLiteral("Ауры договорились")
+                                                : QStringLiteral("Собеседник занят — попробуйте позже"));
+                             speakImportant(accepted ? QStringLiteral("Встреча согласована")
+                                                     : QStringLiteral("Договориться не удалось"));
+                         });
+}
+
 void AppStore::savePreferences(const QVariantMap& preferences) {
     setBusy(true);
     client_->sendRequest(QStringLiteral("prefs.set"), QJsonObject::fromVariantMap(preferences),

@@ -3,17 +3,23 @@ import QtQuick.Controls
 
 /*
   GlassField — стеклянное поле ввода с плавающей подсказкой.
+
+  v3: icon — глиф слева (например «✉» / «🔒»), action — глиф справа
+  (например «👁» показа пароля); клик по action даёт сигнал actionClicked.
 */
 TextField {
     id: control
 
     property string label: ""
     property bool invalid: false
+    property string icon: ""
+    property string action: ""
+    signal actionClicked()
 
     implicitHeight: 52
     implicitWidth: 240
-    leftPadding: AuraTheme.spaceMd
-    rightPadding: AuraTheme.spaceMd
+    leftPadding: control.icon.length > 0 ? AuraTheme.spaceMd + 24 : AuraTheme.spaceMd
+    rightPadding: control.action.length > 0 ? AuraTheme.spaceMd + 24 : AuraTheme.spaceMd
     topPadding: label.length > 0 ? 20 : 0
     bottomPadding: label.length > 0 ? 6 : 0
     font.family: AuraTheme.fontFamily
@@ -61,5 +67,33 @@ TextField {
         color: control.activeFocus ? AuraTheme.accent : AuraTheme.textMuted
         visible: control.label.length > 0
         Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
+    }
+
+    // Иконка слева (конверт, замок…)
+    Text {
+        x: AuraTheme.spaceSm + 4
+        anchors.verticalCenter: parent.verticalCenter
+        text: control.icon
+        font.pixelSize: 14
+        color: control.activeFocus ? AuraTheme.accent : AuraTheme.textMuted
+        visible: control.icon.length > 0
+        Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
+    }
+
+    // Действие справа (глаз показа пароля…)
+    Text {
+        x: control.width - control.rightPadding + 4
+        anchors.verticalCenter: parent.verticalCenter
+        text: control.action
+        font.pixelSize: 14
+        color: control.activeFocus ? AuraTheme.lilac : AuraTheme.textMuted
+        visible: control.action.length > 0
+
+        MouseArea {
+            anchors.fill: parent
+            anchors.margins: -8
+            cursorShape: Qt.PointingHandCursor
+            onClicked: control.actionClicked()
+        }
     }
 }

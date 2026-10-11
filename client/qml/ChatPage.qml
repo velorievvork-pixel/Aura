@@ -121,6 +121,46 @@ Item {
                     maxBubbleWidth: Math.max(220, messageList.width * 0.68)
                 }
 
+                // «Аура думает…» (v3): три пульсирующие точки, пока идёт запрос
+                footer: Item {
+                    width: messageList.width
+                    height: visible ? 36 : 0
+                    visible: App && App.busy
+
+                    Row {
+                        anchors.left: parent.left
+                        anchors.leftMargin: AuraTheme.spaceXs
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 5
+
+                        Repeater {
+                            model: 3
+                            Rectangle {
+                                required property int index
+                                width: 8
+                                height: 8
+                                radius: 4
+                                color: AuraTheme.accentSoft
+                                SequentialAnimation on opacity {
+                                    loops: Animation.Infinite
+                                    NumberAnimation { to: 0.25; duration: 550; easing.type: Easing.InOutSine }
+                                    NumberAnimation { to: 1.0; duration: 550; easing.type: Easing.InOutSine }
+                                    // небольшая задержка старта создаёт «волну»
+                                    PauseAnimation { duration: index * 160 }
+                                }
+                            }
+                        }
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Аура думает…"
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontMicro
+                            color: AuraTheme.textSecondary
+                        }
+                    }
+                }
+
                 onCountChanged: Qt.callLater(positionViewAtEnd)
             }
         }
@@ -129,6 +169,24 @@ Item {
         ConfirmationPanel {
             Layout.fillWidth: true
             backdrop: page.Window.window ? page.Window.window.contentItem : null
+        }
+
+        // -------------------------------- чипы быстрых ответов (v3)
+        Flow {
+            Layout.fillWidth: true
+            spacing: AuraTheme.spaceSm
+            visible: page.chatId > 0 && !(App && App.busy)
+
+            Repeater {
+                model: ["Договориться о встрече", "Напомнить мне об этом", "Что ты умеешь?"]
+                delegate: GlassButton {
+                    required property var modelData
+                    text: modelData
+                    variant: "glass"
+                    implicitHeight: 34
+                    onClicked: composer.text = modelData
+                }
+            }
         }
 
         // ------------------------------------------------------- ввод

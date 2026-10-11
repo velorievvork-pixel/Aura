@@ -1,6 +1,8 @@
 /* ==========================================================================
-   Aura — дизайн-система «Dark Glassmorphism» (v2).
+   Aura — дизайн-система «Dark Glassmorphism» (v3, макеты 30.09.2026).
    Токены один в один с client/qml/theme/AuraTheme.qml и docs/DESIGN.md.
+   v3: gradient-CTA (#7c6aff→#a78bfa), усиленное свечение (.40), lilac-индикатор,
+   фиолетово-маджентовые орбиты фона.
    ========================================================================== */
 
 :root {
@@ -20,11 +22,16 @@
   --glass-radius: 22px;
   --glass-radius-sm: 14px;
 
-  /* акцент */
+  /* акцент (v3) */
   --accent: #7c6aff;
   --accent-soft: #a78bfa;
   --accent-deep: #5b4dd6;
-  --accent-glow: rgba(124, 106, 255, 0.25);
+  --accent-glow: rgba(124, 106, 255, 0.4);
+  --accent-grad-a: #7c6aff;
+  --accent-grad-b: #a78bfa;
+  --lilac: #c4b5fd;
+  --glow-violet: #8b5cf6;
+  --glow-magenta: #c026d3;
 
   /* текст */
   --text-primary: #f0f0f4;

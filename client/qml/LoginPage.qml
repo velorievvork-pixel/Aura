@@ -29,7 +29,7 @@ Item {
     GlassPanel {
         id: card
         anchors.centerIn: parent
-        width: Math.min(420, parent.width - AuraTheme.spaceXl * 2)
+        width: Math.min(430, parent.width - AuraTheme.spaceXl * 2)
         backdrop: page.Window.window ? page.Window.window.contentItem : null
         padding: AuraTheme.spaceXl
 
@@ -37,50 +37,26 @@ Item {
             anchors.fill: parent
             spacing: AuraTheme.spaceMd
 
-            // Логотип: светящееся кольцо
-            Item {
+            // Эмблема v3: ядро + кольцо лучей со свечением
+            AuraEmblem {
                 Layout.alignment: Qt.AlignHCenter
-                Layout.preferredWidth: 64
-                Layout.preferredHeight: 64
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: width / 2
-                    color: "transparent"
-                    border.width: 2
-                    border.color: AuraTheme.accentA(0.7)
-
-                    SequentialAnimation on opacity {
-                        loops: Animation.Infinite
-                        NumberAnimation { to: 0.35; duration: 2400; easing.type: Easing.InOutSine }
-                        NumberAnimation { to: 1.0; duration: 2400; easing.type: Easing.InOutSine }
-                    }
-                }
-                Rectangle {
-                    anchors.centerIn: parent
-                    width: parent.width * 0.62
-                    height: width
-                    radius: width / 2
-                    color: "transparent"
-                    border.width: 1
-                    border.color: AuraTheme.accentA(0.35)
-                }
-                Rectangle {
-                    anchors.centerIn: parent
-                    width: 10
-                    height: 10
-                    radius: 5
-                    color: AuraTheme.accentSoft
-                }
+                Layout.topMargin: AuraTheme.spaceSm
+                size: 72
             }
 
             Text {
                 Layout.alignment: Qt.AlignHCenter
-                text: "Aura"
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                text: page.flow === "auth"
+                      ? (page.registerMode ? "Create your Aura" : "Welcome to Aura")
+                      : (page.flow === "verify" ? "Подтверждение email"
+                        : page.flow === "forgot" ? "Восстановление пароля"
+                        : page.flow === "twofactor" ? "Двухфакторный вход"
+                        : "Новый пароль")
                 font.family: AuraTheme.fontFamily
                 font.pixelSize: AuraTheme.fontHero
-                font.weight: Font.Light
-                font.letterSpacing: 2
+                font.weight: Font.DemiBold
                 color: AuraTheme.textPrimary
             }
 
@@ -89,9 +65,11 @@ Item {
                 Layout.fillWidth: true
                 horizontalAlignment: Text.AlignHCenter
                 text: page.flow === "auth"
-                      ? "Сеть ИИ-агентов: ваша Аура договорится с другими Аурами,\nа вы просто живёте"
-                      : (page.flow === "verify" ? "Подтвердите email — введите код из письма"
-                        : page.flow === "forgot" ? "Восстановление пароля"
+                      ? (page.registerMode ? "Ваша личная сеть ИИ-агентов"
+                                           : "Ваша личная сеть ИИ-агентов")
+                      : (page.flow === "verify" ? "Введите код из письма"
+                        : page.flow === "forgot" ? "Отправим код сброса на email"
+                        : page.flow === "twofactor" ? "Код из приложения-аутентификатора"
                         : "Придумайте новый пароль")
                 font.family: AuraTheme.fontFamily
                 font.pixelSize: AuraTheme.fontSmall
@@ -99,7 +77,7 @@ Item {
                 lineHeight: 1.3
             }
 
-            Item { Layout.preferredHeight: AuraTheme.spaceSm; visible: page.flow === "auth" }
+            Item { Layout.preferredHeight: AuraTheme.spaceXs; visible: page.flow === "auth" }
 
             // ============================ Поток «вход / регистрация» ============================
             ColumnLayout {
@@ -107,55 +85,8 @@ Item {
                 spacing: AuraTheme.spaceMd
                 visible: page.flow === "auth"
 
-                // Переключатель Вход / Регистрация — стеклянная пилюля
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 44
-                    radius: AuraTheme.radiusPill
-                    color: Qt.rgba(1, 1, 1, 0.05)
-                    border.width: 1
-                    border.color: Qt.rgba(1, 1, 1, AuraTheme.glassBorder)
-
-                    Rectangle {
-                        id: pill
-                        width: parent.width / 2 - 4
-                        height: parent.height - 8
-                        y: 4
-                        x: modeSwitch.currentIndex === 0 ? 4 : parent.width / 2
-                        radius: AuraTheme.radiusPill
-                        color: Qt.rgba(1, 1, 1, 0.12)
-                        border.width: 1
-                        border.color: Qt.rgba(1, 1, 1, 0.18)
-                        Behavior on x { NumberAnimation { duration: AuraTheme.moveMs; easing.type: Easing.OutCubic } }
-                    }
-
-                    Row {
-                        anchors.fill: parent
-                        Repeater {
-                            model: ["Вход", "Регистрация"]
-                            delegate: Item {
-                                width: (parent ? parent.width : 200) / 2
-                                height: parent ? parent.height : 44
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: modelData
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontSmall
-                                    font.weight: modeSwitch.currentIndex === index ? Font.DemiBold : Font.Normal
-                                    color: modeSwitch.currentIndex === index
-                                           ? AuraTheme.textPrimary : AuraTheme.textSecondary
-                                }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: modeSwitch.currentIndex = index
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Скрытый хранитель индекса режима
+                // Скрытый хранитель индекса режима: 0 — вход, 1 — регистрация.
+                // Переключение — ссылкой внизу карточки (v3, без пилюли).
                 QtObject {
                     id: modeSwitch
                     property int currentIndex: 0
@@ -165,6 +96,7 @@ Item {
                     id: nameField
                     Layout.fillWidth: true
                     label: "Имя"
+                    icon: "👤"
                     placeholderText: "Как вас зовут"
                     visible: page.registerMode
                     enabled: !page.busy
@@ -174,6 +106,7 @@ Item {
                     id: emailField
                     Layout.fillWidth: true
                     label: "Email"
+                    icon: "✉"
                     placeholderText: "you@example.com"
                     inputMethodHints: Qt.ImhEmailCharactersOnly
                     enabled: !page.busy
@@ -183,10 +116,20 @@ Item {
                     id: passwordField
                     Layout.fillWidth: true
                     label: "Пароль"
+                    icon: "🔒"
+                    action: "👁"
                     placeholderText: page.registerMode ? "минимум 8 символов, буквы и цифры" : "••••••••"
-                    echoMode: TextInput.Password
+                    echoMode: revealPassword.checked ? TextInput.Normal : TextInput.Password
                     enabled: !page.busy
                     onAccepted: submitButton.clicked()
+                    onActionClicked: revealPassword.toggle()
+
+                    // «Глаз»: показать/скрыть пароль (v3)
+                    CheckBox {
+                        id: revealPassword
+                        visible: false
+                        function toggle() { checked = !checked }
+                    }
                 }
 
                 Text {
@@ -203,7 +146,7 @@ Item {
                     id: submitButton
                     Layout.fillWidth: true
                     variant: "accent"
-                    text: page.registerMode ? "Создать Ауру" : "Войти"
+                    text: page.registerMode ? "Создать аккаунт" : "Войти"
                     glyph: page.registerMode ? "✦" : "→"
                     busy: page.busy
                     enabled: !page.busy
@@ -216,19 +159,48 @@ Item {
                     }
                 }
 
-                // Ссылка «Забыли пароль?»
-                Text {
-                    Layout.alignment: Qt.AlignHCenter
-                    text: "Забыли пароль?"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    color: AuraTheme.accentSoft
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            forgotEmailField.text = emailField.text;
-                            page.flow = "forgot";
+                // Google OAuth: сервер ещё не отдаёт вход через Google
+                // (только интеграции) — кнопка честно неактивна.
+                GlassButton {
+                    Layout.fillWidth: true
+                    text: "Continue with Google"
+                    glyph: "G"
+                    enabled: false
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 400
+                    ToolTip.text: "Появится после настройки Google OAuth на сервере"
+                }
+
+                // Забыли пароль? · Сменить режим (v3: вместо пилюли)
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: AuraTheme.spaceSm
+
+                    Text {
+                        text: "Забыли пароль?"
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontSmall
+                        color: AuraTheme.accentSoft
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                forgotEmailField.text = emailField.text;
+                                page.flow = "forgot";
+                            }
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: page.registerMode ? "Уже есть аккаунт? Войти"
+                                                : "Нет аккаунта? Создать Ауру"
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontSmall
+                        color: AuraTheme.accentSoft
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: modeSwitch.currentIndex = page.registerMode ? 0 : 1
                         }
                     }
                 }

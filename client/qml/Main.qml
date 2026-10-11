@@ -74,7 +74,7 @@ ApplicationWindow {
             Component.onCompleted: requestPaint()
         }
 
-        // Два размытых пятна «северного сияния»
+        // Орбиты «северного сияния» (v3): фиолетовая и маджентовая
         Rectangle {
             id: blobA
             width: 520
@@ -82,8 +82,8 @@ ApplicationWindow {
             radius: width / 2
             x: -120
             y: -140
-            color: "#4C5BD6"
-            opacity: 0.30
+            color: AuraTheme.glowViolet
+            opacity: 0.32
             layer.enabled: true
             layer.effect: MultiEffect {
                 blurEnabled: true
@@ -104,8 +104,8 @@ ApplicationWindow {
             radius: width / 2
             x: parent.width - 260
             y: parent.height - 300
-            color: "#2FA9A0"
-            opacity: 0.22
+            color: AuraTheme.glowMagenta
+            opacity: 0.20
             layer.enabled: true
             layer.effect: MultiEffect {
                 blurEnabled: true
@@ -145,12 +145,13 @@ ApplicationWindow {
         OnboardingPage {}
     }
 
-    // Узкое окно: стековая навигация (как до этапа 12).
+    // Узкое окно: стековая навигация. Главный экран — Home (v3),
+    // чаты и настройки — поверх него.
     Component {
         id: compactStack
         StackView {
             id: stack
-            initialItem: stackChatsPage
+            initialItem: stackHomePage
 
             popEnter: Transition {
                 NumberAnimation { property: "opacity"; from: 0; to: 1; duration: AuraTheme.moveMs }
@@ -158,6 +159,16 @@ ApplicationWindow {
             pushEnter: Transition {
                 NumberAnimation { property: "opacity"; from: 0; to: 1; duration: AuraTheme.moveMs }
                 NumberAnimation { property: "x"; from: 40; to: 0; duration: AuraTheme.moveMs; easing.type: Easing.OutCubic }
+            }
+
+            // v3: Home-дашборд — стартовый экран.
+            Component {
+                id: stackHomePage
+                HomePage {
+                    onOpenChats: stack.push(stackChatsPage)
+                    onOpenTasks: stack.push(stackTasksPage)
+                    onOpenSettings: stack.push(stackSettingsPage)
+                }
             }
 
             Component {
@@ -185,6 +196,53 @@ ApplicationWindow {
                 id: stackSettingsPage
                 SettingsPage {
                     onBack: stack.pop()
+                }
+            }
+
+            // v3: задачи в компактной раскладке.
+            Component {
+                id: stackTasksPage
+                Item {
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: AuraTheme.spaceLg
+                        spacing: AuraTheme.spaceMd
+
+                        GlassPanel {
+                            Layout.fillWidth: true
+                            padding: AuraTheme.spaceMd
+                            backdrop: window.contentItem
+
+                            RowLayout {
+                                anchors.fill: parent
+                                spacing: AuraTheme.spaceSm
+
+                                GlassButton {
+                                    variant: "quiet"
+                                    text: ""
+                                    glyph: "←"
+                                    implicitWidth: 48
+                                    implicitHeight: 40
+                                    onClicked: stack.pop()
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: "Задачи"
+                                    font.family: AuraTheme.fontFamily
+                                    font.pixelSize: AuraTheme.fontTitle
+                                    font.weight: Font.DemiBold
+                                    color: AuraTheme.textPrimary
+                                }
+                            }
+                        }
+
+                        TasksPanel {
+                            Layout.fillWidth: true
+                            backdrop: window.contentItem
+                        }
+
+                        Item { Layout.fillHeight: true }
+                    }
                 }
             }
 

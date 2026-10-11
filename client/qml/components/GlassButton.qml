@@ -7,7 +7,7 @@ import QtQuick.Controls
 
   Варианты:
     variant: "glass"   — нейтральное стекло (по умолчанию)
-             "accent"  — акцентное стекло с сиянием
+             "accent"  — градиент accent → accentSoft со свечением (CTA, v3)
              "quiet"   — почти прозрачная, для второстепенных действий
              "danger"  — красноватое стекло
 */
@@ -73,13 +73,28 @@ Button {
             id: glass
             anchors.fill: parent
             radius: AuraTheme.radiusPill
+            // v3: акцентная кнопка — градиент accent → accentSoft (135°).
+            // У Rectangle с gradient свойство color игнорируется.
+            gradient: control.variant === "accent" ? accentGradient : null
             color: control.variant === "accent"
-                   ? (control.pressed ? AuraTheme.accentDeep
-                                      : (control.hovered ? Qt.lighter(AuraTheme.accent, 1.08) : AuraTheme.accent))
+                   ? "transparent"
                    : Qt.rgba(control.baseColor.r, control.baseColor.g, control.baseColor.b,
                              control.pressed ? control.baseFill + 0.06
                                              : (control.hovered ? control.baseFill + 0.04
                                                                 : control.baseFill))
+
+            Gradient {
+                id: accentGradient
+                orientation: Gradient.Horizontal
+                GradientStop {
+                    position: 0.0
+                    color: control.pressed ? AuraTheme.accentDeep : AuraTheme.accent
+                }
+                GradientStop {
+                    position: 1.0
+                    color: control.pressed ? AuraTheme.accent : AuraTheme.accentSoft
+                }
+            }
             border.width: 1
             border.color: control.variant === "accent"
                           ? Qt.rgba(1, 1, 1, control.pressed ? 0.42 : 0.28)

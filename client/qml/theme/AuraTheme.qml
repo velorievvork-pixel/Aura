@@ -2,11 +2,13 @@ pragma Singleton
 import QtQuick
 
 /*
-  AuraTheme — дизайн-система «Dark Glassmorphism» (v2).
+  AuraTheme — дизайн-система «Dark Glassmorphism» (v3, макеты 30.09.2026).
 
   Тёмный графит + полупрозрачные пузыри в духе Apple: тонкая светлая рамка,
-  верхний блик, мягкая тень и размытие фона. Акцент — мягкий фиолет #7C6AFF.
-  Значения один в один с preview/styles.css и docs/DESIGN.md.
+  верхний блик, мягкая тень и размытие фона. Акцент — мягкий фиолет #7C6AFF;
+  CTA-кнопки — градиент accent → accentSoft со свечением, фон — фиолетово-
+  маджентовые орбиты. Значения один в один с preview/styles.css,
+  client/styles/aura_theme.qss и docs/DESIGN.md.
 */
 QtObject {
     // --- фон ------------------------------------------------------------
@@ -26,10 +28,13 @@ QtObject {
 
     // --- акцент ---------------------------------------------------------
     readonly property color accent:       "#7C6AFF"
-    readonly property color accentSoft:   "#A78BFA"  // сообщения Ауры, подсветка
+    readonly property color accentSoft:   "#A78BFA"  // сообщения Ауры, подсветка, конец градиента CTA
     readonly property color accentDeep:   "#5B4DD6"
     readonly property real  accentFill:   0.20
-    readonly property color accentGlow:   "#407C6AFF" // свечение акцентных кнопок
+    readonly property color accentGlow:   "#667C6AFF" // свечение акцентных кнопок (v3: .40)
+    readonly property color glowViolet:   "#8B5CF6"   // фоновые орбиты (v3)
+    readonly property color glowMagenta:  "#C026D3"   // фоновые орбиты (v3)
+    readonly property color lilac:        "#C4B5FD"   // индикатор активного пункта меню (v3)
 
     // --- текст ----------------------------------------------------------
     readonly property color textPrimary:   "#F0F0F4"

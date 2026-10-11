@@ -36,11 +36,15 @@ qt_add_qml_module(aura-client
         qml/OnboardingPage.qml
         qml/SettingsPage.qml
         qml/DesktopShell.qml
+        qml/HomePage.qml
+        qml/ContactsPage.qml
+        qml/NegotiationsPage.qml
         qml/theme/AuraTheme.qml
         qml/components/GlassSurface.qml
         qml/components/GlassPanel.qml
         qml/components/GlassButton.qml
         qml/components/GlassField.qml
+        qml/components/AuraEmblem.qml
         qml/components/ChatBubble.qml
         qml/components/AuraAvatar.qml
         qml/components/VoicePanel.qml

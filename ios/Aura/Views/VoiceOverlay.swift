@@ -1,46 +1,47 @@
-// VoiceOverlay.swift — панель голосового запроса (SFSpeechRecognizer,
-// fallback — серверный STT Aura).
+// VoiceOverlay.swift — голосовой запрос: расшифровка в реальном времени,
+// по окончании текст уходит Ауре (SpeechService.onFinalTranscript).
 import SwiftUI
 
 struct VoiceOverlay: View {
 
     @EnvironmentObject private var store: AppStore
+    @ObservedObject private var speech: SpeechService
+
+    init(speech: SpeechService) {
+        _speech = ObservedObject(wrappedValue: speech)
+    }
 
     var body: some View {
-        VStack(spacing: 12) {
-            Text(store.speech.transcript.isEmpty ? "Слушаю…" : store.speech.transcript)
-                .font(.body)
-                .lineLimit(3)
-                .padding(.horizontal)
-
-            HStack(spacing: 24) {
-                Button(role: .cancel) {
-                    store.speech.cancelListening()
+        VStack(spacing: 16) {
+            AuraOrb(size: 64)
+                .scaleEffect(speech.state == .listening ? 1.08 : 1)
+                .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: speech.state)
+            Text(speech.transcript.isEmpty ? (speech.state == .listening ? "Слушаю…" : "Нажмите на микрофон")
+                 : speech.transcript)
+                .font(AuraFont.manrope(17))
+                .foregroundStyle(AuraColor.textPrimary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+            HStack(spacing: 16) {
+                RoundIconButton(systemImage: "xmark", label: "Закрыть", size: 48) {
+                    speech.cancelListening()
                     store.voiceOverlayVisible = false
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.largeTitle)
                 }
-
-                Button {
-                    if store.speech.state == .listening {
-                        store.speech.stopListening()
+                RoundIconButton(systemImage: speech.state == .listening ? "stop.fill" : "mic.fill",
+                                label: speech.state == .listening ? "Готово" : "Слушать", accent: true, size: 64) {
+                    if speech.state == .listening {
+                        speech.stopListening()
                     } else {
-                        store.speech.startListening()
+                        speech.startListening()
                     }
-                } label: {
-                    Image(systemName: store.speech.state == .listening ? "stop.circle.fill" : "mic.circle.fill")
-                        .font(.system(size: 56))
                 }
             }
         }
-        .padding()
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
-        .padding()
+        .glassCard(radius: AuraRadius.shell, glow: true, padding: 24)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 90)
         .onAppear {
-            if store.speech.state == .idle {
-                store.speech.startListening()
-            }
+            if speech.state == .idle { speech.startListening() }
         }
     }
 }

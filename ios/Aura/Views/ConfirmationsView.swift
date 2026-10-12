@@ -1,4 +1,5 @@
-// ConfirmationsView.swift — барьер подтверждения опасных операций (этап 8).
+// ConfirmationsView.swift — опасные действия Ауры, ждущие решения человека
+// (confirmation.approve / confirmation.deny). Сама Аура их не выполняет.
 import SwiftUI
 
 struct ConfirmationsView: View {
@@ -6,40 +7,41 @@ struct ConfirmationsView: View {
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
-        NavigationStack {
-            List {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                BackToHomeButton()
+                ScreenHeader("Подтверждения")
+                Text("Письма, сообщения и брони Аура не выполняет сама: каждое такое действие ждёт здесь вашего решения.")
+                    .font(AuraFont.body)
+                    .foregroundStyle(AuraColor.textSecondary)
                 if store.confirmations.isEmpty {
-                    Text("Нет операций, ожидающих подтверждения")
-                        .foregroundStyle(.secondary)
+                    Muted("Сейчас ничего не ждёт решения.")
                 }
-                ForEach(store.confirmations.indices, id: \.self) { index in
-                    let action = store.confirmations[index]
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(action.string("tool"))
-                            .font(.headline)
-                        Text(action.string("summary"))
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Text("истекает: \(action.string("expires_at"))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        HStack(spacing: 16) {
-                            Button("Разрешить") {
-                                store.decideConfirmation(id: action.int("id"), approve: true)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            Button("Отклонить", role: .destructive) {
-                                store.decideConfirmation(id: action.int("id"), approve: false)
-                            }
-                            .buttonStyle(.bordered)
+                ForEach(store.confirmations) { action in
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Circle().fill(AuraColor.warning).frame(width: 8, height: 8)
+                            Text("Требуется подтверждение").font(AuraFont.labelMedium).foregroundStyle(AuraColor.warning)
                         }
-                        .font(.footnote)
+                        Text(action.summary.isEmpty ? action.tool : action.summary)
+                            .font(AuraFont.titleSmall)
+                            .foregroundStyle(AuraColor.textPrimary)
+                        Muted("инструмент: \(Format.toolLabel(action.tool))")
+                        HStack(spacing: 10) {
+                            GradientButton(title: "Подтвердить", height: 44) {
+                                store.decideConfirmation(id: action.id, approve: true)
+                            }
+                            GlassButton(title: "Отклонить", danger: true, height: 44) {
+                                store.decideConfirmation(id: action.id, approve: false)
+                            }
+                        }
                     }
-                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .glassCard()
                 }
             }
-            .navigationTitle("Подтверждения")
-            .refreshable { store.loadConfirmations() }
+            .padding(20)
         }
+        .refreshable { await store.loadConfirmations() }
     }
 }

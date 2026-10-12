@@ -30,6 +30,9 @@ ALLOWED: set[str] = {
     "lock.shield",
     "person.2",
     "arrow.right.square",
+    # иконки задач на «Главной» (массив systemName по индексу)
+    "doc.text",
+    "play.rectangle",
 }
 
 # Серверные события: их клиент не отправляет, только принимает.
@@ -58,7 +61,9 @@ def server_kinds() -> set[str]:
     return set(re.findall(r'create\(\s*[^,]+,\s*"([a-z][a-z0-9.]+)"', text))
 
 
-SYSTEM_IMAGE_RE = re.compile(r'systemImage(?:Name)?:\s*"[^"]*"')
+# Аргументы-иконки: systemImage:/systemName:/symbol: — литерал или тернарный
+# выбор из двух литералов (до запятой или скобки).
+SYSTEM_IMAGE_RE = re.compile(r'(?:systemImage(?:Name)?|systemName|symbol):\s*[^,)]*')
 
 
 def swift_candidates() -> dict[str, list[str]]:

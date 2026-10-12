@@ -1,106 +1,82 @@
-// OnboardingView.swift — опрос после регистрации: день рождения, аллергии,
-// диета, город, транспорт, бюджет. Всё необязательное; заполненные поля
-// уходят в prefs.set и попадают в контекст Ауры. Флаг onboarded ставит
-// сервер (docs/PROTOCOL.md) — до тех пор окно показывается после входа.
+// OnboardingView.swift — анкета после регистрации: день рождения, аллергии,
+// диета, передвижение, город, бюджет. Всё необязательно («Пропустить»), но
+// заполненная анкета сразу попадает в контекст Ауры (prefs.set → AI context).
 import SwiftUI
 
 struct OnboardingView: View {
 
     @EnvironmentObject private var store: AppStore
-
     @State private var birthday = ""
     @State private var allergies = ""
     @State private var city = ""
     @State private var budget = ""
-    @State private var diet: Set<String> = []
+    @State private var diet = Set<String>()
     @State private var transport = "walk"
 
-    private let dietOptions = ["vegan", "vegetarian", "gluten_free", "lactose_free", "halal", "kosher"]
-    private let transportOptions = [("walk", "Пешком"), ("bike", "Велосипед"),
-                                    ("transit", "Транспорт"), ("car", "Машина")]
+    private let dietOptions = [("vegan", "Веган"), ("vegetarian", "Вегетарианец"), ("gluten_free", "Без глютена"),
+                               ("lactose_free", "Без лактозы"), ("halal", "Халяль"), ("kosher", "Кошер")]
+    private let transportOptions = [("walk", "Пешком"), ("bike", "Велосипед"), ("transit", "Транспорт"),
+                                    ("car", "Машина")]
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("О вас") {
-                    TextField("День рождения (ГГГГ-ММ-ДД)", text: $birthday)
-                        .keyboardType(.numbersAndPunctuation)
-                        .autocorrectionDisabled()
-                    TextField("Аллергии (через запятую)", text: $allergies)
-                    TextField("Город", text: $city)
-                    TextField("Бюджет на встречу, €", text: $budget)
-                        .keyboardType(.decimalPad)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(spacing: 14) {
+                    AuraEmblem(size: 56)
+                    Text("Расскажите о себе")
+                        .font(AuraFont.headline)
+                        .foregroundStyle(AuraColor.textPrimary)
+                    Muted("Аура использует это для мест, времени и рекомендаций. Всё необязательно и меняется в настройках.",
+                          alignment: .center)
                 }
-                Section("Диета") {
-                    chips(dietOptions, selection: $diet, multi: true) { dietLabel($0) }
-                }
-                Section("Передвижение") {
-                    chips(transportOptions.map { $0.0 }, selection: Binding(
-                        get: { [transport] },
-                        set: { transport = $0.first ?? "walk" }
-                    ), multi: false) { value in
-                        transportOptions.first(where: { $0.0 == value })?.1 ?? value
+                .frame(maxWidth: .infinity)
+                AuraField(text: $birthday, placeholder: "ГГГГ-ММ-ДД", label: "День рождения",
+                          keyboard: .numbersAndPunctuation)
+                AuraField(text: $allergies, placeholder: "через запятую", label: "Аллергии")
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Диета").font(AuraFont.labelMedium).foregroundStyle(AuraColor.textSecondary)
+                    FlowLayout(spacing: 8) {
+                        ForEach(dietOptions.indices, id: \.self) { index in
+                            let option = dietOptions[index]
+                            AuraChip(title: option.1, active: diet.contains(option.0)) {
+                                if diet.contains(option.0) { diet.remove(option.0) } else { diet.insert(option.0) }
+                            }
+                        }
                     }
                 }
-                Section {
-                    Button("Сохранить") {
-                        store.submitOnboarding(
-                            birthday: birthday.trimmingCharacters(in: .whitespaces),
-                            allergies: allergies.split(separator: ",")
-                                .map { $0.trimmingCharacters(in: .whitespaces) }
-                                .filter { !$0.isEmpty },
-                            diet: Array(diet),
-                            transport: transport,
-                            city: city.trimmingCharacters(in: .whitespaces),
-                            budget: budget.trimmingCharacters(in: .whitespaces)
-                        )
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Передвижение").font(AuraFont.labelMedium).foregroundStyle(AuraColor.textSecondary)
+                    FlowLayout(spacing: 8) {
+                        ForEach(transportOptions.indices, id: \.self) { index in
+                            let option = transportOptions[index]
+                            AuraChip(title: option.1, active: transport == option.0) { transport = option.0 }
+                        }
                     }
-                    Button("Пропустить", role: .cancel) { store.skipOnboarding() }
-                } footer: {
-                    Text("Аура использует это для мест, времени и рекомендаций. Изменить можно в настройках.")
                 }
+                AuraField(text: $city, placeholder: "Например, Москва", label: "Город")
+                AuraField(text: $budget, placeholder: "Например, 25", label: "Бюджет на встречу", keyboard: .decimalPad)
+                GradientButton(title: "Сохранить", busy: store.busy) {
+                    store.submitOnboarding(
+                        birthday: birthday.trimmingCharacters(in: .whitespaces),
+                        allergies: allergies.split(separator: ",")
+                            .map { $0.trimmingCharacters(in: .whitespaces) }
+                            .filter { !$0.isEmpty },
+                        diet: dietOptions.map { $0.0 }.filter { diet.contains($0) },
+                        transport: transport,
+                        city: city.trimmingCharacters(in: .whitespaces),
+                        budget: budget.trimmingCharacters(in: .whitespaces))
+                }
+                GlassButton(title: "Пропустить", quiet: true) { store.skipOnboarding() }
             }
-            .navigationTitle("Расскажите о себе")
-            .interactiveDismissDisabled()
+            .glassCard(radius: 34, padding: 24)
+            .padding(20)
+            .frame(maxWidth: 560)
+            .frame(maxWidth: .infinity)
         }
-    }
-
-    // MARK: - Хелперы
-
-    @ViewBuilder
-    private func chips(_ options: [String], selection: Binding<Set<String>>,
-                       multi: Bool, label: @escaping (String) -> String) -> some View {
-        // Простая сетка «чипов» на кнопках — без сторонних зависимостей.
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120))], alignment: .leading) {
-            ForEach(options, id: \.self) { option in
-                let isOn = selection.wrappedValue.contains(option)
-                Button {
-                    if multi {
-                        if isOn { selection.wrappedValue.remove(option) }
-                        else { selection.wrappedValue.insert(option) }
-                    } else {
-                        selection.wrappedValue = [option]
-                    }
-                } label: {
-                    Text(label(option))
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(isOn ? Color.accentColor.opacity(0.25) : Color.gray.opacity(0.12),
-                                    in: Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-    }
-
-    private func dietLabel(_ option: String) -> String {
-        switch option {
-        case "vegan": return "Веган"
-        case "vegetarian": return "Вегетарианец"
-        case "gluten_free": return "Без глютена"
-        case "lactose_free": return "Без лактозы"
-        case "halal": return "Халяль"
-        case "kosher": return "Кошер"
-        default: return option
+        .scrollDismissesKeyboard(.interactively)
+        .onAppear {
+            let saved = store.prefs.string("city")
+            if city.isEmpty, !saved.isEmpty { city = saved }
         }
     }
 }

@@ -52,7 +52,8 @@ struct AuraApp: App {
                     }
                     store.speech.onFinalTranscript = { text in
                         store.voiceOverlayVisible = false
-                        Task { await store.askAura(text) }
+                        store.selectTab(.aura)
+                        store.ask(text)
                     }
                 }
                 .task {

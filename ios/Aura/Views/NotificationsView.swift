@@ -1,4 +1,5 @@
-// NotificationsView.swift — «входящая» уведомлений и push-устройства (этап 13).
+// NotificationsView.swift — входящие уведомления (notifications.list/read)
+// и устройства, на которые приходят push (devices.push.*).
 import SwiftUI
 
 struct NotificationsView: View {
@@ -6,96 +7,65 @@ struct NotificationsView: View {
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    if store.notifications.isEmpty {
-                        Text("Уведомлений пока нет")
-                            .foregroundStyle(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                // «Прочитать все» — в строке «назад»: рядом с заголовком 38 pt ему не хватает места.
+                HStack {
+                    BackToHomeButton()
+                    Spacer()
+                    if store.notices.contains(where: { !$0.read }) {
+                        GlassButton(title: "Прочитать все", height: 38, fullWidth: false) {
+                            store.markNotificationsRead()
+                        }
                     }
-                    ForEach(store.notifications.indices, id: \.self) { index in
-                        let item = store.notifications[index]
-                        Button {
-                            if !item.bool("read") {
-                                store.markNotificationsRead(id: item.int("id"))
-                            }
-                        } label: {
-                            HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: Self.icon(for: item.string("kind")))
-                                    .foregroundStyle(item.bool("read") ? .secondary : .accentColor)
-                                    .frame(width: 24)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(item.string("title"))
-                                        .font(.subheadline.weight(item.bool("read") ? .regular : .semibold))
-                                        .foregroundStyle(.primary)
-                                    if !item.string("body").isEmpty {
-                                        Text(item.string("body"))
-                                            .font(.footnote)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Text(item.string("created_at"))
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
+                }
+                ScreenHeader("Уведомления")
+                if store.notices.isEmpty {
+                    Muted("Пока пусто.")
+                }
+                ForEach(store.notices) { notice in
+                    Button {
+                        if !notice.read { store.markNotificationsRead(id: notice.id) }
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            Circle()
+                                .fill(notice.read ? AuraColor.textSecondary.opacity(0.3) : AuraColor.status(notice.kind))
+                                .frame(width: 9, height: 9)
+                                .padding(.top, 5)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(notice.title).font(AuraFont.titleSmall).foregroundStyle(AuraColor.textPrimary)
+                                if !notice.body.isEmpty {
+                                    Text(notice.body).font(AuraFont.small).foregroundStyle(AuraColor.textSecondary)
                                 }
+                                Muted("\(Format.dayPhrase(notice.createdAt)), \(Format.timeOf(notice.createdAt))")
                             }
+                            Spacer(minLength: 0)
                         }
-                        .buttonStyle(.plain)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .glassCard(padding: 16)
                     }
-                } header: {
-                    Text("Уведомления")
+                    .buttonStyle(PressStyle())
                 }
-
-                Section {
-                    if store.pushDevices.isEmpty {
-                        Text("Push-устройства не зарегистрированы")
-                            .foregroundStyle(.secondary)
-                    }
-                    ForEach(store.pushDevices.indices, id: \.self) { index in
-                        let device = store.pushDevices[index]
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(device.string("platform"))
-                                    .font(.subheadline)
-                                Text("зарегистрировано: \(device.string("created_at"))")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Button("Отозвать", role: .destructive) {
-                                store.revokePushDevice(id: device.int("id"))
-                            }
-                            .font(.footnote)
+                SectionTitle(text: "Push-устройства").padding(.top, 12)
+                if store.pushDevices.isEmpty {
+                    Muted("Push на этом устройстве ещё не зарегистрирован: разрешите уведомления в настройках iOS.")
+                }
+                ForEach(store.pushDevices) { device in
+                    HStack {
+                        Text("\(device.platform.uppercased()) · \(device.enabled ? "включено" : "выключено")")
+                            .font(AuraFont.small)
+                            .foregroundStyle(AuraColor.textPrimary)
+                        Spacer()
+                        GlassButton(title: "Отозвать", quiet: true, height: 36, fullWidth: false) {
+                            store.revokePushDevice(id: device.id)
                         }
                     }
-                } header: {
-                    Text("Push-устройства")
-                } footer: {
-                    Text("Токен этого устройства регистрируется автоматически после разрешения на уведомления.")
                 }
             }
-            .navigationTitle("Уведомления")
-            .toolbar {
-                if store.unreadNotifications > 0 {
-                    Button("Прочитать все") {
-                        store.markNotificationsRead()
-                    }
-                }
-            }
-            .refreshable {
-                store.loadNotifications()
-                store.loadPushDevices()
-            }
+            .padding(20)
         }
-    }
-
-    static func icon(for kind: String) -> String {
-        switch kind {
-        case "task.due": return "alarm"
-        case "confirmation.requested": return "exclamationmark.shield"
-        case "a2a.proposal": return "person.2"
-        case "login.new": return "arrow.right.square"
-        case "twofactor.enabled", "twofactor.disabled": return "lock.shield"
-        default: return "bell"
-        }
+        .refreshable { await store.loadNotifications() }
+        .onAppear { store.loadPushDevices() }
     }
 }

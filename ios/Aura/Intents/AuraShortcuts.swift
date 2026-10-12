@@ -2,6 +2,8 @@
 //
 // После сборки приложения команды автоматически появляются в «Команды» —
 // их можно назначить на Back Tap, кнопку действия или автоматизации.
+// В фразах допустимы только параметры AppEntity/AppEnum, поэтому текст
+// запроса и название задачи Siri спрашивает отдельно (requestValueDialog).
 import AppIntents
 
 struct AuraShortcuts: AppShortcutsProvider {
@@ -10,8 +12,8 @@ struct AuraShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: AskAuraIntent(),
             phrases: [
-                "Спросить Ауру в \(.applicationName): \{message}",
-                "В \(.applicationName) спроси Ауру \{message}"
+                "Спросить Ауру в \(.applicationName)",
+                "В \(.applicationName) спроси Ауру"
             ],
             shortTitle: "Спросить Ауру",
             systemImageName: "sparkles"
@@ -19,8 +21,8 @@ struct AuraShortcuts: AppShortcutsProvider {
         AppShortcut(
             intent: CreateTaskIntent(),
             phrases: [
-                "Создать задачу в \(.applicationName): \{taskTitle}",
-                "В \(.applicationName) новая задача \{taskTitle}"
+                "Создать задачу в \(.applicationName)",
+                "В \(.applicationName) новая задача"
             ],
             shortTitle: "Создать задачу",
             systemImageName: "checklist"

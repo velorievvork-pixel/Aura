@@ -45,6 +45,14 @@ targets:
           Доступ к напоминаниям нужен, чтобы переносить задачи Aura
           в системные напоминания iOS (только по вашей кнопке).
         ITSAppUsesNonExemptEncryption: false
+        # Manrope (SIL OFL 1.1) — шрифт макетов v3, лежит в Aura/Resources/Fonts.
+        UIAppFonts:
+          - Manrope-Regular.ttf
+          - Manrope-Medium.ttf
+          - Manrope-SemiBold.ttf
+          - Manrope-Bold.ttf
+          - Manrope-ExtraBold.ttf
+        UIUserInterfaceStyle: Dark
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -57,6 +65,9 @@ targets:
         # Push Notifications: development для отладки; при архивации
         # Xcode подставит production автоматически (aps-environment).
         aps-environment: development
+    scheme:
+      testTargets:
+        - AuraTests
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.aura.app

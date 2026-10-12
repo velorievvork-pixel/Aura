@@ -107,6 +107,31 @@ public final class AuraClient: @unchecked Sendable {
         try await request("auth.status2fa")
     }
 
+    public func setup2fa() async throws -> JSONValue {
+        try await request("auth.setup2fa")
+    }
+
+    public func confirm2fa(code: String) async throws -> JSONValue {
+        try await request("auth.confirm2fa", ["code": .string(code)])
+    }
+
+    public func disable2fa(password: String) async throws -> JSONValue {
+        try await request("auth.disable2fa", ["password": .string(password)])
+    }
+
+    /// Сброс пароля: код уходит на почту (ответ одинаковый, есть ли аккаунт).
+    public func forgotPassword(email: String) async throws -> JSONValue {
+        try await request("auth.forgotPassword", ["email": .string(email)])
+    }
+
+    public func resetPassword(email: String, code: String, newPassword: String) async throws -> JSONValue {
+        try await request("auth.resetPassword", [
+            "email": .string(email),
+            "code": .string(code),
+            "new_password": .string(newPassword)
+        ])
+    }
+
     // MARK: - Чаты и сообщения
 
     public func chatList() async throws -> JSONValue {
@@ -122,6 +147,10 @@ public final class AuraClient: @unchecked Sendable {
             "chat_id": .from(chatId),
             "limit": .from(limit)
         ])
+    }
+
+    public func chatRead(chatId: Int64) async throws -> JSONValue {
+        try await request("chat.read", ["chat_id": .from(chatId)])
     }
 
     public func chatSend(chatId: Int64, text: String) async throws -> JSONValue {
@@ -142,6 +171,29 @@ public final class AuraClient: @unchecked Sendable {
         ])
     }
 
+    /// A2A-переговоры, один раунд: target — email или имя собеседника, окно в часах.
+    /// Ответ: accepted, slot{start,end}, place{name,city,tags,rating}, counter_slots[], message.
+    public func agentNegotiate(target: String, topic: String = "", durationMinutes: Int = 60,
+                               windowHours: Int = 96) async throws -> JSONValue {
+        var payload: [String: JSONValue] = [
+            "target": .string(target),
+            "duration_minutes": .from(durationMinutes),
+            "window_hours": .from(windowHours)
+        ]
+        if !topic.isEmpty { payload["topic"] = .string(topic) }
+        return try await request("agent.negotiate", payload)
+    }
+
+    /// Прямой запуск инструмента по кнопке пользователя (например book_table).
+    public func toolRun(tool: String, args: [String: JSONValue]) async throws -> JSONValue {
+        try await request("tool.run", ["tool": .string(tool), "args": .object(args)])
+    }
+
+    /// Поиск людей по имени или email, чтобы начать с ними чат (chat.open).
+    public func usersSearch(query: String, limit: Int = 10) async throws -> JSONValue {
+        try await request("users.search", ["query": .string(query), "limit": .from(limit)])
+    }
+
     /// Серверный STT: аудио в base64 (формат согласуется с AI-сервисом).
     public func speechTranscribe(audioBase64: String, language: String,
                                  format: String) async throws -> JSONValue {
@@ -156,6 +208,10 @@ public final class AuraClient: @unchecked Sendable {
 
     public func memoryList() async throws -> JSONValue {
         try await request("memory.list")
+    }
+
+    public func memoryAdd(text: String, kind: String = "fact") async throws -> JSONValue {
+        try await request("memory.add", ["text": .string(text), "kind": .string(kind)])
     }
 
     public func prefsGet() async throws -> JSONValue {
@@ -176,10 +232,12 @@ public final class AuraClient: @unchecked Sendable {
         return try await request("tasks.list", payload)
     }
 
-    public func taskCreate(title: String, notes: String = "", remindAt: String = "") async throws -> JSONValue {
+    public func taskCreate(title: String, notes: String = "", remindAt: String = "",
+                           dueAt: String = "") async throws -> JSONValue {
         var payload: [String: JSONValue] = ["title": .string(title)]
         if !notes.isEmpty { payload["notes"] = .string(notes) }
         if !remindAt.isEmpty { payload["remind_at"] = .string(remindAt) }
+        if !dueAt.isEmpty { payload["due_at"] = .string(dueAt) }
         return try await request("tasks.create", payload)
     }
 

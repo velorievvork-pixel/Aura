@@ -1,9 +1,10 @@
 // AppStore.swift — центральное состояние iOS-приложения Aura.
 //
-// Единственный объект, который видит SwiftUI: держит авторизацию, списки
-// чатов/сообщений/задач/подтверждений/интеграций, вызывает AuraClient и
-// разбирает события сервера (chat.message, task.due). Тот же контракт,
-// что у Qt-клиента: сервер — источник истины, клиент — представление.
+// Единственный объект, который видит SwiftUI: авторизация (email-код, 2FA,
+// сброс пароля), диалог с Аурой, переговоры Аур, задачи, контакты и чаты,
+// подтверждения, уведомления, разрешения и интеграции. Тот же контракт, что
+// у Qt- и Android-клиентов: сервер — источник истины, клиент — представление;
+// опасные действия выполняются только по кнопке пользователя.
 import AuraKit
 import AVFoundation
 import Foundation
@@ -11,13 +12,167 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
+/// Разделы v3: пять во вкладках снизу, остальные открываются из шапки «Главной».
 enum AppTab: Hashable {
-    case chats
+    case home
+    case aura
+    case negotiations
     case tasks
+    case contacts
+    case settings
     case confirmations
     case notifications
-    case settings
 }
+
+// MARK: - Модели экранов
+
+struct ChatMember: Hashable {
+    let userId: Int64
+    let name: String
+    let email: String
+}
+
+struct ChatSummary: Identifiable, Hashable {
+    let id: Int64
+    let title: String
+    let lastBody: String
+    let lastAt: String
+    let members: [ChatMember]
+}
+
+struct ChatMessage: Identifiable, Hashable {
+    let id: Int64
+    let senderId: Int64
+    let body: String
+    let kind: String
+    let createdAt: String
+    let senderName: String
+}
+
+struct AuraTask: Identifiable, Hashable {
+    let id: Int64
+    let title: String
+    let notes: String
+    let status: String
+    let remindAt: String
+    let dueAt: String
+    let completedAt: String
+
+    /// Когда задача: срок, иначе время напоминания.
+    var whenAt: String { dueAt.isEmpty ? remindAt : dueAt }
+    var isDone: Bool { status == "done" }
+}
+
+/// Собеседник: человек из чатов (кроме меня), по одному на человека.
+struct Contact: Identifiable, Hashable {
+    var id: Int64 { userId }
+    let userId: Int64
+    let name: String
+    let email: String
+    let chatId: Int64
+    let lastBody: String
+    let lastAt: String
+}
+
+struct FoundUser: Identifiable, Hashable {
+    let id: Int64
+    let name: String
+    let email: String
+}
+
+/// Действие Ауры, ждущее решения, прямо под её репликой.
+struct DialogAction: Hashable {
+    let confirmationId: Int64
+    let summary: String
+    let tool: String
+}
+
+struct DialogEntry: Identifiable, Hashable {
+    let id: Int
+    let fromAura: Bool
+    let text: String
+    var error = false
+    var actions: [DialogAction] = []
+    var hasA2a = false
+}
+
+struct Slot: Hashable {
+    let start: String
+    let end: String
+}
+
+struct Place: Hashable {
+    let name: String
+    let city: String
+    let tags: [String]
+    let rating: String
+}
+
+/// Один раунд agent.negotiate: запрос рядом с ответом сервера.
+struct Negotiation: Identifiable, Hashable {
+    let id: UUID
+    let target: String
+    let topic: String
+    let durationMinutes: Int
+    let windowHours: Int
+    let round: Int
+    let accepted: Bool
+    let slot: Slot?
+    let place: Place?
+    let counterSlots: [Slot]
+    let message: String
+    var booking: String?
+}
+
+struct MemoryEntry: Hashable {
+    let kind: String
+    let text: String
+}
+
+struct PendingAction: Identifiable, Hashable {
+    let id: Int64
+    let tool: String
+    let summary: String
+}
+
+struct Notice: Identifiable, Hashable {
+    let id: Int64
+    let kind: String
+    let title: String
+    let body: String
+    var read: Bool
+    let createdAt: String
+}
+
+struct PushDevice: Identifiable, Hashable {
+    let id: Int64
+    let platform: String
+    let enabled: Bool
+}
+
+struct PermissionRow: Identifiable, Hashable {
+    var id: String { tool }
+    let tool: String
+    let description: String
+    let dangerous: Bool
+    let mode: String
+}
+
+struct IntegrationProvider: Identifiable, Hashable {
+    var id: String { provider }
+    let provider: String
+    let name: String
+    let description: String
+}
+
+struct ConnectionRow: Identifiable, Hashable {
+    let id: Int64
+    let provider: String
+    let account: String
+    let status: String
+}
+
+// MARK: - Стор
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -26,8 +181,12 @@ final class AppStore: ObservableObject {
         case loggedOut
         case needsEmailCode(String)   // ждём код подтверждения email
         case needs2fa(String, String) // ждём TOTP-код (email, пароль для login2fa)
+        case needsResetCode(String)   // ждём код сброса пароля
         case loggedIn
     }
+
+    /// После пяти раундов без согласия решает человек (docs/A2A_PROTOCOL.md).
+    static let maxRounds = 5
 
     // MARK: Состояние для UI
 
@@ -36,34 +195,47 @@ final class AppStore: ObservableObject {
     @Published var statusMessage = ""
     @Published var errorMessage = ""
     @Published var serverURLText = "ws://127.0.0.1:9000"
+    @Published private(set) var busyCount = 0
+    var busy: Bool { busyCount > 0 }
 
+    @Published var userId: Int64 = 0
     @Published var userName = ""
     @Published var userEmail = ""
 
-    @Published var chats: [JSONValue] = []
-    @Published var currentChatId: Int64 = 0
-    @Published var currentChatTitle = ""
-    @Published var messages: [JSONValue] = []
+    @Published var tab: AppTab = .home
 
-    @Published var tasks: [JSONValue] = []
-    @Published var confirmations: [JSONValue] = []
-    @Published var permissions: [JSONValue] = []
-    @Published var integrations: [JSONValue] = []
-    @Published var integrationProviders: [JSONValue] = []
+    @Published var dialog: [DialogEntry] = []
+    @Published var memory: [MemoryEntry] = []
+    @Published var prefs: JSONValue = .emptyObject
 
-    // Этап 13: in-app «входящая» уведомлений и push-устройства.
-    @Published var notifications: [JSONValue] = []
+    @Published var negotiation: Negotiation?
+    @Published var negotiationHistory: [Negotiation] = []
+    /// Раунды, шаги которых уже показаны: при возврате на вкладку не проигрываем заново.
+    var revealedNegotiations = Set<UUID>()
+
+    @Published var chats: [ChatSummary] = []
+    @Published var contacts: [Contact] = []
+    @Published var foundUsers: [FoundUser] = []
+    @Published var openChatId: Int64 = 0
+    @Published var messages: [ChatMessage] = []
+
+    @Published var tasks: [AuraTask] = []
+    @Published var confirmations: [PendingAction] = []
+    @Published var permissions: [PermissionRow] = []
+    @Published var connections: [ConnectionRow] = []
+    @Published var providers: [IntegrationProvider] = []
+
+    @Published var notices: [Notice] = []
     @Published var unreadNotifications: Int64 = 0
-    @Published var pushDevices: [JSONValue] = []
+    @Published var pushDevices: [PushDevice] = []
 
-    @Published var tab: AppTab = .chats
+    @Published var twoFaEnabled = false
+    @Published var twoFaSecret = ""
+    @Published var recoveryCodes: [String] = []
 
-    // Онбординг-опрос после регистрации (этап 8+): показываем, пока сервер
-    // не выставил prefs.onboarded (флаг ставится при сохранении анкеты).
+    // Онбординг-опрос после регистрации: показываем, пока prefs.onboarded != true.
     @Published var needOnboarding = false
-    @Published var onboardingVisible = false
     @Published var voiceOverlayVisible = false
-    @Published var devEmailCode = ""      // подсказка в режиме AURA_MAIL_DRIVER=dev
     @Published var ttsEnabled = true
 
     let client = AuraClient()
@@ -71,6 +243,10 @@ final class AppStore: ObservableObject {
     let speech = SpeechService()
 
     private var eventTask: Task<Void, Never>?
+    private var dialogSeq = 0
+    /// Ответ «С чем помогать?» из регистрации — уходит в память после первого входа.
+    private var pendingFocus = ""
+    private var pendingPushToken = ""
 
     // MARK: Запуск
 
@@ -90,12 +266,23 @@ final class AppStore: ObservableObject {
         Task {
             do {
                 try connectTransport()
-                let payload = try await client.authenticate(token: token)
-                try await applyAuth(payload)
+                do {
+                    _ = try await client.authenticate(token: token)
+                } catch {
+                    // Access-токен истёк или отозван — пробуем ротацию refresh-токена.
+                    guard let refresh = keychain.load(.refreshToken), !refresh.isEmpty else { throw error }
+                    let rotated = try await client.refresh(refreshToken: refresh)
+                    saveTokens(rotated)
+                    _ = try await client.authenticate(token: rotated.string("token"))
+                }
+                // auth.me возвращает пользователя прямо в payload (без обёртки user).
+                let me = try await client.me()
+                try await signedIn(user: me["user"] ?? me)
             } catch {
                 keychain.delete(.accessToken)
+                keychain.delete(.refreshToken)
                 authState = .loggedOut
-                setStatus("Сессия истекла — войдите заново")
+                setStatus("Сессия истекла, войдите снова")
             }
         }
     }
@@ -103,69 +290,91 @@ final class AppStore: ObservableObject {
     private func connectTransport() throws {
         guard let url = URL(string: serverURLText),
               let scheme = url.scheme, scheme == "ws" || scheme == "wss" else {
-            throw AuraError(code: "bad_request", message: "адрес сервера: ws:// или wss://")
+            throw AuraError(code: "bad_request", message: "Адрес сервера начинается с ws:// или wss://")
         }
         keychain.save(serverURLText, for: .serverURL)
-        try client.connect(serverURL: url)
+        if !client.isConnected {
+            try client.connect(serverURL: url)
+        }
     }
 
-    // MARK: Auth
+    // MARK: Авторизация
 
     func login(email: String, password: String) {
-        Task {
+        run {
+            try self.connectTransport()
             do {
-                try connectTransport()
-                let payload = try await client.login(email: email, password: password,
-                                                     device: "ios",
-                                                     deviceId: deviceId())
-                try await applyAuth(payload)
+                let payload = try await self.client.login(email: email, password: password,
+                                                          device: "ios", deviceId: self.deviceId())
+                try await self.applyAuth(payload)
             } catch let error as AuraError where error.code == "requires_2fa" {
-                authState = .needs2fa(email, password)
-            } catch {
-                fail(error)
+                self.authState = .needs2fa(email, password)
+            } catch let error as AuraError where error.code == "email_not_verified" {
+                self.authState = .needsEmailCode(email)
             }
         }
     }
 
-    func register(displayName: String, email: String, password: String) {
-        Task {
-            do {
-                try connectTransport()
-                let payload = try await client.register(email: email, password: password,
-                                                        displayName: displayName)
-                devEmailCode = payload.string("email_code")
-                authState = .needsEmailCode(email)
-                setStatus("Код подтверждения отправлен на \(email)")
-            } catch {
-                fail(error)
-            }
+    func register(displayName: String, email: String, password: String, focus: String) {
+        pendingFocus = focus.trimmingCharacters(in: .whitespacesAndNewlines)
+        run {
+            try self.connectTransport()
+            _ = try await self.client.register(email: email, password: password, displayName: displayName)
+            self.authState = .needsEmailCode(email)
+            self.setStatus("Мы отправили код подтверждения на \(email)")
         }
     }
 
     func verifyEmail(email: String, code: String) {
-        Task {
-            do {
-                _ = try await client.verifyEmail(email: email, code: code)
-                setStatus("Email подтверждён — войдите")
-                authState = .loggedOut
-            } catch {
-                fail(error)
-            }
+        run {
+            _ = try await self.client.verifyEmail(email: email, code: code)
+            self.authState = .loggedOut
+            self.setStatus("Email подтверждён, теперь можно войти")
         }
     }
 
-    func login2fa(email: String, password: String, code: String, trustDevice: Bool) {
-        Task {
-            do {
-                let payload = try await client.login2fa(email: email, password: password,
-                                                        code: code,
-                                                        trustDevice: trustDevice,
-                                                        device: "ios",
-                                                        deviceId: deviceId())
-                try await applyAuth(payload)
-            } catch {
-                fail(error)
-            }
+    func resendCode(email: String) {
+        run {
+            _ = try await self.client.resendCode(email: email)
+            self.setStatus("Код отправлен ещё раз")
+        }
+    }
+
+    func forgotPassword(email: String) {
+        let address = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else {
+            errorMessage = "Введите email"
+            return
+        }
+        run {
+            try self.connectTransport()
+            _ = try await self.client.forgotPassword(email: address)
+            self.authState = .needsResetCode(address)
+            self.setStatus("Если такой аккаунт есть, код отправлен на \(address)")
+        }
+    }
+
+    func resetPassword(email: String, code: String, newPassword: String) {
+        run {
+            _ = try await self.client.resetPassword(email: email,
+                                                    code: code.trimmingCharacters(in: .whitespaces),
+                                                    newPassword: newPassword)
+            self.authState = .loggedOut
+            self.setStatus("Пароль изменён, войдите с новым паролем")
+        }
+    }
+
+    func cancelAuthFlow() {
+        authState = .loggedOut
+    }
+
+    func login2fa(code: String, trustDevice: Bool) {
+        guard case .needs2fa(let email, let password) = authState else { return }
+        run {
+            let payload = try await self.client.login2fa(email: email, password: password, code: code,
+                                                         trustDevice: trustDevice, device: "ios",
+                                                         deviceId: self.deviceId())
+            try await self.applyAuth(payload)
         }
     }
 
@@ -178,32 +387,56 @@ final class AppStore: ObservableObject {
             eventTask = nil
             client.disconnect()
             authState = .loggedOut
-            messages = []
-            chats = []
-            tasks = []
-            confirmations = []
+            resetData()
         }
     }
 
-    private func applyAuth(_ payload: JSONValue) async throws {
-        keychain.save(payload.string("access_token"), for: .accessToken)
+    func setServerURL(_ text: String) {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.hasPrefix("ws://") || value.hasPrefix("wss://") else {
+            errorMessage = "Адрес сервера начинается с ws:// или wss://"
+            return
+        }
+        serverURLText = value
+        keychain.save(value, for: .serverURL)
+        if authState == .loggedIn {
+            logout()
+        } else {
+            client.disconnect()
+        }
+        setStatus("Адрес сервера сохранён")
+    }
+
+    private func saveTokens(_ payload: JSONValue) {
+        // Сервер отдаёт access-токен в поле "token" (docs/PROTOCOL.md, auth.login).
+        keychain.save(payload.string("token"), for: .accessToken)
         keychain.save(payload.string("refresh_token"), for: .refreshToken)
-        let user = payload["user"] ?? payload
+    }
+
+    private func applyAuth(_ payload: JSONValue) async throws {
+        saveTokens(payload)
+        try await signedIn(user: payload["user"] ?? payload)
+    }
+
+    private func signedIn(user: JSONValue) async throws {
+        userId = user.int("id")
         userName = user.string("display_name", default: user.string("email"))
         userEmail = user.string("email")
         authState = .loggedIn
+        tab = .home
         startEventLoop()
-        await loadAll()
-        // Этап 13: «входящая» уведомлений + APNs-токен (если уже получен).
-        loadNotifications()
-        loadPushDevices()
+        loadAll()
         await checkOnboarding()
+        if !pendingFocus.isEmpty {
+            let focus = pendingFocus
+            pendingFocus = ""
+            _ = try? await client.memoryAdd(text: "Просит помогать с: \(focus)", kind: "preference")
+        }
         if !pendingPushToken.isEmpty {
             let token = pendingPushToken
             pendingPushToken = ""
             registerPushToken(token)
         }
-        setStatus("Добро пожаловать, \(userName)")
     }
 
     private func deviceId() -> String {
@@ -213,6 +446,17 @@ final class AppStore: ObservableObject {
         return fresh
     }
 
+    private func resetData() {
+        dialog = []; memory = []; prefs = .emptyObject
+        negotiation = nil; negotiationHistory = []
+        chats = []; contacts = []; foundUsers = []; openChatId = 0; messages = []
+        tasks = []; confirmations = []; permissions = []; connections = []; providers = []
+        notices = []; unreadNotifications = 0; pushDevices = []
+        twoFaEnabled = false; twoFaSecret = ""; recoveryCodes = []
+        userId = 0; userName = ""; userEmail = ""; tab = .home
+        updateBadge()
+    }
+
     // MARK: События сервера
 
     private func startEventLoop() {
@@ -220,7 +464,7 @@ final class AppStore: ObservableObject {
         eventTask = Task { [weak self] in
             guard let self else { return }
             for await event in self.client.events() {
-                await self.handleEvent(event.name, event.payload)
+                self.handleEvent(event.name, event.payload)
             }
         }
     }
@@ -228,13 +472,13 @@ final class AppStore: ObservableObject {
     private func handleEvent(_ name: String, _ payload: JSONValue) {
         switch name {
         case AuraEventName.chatMessage:
-            let chatId = payload.int("chat_id")
-            if chatId == currentChatId || currentChatId == 0 {
-                messages.append(payload)
-            }
             loadChats()
-            if ttsEnabled {
-                speech.speak(payload.string("text"))
+            let chatId = payload.int("chat_id")
+            if chatId != 0, chatId == openChatId {
+                Task { await loadHistory() }
+            }
+            if ttsEnabled, payload.int("sender_id") != userId {
+                speech.speak(payload.string("body"))
             }
         case AuraEventName.taskDue:
             loadTasks()
@@ -243,35 +487,49 @@ final class AppStore: ObservableObject {
                 speech.speak("Напоминание: \(payload.string("title"))")
             }
         case AuraEventName.notificationNew:
-            // In-app «входящая»: добавляем в список и обновляем счётчик.
-            notifications.insert(payload, at: 0)
-            unreadNotifications += 1
-            updateBadge()
+            loadNotifications()
         default:
             break
         }
     }
 
-    // MARK: Данные
-
-    func loadAll() async {
+    func loadAll() {
         loadChats()
         loadTasks()
         loadConfirmations()
+        loadNotifications()
         loadPermissions()
         loadIntegrations()
+        load2faStatus()
+        loadMemory()
+    }
+
+    func selectTab(_ value: AppTab) {
+        tab = value
+        if value != .contacts { openChatId = 0 }
+        switch value {
+        case .settings:
+            loadPermissions(); loadIntegrations(); load2faStatus()
+        case .confirmations:
+            loadConfirmations()
+        case .notifications:
+            loadNotifications()
+        case .tasks:
+            loadTasks()
+        case .contacts:
+            loadChats(); loadPermissions()
+        default:
+            break
+        }
     }
 
     // MARK: Онбординг-опрос
 
     func checkOnboarding() async {
         do {
-            let prefs = try await client.request("prefs.get")
-            let needs = !prefs.bool("onboarded")
-            await MainActor.run {
-                needOnboarding = needs
-                onboardingVisible = needs
-            }
+            let value = try await client.prefsGet()
+            prefs = value
+            needOnboarding = !value.bool("onboarded")
         } catch {
             fail(error)
         }
@@ -284,264 +542,440 @@ final class AppStore: ObservableObject {
         if !allergies.isEmpty { payload["allergies"] = .array(allergies.map { .string($0) }) }
         if !diet.isEmpty { payload["diet"] = .array(diet.map { .string($0) }) }
         if !city.isEmpty { payload["city"] = .string(city) }
-        if let value = Double(budget) { payload["budget_limit"] = .number(value) }
-        Task {
-            do {
-                _ = try await client.prefsSet(.object(payload))
-                await MainActor.run {
-                    needOnboarding = false
-                    onboardingVisible = false
-                    statusMessage = "Анкета сохранена"
-                }
-            } catch { fail(error) }
+        if let value = Double(budget.replacingOccurrences(of: ",", with: ".")) {
+            payload["budget_limit"] = .number(value)
+        }
+        run {
+            _ = try await self.client.prefsSet(.object(payload))
+            self.needOnboarding = false
+            self.setStatus("Анкета сохранена")
+            await self.checkOnboarding()
         }
     }
 
     /// «Пропустить»: пустую анкету не сохраняем, но больше не показываем.
     func skipOnboarding() {
-        onboardingVisible = false
+        needOnboarding = false
     }
 
-    func loadChats() {
-        Task {
-            do {
-                let payload = try await client.chatList()
-                chats = payload.array("chats")
-            } catch { fail(error) }
-        }
+    // MARK: Аура
+
+    /// Запрос к Ауре из «Моей Ауры», «Главной» и голоса. Реплика и ответ ложатся в
+    /// диалог; опасные действия из results[] — кнопками «Подтвердить / Отклонить».
+    func ask(_ text: String, chatId: Int64 = 0) {
+        Task { await askAura(text, chatId: chatId) }
     }
 
-    func selectChat(_ chat: JSONValue) {
-        currentChatId = chat.int("id")
-        currentChatTitle = chat.string("title", default: chat.string("peer_email"))
-        messages = []
-        Task {
-            do {
-                let payload = try await client.chatHistory(chatId: currentChatId)
-                messages = payload.array("messages")
-            } catch { fail(error) }
-        }
-    }
-
-    func openChat(contact: String) {
-        Task {
-            do {
-                let payload = try await client.chatOpen(contact: contact)
-                loadChats()
-                selectChat(payload["chat"] ?? payload)
-            } catch { fail(error) }
-        }
-    }
-
-    func sendMessage(_ text: String) {
-        guard !text.isEmpty, currentChatId > 0 else { return }
-        Task {
-            do {
-                _ = try await client.chatSend(chatId: currentChatId, text: text)
-            } catch { fail(error) }
-        }
-    }
-
-    /// Запрос к Ауре; ответ возвращается для Siri/Shortcuts и показывается в UI.
     @discardableResult
-    func askAura(_ message: String) async -> String {
+    func askAura(_ text: String, chatId: Int64 = 0) async -> String {
+        let message = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !message.isEmpty else { return "" }
+        if chatId == 0 { appendDialog(fromAura: false, text: message) }
+        busyCount += 1
+        defer { busyCount -= 1 }
         do {
-            let payload = try await client.agentAsk(chatId: currentChatId, message: message)
-            let reply = payload.string("reply")
-            setStatus(reply.isEmpty ? "Аура выполнила запрос" : reply)
-            if ttsEnabled { speech.speak(reply) }
-            if currentChatId > 0 {
-                // Сообщения придут событием chat.message — обновим историю.
-                let history = try await client.chatHistory(chatId: currentChatId)
-                messages = history.array("messages")
+            let result = try await client.agentAsk(chatId: chatId, message: message)
+            let reply = result.string("reply").isEmpty ? "Готово" : result.string("reply")
+            let actions: [DialogAction] = result.array("results").compactMap { item -> DialogAction? in
+                guard item.bool("requires_confirmation") else { return nil }
+                return DialogAction(confirmationId: item.int("confirmation_id"),
+                                    summary: item.string("summary"), tool: item.string("tool"))
             }
+            if chatId == 0 {
+                var hasA2a = false
+                if case .object = result["a2a"] { hasA2a = true }
+                appendDialog(fromAura: true, text: reply, actions: actions, hasA2a: hasA2a)
+            } else {
+                await loadHistory()
+            }
+            if ttsEnabled { speech.speak(reply) }
+            loadChats(); loadTasks(); loadConfirmations(); loadNotifications(); loadMemory()
             return reply
         } catch {
+            if chatId == 0 { appendDialog(fromAura: true, text: describe(error), error: true) }
             fail(error)
             return ""
         }
     }
 
+    private func appendDialog(fromAura: Bool, text: String, error: Bool = false,
+                              actions: [DialogAction] = [], hasA2a: Bool = false) {
+        dialogSeq += 1
+        dialog.append(DialogEntry(id: dialogSeq, fromAura: fromAura, text: text, error: error,
+                                  actions: actions, hasA2a: hasA2a))
+    }
+
+    func loadMemory() {
+        Task {
+            guard let payload = try? await client.memoryList() else { return }
+            memory = payload.array("entries").map {
+                MemoryEntry(kind: $0.string("kind"), text: $0.string("text"))
+            }
+        }
+    }
+
+    // MARK: Переговоры
+
+    /// Один раунд A2A (agent.negotiate). Раунды с тем же собеседником считаются подряд.
+    func negotiate(target: String, topic: String, durationMinutes: Int, windowHours: Int) {
+        let who = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !who.isEmpty else { return }
+        let subject = topic.trimmingCharacters(in: .whitespacesAndNewlines)
+        run {
+            let result = try await self.client.agentNegotiate(target: who, topic: subject,
+                                                              durationMinutes: durationMinutes,
+                                                              windowHours: windowHours)
+            let round = 1 + self.negotiationHistory.prefix(while: { $0.target == who }).count
+            let item = Negotiation(id: UUID(), target: who, topic: subject,
+                                   durationMinutes: durationMinutes, windowHours: windowHours,
+                                   round: round, accepted: result.bool("accepted"),
+                                   slot: Self.slot(result["slot"]), place: Self.place(result["place"]),
+                                   counterSlots: result.array("counter_slots").compactMap { Self.slot($0) },
+                                   message: result.string("message"))
+            self.negotiation = item
+            self.negotiationHistory.insert(item, at: 0)
+            self.tab = .negotiations
+            self.loadNotifications()
+        }
+    }
+
+    private static func slot(_ value: JSONValue?) -> Slot? {
+        guard let value, case .object = value else { return nil }
+        return Slot(start: value.string("start"), end: value.string("end"))
+    }
+
+    private static func place(_ value: JSONValue?) -> Place? {
+        guard let value, case .object = value else { return nil }
+        let rating = value["rating"]?.doubleValue.map { String(format: "%.1f", $0) } ?? ""
+        return Place(name: value.string("name"), city: value.string("city"),
+                     tags: value.array("tags").compactMap(\.stringValue), rating: rating)
+    }
+
+    func clearNegotiation() {
+        negotiation = nil
+    }
+
+    /// «Подтвердить и забронировать»: book_table по кнопке пользователя и встреча в задачи
+    /// с напоминанием за полчаса. Если бронирование запрещено в разрешениях — не обходим.
+    func bookNegotiation() {
+        guard let current = negotiation, let slot = current.slot, let place = current.place else { return }
+        if permissions.first(where: { $0.tool == "book_table" })?.mode == "deny" {
+            errorMessage = "Бронирование запрещено в разрешениях"
+            return
+        }
+        run {
+            let result = try await self.client.toolRun(tool: "book_table", args: [
+                "place": .string(place.name),
+                "at": .string(slot.start),
+                "people": .from(2)
+            ])
+            var booked = current
+            booked.booking = result.string("confirmation").isEmpty ? "ok" : result.string("confirmation")
+            self.negotiation = booked
+            self.negotiationHistory = self.negotiationHistory.map { $0.id == current.id ? booked : $0 }
+            let remind = Format.parseISO(slot.start).map { Format.isoString($0.addingTimeInterval(-30 * 60)) } ?? ""
+            let topic = current.topic.isEmpty ? "переговоры" : current.topic
+            _ = try await self.client.taskCreate(title: "Встреча: \(topic) — \(place.name)",
+                                                 remindAt: remind, dueAt: slot.start)
+            self.loadTasks()
+            self.setStatus("Столик забронирован: \(place.name)")
+        }
+    }
+
+    // MARK: Люди и чаты
+
+    func searchUsers(_ query: String) {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= 2 else {
+            foundUsers = []
+            return
+        }
+        Task {
+            guard let payload = try? await client.usersSearch(query: text) else { return }
+            foundUsers = payload.array("users").map {
+                FoundUser(id: $0.int("id"),
+                          name: $0.string("display_name", default: $0.string("email")),
+                          email: $0.string("email"))
+            }.filter { $0.id != userId }
+        }
+    }
+
+    func loadChats() {
+        run {
+            let payload = try await self.client.chatList()
+            let me = self.userId
+            self.chats = payload.array("chats").map { chat in
+                let members = chat.array("members").map {
+                    ChatMember(userId: $0.int("user_id"),
+                               name: $0.string("display_name", default: $0.string("email")),
+                               email: $0.string("email"))
+                }
+                let others = members.filter { $0.userId != me }.map(\.name).joined(separator: ", ")
+                let title = chat.string("title").isEmpty
+                    ? (others.isEmpty ? "Чат \(chat.int("id"))" : others) : chat.string("title")
+                return ChatSummary(id: chat.int("id"), title: title,
+                                   lastBody: chat.string("last_message_body"),
+                                   lastAt: chat.string("last_message_at"), members: members)
+            }
+            var seen = Set<Int64>()
+            self.contacts = self.chats.flatMap { chat in
+                chat.members.filter { $0.userId != me && seen.insert($0.userId).inserted }.map {
+                    Contact(userId: $0.userId, name: $0.name, email: $0.email, chatId: chat.id,
+                            lastBody: chat.lastBody, lastAt: chat.lastAt)
+                }
+            }
+        }
+    }
+
+    func openChat(id: Int64) {
+        openChatId = id
+        messages = []
+        tab = .contacts
+        run { await self.loadHistory() }
+    }
+
+    func openChat(contact: String) {
+        run {
+            let payload = try await self.client.chatOpen(contact: contact)
+            let chat = payload["chat"] ?? payload
+            self.openChatId = chat.int("id")
+            self.messages = []
+            self.tab = .contacts
+            self.loadChats()
+            await self.loadHistory()
+        }
+    }
+
+    func closeChat() {
+        openChatId = 0
+    }
+
+    private func loadHistory() async {
+        let chatId = openChatId
+        guard chatId > 0, let payload = try? await client.chatHistory(chatId: chatId) else { return }
+        guard chatId == openChatId else { return }
+        messages = payload.array("messages").map {
+            ChatMessage(id: $0.int("id"), senderId: $0.int("sender_id"), body: $0.string("body"),
+                        kind: $0.string("kind", default: "text"), createdAt: $0.string("created_at"),
+                        senderName: $0.string("sender_name"))
+        }
+        _ = try? await client.chatRead(chatId: chatId)
+    }
+
+    func sendMessage(_ text: String) {
+        let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty, openChatId > 0 else { return }
+        run {
+            _ = try await self.client.chatSend(chatId: self.openChatId, text: body)
+            await self.loadHistory()
+        }
+    }
+
+    // MARK: Задачи
+
     func loadTasks() {
-        Task {
-            do {
-                let payload = try await client.tasksList()
-                tasks = payload.array("tasks")
-            } catch { fail(error) }
+        run {
+            let payload = try await self.client.tasksList()
+            self.tasks = payload.array("tasks").map {
+                AuraTask(id: $0.int("id"), title: $0.string("title"), notes: $0.string("notes"),
+                         status: $0.string("status"), remindAt: $0.string("remind_at"),
+                         dueAt: $0.string("due_at"), completedAt: $0.string("completed_at"))
+            }
         }
     }
 
-    func createTask(title: String, notes: String, remindAt: String) {
-        Task {
-            do {
-                _ = try await client.taskCreate(title: title, notes: notes, remindAt: remindAt)
-                loadTasks()
-                setStatus("Задача создана")
-            } catch { fail(error) }
+    func createTask(title: String, notes: String = "", remindAt: String = "", dueAt: String = "") {
+        let text = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        run {
+            _ = try await self.client.taskCreate(title: text, notes: notes, remindAt: remindAt, dueAt: dueAt)
+            self.loadTasks()
+            self.setStatus("Задача создана")
         }
     }
 
+    /// status: complete | cancel | reopen.
     func setTaskStatus(id: Int64, status: String) {
-        Task {
-            do {
-                _ = try await client.taskSetStatus(id: id, status: status)
-                loadTasks()
-            } catch { fail(error) }
+        run {
+            _ = try await self.client.taskSetStatus(id: id, status: status)
+            self.loadTasks()
         }
     }
 
     func deleteTask(id: Int64) {
-        Task {
-            do {
-                _ = try await client.taskDelete(id: id)
-                loadTasks()
-            } catch { fail(error) }
+        run {
+            _ = try await self.client.taskDelete(id: id)
+            self.loadTasks()
         }
     }
 
+    // MARK: Подтверждения и разрешения
+
     func loadConfirmations() {
-        Task {
-            do {
-                let payload = try await client.confirmationsList()
-                confirmations = payload.array("actions")
-            } catch { fail(error) }
+        run {
+            let payload = try await self.client.confirmationsList()
+            self.confirmations = payload.array("actions").map {
+                PendingAction(id: $0.int("id"), tool: $0.string("tool"), summary: $0.string("summary"))
+            }
         }
     }
 
     func decideConfirmation(id: Int64, approve: Bool) {
-        Task {
-            do {
-                _ = try await client.confirmationDecide(id: id, approve: approve)
-                loadConfirmations()
-            } catch { fail(error) }
+        run {
+            _ = try await self.client.confirmationDecide(id: id, approve: approve)
+            self.setStatus(approve ? "Подтверждено" : "Отклонено")
+            self.loadConfirmations(); self.loadChats(); self.loadNotifications()
         }
     }
 
     func loadPermissions() {
-        Task {
-            do {
-                let payload = try await client.permissionsList()
-                permissions = payload.array("tools")
-            } catch { fail(error) }
+        run {
+            let payload = try await self.client.permissionsList()
+            self.permissions = payload.array("tools").map {
+                PermissionRow(tool: $0.string("tool"), description: $0.string("description"),
+                              dangerous: $0.bool("dangerous"), mode: $0.string("mode"))
+            }
         }
     }
 
     func setPermission(tool: String, mode: String) {
-        Task {
-            do {
-                _ = try await client.permissionSet(tool: tool, mode: mode)
-                loadPermissions()
-            } catch { fail(error) }
+        run {
+            _ = try await self.client.permissionSet(tool: tool, mode: mode)
+            self.loadPermissions()
         }
     }
 
-    // MARK: Интеграции (этап 9)
+    // MARK: 2FA
+
+    func load2faStatus() {
+        Task {
+            guard let payload = try? await client.status2fa() else { return }
+            twoFaEnabled = payload.bool("enabled")
+        }
+    }
+
+    func setup2fa() {
+        run {
+            let payload = try await self.client.setup2fa()
+            let uri = payload.string("otpauth_uri")
+            self.twoFaSecret = uri.isEmpty ? payload.string("secret") : uri
+        }
+    }
+
+    func confirm2fa(code: String) {
+        run {
+            let payload = try await self.client.confirm2fa(code: code)
+            self.recoveryCodes = payload.array("recovery_codes").compactMap(\.stringValue)
+            self.twoFaSecret = ""
+            self.twoFaEnabled = true
+        }
+    }
+
+    func disable2fa(password: String) {
+        run {
+            _ = try await self.client.disable2fa(password: password)
+            self.twoFaEnabled = false
+            self.recoveryCodes = []
+        }
+    }
+
+    // MARK: Интеграции
 
     func loadIntegrations() {
-        Task {
-            do {
-                let payload = try await client.integrationsList()
-                integrationProviders = payload.array("providers")
-                integrations = payload.array("connections")
-            } catch { fail(error) }
+        run {
+            let payload = try await self.client.integrationsList()
+            self.providers = payload.array("providers").map {
+                IntegrationProvider(provider: $0.string("provider"),
+                                    name: $0.string("name", default: $0.string("provider")),
+                                    description: $0.string("description"))
+            }
+            self.connections = payload.array("connections").map {
+                ConnectionRow(id: $0.int("id"), provider: $0.string("provider"),
+                              account: $0.string("account"), status: $0.string("status"))
+            }
         }
     }
 
     func beginIntegration(provider: String) {
-        Task {
-            do {
-                let payload = try await client.integrationBegin(provider: provider,
-                                                                redirectUri: "aura://oauth")
-                guard let url = URL(string: payload.string("authorize_url")) else {
-                    throw AuraError(code: "internal", message: "сервер вернул некорректную ссылку")
-                }
-                UIApplication.shared.open(url)
-                setStatus("Разрешите Ауре доступ в открывшемся окне")
-            } catch { fail(error) }
+        run {
+            let payload = try await self.client.integrationBegin(provider: provider, redirectUri: "aura://oauth")
+            guard let url = URL(string: payload.string("authorize_url")) else {
+                throw AuraError(code: "internal", message: "сервер вернул некорректную ссылку")
+            }
+            _ = await UIApplication.shared.open(url)
+            self.setStatus("Разрешите Ауре доступ в открывшемся окне")
         }
     }
 
     func integrationCallback(provider: String, code: String, state: String) {
-        Task {
-            do {
-                _ = try await client.integrationCallback(provider: provider, code: code, state: state)
-                setStatus("Подключено: \(provider)")
-                loadIntegrations()
-            } catch { fail(error) }
+        run {
+            _ = try await self.client.integrationCallback(provider: provider, code: code, state: state)
+            self.setStatus("Подключено: \(provider)")
+            self.loadIntegrations()
         }
     }
 
     func revokeIntegration(id: Int64) {
-        Task {
-            do {
-                _ = try await client.integrationRevoke(id: id)
-                setStatus("Доступ отозван")
-                loadIntegrations()
-            } catch { fail(error) }
+        run {
+            _ = try await self.client.integrationRevoke(id: id)
+            self.setStatus("Доступ отозван")
+            self.loadIntegrations()
         }
     }
 
     func syncIntegration(id: Int64) {
-        Task {
-            do {
-                let payload = try await client.integrationSync(id: id)
-                if payload.string("provider") == "google_calendar" {
-                    setStatus("Календарь синхронизирован: \(payload.int("events")) событий")
-                } else {
-                    setStatus("Синхронизировано: \(payload.string("profile_email"))")
-                }
-            } catch { fail(error) }
+        run {
+            let payload = try await self.client.integrationSync(id: id)
+            if payload.string("provider") == "google_calendar" {
+                self.setStatus("Календарь синхронизирован: \(payload.int("events")) событий")
+            } else {
+                self.setStatus("Синхронизировано: \(payload.string("profile_email"))")
+            }
         }
     }
 
-    // MARK: Уведомления и push (этап 13)
+    // MARK: Уведомления и push
 
     func loadNotifications() {
-        Task {
-            do {
-                let payload = try await client.notificationsList()
-                notifications = payload.array("notifications")
-                unreadNotifications = payload.int("unread")
-                updateBadge()
-            } catch { fail(error) }
+        run {
+            let payload = try await self.client.notificationsList()
+            self.notices = payload.array("notifications").map {
+                Notice(id: $0.int("id"), kind: $0.string("kind"), title: $0.string("title"),
+                       body: $0.string("body"), read: $0.bool("read"), createdAt: $0.string("created_at"))
+            }
+            self.unreadNotifications = payload.int("unread")
+            self.updateBadge()
         }
     }
 
+    /// id = 0 — отметить прочитанными все.
     func markNotificationsRead(id: Int64 = 0) {
-        Task {
-            do {
-                let payload = try await client.notificationsRead(id: id)
-                if id == 0 {
-                    notifications = notifications.map { item in
-                        var copy = item
-                        copy["read"] = .bool(true)
-                        return copy
-                    }
-                } else if let index = notifications.firstIndex(where: { $0.int("id") == id }) {
-                    notifications[index]["read"] = .bool(true)
-                }
-                unreadNotifications = payload.int("unread")
-                updateBadge()
-            } catch { fail(error) }
+        run {
+            let payload = try await self.client.notificationsRead(id: id)
+            self.notices = self.notices.map { notice in
+                var copy = notice
+                if id == 0 || notice.id == id { copy.read = true }
+                return copy
+            }
+            self.unreadNotifications = payload.int("unread")
+            self.updateBadge()
         }
     }
 
     func loadPushDevices() {
-        Task {
-            do {
-                let payload = try await client.devicesPushList()
-                pushDevices = payload.array("devices")
-            } catch { fail(error) }
+        run {
+            let payload = try await self.client.devicesPushList()
+            self.pushDevices = payload.array("devices").map {
+                PushDevice(id: $0.int("id"), platform: $0.string("platform"), enabled: $0.bool("enabled"))
+            }
         }
     }
 
     func revokePushDevice(id: Int64) {
-        Task {
-            do {
-                _ = try await client.devicesPushRevoke(id: id)
-                setStatus("Устройство отозвано")
-                loadPushDevices()
-            } catch { fail(error) }
+        run {
+            _ = try await self.client.devicesPushRevoke(id: id)
+            self.setStatus("Устройство отозвано")
+            self.loadPushDevices()
         }
     }
 
@@ -551,20 +985,14 @@ final class AppStore: ObservableObject {
             pendingPushToken = tokenHex   // зарегистрируем после входа
             return
         }
-        Task {
-            do {
-                _ = try await client.devicesPushRegister(platform: "apns", token: tokenHex)
-                loadPushDevices()
-            } catch { fail(error) }
+        run {
+            _ = try await self.client.devicesPushRegister(platform: "apns", token: tokenHex)
+            self.loadPushDevices()
         }
     }
 
-    private var pendingPushToken = ""
-
     private func updateBadge() {
-        Task { @MainActor in
-            UIApplication.shared.applicationIconBadgeNumber = Int(unreadNotifications)
-        }
+        UNUserNotificationCenter.current().setBadgeCount(Int(unreadNotifications)) { _ in }
     }
 
     // MARK: Deep links
@@ -573,25 +1001,40 @@ final class AppStore: ObservableObject {
         guard let link = DeepLink(url: url) else { return }
         switch link {
         case .chats(let id):
-            tab = .chats
-            if let id, let chat = chats.first(where: { $0.int("id") == id }) {
-                selectChat(chat)
+            if let id {
+                openChat(id: id)
+            } else {
+                selectTab(.contacts)
             }
         case .voice:
             voiceOverlayVisible = true
         case .ask(let text):
             voiceOverlayVisible = false
-            Task { await askAura(text) }
+            tab = .aura
+            ask(text)
         case .tasks:
-            tab = .tasks
+            selectTab(.tasks)
         case .settings:
-            tab = .settings
+            selectTab(.settings)
         case .oauth(let provider, let code, let state):
             integrationCallback(provider: provider, code: code, state: state)
         }
     }
 
-    // MARK: Прочее
+    // MARK: Служебное
+
+    /// Сетевой вызов с индикатором занятости; ошибка — в errorMessage (тост).
+    private func run(_ work: @escaping @MainActor () async throws -> Void) {
+        Task {
+            busyCount += 1
+            defer { busyCount -= 1 }
+            do {
+                try await work()
+            } catch {
+                fail(error)
+            }
+        }
+    }
 
     func setStatus(_ message: String) {
         statusMessage = message
@@ -599,10 +1042,20 @@ final class AppStore: ObservableObject {
     }
 
     func fail(_ error: Error) {
-        if let error = error as? AuraError {
-            errorMessage = error.message
-        } else {
-            errorMessage = error.localizedDescription
+        errorMessage = describe(error)
+    }
+
+    private func describe(_ error: Error) -> String {
+        guard let error = error as? AuraError else { return error.localizedDescription }
+        switch error.code {
+        case "unauthorized": return "Неверный email или пароль"
+        case "requires_2fa": return "Нужен код двухфакторной аутентификации"
+        case "email_not_verified": return "Email не подтверждён"
+        case "conflict": return "Такой email уже зарегистрирован"
+        case "not_found": return "Не найдено"
+        case "disconnected": return "Нет соединения с сервером"
+        case "upstream_error": return "AI-сервис недоступен, попробуйте позже"
+        default: return error.message.isEmpty ? "Ошибка (\(error.code))" : error.message
         }
     }
 }

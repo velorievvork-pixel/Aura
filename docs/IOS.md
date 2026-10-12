@@ -20,12 +20,18 @@ ios/
     Tests/AuraKitTests/       # JSON, кадры, deep links (swift test без симулятора)
   Aura/
     AuraApp.swift             # @main: bootstrap, onOpenURL, STT-fallback
-    Support/AppStore.swift    # состояние UI, события chat.message/task.due
+    Support/AppStore.swift    # состояние UI: диалог с Аурой, переговоры, контакты,
+                              # задачи, события chat.message/task.due/notification.new
+    Support/Theme.swift       # токены v3 (цвета, радиусы, Manrope) — как у Qt/Android
+    Support/Format.swift      # даты и подписи по-русски (сегодня/завтра, склонения)
+    Resources/Fonts/          # Manrope (SIL OFL 1.1), подключён через UIAppFonts
     Support/SpeechService.swift   # гибрид: SFSpeechRecognizer + серверный STT; AVSpeechSynthesizer
     Support/EventKitService.swift # экспорт задач в напоминания iOS (по кнопке)
     Intents/                  # App Intents: «Спросить Ауру», «Создать задачу», фразы Siri
-    Views/                    # вход/2FA, чаты, задачи, подтверждения, настройки,
-                              # разрешения, интеграции, Quick Actions, голос
+    Views/                    # v3 по макетам: Root (вкладки), Home, MyAura,
+                              # Negotiations, Tasks, Contacts (+чат), Settings,
+                              # Confirmations, Notifications, Login, Onboarding,
+                              # VoiceOverlay, Quick Actions; Components — общие элементы
   AuraTests/                  # смоук-тесты UI-слоя
 ```
 
@@ -34,19 +40,25 @@ ios/
 | фича | UI | эндпоинты |
 | --- | --- | --- |
 | Вход/регистрация, email-код, 2FA (TOTP + доверенное устройство) | LoginView | `auth.register/verifyEmail/login/login2fa/token/refresh/logout` |
-| Чаты и сообщения | ChatsView/ChatView | `chat.list/open/history/send`, событие `chat.message` |
-| «Спросить Ауру» | переключатель в чате, голос, Siri | `agent.ask` (в чате — с контекстом, Siri — `chat_id=0`) |
-| Задачи и напоминания | TasksView | `tasks.list/create/complete/cancel/delete`, событие `task.due` (озвучивается) |
-| Экспорт задач в напоминания iOS | кнопка в задаче | EventKit (`requestFullAccessToReminders` — только по нажатию) |
+| Сброс пароля | LoginView | `auth.forgotPassword/resetPassword` |
+| Главная | HomeView | сводка задач, подтверждений, переговоров и уведомлений |
+| «Моя Аура» | MyAuraView, голос, Siri | `agent.ask` (`chat_id=0`); действия с `requires_confirmation` — кнопки «Подтвердить / Отклонить» под ответом; `memory.list` |
+| Переговоры Аур | NegotiationsView | `agent.negotiate` (один раунд, до 5 подряд); бронь по кнопке — `tool.run` `book_table` + задача с напоминанием за 30 минут |
+| Контакты и чаты | ContactsView/ChatView | `chat.list/open/history/send/read`, `users.search`, событие `chat.message`; в чате режим «Спросить Ауру» — `agent.ask` с `chat_id` |
+| Задачи и напоминания | TasksView | `tasks.list/create(due_at)/complete/reopen/delete`, событие `task.due` (озвучивается) |
+| Экспорт задач в напоминания iOS | долгое нажатие на задачу | EventKit (`requestFullAccessToReminders` — только по нажатию) |
 | Барьер подтверждения | ConfirmationsView (badge) | `confirmation.list/approve/deny` |
-| Разрешения инструментов | PermissionsView | `permissions.list/set` |
-| Интеграции Google | IntegrationsView | `integrations.list/begin/callback/revoke/sync`; consent в Safari → возврат `aura://oauth?provider&code&state` |
-| Уведомления (этап 13) | NotificationsView (вкладка, badge) | `notifications.list/read`, `devices.push.register/list/revoke`, событие `notification.new`; APNs-токен из AppDelegate |
+| Разрешения инструментов | SettingsView | `permissions.list/set` |
+| 2FA | SettingsView | `auth.status2fa/setup2fa/confirm2fa/disable2fa` |
+| Интеграции Google | SettingsView | `integrations.list/begin/callback/revoke/sync`; consent в Safari → возврат `aura://oauth?provider&code&state` |
+| Уведомления (этап 13) | NotificationsView (из шапки «Главной», счётчик) | `notifications.list/read`, `devices.push.register/list/revoke`, событие `notification.new`; APNs-токен из AppDelegate |
 | Голос | VoiceOverlay, Siri | on-device SFSpeechRecognizer; fallback `speech.transcribe` (WAV 16k mono, base64); озвучка AVSpeechSynthesizer |
 
-Ошибки сервера (`code`/`message`) показываются алертом; транспортные ошибки —
-в статусной строке. Состояния: `disconnected/connecting/connected`,
-`loggedOut/needsEmailCode/needs2fa/loggedIn`, голос `idle/listening/processing`.
+Ошибки сервера (`code`/`message`) и статусы показываются плашкой сверху.
+Состояния: `disconnected/connecting/connected`,
+`loggedOut/needsEmailCode/needs2fa/needsResetCode/loggedIn`, голос
+`idle/listening/processing`. Сессия восстанавливается при запуске по
+access-токену (поле `token` ответа входа), при истёкшем — через `auth.refresh`.
 
 ## Siri, Команды, Back Tap
 
@@ -89,18 +101,24 @@ brew install xcodegen && cd ios && xcodegen generate && open Aura.xcodeproj
 cd ios/AuraKit && swift test        # тесты общего слоя без симулятора
 ```
 
+CI: `.github/workflows/build-ios.yml` (macOS, Xcode 15.4) генерирует проект,
+гоняет `swift test` пакета AuraKit, собирает приложение под симулятор и
+запускает AuraTests; Aura.app для симулятора — в артефактах запуска.
+
 Автосверка протокола без macOS (ловит опечатки в именах хендлеров):
 
 ```bash
 python3 tools/check_ios_protocol.py
-# хендлеров сервера: 64; типов в iOS-клиенте: 44 — все известны серверу
+# хендлеров сервера: 64; типов в iOS-клиенте: 48 — все известны серверу
 ```
 
 ## Ограничения этапа
 
-- Компиляция Swift и симулятор недоступны в песочнице разработки: код
-  проверен сверкой протокола, валидацией project.yml (YAML), балансом
-  синтаксиса и ревью; `swift test`/Xcode-сборку нужно прогнать на Mac.
+- Xcode и симулятор недоступны в песочнице разработки. Редизайн v3
+  проверен компилятором Swift 5.10 под Linux: синтаксис всех файлов, типы
+  AuraKit, AppStore и Format, а экраны — против заглушки SwiftUI (строже
+  настоящей: не больше 10 элементов в блоке); логика дат и склонений
+  прогнана на значениях. Окончательная сборка — в CI «Build iOS» или в Xcode.
 - Push-доставка требует внешнего шлюза APNs (сервер отдаёт готовый конверт
   на `AURA_PUSH_WEBHOOK_URL`; подписывает JWT и форвардит в Apple шлюз) —
   в песочнице проверен путь до шлюза (webhook-драйвер, e2e), реальная

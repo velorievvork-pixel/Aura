@@ -10,7 +10,7 @@ final class JSONValueTests: XCTestCase {
         let json = """
         {"id": 12, "ok": true, "text": "привет", "tags": ["a", "b"], "meta": null}
         """
-        let value = try JSONDecoder().decode(JSONValue.self, from Data(json.utf8))
+        let value = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
         XCTAssertEqual(value.int("id"), 12)
         XCTAssertEqual(value.bool("ok"), true)
         XCTAssertEqual(value.string("text"), "привет")

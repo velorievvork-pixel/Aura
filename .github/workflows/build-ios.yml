@@ -1,0 +1,63 @@
+# Сборка iOS-клиента Aura на macOS: проект из ios/project.yml (XcodeGen),
+# сборка под симулятор без подписи и смоук-тесты (AuraTests + AuraKit).
+#
+# Результат: вкладка Actions → «Build iOS» → Artifacts → aura-ios-simulator
+# (Aura.app для симулятора). Для TestFlight нужен Apple Developer Program,
+# сертификат и provisioning profile (см. docs/IOS.md).
+name: Build iOS
+
+on:
+  push:
+    branches: ["**"]
+    paths: ["ios/**", ".github/workflows/build-ios.yml"]
+  pull_request:
+    paths: ["ios/**", ".github/workflows/build-ios.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Xcode — симулятор и тесты
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode 15.4
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: XcodeGen
+        run: brew install xcodegen
+
+      - name: Проект Aura.xcodeproj
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Тесты AuraKit (Swift Package)
+        working-directory: ios/AuraKit
+        run: swift test
+
+      - name: Сборка и смоук-тесты приложения
+        working-directory: ios
+        run: |
+          set -o pipefail
+          DEST=$(xcrun simctl list devices available -j \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
+          xcodebuild test \
+            -project Aura.xcodeproj -scheme Aura \
+            -destination "id=$DEST" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee ../xcodebuild.log
+
+      - name: Артефакт — Aura.app (симулятор)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-ios-simulator
+          path: ios/build/Build/Products/Debug-iphonesimulator/Aura.app
+
+      - name: Лог сборки
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-ios-build-log
+          path: xcodebuild.log

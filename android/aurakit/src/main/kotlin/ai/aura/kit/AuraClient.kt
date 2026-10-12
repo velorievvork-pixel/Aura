@@ -77,6 +77,17 @@ class AuraClient(private val transport: WebSocketTransport = WebSocketTransport(
 
     suspend fun me(): JsonObject? = request("auth.me")
 
+    /** Код сброса пароля на email; ответ всегда «ок» (не раскрывает, есть ли аккаунт). */
+    suspend fun forgotPassword(email: String): JsonObject? =
+        request("auth.forgotPassword", buildJsonObject { put("email", email) })
+
+    suspend fun resetPassword(email: String, code: String, newPassword: String): JsonObject? =
+        request("auth.resetPassword", buildJsonObject {
+            put("email", email)
+            put("code", code)
+            put("new_password", newPassword)
+        })
+
     suspend fun logout(): JsonObject? = request("auth.logout")
 
     suspend fun setup2fa(): JsonObject? = request("auth.setup2fa")
@@ -119,6 +130,32 @@ class AuraClient(private val transport: WebSocketTransport = WebSocketTransport(
             put("chat_id", chatId)
         })
 
+    /**
+     * A2A-переговоры (один раунд): target — email или имя собеседника, окно в часах.
+     * Ответ: accepted, slot{start,end}, place{name,city,tags,rating}, counter_slots[], message.
+     */
+    suspend fun agentNegotiate(target: String, topic: String = "", durationMinutes: Int = 60, windowHours: Int = 96): JsonObject? =
+        request("agent.negotiate", buildJsonObject {
+            put("target", target)
+            if (topic.isNotEmpty()) put("topic", topic)
+            put("duration_minutes", durationMinutes)
+            put("window_hours", windowHours)
+        })
+
+    /** Прямой запуск инструмента (например, book_table по кнопке пользователя). */
+    suspend fun toolRun(tool: String, args: JsonObject): JsonObject? =
+        request("tool.run", buildJsonObject {
+            put("tool", tool)
+            put("args", args)
+        })
+
+    /** Поиск людей по имени/email — для добавления в контакты (chat.open). */
+    suspend fun usersSearch(query: String, limit: Int = 10): JsonObject? =
+        request("users.search", buildJsonObject {
+            put("query", query)
+            put("limit", limit)
+        })
+
     /** Серверный STT: аудио в base64 (16 кГц моно WAV), fallback для on-device. */
     suspend fun speechTranscribe(audioBase64: String, language: String = "auto", format: String = "wav"): JsonObject? =
         request("speech.transcribe", buildJsonObject {
@@ -132,6 +169,13 @@ class AuraClient(private val transport: WebSocketTransport = WebSocketTransport(
     suspend fun memoryList(query: String = ""): JsonObject? =
         request("memory.list", buildJsonObject {
             if (query.isNotEmpty()) put("query", query)
+        })
+
+    /** Запись в долговременную память (kind: fact | preference | schedule | contact). */
+    suspend fun memoryAdd(text: String, kind: String = "fact"): JsonObject? =
+        request("memory.add", buildJsonObject {
+            put("text", text)
+            put("kind", kind)
         })
 
     suspend fun prefsGet(): JsonObject? = request("prefs.get")
@@ -149,11 +193,12 @@ class AuraClient(private val transport: WebSocketTransport = WebSocketTransport(
             if (status.isNotEmpty()) put("status", status)
         })
 
-    suspend fun taskCreate(title: String, notes: String = "", remindAt: String = "", chatId: Long = 0): JsonObject? =
+    suspend fun taskCreate(title: String, notes: String = "", remindAt: String = "", chatId: Long = 0, dueAt: String = ""): JsonObject? =
         request("tasks.create", buildJsonObject {
             put("title", title)
             if (notes.isNotEmpty()) put("notes", notes)
             if (remindAt.isNotEmpty()) put("remind_at", remindAt)
+            if (dueAt.isNotEmpty()) put("due_at", dueAt)
             if (chatId > 0) put("chat_id", chatId)
         })
 

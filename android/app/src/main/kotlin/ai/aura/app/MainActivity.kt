@@ -11,9 +11,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -24,13 +24,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import ai.aura.app.ui.LoginScreen
 import ai.aura.app.ui.MainScaffold
 import ai.aura.app.ui.OnboardingScreen
 import ai.aura.app.ui.VoiceSheet
 import ai.aura.app.ui.theme.AuraTheme
+import ai.aura.app.ui.theme.BgDeep
 
 /**
  * Единственная activity приложения (singleTask — deep links и OAuth-редирект
@@ -55,7 +55,6 @@ class MainActivity : ComponentActivity() {
                 val context = LocalContext.current
                 val snackbar = remember { SnackbarHostState() }
                 val errorText by AppStore.errorText.collectAsState()
-                val busy by AppStore.busy.collectAsState()
 
                 // Android 13+: системные уведомления (и push) требуют явного
                 // разрешения — спрашиваем один раз при первом входе.
@@ -75,14 +74,19 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                Scaffold(snackbarHost = { SnackbarHost(snackbar) }) { padding ->
+                // Фон и отступы под системные панели рисуют сами экраны (AuraBackground);
+                // состояние «занято» показывают кнопки, а не общий спиннер.
+                Scaffold(
+                    snackbarHost = { SnackbarHost(snackbar) },
+                    containerColor = BgDeep,
+                    contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                ) { padding ->
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(padding),
                         verticalArrangement = Arrangement.Top,
                     ) {
-                        if (busy) CircularProgressIndicator(modifier = Modifier.padding(8.dp))
                         val auth by AppStore.auth.collectAsState()
                         val needOnboarding by AppStore.needOnboarding.collectAsState()
                         when {

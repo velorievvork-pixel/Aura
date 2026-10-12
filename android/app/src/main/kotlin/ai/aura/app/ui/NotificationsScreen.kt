@@ -3,92 +3,78 @@ package ai.aura.app.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import ai.aura.app.AppStore
-import ai.aura.app.ui.theme.GlassPanel
-import ai.aura.app.ui.theme.TextMuted
+import ai.aura.app.ui.theme.Dot
+import ai.aura.app.ui.theme.GlassButton
+import ai.aura.app.ui.theme.GlassCard
+import ai.aura.app.ui.theme.Muted
+import ai.aura.app.ui.theme.RoundIconButton
+import ai.aura.app.ui.theme.ScreenHeader
+import ai.aura.app.ui.theme.SectionTitle
+import ai.aura.app.ui.theme.TextPrimary
+import ai.aura.app.ui.theme.TextSecondary
 import ai.aura.app.ui.theme.statusColor
 
-/** «Входящая» уведомлений (этап 13) + push-устройства с отзывом. */
+/** Входящая: напоминания, переговоры, подтверждения, новые входы; push-устройства. */
 @Composable
 fun NotificationsScreen() {
     val notices by AppStore.notices.collectAsState()
     val devices by AppStore.pushDevices.collectAsState()
     val pushStatus by AppStore.pushStatus.collectAsState()
-
     LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        // «Прочитать все» — в строке «назад»: рядом с заголовком 38 sp ему не хватает места.
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-            ) {
-                Text("Входящая", style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 8.dp))
-                TextButton(onClick = { AppStore.markAllRead() }) { Text("Прочитать все") }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RoundIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "Назад", { AppStore.selectTab(AppStore.Tab.HOME) }, size = 40.dp)
+                Spacer(Modifier.weight(1f))
+                if (notices.any { !it.read }) GlassButton("Прочитать все", { AppStore.markAllRead() }, height = 38.dp)
             }
         }
+        item { ScreenHeader("Уведомления") }
+        if (notices.isEmpty()) item { Muted("Пока пусто.") }
         items(notices, key = { it.id }) { notice ->
-            GlassPanel(modifier = Modifier.fillMaxWidth()) {
-                Column {
-                    Text(notice.title, style = MaterialTheme.typography.titleSmall,
-                        color = statusColor(notice.kind))
-                    Text(notice.body, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Row(horizontalArrangement = Arrangement.SpaceBetween,
-                        modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            buildString {
-                                append(notice.kind)
-                                if (!notice.read) append(" · не прочитано")
-                                append(" · ${notice.createdAt}")
-                            },
-                            color = TextMuted,
-                            style = MaterialTheme.typography.labelSmall,
-                        )
-                        if (!notice.read) {
-                            TextButton(onClick = { AppStore.markRead(notice.id) }) {
-                                Text("Прочитано")
-                            }
-                        }
+            GlassCard(Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                onClick = if (!notice.read) ({ AppStore.markRead(notice.id) }) else null) {
+                Row(verticalAlignment = Alignment.Top) {
+                    Dot(if (notice.read) TextSecondary.copy(alpha = 0.3f) else statusColor(notice.kind), 9.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(notice.title, style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+                        val detail = if (notice.kind == "login.new") "" else notice.body
+                        if (detail.isNotEmpty()) Text(detail, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                        Muted("${dayPhrase(notice.createdAt)}, ${timeOf(notice.createdAt)}")
                     }
                 }
             }
         }
-        item {
-            Text("Push-устройства", style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(top = 16.dp))
-            Text(pushStatus.ifEmpty { "Push ещё не регистрировался" },
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        item { SectionTitle("Push-устройства", Modifier.fillMaxWidth()) }
+        item { Muted(pushStatus.ifEmpty { "Push ещё не регистрировался" }) }
         items(devices, key = { it.id }) { device ->
-            GlassPanel(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        "${device.platform} · ${if (device.enabled) "включено" else "выключено"}",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    TextButton(onClick = { AppStore.revokePushDevice(device.id) }) {
-                        Text("Отозвать")
-                    }
+            GlassCard(Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("${device.platform} · ${if (device.enabled) "включено" else "выключено"}",
+                        style = MaterialTheme.typography.bodyMedium, color = TextPrimary, modifier = Modifier.weight(1f))
+                    GlassButton("Отозвать", { AppStore.revokePushDevice(device.id) }, height = 36.dp, quiet = true)
                 }
             }
         }

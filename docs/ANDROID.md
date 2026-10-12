@@ -21,7 +21,12 @@ android/
         ├── kotlin/ai/aura/app/       # MainActivity, AppStore, SecureStore,
         │                             # Notifications, push/FcmService,
         │                             # voice/VoiceService, ui/*
-        └── res/                      # тема, иконки, шорткаты лаунчера
+        │   └── ui/                   # экраны v3: Home, MyAura, Negotiations,
+        │                             # Tasks, Contacts, Settings, Confirmations,
+        │                             # Notifications, Login, Onboarding;
+        │                             # theme/ — токены, Manrope, компоненты
+        └── res/                      # тема, шрифт Manrope (font/), иконки,
+                                      # шорткаты лаунчера
 ```
 
 Принцип v3 сохранён: клиенты раздельные, общие — только протокол и сервер.
@@ -115,7 +120,11 @@ Accessibility API не используется; фоновых процессо
 - серверная часть FCM покрыта C++ unit-тестом `server_push_devices_fcm`
   и e2e-секцией 3e (конверт `{platform:"fcm", fcm.message…}` ловится
   push-моком);
-- **сборка APK в песочнице разработки не выполнялась** (нет Android SDK):
-  код написан под compileSdk 34 / AGP 8.5 / Kotlin 2.0 и проверялся
-  статически; перед релизом соберите `:app:assembleDebug` в Android Studio
-  и прогоните ручные чек-листы (docs/TESTING.md, «Android: шорткаты и FCM»).
+- редизайн v3 (макеты 30.09.2026): код `AppStore` и всех экранов `ui/`
+  скомпилирован против Compose Multiplatform 1.7 (desktop) с заглушками
+  для `android.*`, Firebase и activity, а экраны отрендерены в PNG на живых
+  данных локального сервера и сверены с макетами; Android SDK для этого не нужен;
+- **сборка APK в песочнице разработки не выполнялась** (нет Android SDK и
+  Google Maven): перед релизом соберите `:app:assembleDebug` (CI «Build
+  Android APK» или Android Studio) и прогоните ручные чек-листы
+  (docs/TESTING.md, «Android: шорткаты и FCM»).

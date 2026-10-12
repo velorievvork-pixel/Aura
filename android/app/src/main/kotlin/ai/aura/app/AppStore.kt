@@ -21,7 +21,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
@@ -36,9 +38,33 @@ object AppStore {
 
     // ------------------------------------------------------------- модели UI
 
-    data class Chat(val id: Long, val title: String, val lastBody: String, val lastAt: String)
-    data class Message(val id: Long, val senderId: Long, val body: String, val kind: String, val createdAt: String)
-    data class Task(val id: Long, val title: String, val notes: String, val status: String, val remindAt: String)
+    data class Member(val userId: Long, val name: String, val email: String)
+    data class Chat(val id: Long, val title: String, val lastBody: String, val lastAt: String, val members: List<Member>)
+    data class Message(val id: Long, val senderId: Long, val body: String, val kind: String, val createdAt: String,
+                       val senderName: String = "")
+    data class Task(val id: Long, val title: String, val notes: String, val status: String, val remindAt: String,
+                    val dueAt: String = "", val completedAt: String = "") {
+        /** Когда задача: срок, иначе время напоминания. */
+        val whenAt: String get() = dueAt.ifEmpty { remindAt }
+    }
+    /** Собеседник: человек из чатов (кроме меня). */
+    data class Contact(val userId: Long, val name: String, val email: String, val chatId: Long,
+                       val lastBody: String, val lastAt: String)
+    data class FoundUser(val id: Long, val name: String, val email: String)
+    /** Действие Ауры, ждущее решения, прямо под её репликой. */
+    data class DialogAction(val confirmationId: Long, val summary: String, val tool: String)
+    data class DialogEntry(val id: Long, val fromAura: Boolean, val text: String, val error: Boolean = false,
+                           val actions: List<DialogAction> = emptyList(), val hasA2a: Boolean = false)
+    data class Slot(val start: String, val end: String)
+    data class Place(val name: String, val city: String, val tags: List<String>, val rating: String)
+    /** Один раунд agent.negotiate: запрос рядом с ответом сервера. */
+    data class Negotiation(
+        val target: String, val topic: String, val durationMinutes: Int, val windowHours: Int,
+        val round: Int, val at: Long,
+        val accepted: Boolean, val slot: Slot?, val place: Place?, val counterSlots: List<Slot>,
+        val message: String, val booking: String? = null,
+    )
+    data class MemoryEntry(val kind: String, val text: String)
     data class Confirmation(val id: Long, val tool: String, val summary: String, val status: String)
     data class Notice(val id: Long, val kind: String, val title: String, val body: String, val read: Boolean, val createdAt: String)
     data class PushDevice(val id: Long, val platform: String, val enabled: Boolean)
@@ -50,10 +76,12 @@ object AppStore {
         data object LoggedOut : AuthState()
         data class NeedsEmailCode(val email: String) : AuthState()
         data class Needs2fa(val email: String, val password: String) : AuthState()
+        data class NeedsResetCode(val email: String) : AuthState()
         data class LoggedIn(val displayName: String, val email: String) : AuthState()
     }
 
-    enum class Tab { CHATS, TASKS, PENDING, NOTICES, SETTINGS }
+    /** Разделы v3: пять во вкладках снизу, остальные открываются из шапки Home. */
+    enum class Tab { HOME, AURA, NEGOTIATIONS, TASKS, CONTACTS, SETTINGS, CONFIRMATIONS, NOTICES }
 
     // ------------------------------------------------------------- состояние
 
@@ -74,7 +102,7 @@ object AppStore {
     private val _busy = MutableStateFlow(false)
     val busy: StateFlow<Boolean> = _busy
 
-    private val _tab = MutableStateFlow(Tab.CHATS)
+    private val _tab = MutableStateFlow(Tab.HOME)
     val tab: StateFlow<Tab> = _tab
 
     private val _openChatId = MutableStateFlow(0L)
@@ -130,6 +158,33 @@ object AppStore {
     private val _needOnboarding = MutableStateFlow(false)
     val needOnboarding: StateFlow<Boolean> = _needOnboarding
 
+    private val _userId = MutableStateFlow(0L)
+    val userId: StateFlow<Long> = _userId
+
+    private val _contacts = MutableStateFlow<List<Contact>>(emptyList())
+    val contacts: StateFlow<List<Contact>> = _contacts
+
+    private val _dialog = MutableStateFlow<List<DialogEntry>>(emptyList())
+    val dialog: StateFlow<List<DialogEntry>> = _dialog
+
+    private val _negotiation = MutableStateFlow<Negotiation?>(null)
+    val negotiation: StateFlow<Negotiation?> = _negotiation
+
+    private val _negotiationHistory = MutableStateFlow<List<Negotiation>>(emptyList())
+    val negotiationHistory: StateFlow<List<Negotiation>> = _negotiationHistory
+
+    private val _userResults = MutableStateFlow<List<FoundUser>>(emptyList())
+    val userResults: StateFlow<List<FoundUser>> = _userResults
+
+    private val _memory = MutableStateFlow<List<MemoryEntry>>(emptyList())
+    val memory: StateFlow<List<MemoryEntry>> = _memory
+
+    private val _prefs = MutableStateFlow<JsonObject?>(null)
+    val prefs: StateFlow<JsonObject?> = _prefs
+
+    /** Ответ «С чем помогать?» из регистрации — уходит в память после первого входа. */
+    private var pendingFocus = ""
+    private var dialogSeq = 0L
     private var eventsStarted = false
 
     // ------------------------------------------------------------- запуск
@@ -174,8 +229,10 @@ object AppStore {
                     store.refreshToken = rotated.str("refresh_token")
                     client.authenticate(rotated.str("token"))
                 }
+                // auth.me возвращает пользователя прямо в payload (без обёртки user).
                 val me = client.me()
-                val user = me.obj("user")
+                val user = me.obj("user") ?: me
+                _userId.value = user.long("id")
                 _auth.value = AuthState.LoggedIn(user.str("display_name"), user.str("email"))
                 afterLogin()
             }
@@ -208,7 +265,8 @@ object AppStore {
         }
     }
 
-    fun register(displayName: String, email: String, password: String) = scope.launch {
+    fun register(displayName: String, email: String, password: String, focus: String = "") = scope.launch {
+        pendingFocus = focus.trim()
         guard {
             client.connect(store.serverUrl)
             waitForConnected()
@@ -225,6 +283,27 @@ object AppStore {
             _errorText.value = "Email подтверждён — теперь можно войти"
         }
     }
+
+    fun forgotPassword(email: String) = scope.launch {
+        if (email.isBlank()) { _errorText.value = "Введите email"; return@launch }
+        guard {
+            client.connect(store.serverUrl)
+            waitForConnected()
+            client.forgotPassword(email.trim())
+            _auth.value = AuthState.NeedsResetCode(email.trim())
+            _errorText.value = "Если такой аккаунт есть, код отправлен на ${email.trim()}"
+        }
+    }
+
+    fun resetPassword(email: String, code: String, newPassword: String) = scope.launch {
+        guard {
+            client.resetPassword(email, code.trim(), newPassword)
+            _auth.value = AuthState.LoggedOut
+            _errorText.value = "Пароль изменён — войдите с новым паролем"
+        }
+    }
+
+    fun cancelAuthFlow() { _auth.value = AuthState.LoggedOut }
 
     fun resendCode(email: String) = scope.launch {
         guard { client.resendCode(email) }
@@ -263,6 +342,7 @@ object AppStore {
         store.accessToken = payload.str("token")
         store.refreshToken = payload.str("refresh_token")
         val user = payload.obj("user")
+        _userId.value = user.long("id")
         _auth.value = AuthState.LoggedIn(user.str("display_name"), user.str("email"))
         afterLogin()
     }
@@ -277,12 +357,20 @@ object AppStore {
         refresh2faStatus()
         registerPushDevice()
         checkOnboarding()
+        refreshMemory()
+        if (pendingFocus.isNotEmpty()) {
+            val focus = pendingFocus
+            pendingFocus = ""
+            runCatching { client.memoryAdd("Просит помогать с: $focus", "preference") }
+        }
     }
 
     /** prefs.onboarded ставит сервер, когда сохранены поля анкеты. */
     private suspend fun checkOnboarding() {
         runCatching {
-            _needOnboarding.value = !client.prefsGet().bool("onboarded")
+            val prefs = client.prefsGet()
+            _prefs.value = prefs
+            _needOnboarding.value = !prefs.bool("onboarded")
         }
     }
 
@@ -320,23 +408,144 @@ object AppStore {
         _notices.value = emptyList(); _unread.value = 0
         _pushDevices.value = emptyList(); _permissions.value = emptyList()
         _connections.value = emptyList(); _askReply.value = ""
+        _contacts.value = emptyList(); _dialog.value = emptyList(); _negotiation.value = null
+        _negotiationHistory.value = emptyList(); _userResults.value = emptyList(); _memory.value = emptyList()
+        _userId.value = 0; _tab.value = Tab.HOME
     }
 
     // ------------------------------------------------------------- Аура/голос
 
-    fun ask(text: String) = scope.launch {
+    /**
+     * Запрос к Ауре («Моя Аура», Home, голос, шорткаты). Реплика и ответ ложатся в
+     * диалог; опасные действия из results[] — кнопками «Подтвердить / Отклонить».
+     */
+    fun ask(text: String, chatId: Long = 0) = scope.launch {
         if (text.isBlank()) return@launch
+        if (chatId == 0L) appendDialog(DialogEntry(++dialogSeq, fromAura = false, text = text.trim()))
         guard {
-            val result = client.agentAsk(text, _openChatId.value)
-            _askReply.value = result.str("reply").ifEmpty { "Аура ничего не ответила" }
-            refreshChats(); refreshTasks(); refreshConfirmations(); refreshNotifications()
+            try {
+                val result = client.agentAsk(text.trim(), chatId)
+                val reply = result.str("reply").ifEmpty { "Готово" }
+                _askReply.value = reply
+                val actions = result.arr("results").mapNotNull { element ->
+                    val item = element as? JsonObject ?: return@mapNotNull null
+                    if (!item.bool("requires_confirmation")) return@mapNotNull null
+                    DialogAction(item.long("confirmation_id"), item.str("summary"), item.str("tool"))
+                }
+                if (chatId == 0L) {
+                    appendDialog(DialogEntry(++dialogSeq, fromAura = true, text = reply, actions = actions,
+                        hasA2a = result?.get("a2a") is JsonObject))
+                } else {
+                    loadHistory()
+                }
+            } catch (error: AuraError) {
+                if (chatId == 0L) appendDialog(DialogEntry(++dialogSeq, fromAura = true, text = describe(error), error = true))
+                throw error
+            }
+            refreshChats(); refreshTasks(); refreshConfirmations(); refreshNotifications(); refreshMemory()
+        }
+    }
+
+    private fun appendDialog(entry: DialogEntry) { _dialog.value = _dialog.value + entry }
+
+    fun refreshMemory() = scope.launch {
+        runCatching {
+            _memory.value = client.memoryList().arr("entries").mapNotNull { element ->
+                val entry = element as? JsonObject ?: return@mapNotNull null
+                MemoryEntry(entry.str("kind"), entry.str("text"))
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- переговоры
+
+    /** Один раунд A2A (agent.negotiate). Раунды с тем же собеседником считаются подряд. */
+    fun negotiate(target: String, topic: String, durationMinutes: Int, windowHours: Int) = scope.launch {
+        if (target.isBlank()) return@launch
+        guard {
+            val result = client.agentNegotiate(target.trim(), topic.trim(), durationMinutes, windowHours)
+            val round = 1 + _negotiationHistory.value.takeWhile { it.target == target.trim() }.size
+            fun slotOf(element: kotlinx.serialization.json.JsonElement?): Slot? =
+                (element as? JsonObject)?.let { Slot(it.str("start"), it.str("end")) }
+            val place = result.obj("place")?.let { p ->
+                Place(p.str("name"), p.str("city"),
+                    p.arr("tags").mapNotNull { (it as? JsonPrimitive)?.content },
+                    p["rating"]?.jsonPrimitive?.content?.toDoubleOrNull()
+                        ?.let { String.format(java.util.Locale.US, "%.1f", it) } ?: "")
+            }
+            val negotiation = Negotiation(
+                target = target.trim(), topic = topic.trim(), durationMinutes = durationMinutes,
+                windowHours = windowHours, round = round, at = System.currentTimeMillis(),
+                accepted = result.bool("accepted"), slot = slotOf(result?.get("slot")), place = place,
+                counterSlots = result.arr("counter_slots").mapNotNull { slotOf(it) },
+                message = result.str("message"),
+            )
+            _negotiation.value = negotiation
+            _negotiationHistory.value = listOf(negotiation) + _negotiationHistory.value
+            _tab.value = Tab.NEGOTIATIONS
+            refreshNotifications()
+        }
+    }
+
+    fun clearNegotiation() { _negotiation.value = null }
+
+    /**
+     * «Подтвердить и забронировать»: book_table по кнопке пользователя и встреча в задачи
+     * (напоминание за полчаса). Если пользователь запретил бронирование — не обходим.
+     */
+    fun bookNegotiation() = scope.launch {
+        val current = _negotiation.value ?: return@launch
+        val slot = current.slot ?: return@launch
+        val place = current.place ?: return@launch
+        if (_permissions.value.firstOrNull { it.tool == "book_table" }?.mode == "deny") {
+            _errorText.value = "Бронирование запрещено в разрешениях"
+            return@launch
+        }
+        guard {
+            val result = client.toolRun("book_table", buildJsonObject {
+                put("place", place.name)
+                put("at", slot.start)
+                put("people", 2)
+            })
+            val booked = current.copy(booking = result.str("confirmation").ifEmpty { "ok" })
+            _negotiation.value = booked
+            _negotiationHistory.value = _negotiationHistory.value.map { if (it.at == current.at) booked else it }
+            val remind = runCatching {
+                java.time.Instant.parse(slot.start).minusSeconds(30 * 60).toString()
+            }.getOrDefault("")
+            client.taskCreate("Встреча: ${current.topic.ifEmpty { "переговоры" }} — ${place.name}",
+                remindAt = remind, dueAt = slot.start)
+            refreshTasks()
+            _errorText.value = "Столик забронирован: ${place.name}"
+        }
+    }
+
+    // ------------------------------------------------------------- люди
+
+    fun searchUsers(query: String) = scope.launch {
+        if (query.trim().length < 2) { _userResults.value = emptyList(); return@launch }
+        runCatching {
+            _userResults.value = client.usersSearch(query.trim()).arr("users").mapNotNull { element ->
+                val user = element as? JsonObject ?: return@mapNotNull null
+                FoundUser(user.long("id"), user.str("display_name").ifEmpty { user.str("email") }, user.str("email"))
+            }.filter { it.id != _userId.value }
         }
     }
 
     fun consumePendingAsk() { _pendingAsk.value = null }
     fun consumeWantVoice() { _wantVoice.value = false }
     fun requestVoice() { _wantVoice.value = true }
-    fun selectTab(value: Tab) { _tab.value = value }
+    fun selectTab(value: Tab) {
+        _tab.value = value
+        if (value != Tab.CONTACTS) _openChatId.value = 0
+        when (value) {
+            Tab.SETTINGS -> { refreshPermissions(); refreshIntegrations(); refresh2faStatus() }
+            Tab.CONFIRMATIONS -> refreshConfirmations()
+            Tab.NOTICES -> refreshNotifications()
+            Tab.TASKS -> refreshTasks()
+            else -> Unit
+        }
+    }
 
     // ------------------------------------------------------------- чаты
 
@@ -345,24 +554,40 @@ object AppStore {
             val payload = client.chatList()
             _chats.value = payload.arr("chats").mapNotNull { element ->
                 val chat = element as? JsonObject ?: return@mapNotNull null
-                Chat(chat.long("id"), chat.str("title").ifEmpty { "Чат ${chat.long("id")}" },
-                    chat.str("last_message_body"), chat.str("last_message_at"))
+                val members = chat.arr("members").mapNotNull { m ->
+                    val member = m as? JsonObject ?: return@mapNotNull null
+                    Member(member.long("user_id"), member.str("display_name").ifEmpty { member.str("email") },
+                        member.str("email"))
+                }
+                val others = members.filter { it.userId != _userId.value }
+                Chat(chat.long("id"),
+                    chat.str("title").ifEmpty { others.joinToString { it.name }.ifEmpty { "Чат ${chat.long("id")}" } },
+                    chat.str("last_message_body"), chat.str("last_message_at"), members)
+            }
+            // Контакты — люди из чатов, по одному на человека.
+            val seen = HashSet<Long>()
+            _contacts.value = _chats.value.flatMap { chat ->
+                chat.members.filter { it.userId != _userId.value && seen.add(it.userId) }
+                    .map { Contact(it.userId, it.name, it.email, chat.id, chat.lastBody, chat.lastAt) }
             }
         }
     }
 
     fun openChat(id: Long) = scope.launch {
         _openChatId.value = id
-        _tab.value = Tab.CHATS
-        loadHistory()
+        _tab.value = Tab.CONTACTS
+        guard { loadHistory() }
     }
+
+    fun closeChat() { _openChatId.value = 0 }
 
     fun openChatByContact(contact: String) = scope.launch {
         guard {
             val payload = client.chatOpen(contact)
             val chat = payload.obj("chat")
             _openChatId.value = chat.long("id")
-            _tab.value = Tab.CHATS
+            _tab.value = Tab.CONTACTS
+            refreshChats()
             loadHistory()
         }
     }
@@ -372,7 +597,7 @@ object AppStore {
         _messages.value = payload.arr("messages").mapNotNull { element ->
             val message = element as? JsonObject ?: return@mapNotNull null
             Message(message.long("id"), message.long("sender_id"), message.str("body"),
-                message.str("kind").ifEmpty { "text" }, message.str("created_at"))
+                message.str("kind").ifEmpty { "text" }, message.str("created_at"), message.str("sender_name"))
         }
         runCatching { client.request("chat.read", buildJsonObject { put("chat_id", _openChatId.value) }) }
     }
@@ -393,14 +618,14 @@ object AppStore {
             _tasks.value = payload.arr("tasks").mapNotNull { element ->
                 val task = element as? JsonObject ?: return@mapNotNull null
                 Task(task.long("id"), task.str("title"), task.str("notes"),
-                    task.str("status"), task.str("remind_at"))
+                    task.str("status"), task.str("remind_at"), task.str("due_at"), task.str("completed_at"))
             }
         }
     }
 
-    fun createTask(title: String, remindAt: String) = scope.launch {
+    fun createTask(title: String, remindAt: String = "", dueAt: String = "") = scope.launch {
         if (title.isBlank()) return@launch
-        guard { client.taskCreate(title, remindAt = remindAt); refreshTasks() }
+        guard { client.taskCreate(title.trim(), remindAt = remindAt, dueAt = dueAt); refreshTasks() }
     }
 
     fun setTaskStatus(id: Long, status: String) = scope.launch {
@@ -608,7 +833,7 @@ object AppStore {
             is DeepLink.Chats -> {
                 // Локальная копия: id объявлен в другом модуле, smart cast невозможен.
                 val chatId = link.id
-                if (chatId != null) openChat(chatId) else _tab.value = Tab.CHATS
+                if (chatId != null) openChat(chatId) else _tab.value = Tab.CONTACTS
             }
             DeepLink.Voice -> _wantVoice.value = true
             is DeepLink.Ask -> if (link.text.isBlank()) _wantVoice.value = true else ask(link.text)

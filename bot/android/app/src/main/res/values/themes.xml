@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Базовая тема окна; цвета интерфейса задаёт Compose (ui/Theme.kt) -->
-    <style name="Theme.Aura" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:statusBarColor">#FF4F46E5</item>
-        <item name="android:windowBackground">#FFF8F7FF</item>
+    <!-- Окно — в цвет фона дизайн-системы v3 (как у android/app); остальное рисует Compose. -->
+    <style name="Theme.Aura" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF09080E</item>
+        <item name="android:statusBarColor">#FF09080E</item>
+        <item name="android:navigationBarColor">#FF09080E</item>
     </style>
 </resources>

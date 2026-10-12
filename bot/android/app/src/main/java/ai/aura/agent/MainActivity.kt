@@ -8,7 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import ai.aura.agent.ui.AuraApp
-import ai.aura.agent.ui.AuraTheme
+import ai.aura.agent.ui.theme.AuraTheme
 
 /** Единственная Activity: весь интерфейс — Compose, навигация — состоянием AppViewModel. */
 class MainActivity : ComponentActivity() {

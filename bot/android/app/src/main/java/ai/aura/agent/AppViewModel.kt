@@ -151,6 +151,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         screen = Screen.Onboarding
     }
 
+    fun cancelOnboarding() {
+        if (user?.onboarded == true) screen = Screen.Main
+    }
+
     fun logout() = io {
         runCatching { api.logout() }
         dropSession()

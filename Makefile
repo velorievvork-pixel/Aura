@@ -1,7 +1,14 @@
-.PHONY: check ai-test server-build server-test protocol-check e2e schema-check docker-up docker-down docker-logs ai-run server-run
+.PHONY: check bot-test bot-run ai-test server-build server-test protocol-check e2e schema-check docker-up docker-down docker-logs ai-run server-run
 
 # Полный прогон всех проверок
-check: ai-test server-test protocol-check
+check: bot-test ai-test server-test protocol-check
+
+# Aura Bot (TG-бот + API): тесты и запуск
+bot-test:
+	cd bot && python -m pytest -q
+
+bot-run:
+	cd bot && python -m aura_bot
 
 # Python AI-сервис: тесты
 ai-test:

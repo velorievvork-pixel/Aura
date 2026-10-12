@@ -33,3 +33,6 @@ CMakeLists.txt.user
 .vscode/
 *.swp
 .DS_Store
+
+# Aura Bot: локальная SQLite-база
+bot/*.db

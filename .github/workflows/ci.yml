@@ -50,6 +50,22 @@ jobs:
       - name: Тесты
         run: cd ai && PYTHONPATH=. python -m pytest -q
 
+  bot:
+    name: Aura Bot (TG + API) — тесты
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Зависимости
+        run: pip install -r bot/requirements.txt
+
+      - name: Тесты
+        run: cd bot && python -m pytest -q
+
   protocol:
     name: Протокол iOS/Android ↔ сервер и синтаксис e2e
     runs-on: ubuntu-latest

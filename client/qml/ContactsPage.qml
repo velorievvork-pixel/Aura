@@ -126,6 +126,8 @@ Item {
                     id: row
                     required property var modelData
                     readonly property bool active: page.selected && page.selected.id === modelData.id
+                    readonly property bool inline: width >= 460
+                    readonly property string preview: modelData.lastMessage ? modelData.lastMessage : "Аура доступна"
                     width: list.width
                     height: 70
                     radius: 16
@@ -139,17 +141,35 @@ Item {
                         anchors.rightMargin: 18
                         spacing: 16
                         AuraAvatar { name: row.modelData.name; size: 46 }
-                        Text {
-                            text: row.modelData.name
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontBody
-                            font.weight: Font.Bold
-                            color: AuraTheme.textPrimary
+                        // В узкой колонке превью уходит под имя: в одну строку
+                        // оно сжималось в ноль и оставалась одна черта-разделитель.
+                        ColumnLayout {
+                            Layout.fillWidth: !row.inline
+                            spacing: 2
+                            Text {
+                                Layout.fillWidth: true
+                                text: row.modelData.name
+                                elide: Text.ElideRight
+                                font.family: AuraTheme.fontFamily
+                                font.pixelSize: AuraTheme.fontBody
+                                font.weight: Font.Bold
+                                color: AuraTheme.textPrimary
+                            }
+                            Text {
+                                visible: !row.inline
+                                Layout.fillWidth: true
+                                text: row.preview
+                                elide: Text.ElideRight
+                                font.family: AuraTheme.fontFamily
+                                font.pixelSize: AuraTheme.fontSmall
+                                color: AuraTheme.textSecondary
+                            }
                         }
-                        Rectangle { implicitWidth: 50; implicitHeight: 1; color: AuraTheme.textMuted }
+                        Rectangle { visible: row.inline; implicitWidth: 50; implicitHeight: 1; color: AuraTheme.textMuted }
                         Text {
+                            visible: row.inline
                             Layout.fillWidth: true
-                            text: row.modelData.lastMessage ? row.modelData.lastMessage : "Аура доступна"
+                            text: row.preview
                             elide: Text.ElideRight
                             font.family: AuraTheme.fontFamily
                             font.pixelSize: AuraTheme.fontSmall
@@ -231,15 +251,16 @@ Item {
             Layout.preferredWidth: page.chatOpen ? Math.min(560, page.width * 0.5) : 340
             Layout.fillHeight: true
 
-            Sphere { width: 120; height: 120; x: -70; y: -20; visible: !page.chatOpen }
-            Sphere { width: 22; height: 22; x: -90; y: 150; visible: !page.chatOpen }
+            // Сферы залезают в колонку списка — показываем, только пока она широкая.
+            Sphere { width: 120; height: 120; x: -70; y: -20; visible: !page.chatOpen && list.width >= 520 }
+            Sphere { width: 22; height: 22; x: -90; y: 150; visible: !page.chatOpen && list.width >= 520 }
 
             // Профиль
             Rectangle {
                 id: profile
                 visible: !page.chatOpen && page.selected !== null
                 width: parent.width
-                height: Math.min(parent.height, profileCol.implicitHeight + 60)
+                height: Math.min(parent.height, 1 + 33 + profileCol.implicitHeight + 22 + actions.implicitHeight + 26)
                 radius: 30
                 gradient: Gradient {
                     GradientStop { position: 0.0; color: Qt.rgba(0.43, 0.43, 0.47, 0.55) }
@@ -248,117 +269,141 @@ Item {
                 border.width: 1
                 border.color: Qt.rgba(1, 1, 1, 0.28)
 
-                ColumnLayout {
-                    id: profileCol
-                    x: 26
-                    y: 34
-                    width: parent.width - 52
-                    spacing: 22
+                // Если карточка не влезает по высоте (узкое/низкое окно), информация
+                // прокручивается внутри неё, а не выталкивает кнопки за край окна.
+                Flickable {
+                    id: profileScroll
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: actions.top
+                    anchors.topMargin: 1
+                    anchors.bottomMargin: 22
+                    clip: true
+                    contentWidth: width
+                    contentHeight: profileCol.implicitHeight + 33
+                    boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                     ColumnLayout {
-                        Layout.alignment: Qt.AlignHCenter
-                        spacing: 4
-                        AuraAvatar {
-                            Layout.alignment: Qt.AlignHCenter
-                            name: page.selected ? page.selected.name : ""
-                            size: 100
-                            ring: true
-                        }
-                        Text {
-                            Layout.alignment: Qt.AlignHCenter
-                            Layout.topMargin: 12
-                            text: page.selected ? page.selected.name : ""
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontTitle
-                            font.weight: Font.Bold
-                            color: AuraTheme.textPrimary
-                        }
-                        Text {
-                            Layout.alignment: Qt.AlignHCenter
-                            text: "Аура доступна · " + (page.selected ? page.selected.email : "")
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
-                        }
-                    }
+                        id: profileCol
+                        x: 26
+                        y: 33
+                        width: profileScroll.width - 52
+                        spacing: 22
 
-                    component InfoBlock: ColumnLayout {
-                        id: block
-                        property string icon: ""
-                        property string title: ""
-                        property var lines: []
-                        Layout.fillWidth: true
-                        spacing: 8
-                        RowLayout {
-                            spacing: 10
-                            Rectangle {
-                                implicitWidth: 28; implicitHeight: 28; radius: 14
-                                color: AuraTheme.accent
-                                Icon { anchors.centerIn: parent; name: block.icon; size: 14; color: "#FFFFFF" }
+                        ColumnLayout {
+                            Layout.alignment: Qt.AlignHCenter
+                            spacing: 4
+                            AuraAvatar {
+                                Layout.alignment: Qt.AlignHCenter
+                                name: page.selected ? page.selected.name : ""
+                                size: 100
+                                ring: true
                             }
                             Text {
-                                text: block.title
+                                Layout.alignment: Qt.AlignHCenter
+                                Layout.topMargin: 12
+                                text: page.selected ? page.selected.name : ""
                                 font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontBody
+                                font.pixelSize: AuraTheme.fontTitle
                                 font.weight: Font.Bold
                                 color: AuraTheme.textPrimary
                             }
-                        }
-                        Repeater {
-                            model: block.lines
-                            delegate: Text {
-                                required property string modelData
-                                Layout.leftMargin: 38
-                                Layout.fillWidth: true
-                                wrapMode: Text.WordWrap
-                                text: modelData
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: "Аура доступна · " + (page.selected ? page.selected.email : "")
                                 font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontSmall + 1
-                                font.weight: Font.DemiBold
-                                color: AuraTheme.textPrimary
+                                font.pixelSize: AuraTheme.fontSmall
+                                color: AuraTheme.textSecondary
                             }
                         }
-                    }
 
-                    InfoBlock {
-                        icon: "calendar-days"
-                        title: "Последнее в переписке"
-                        lines: page.selected && page.selected.lastMessage
-                               ? ["«" + page.selected.lastMessage + "»", F.dayPhrase(page.selected.lastAt) + ", " + F.time(page.selected.lastAt)]
-                               : ["Пока ничего"]
-                    }
-                    InfoBlock {
-                        icon: "lock"
-                        title: "Что может ваша Аура"
-                        lines: [
-                            "Писать: " + (page.modeLabel[page.permission("send_message")] || "—"),
-                            "Бронировать: " + (page.modeLabel[page.permission("book_table")] || "—"),
-                            "Делиться: только свободными окнами"
-                        ]
-                    }
+                        component InfoBlock: ColumnLayout {
+                            id: block
+                            property string icon: ""
+                            property string title: ""
+                            property var lines: []
+                            Layout.fillWidth: true
+                            spacing: 8
+                            RowLayout {
+                                spacing: 10
+                                Rectangle {
+                                    implicitWidth: 28; implicitHeight: 28; radius: 14
+                                    color: AuraTheme.accent
+                                    Icon { anchors.centerIn: parent; name: block.icon; size: 14; color: "#FFFFFF" }
+                                }
+                                Text {
+                                    text: block.title
+                                    font.family: AuraTheme.fontFamily
+                                    font.pixelSize: AuraTheme.fontBody
+                                    font.weight: Font.Bold
+                                    color: AuraTheme.textPrimary
+                                }
+                            }
+                            Repeater {
+                                model: block.lines
+                                delegate: Text {
+                                    required property string modelData
+                                    Layout.leftMargin: 38
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    text: modelData
+                                    font.family: AuraTheme.fontFamily
+                                    font.pixelSize: AuraTheme.fontSmall + 1
+                                    font.weight: Font.DemiBold
+                                    color: AuraTheme.textPrimary
+                                }
+                            }
+                        }
 
-                    ColumnLayout {
+                        InfoBlock {
+                            icon: "calendar-days"
+                            title: "Последнее в переписке"
+                            lines: page.selected && page.selected.lastMessage
+                                   ? ["«" + page.selected.lastMessage + "»", F.dayPhrase(page.selected.lastAt) + ", " + F.time(page.selected.lastAt)]
+                                   : ["Пока ничего"]
+                        }
+                        InfoBlock {
+                            icon: "lock"
+                            title: "Что может ваша Аура"
+                            lines: [
+                                "Писать: " + (page.modeLabel[page.permission("send_message")] || "—"),
+                                "Бронировать: " + (page.modeLabel[page.permission("book_table")] || "—"),
+                                "Делиться: только свободными окнами"
+                            ]
+                        }
+                    }
+                }
+
+                // Кнопки закреплены внизу карточки — всегда на виду.
+                ColumnLayout {
+                    id: actions
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.leftMargin: 26
+                    anchors.rightMargin: 26
+                    anchors.bottomMargin: 26
+                    spacing: 10
+                    GlassButton {
                         Layout.fillWidth: true
-                        spacing: 10
-                        GlassButton {
-                            Layout.fillWidth: true
-                            implicitHeight: 50
-                            text: "Начать переговоры"
-                            symbol: "handshake"
-                            busy: App ? App.busy : false
-                            onClicked: {
-                                App.negotiateAgent(page.selected.email, "", 60, F.windowHours("weekend"))
-                                page.navigate("negotiations")
-                            }
+                        implicitHeight: 50
+                        text: "Начать переговоры"
+                        symbol: "handshake"
+                        busy: App ? App.busy : false
+                        onClicked: {
+                            App.negotiateAgent(page.selected.email, "", 60, F.windowHours("weekend"))
+                            page.navigate("negotiations")
                         }
-                        GlassButton {
-                            Layout.fillWidth: true
-                            implicitHeight: 46
-                            variant: "quiet"
-                            text: "Открыть чат"
-                            symbol: "message-circle"
-                            onClicked: page.chatOpen = true
-                        }
+                    }
+                    GlassButton {
+                        Layout.fillWidth: true
+                        implicitHeight: 46
+                        variant: "quiet"
+                        text: "Открыть чат"
+                        symbol: "message-circle"
+                        onClicked: page.chatOpen = true
                     }
                 }
             }

@@ -117,15 +117,15 @@ Item {
     }
 
     // 4. Блик сверху — ощущение объёма.
+    //    Той же формы, что и плёнка: у низких пилюль урезанный по высоте блик
+    //    получал меньший радиус, и его углы вылезали за скругление.
     Rectangle {
-        anchors.left: inner.left
-        anchors.right: inner.right
-        anchors.top: inner.top
-        height: Math.max(1, Math.round(inner.height * 0.4))
+        anchors.fill: inner
         radius: film.radius
         visible: root.showHighlight
         gradient: Gradient {
             GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.07) }
+            GradientStop { position: 0.4; color: Qt.rgba(1, 1, 1, 0.0) }
             GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.0) }
         }
     }

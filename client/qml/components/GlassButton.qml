@@ -79,17 +79,17 @@ Button {
                 GradientStop { position: 1.0; color: AuraTheme.gradEnd }
             }
 
-            // Верхний блик
+            // Верхний блик. Той же формы, что и кнопка, а затухает градиентом:
+            // прямоугольник половинной высоты получал радиус не больше h/4 кнопки,
+            // и его углы торчали за круг/пилюлю светлым «квадратом».
             Rectangle {
                 visible: control.variant !== "quiet" || control.hovered
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
+                anchors.fill: parent
                 anchors.margins: 1
-                height: parent.height * 0.5
-                radius: parent.radius
+                radius: Math.max(0, parent.radius - 1)
                 gradient: Gradient {
                     GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, control.isAccent ? 0.22 : 0.08) }
+                    GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0.0) }
                     GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.0) }
                 }
             }

@@ -74,16 +74,15 @@ Item {
                           ? AuraTheme.accentA(0.35)
                           : Qt.rgba(1, 1, 1, root.mine ? 0.22 : AuraTheme.glassBorder)
 
-            // Блик по верхнему краю пузыря
+            // Блик по верхнему краю пузыря (той же формы, что и пузырь, чтобы
+            // углы не вылезали за скругление у однострочных сообщений)
             Rectangle {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
+                anchors.fill: parent
                 anchors.margins: 1
-                height: parent.height * 0.45
-                radius: parent.radius
+                radius: Math.max(0, parent.radius - 1)
                 gradient: Gradient {
                     GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.16) }
+                    GradientStop { position: 0.45; color: Qt.rgba(1, 1, 1, 0.0) }
                     GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.0) }
                 }
             }

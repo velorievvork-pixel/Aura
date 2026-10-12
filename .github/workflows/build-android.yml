@@ -54,6 +54,22 @@ jobs:
           name: aura-android-debug
           path: android/app/build/outputs/apk/debug/*.apk
 
+      # Песочница разработки не видит blob-хосты артефактов: готовый APK
+      # кладём в ветку builds/android, откуда его забирают обычным git.
+      - name: Публикация в ветку builds/android
+        if: success()
+        run: |
+          set -e
+          mkdir pub && cp android/app/build/outputs/apk/debug/app-debug.apk pub/Aura-debug.apk
+          cd pub
+          for f in *; do
+            if [ "$(wc -c < "$f")" -gt 94000000 ]; then split -b 90m -d "$f" "$f.part"; rm "$f"; fi
+          done
+          git init -q -b builds/android
+          git config user.name aura-ci && git config user.email ci@aura.local
+          git add -A && git commit -qm "android ${{ github.sha }} [skip ci]"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/android
+
       - name: Артефакт — лог сборки (для отладки)
         if: always()
         uses: actions/upload-artifact@v4

@@ -87,6 +87,9 @@ target_link_libraries(aura-client PRIVATE
     Qt6::TextToSpeech
 )
 
+# Windows: GUI-приложение без консольного окна.
+set_target_properties(aura-client PROPERTIES WIN32_EXECUTABLE ON)
+
 if(NOT MSVC)
     target_compile_options(aura-client PRIVATE -Wall -Wextra)
 endif()

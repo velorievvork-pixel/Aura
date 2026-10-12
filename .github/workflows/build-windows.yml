@@ -70,7 +70,52 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item build\client\Release\aura-client.exe dist\
-          windeployqt --release --no-translations dist\aura-client.exe 2>&1 | Tee-Object -Append build.log
+          # --qmldir: без него windeployqt не кладёт QML-модули (QtQuick.Controls,
+          # Layouts, Effects), и программа падает при запуске.
+          windeployqt --release --no-translations --qmldir client\qml dist\aura-client.exe 2>&1 | Tee-Object -Append build.log
+          # Рантайм MSVC рядом с программой: на чистой Windows его может не быть.
+          foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "concrt140.dll")) {
+            if (Test-Path "C:\Windows\System32\$dll") { Copy-Item "C:\Windows\System32\$dll" dist\ -Force }
+          }
+
+      - name: Установщик (NSIS) и портативный архив
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+            $nsis = "${env:ProgramFiles(x86)}\NSIS"
+            if (-not (Test-Path "$nsis\makensis.exe")) { choco install nsis -y --no-progress | Out-Null }
+            echo "$nsis" >> $env:GITHUB_PATH
+            $env:PATH = "$nsis;$env:PATH"
+          }
+          makensis client\packaging\windows\aura.nsi
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Compress-Archive -Path dist\* -DestinationPath Aura-portable-windows.zip -Force
+
+      - name: Артефакт — установщик
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aura-setup-windows
+          path: |
+            Aura-Setup.exe
+            Aura-portable-windows.zip
+
+      # Песочница разработки не видит blob-хосты артефактов: готовые файлы
+      # кладём в ветку builds/windows, откуда их забирают обычным git.
+      - name: Публикация в ветку builds/windows
+        if: success()
+        shell: bash
+        run: |
+          set -e
+          mkdir pub && cp Aura-Setup.exe Aura-portable-windows.zip pub/
+          cd pub
+          for f in *; do
+            if [ "$(wc -c < "$f")" -gt 94000000 ]; then split -b 90m -d "$f" "$f.part"; rm "$f"; fi
+          done
+          git init -q -b builds/windows
+          git config user.name aura-ci && git config user.email ci@aura.local
+          git add -A && git commit -qm "windows ${{ github.sha }} [skip ci]"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/windows
 
       - name: Артефакт — exe
         if: success()

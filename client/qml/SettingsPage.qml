@@ -1056,10 +1056,7 @@ Item {
                                 RowLayout {
                                     spacing: AuraTheme.spaceXs
                                     Text {
-                                        text: ({ send_message: "Сообщения", create_note: "Заметки", create_reminder: "Напоминания",
-                                                 send_email: "Письма", find_cafe: "Подбор мест", book_table: "Бронирование",
-                                                 check_calendar: "Календарь", suggest_time: "Подбор времени" })[toolRow.modelData.tool]
-                                              || toolRow.modelData.tool
+                                        text: F.toolTitle(toolRow.modelData.tool)
                                         font.family: AuraTheme.fontFamily
                                         font.pixelSize: AuraTheme.fontSmall
                                         font.weight: Font.DemiBold

@@ -121,8 +121,14 @@ void Listener::acceptLoop() {
             break;
         }
 
+        // sockaddr_in6 вмещает и IPv4-адрес: при прослушивании 0.0.0.0/127.0.0.1
+        // accept() кладёт туда sockaddr_in. Без этой ветки IP был пустым
+        // (в аудите, уведомлении о входе и учёте неудачных попыток — ":порт").
         char addressText[INET6_ADDRSTRLEN] = {0};
-        if (peer.sin6_family == AF_INET6) {
+        if (peer.sin6_family == AF_INET) {
+            const auto* v4 = reinterpret_cast<const sockaddr_in*>(&peer);
+            ::inet_ntop(AF_INET, &v4->sin_addr, addressText, sizeof(addressText));
+        } else if (peer.sin6_family == AF_INET6) {
             const auto* ipv4Mapped = reinterpret_cast<const unsigned char*>(&peer.sin6_addr);
             static const unsigned char prefix[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF};
             if (std::memcmp(ipv4Mapped, prefix, 12) == 0) {

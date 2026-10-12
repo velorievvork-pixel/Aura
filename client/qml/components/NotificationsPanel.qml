@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import Aura
+import "../Format.js" as F
 
 /*
   NotificationsPanel — «входящая» уведомлений и push-устройства (этап 13).
@@ -79,6 +80,8 @@ GlassPanel {
                     spacing: AuraTheme.spaceSm
 
                     Text {
+                        Layout.preferredWidth: 20
+                        horizontalAlignment: Text.AlignHCenter
                         text: panel.glyphFor(modelData.kind)
                         font.pixelSize: 16
                         color: modelData.read ? AuraTheme.textMuted : AuraTheme.accent
@@ -98,15 +101,15 @@ GlassPanel {
                         }
                         Text {
                             Layout.fillWidth: true
-                            visible: modelData.body && modelData.body.length > 0
-                            text: modelData.body || ""
+                            visible: text.length > 0
+                            text: F.notificationDetail(modelData)
                             elide: Text.ElideRight
                             font.family: AuraTheme.fontFamily
                             font.pixelSize: AuraTheme.fontMicro
                             color: AuraTheme.textSecondary
                         }
                         Text {
-                            text: modelData.created_at || ""
+                            text: F.stamp(modelData.created_at)
                             font.family: AuraTheme.fontFamily
                             font.pixelSize: AuraTheme.fontMicro
                             color: AuraTheme.textMuted
@@ -176,7 +179,7 @@ GlassPanel {
                         color: AuraTheme.textPrimary
                     }
                     Text {
-                        text: "зарегистрировано: " + (modelData.created_at || "")
+                        text: "зарегистрировано: " + F.stamp(modelData.created_at)
                         font.family: AuraTheme.fontFamily
                         font.pixelSize: AuraTheme.fontMicro
                         color: AuraTheme.textMuted

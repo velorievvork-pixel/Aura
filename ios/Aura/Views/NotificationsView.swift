@@ -34,7 +34,8 @@ struct NotificationsView: View {
                                 .padding(.top, 5)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(notice.title).font(AuraFont.titleSmall).foregroundStyle(AuraColor.textPrimary)
-                                if !notice.body.isEmpty {
+                                // У login.new в body сетевой адрес — пользователю он ни о чём не говорит.
+                                if !notice.body.isEmpty && notice.kind != "login.new" {
                                     Text(notice.body).font(AuraFont.small).foregroundStyle(AuraColor.textSecondary)
                                 }
                                 Muted("\(Format.dayPhrase(notice.createdAt)), \(Format.timeOf(notice.createdAt))")

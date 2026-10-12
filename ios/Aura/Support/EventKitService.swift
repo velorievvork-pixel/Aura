@@ -26,7 +26,7 @@ final class EventKitService {
             if let dueAt {
                 reminder.dueDateComponents = Calendar.current.dateComponents(
                     [.year, .month, .day, .hour, .minute], from: dueAt)
-                reminder.addAlarm(EKAlarm(date: dueAt))
+                reminder.addAlarm(EKAlarm(absoluteDate: dueAt))
             }
             try store.save(reminder, commit: true)
             return nil

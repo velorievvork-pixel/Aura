@@ -39,6 +39,17 @@ function dayPhrase(iso, accusative) {
     return d.getDate() + " " + MONTHS_GEN[d.getMonth()]
 }
 
+// Отметка времени события в прошлом: "сегодня, 10:10", "вчера, 18:05", "3 октября, 09:00".
+function stamp(iso) {
+    var d = parse(iso)
+    if (!d) return ""
+    var now = new Date()
+    var day = sameDay(d, now) ? "сегодня"
+            : sameDay(d, addDays(now, -1)) ? "вчера"
+            : d.getDate() + " " + MONTHS_GEN[d.getMonth()]
+    return day + ", " + time(iso)
+}
+
 function dayTitle(iso) {
     var d = parse(iso)
     if (!d) return ""
@@ -131,6 +142,13 @@ function windowPhrase(hours) {
 }
 
 // Понятное описание инструмента; серверное — запасной вариант для новых инструментов.
+// Короткое название инструмента для заголовков и подтверждений.
+function toolTitle(tool) {
+    return ({ send_message: "Сообщения", create_note: "Заметки", create_reminder: "Напоминания",
+              send_email: "Письма", find_cafe: "Подбор мест", book_table: "Бронирование",
+              check_calendar: "Календарь", suggest_time: "Подбор времени" })[tool] || tool || ""
+}
+
 function toolDescription(tool, fallback) {
     var known = {
         send_message: "Писать сообщения вашим контактам",

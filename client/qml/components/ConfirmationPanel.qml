@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import Aura
+import "../Format.js" as F
 
 /*
   ConfirmationPanel — барьер подтверждения опасных операций (этап 8).
@@ -61,14 +62,14 @@ GlassPanel {
                     Text {
                         Layout.fillWidth: true
                         text: modelData.summary && modelData.summary.length > 0
-                              ? modelData.summary : modelData.tool
+                              ? modelData.summary : F.toolDescription(modelData.tool, modelData.tool)
                         elide: Text.ElideRight
                         font.family: AuraTheme.fontFamily
                         font.pixelSize: AuraTheme.fontSmall
                         color: AuraTheme.textPrimary
                     }
                     Text {
-                        text: "инструмент: " + modelData.tool
+                        text: F.toolTitle(modelData.tool) + (modelData.created_at ? " · " + F.stamp(modelData.created_at) : "")
                         font.family: AuraTheme.fontFamily
                         font.pixelSize: AuraTheme.fontMicro
                         color: AuraTheme.textMuted

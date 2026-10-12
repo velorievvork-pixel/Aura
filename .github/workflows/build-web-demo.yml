@@ -35,6 +35,21 @@ jobs:
           cd android && ./gradlew assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with: { name: aura-demo-android, path: web/android/app/build/outputs/apk/debug/*.apk }
+      # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
+      - name: Публикация в релиз «builds» (демо APK)
+        if: success() && github.ref == 'refs/heads/main'
+        shell: bash
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          R="$GITHUB_REPOSITORY"
+          gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
+            --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
+            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — клиенты с новым дизайном, нужен сервер Aura. Aura-demo.apk и Aura-demo-Setup.exe — демо без сервера." || true
+          mkdir -p pubrel && cp web/android/app/build/outputs/apk/debug/app-debug.apk pubrel/Aura-demo.apk
+          gh release upload builds pubrel/Aura-demo.apk -R "$R" --clobber
+
       - name: Публикация в ветку builds/web-android
         working-directory: .
         run: |
@@ -60,6 +75,21 @@ jobs:
           npm run dist:win
       - uses: actions/upload-artifact@v4
         with: { name: aura-demo-windows, path: web/release/*.exe }
+      # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
+      - name: Публикация в релиз «builds» (демо Windows)
+        if: success() && github.ref == 'refs/heads/main'
+        shell: bash
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          R="$GITHUB_REPOSITORY"
+          mkdir -p pubrel && for f in web/release/*.exe; do cp "$f" pubrel/Aura-demo-Setup.exe; break; done
+          gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
+            --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
+            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — клиенты с новым дизайном, нужен сервер Aura. Aura-demo.apk и Aura-demo-Setup.exe — демо без сервера." || true
+          gh release upload builds pubrel/Aura-demo-Setup.exe -R "$R" --clobber
+
       - name: Публикация в ветку builds/web-windows
         working-directory: .
         shell: bash

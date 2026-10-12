@@ -70,6 +70,20 @@ jobs:
           git add -A && git commit -qm "android ${{ github.sha }} [skip ci]"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/android
 
+      # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
+      - name: Публикация в релиз «builds» (Android)
+        if: success() && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          R="$GITHUB_REPOSITORY"
+          gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
+            --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
+            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — клиенты с новым дизайном, нужен сервер Aura. Aura-demo.apk и Aura-demo-Setup.exe — демо без сервера." || true
+          mkdir -p pubrel && cp android/app/build/outputs/apk/debug/app-debug.apk pubrel/Aura-debug.apk
+          gh release upload builds pubrel/Aura-debug.apk -R "$R" --clobber
+
       - name: Артефакт — лог сборки (для отладки)
         if: always()
         uses: actions/upload-artifact@v4

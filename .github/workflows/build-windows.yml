@@ -117,6 +117,19 @@ jobs:
           git add -A && git commit -qm "windows ${{ github.sha }} [skip ci]"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/windows
 
+      # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
+      - name: Публикация в релиз «builds» (Windows)
+        if: success() && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          R="$GITHUB_REPOSITORY"
+          gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
+            --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
+            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — клиенты с новым дизайном, нужен сервер Aura. Aura-demo.apk и Aura-demo-Setup.exe — демо без сервера." || true
+          gh release upload builds Aura-Setup.exe Aura-portable-windows.zip -R "$R" --clobber
+
       - name: Артефакт — exe
         if: success()
         uses: actions/upload-artifact@v4

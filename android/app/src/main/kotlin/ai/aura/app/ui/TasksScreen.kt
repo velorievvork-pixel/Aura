@@ -186,7 +186,13 @@ private fun TaskRow(task: AppStore.Task, day: LocalDate) {
         ) { if (isDone) Icon(Icons.Outlined.Check, contentDescription = "Выполнено", tint = Color.White, modifier = Modifier.size(14.dp)) }
         Text(task.title, style = MaterialTheme.typography.titleSmall, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis,
             textDecoration = if (isDone) TextDecoration.LineThrough else null, modifier = Modifier.weight(1f).padding(horizontal = 12.dp))
-        if (at != null) Muted(if (at.toLocalDate() == day) timeOf(task.whenAt) else "${dayShort(at.toLocalDate())}, ${timeOf(task.whenAt)}")
+        if (at != null) {
+            // День недели — только внутри показанной недели, иначе «11 октября».
+            val d = at.toLocalDate()
+            val weekStart = day.with(java.time.DayOfWeek.MONDAY)
+            val inWeek = !d.isBefore(weekStart) && d.isBefore(weekStart.plusDays(7))
+            Muted(if (d == day) timeOf(task.whenAt) else "${if (inWeek) dayShort(d) else dateLabel(d)}, ${timeOf(task.whenAt)}")
+        }
         Icon(Icons.Outlined.DeleteOutline, contentDescription = "Удалить", tint = TextMuted,
             modifier = Modifier.padding(start = 8.dp).size(18.dp).clickable { AppStore.deleteTask(task.id) })
         Spacer(Modifier.size(8.dp))

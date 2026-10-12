@@ -117,7 +117,10 @@ Item {
                     const when = F.taskWhen(row.task)
                     if (!when) return ""
                     const d = F.parse(when)
-                    return F.sameDay(d, page.day) ? F.time(when) : F.dayShort(d) + ", " + F.time(when)
+                    if (F.sameDay(d, page.day)) return F.time(when)
+                    // День недели — только в пределах показанной недели, иначе «11 октября».
+                    const inWeek = page.week.some(w => F.sameDay(w, d))
+                    return (inWeek ? F.dayShort(d) : F.dateLabel(d)) + ", " + F.time(when)
                 }
                 font.family: AuraTheme.fontFamily
                 font.pixelSize: AuraTheme.fontSmall

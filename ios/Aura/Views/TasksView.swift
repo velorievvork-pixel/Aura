@@ -180,9 +180,11 @@ private struct TaskRow: View {
                 .lineLimit(1)
             Spacer(minLength: 4)
             if let at {
+                // День недели — только внутри показанной недели, иначе «11 октября».
+                let inWeek = Calendar(identifier: .iso8601).isDate(at, equalTo: day, toGranularity: .weekOfYear)
                 Muted(Calendar.current.isDate(at, inSameDayAs: day)
                       ? Format.timeOf(task.whenAt)
-                      : "\(Format.dayShort(at)), \(Format.timeOf(task.whenAt))")
+                      : "\(inWeek ? Format.dayShort(at) : Format.dateLabel(at)), \(Format.timeOf(task.whenAt))")
             }
             Button {
                 store.deleteTask(id: task.id)

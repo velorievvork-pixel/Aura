@@ -22,6 +22,8 @@ jobs:
   apk:
     name: Gradle — тесты и app-debug.apk
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # публикация APK в ветку builds/bot-android
     defaults:
       run:
         working-directory: bot/android
@@ -60,6 +62,20 @@ jobs:
           name: aura-agent-android-debug
           path: bot/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # Как у android/: песочница не видит blob-хосты артефактов, поэтому APK
+      # дублируется в ветку builds/bot-android (забирается обычным git fetch).
+      - name: Публикация в ветку builds/bot-android
+        if: success()
+        working-directory: .
+        run: |
+          set -e
+          mkdir pub && cp bot/android/app/build/outputs/apk/debug/app-debug.apk pub/AuraAgent-debug.apk
+          cd pub
+          git init -q -b builds/bot-android
+          git config user.name aura-ci && git config user.email ci@aura.local
+          git add -A && git commit -qm "bot-android ${{ github.sha }} [skip ci]"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/bot-android
 
       - name: Отчёт тестов при падении
         if: failure()

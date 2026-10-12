@@ -101,7 +101,7 @@ brew install xcodegen && cd ios && xcodegen generate && open Aura.xcodeproj
 cd ios/AuraKit && swift test        # тесты общего слоя без симулятора
 ```
 
-CI: `.github/workflows/build-ios.yml` (macOS, Xcode 15.4) генерирует проект,
+CI: `.github/workflows/build-ios.yml` (macOS 15, последний стабильный Xcode 16+; свежий XcodeGen пишет проект в его формате) генерирует проект,
 гоняет `swift test` пакета AuraKit, собирает приложение под симулятор и
 запускает AuraTests; Aura.app для симулятора — в артефактах запуска.
 

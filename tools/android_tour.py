@@ -49,11 +49,19 @@ def shot(name: str) -> None:
     log(f"снимок {path}")
 
 
+dump_errors = 0
+
+
 def nodes() -> list[dict]:
-    adb("shell", "uiautomator", "dump", "/sdcard/ui.xml")
+    global dump_errors
+    adb("shell", "rm", "-f", "/sdcard/ui.xml")
+    status = adb("shell", "uiautomator", "dump", "/sdcard/ui.xml").strip()
     xml = adb("shell", "cat", "/sdcard/ui.xml")
     start = xml.find("<?xml")
     if start < 0:
+        dump_errors += 1
+        if dump_errors <= 5:
+            log(f"  uiautomator: {status[:200]}")
         return []
     found = []
     for node in ET.fromstring(xml[start:]).iter("node"):
@@ -130,10 +138,10 @@ def main() -> int:
     shot("login-keyboard")
     hide_keyboard()
     tap("Войти", lowest=True, wait=6)
-    if find("Все системы работают", timeout=20) is None:
-        shot("login-failed")
-        log("! вход не удался")
-        return 1
+    if find("Все системы работают", timeout=60) is None:
+        # Снимок покажет, вошли ли мы: uiautomator мог просто не дождаться простоя.
+        problems.append("не дождались текста «Все системы работают»")
+        log("! главная не распознана, проход продолжается по снимкам")
     time.sleep(3)
     shot("home")
     swipe_up()

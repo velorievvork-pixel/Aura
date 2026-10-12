@@ -163,7 +163,9 @@ public:
         session.set("jwt_id", Json(record.jwtId));
         session.set("device", Json(record.device));
         session.set("remote_addr", Json(record.remoteAddr));
-        session.set("created_at", Json(record.createdAt));
+        // Как DEFAULT now() в PostgreSQL: AuthManager время создания не задаёт,
+        // и без этого sessions.list отдавал пустой created_at.
+        session.set("created_at", Json(record.createdAt.empty() ? isoNow() : record.createdAt));
         session.set("expires_at", Json(record.expiresAt));
         session.set("revoked_at", Json(""));
         table("sessions").push(session);

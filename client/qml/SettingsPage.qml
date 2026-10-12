@@ -19,6 +19,60 @@ Item {
     property var prefs: App ? App.preferences : ({})
 
     // v3: заголовок секции с lilac-индикатором слева (как в макете Settings)
+    // Переключатель в стиле стекла: стандартный Basic-Switch бело-серый и
+    // с лишней шириной, из-за чего вставал посреди строки.
+    component GlassSwitch: Switch {
+        id: sw
+        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+        padding: 0
+        implicitWidth: 46
+        implicitHeight: 26
+        indicator: Rectangle {
+            anchors.fill: parent
+            radius: height / 2
+            color: sw.checked ? AuraTheme.accentA(0.85) : Qt.rgba(1, 1, 1, 0.12)
+            border.width: 1
+            border.color: sw.checked ? AuraTheme.lilacA(0.5) : Qt.rgba(1, 1, 1, 0.18)
+            Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
+            Rectangle {
+                width: 20; height: 20; radius: 10
+                y: 3
+                x: sw.checked ? parent.width - width - 3 : 3
+                color: "#FFFFFF"
+                Behavior on x { NumberAnimation { duration: AuraTheme.pressMs; easing.type: AuraTheme.ease } }
+            }
+        }
+        contentItem: null
+    }
+
+    // Слайдер в стиле темы (у Basic — серый трек и белый «пятак» без акцента).
+    component GlassSlider: Slider {
+        id: sl
+        implicitHeight: 26
+        background: Rectangle {
+            x: sl.leftPadding
+            y: sl.topPadding + sl.availableHeight / 2 - height / 2
+            width: sl.availableWidth
+            height: 4
+            radius: 2
+            color: Qt.rgba(1, 1, 1, 0.12)
+            Rectangle {
+                width: sl.visualPosition * parent.width
+                height: parent.height
+                radius: 2
+                color: AuraTheme.accentSoft
+            }
+        }
+        handle: Rectangle {
+            x: sl.leftPadding + sl.visualPosition * (sl.availableWidth - width)
+            y: sl.topPadding + sl.availableHeight / 2 - height / 2
+            width: 18; height: 18; radius: 9
+            color: "#FFFFFF"
+            border.width: sl.pressed ? 3 : 2
+            border.color: AuraTheme.accent
+        }
+    }
+
     component SectionTitle: RowLayout {
         property string title: ""
         property int titleSize: AuraTheme.fontBody
@@ -472,10 +526,13 @@ Item {
                         }
                         GlassComboBox {
                             id: micLangBox
-                            Layout.preferredWidth: 140
-                            model: ["auto", "ru", "en"]
-                            currentIndex: Math.max(0, model.indexOf(App ? App.micLanguage : "auto"))
-                            onActivated: App.setMicLanguage(model[currentIndex])
+                            Layout.preferredWidth: 160
+                            textRole: "label"
+                            model: [{ value: "auto", label: "Авто" },
+                                    { value: "ru", label: "Русский" },
+                                    { value: "en", label: "English" }]
+                            currentIndex: Math.max(0, model.findIndex(m => m.value === (App ? App.micLanguage : "auto")))
+                            onActivated: App.setMicLanguage(model[currentIndex].value)
                         }
                     }
 
@@ -499,7 +556,8 @@ Item {
                                 color: AuraTheme.textMuted
                             }
                         }
-                        Switch {
+                        Item { Layout.fillWidth: true }
+                        GlassSwitch {
                             checked: App ? App.ttsEnabled : false
                             onToggled: App.setTtsEnabled(checked)
                         }
@@ -521,6 +579,8 @@ Item {
                             id: voiceBox
                             Layout.preferredWidth: 220
                             model: App ? App.ttsVoices : []
+                            enabled: count > 0
+                            displayText: count > 0 ? currentText : "Системный голос"
                             currentIndex: Math.max(0, model.indexOf(App ? App.ttsVoice : ""))
                             onActivated: App.setTtsVoice(model[currentIndex])
                         }
@@ -538,7 +598,7 @@ Item {
                             font.pixelSize: AuraTheme.fontSmall
                             color: AuraTheme.textSecondary
                         }
-                        Slider {
+                        GlassSlider {
                             Layout.fillWidth: true
                             from: -1.0
                             to: 1.0
@@ -559,7 +619,7 @@ Item {
                             font.pixelSize: AuraTheme.fontSmall
                             color: AuraTheme.textSecondary
                         }
-                        Slider {
+                        GlassSlider {
                             Layout.fillWidth: true
                             from: 0.0
                             to: 1.0
@@ -589,7 +649,8 @@ Item {
                                 color: AuraTheme.textMuted
                             }
                         }
-                        Switch {
+                        Item { Layout.fillWidth: true }
+                        GlassSwitch {
                             checked: App ? App.ttsImportantOnly : false
                             onToggled: App.setTtsImportantOnly(checked)
                         }
@@ -619,8 +680,12 @@ Item {
                     anchors.fill: parent
                     spacing: AuraTheme.spaceSm
 
-                    RowLayout {
+                    // В узкой панели кнопки переносятся под заголовок, а не наезжают на него.
+                    GridLayout {
                         Layout.fillWidth: true
+                        columns: width < 480 ? 1 : 2
+                        columnSpacing: AuraTheme.spaceSm
+                        rowSpacing: AuraTheme.spaceXs
                         Text {
                             Layout.fillWidth: true
                             text: "Активные сессии"
@@ -629,19 +694,23 @@ Item {
                             font.weight: Font.DemiBold
                             color: AuraTheme.textPrimary
                         }
-                        GlassButton {
-                            variant: "quiet"
-                            text: "Обновить"
-                            glyph: "⟳"
-                            implicitHeight: 34
-                            onClicked: App.loadSessions()
-                        }
-                        GlassButton {
-                            variant: "danger"
-                            text: "Завершить все"
-                            glyph: "⏻"
-                            implicitHeight: 34
-                            onClicked: App.revokeAllSessions()
+                        RowLayout {
+                            Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight
+                            spacing: AuraTheme.spaceSm
+                            GlassButton {
+                                variant: "quiet"
+                                text: "Обновить"
+                                glyph: "⟳"
+                                implicitHeight: 34
+                                onClicked: App.loadSessions()
+                            }
+                            GlassButton {
+                                variant: "danger"
+                                text: "Завершить все"
+                                glyph: "⏻"
+                                implicitHeight: 34
+                                onClicked: App.revokeAllSessions()
+                            }
                         }
                     }
 
@@ -675,8 +744,11 @@ Item {
                                     }
                                     Text {
                                         Layout.fillWidth: true
-                                        text: (modelData.remote_addr || "") + "  ·  с " +
-                                              String(modelData.created_at || "").replace("T", " ").substring(0, 16)
+                                        // Адрес без IP (":порт", старые записи) ничего не говорит — не показываем.
+                                        text: [/^:/.test(modelData.remote_addr || "") ? "" : (modelData.remote_addr || ""),
+                                               modelData.created_at ? "вход " + F.stamp(modelData.created_at) : ""]
+                                              .filter(x => x.length > 0).join("  ·  ")
+                                        visible: text.length > 0
                                         font.family: AuraTheme.fontFamily
                                         font.pixelSize: AuraTheme.fontMicro
                                         color: AuraTheme.textMuted
@@ -953,8 +1025,9 @@ Item {
                                             color: AuraTheme.textPrimary
                                         }
                                         Text {
-                                            text: (modelData.remote_addr || "") + "  ·  до " +
-                                                  String(modelData.expires_at || "").replace("T", " ").substring(0, 10)
+                                            text: [/^:/.test(modelData.remote_addr || "") ? "" : (modelData.remote_addr || ""),
+                                                   F.parse(modelData.expires_at) ? "доверено до " + F.dateLabel(F.parse(modelData.expires_at)) : ""]
+                                                  .filter(x => x.length > 0).join("  ·  ")
                                             font.family: AuraTheme.fontFamily
                                             font.pixelSize: AuraTheme.fontMicro
                                             color: AuraTheme.textMuted

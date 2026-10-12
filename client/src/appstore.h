@@ -41,7 +41,7 @@ class AppStore : public QObject {
     Q_PROPERTY(bool peerOnline READ peerOnline NOTIFY chatChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
     Q_PROPERTY(QString errorMessage READ errorMessage NOTIFY errorMessageChanged)
-    Q_PROPERTY(QString serverUrl READ serverUrl CONSTANT)
+    Q_PROPERTY(QString serverUrl READ serverUrl NOTIFY connectedChanged)
     Q_PROPERTY(QString connectionLabel READ connectionLabel NOTIFY connectedChanged)
     // auth v3: подтверждение email, восстановление пароля, активные сессии.
     Q_PROPERTY(QString pendingEmail READ pendingEmail NOTIFY authFlowChanged)
@@ -127,6 +127,8 @@ public:
     QString errorMessage() const { return errorMessage_; }
     QString serverUrl() const;
     QString connectionLabel() const;
+    // Смена адреса сервера из интерфейса: ws:// или wss://, сохраняется в настройках.
+    Q_INVOKABLE bool changeServerUrl(const QString& url);
     QString pendingEmail() const { return pendingEmail_; }
     QString devEmailCode() const { return devEmailCode_; }
     QString devResetCode() const { return devResetCode_; }
@@ -317,6 +319,7 @@ private:
     void tryRefresh();  // обмен refresh-токена на новую пару при старте
     void clearSession();
     void setBusy(bool busy);
+    void scheduleReconnect();
     void setStatus(const QString& message);
     void setError(const QString& message);
     void loadChats();
@@ -347,6 +350,8 @@ private:
     QString userEmail_;
     qint64 userId_ = 0;
     bool busy_ = false;
+    int reconnectDelayMs_ = 2000;     // переподключение: 2 → 4 → 8 → 15 с
+    bool reconnectScheduled_ = false;
     qint64 currentChatId_ = 0;
     QString chatTitle_;
     bool peerOnline_ = false;

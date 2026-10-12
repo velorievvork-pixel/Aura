@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import QtQuick.Controls
 import QtCore
 import Aura
@@ -21,6 +22,19 @@ ApplicationWindow {
     color: AuraTheme.bgDeep
     title: App && App.authenticated ? "Aura — " + App.userName : "Aura"
     font.family: AuraTheme.fontFamily
+
+    // Окно не должно быть больше экрана (ноутбуки 1366×768, сохранённая
+    // геометрия с большого монитора): ужимаем и возвращаем в видимую область.
+    function fitToScreen() {
+        const aw = Screen.desktopAvailableWidth
+        const ah = Screen.desktopAvailableHeight - 40   // рамка и заголовок окна
+        if (aw <= 0 || ah <= 0) return
+        if (width > aw) width = Math.max(minimumWidth, aw)
+        if (height > ah) height = Math.max(minimumHeight, ah)
+        if (x < 0 || x + width > aw) x = Math.max(0, Math.round((aw - width) / 2))
+        if (y < 0 || y + height > ah + 40) y = Math.max(0, Math.round((ah - height) / 2))
+    }
+    Component.onCompleted: Qt.callLater(fitToScreen)
 
     // Desktop-учтивость: запоминаем геометрию окна между запусками.
     Settings {

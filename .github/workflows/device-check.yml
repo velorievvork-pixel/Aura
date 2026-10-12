@@ -35,7 +35,7 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAURA_WITH_LIBPQ=OFF -DAURA_BUILD_TESTS=OFF
           cmake --build build -j"$(nproc)"
           python -m pip install -q -r ai/requirements.txt websockets
-          PYTHON=python tools/dev_stack.sh
+          PYTHON=python bash tools/dev_stack.sh
           echo "AURA_DEMO_PASSWORD=Demo$(openssl rand -hex 8)7" >> "$GITHUB_ENV"
       - name: Демо-данные
         run: python tools/demo_seed.py
@@ -67,7 +67,9 @@ jobs:
       - name: Снимки в ветку builds/shots-android
         if: always()
         run: |
-          cd shots/android && git init -q -b builds/shots-android
+          mkdir -p shots/android && cd shots/android
+          [ -n "$(ls -A)" ] || echo "снимков нет — см. лог прогона" > README.txt
+          git init -q -b builds/shots-android
           git config user.name aura-ci && git config user.email ci@aura.local
           git add -A && git commit -qm "android shots ${{ github.sha }} [skip ci]"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/shots-android
@@ -126,7 +128,9 @@ jobs:
         if: always()
         shell: bash
         run: |
-          cd shots && git init -q -b builds/shots-windows
+          mkdir -p shots && cd shots
+          [ -n "$(ls -A)" ] || echo "снимков нет — см. лог прогона" > README.txt
+          git init -q -b builds/shots-windows
           git config user.name aura-ci && git config user.email ci@aura.local
           git add -A && git commit -qm "windows shots ${{ github.sha }} [skip ci]"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/shots-windows
@@ -148,7 +152,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAURA_WITH_LIBPQ=OFF -DAURA_BUILD_TESTS=OFF
           cmake --build build -j"$(sysctl -n hw.ncpu)"
           python -m pip install -q -r ai/requirements.txt websockets
-          PYTHON=python tools/dev_stack.sh
+          PYTHON=python bash tools/dev_stack.sh
           echo "AURA_DEMO_PASSWORD=Demo$(openssl rand -hex 8)7" >> "$GITHUB_ENV"
       - name: Демо-данные
         run: python tools/demo_seed.py
@@ -179,7 +183,8 @@ jobs:
       - name: Снимки в ветку builds/shots-ios
         if: always()
         run: |
-          cd shots/ios && rm -rf Tour.xcresult && rm -f xcodebuild.log
+          mkdir -p shots/ios && cd shots/ios && rm -rf Tour.xcresult && rm -f xcodebuild.log
+          [ -n "$(ls -A)" ] || echo "снимков нет — см. лог прогона" > README.txt
           git init -q -b builds/shots-ios
           git config user.name aura-ci && git config user.email ci@aura.local
           git add -A && git commit -qm "ios shots ${{ github.sha }} [skip ci]"

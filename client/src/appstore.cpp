@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSettings>
+#include <QTimer>
 #include <QUuid>
 #include <QVariant>
 
@@ -81,8 +82,10 @@ AppStore::AppStore(QObject* parent)
             loadChats();
             loadPreferences();
             loadMemory();
-        } else {
-            setStatus(QStringLiteral("Нет соединения"));
+            reconnectDelayMs_ = 2000;
+        } else if (state == WebSocketClient::State::Disconnected) {
+            setStatus(QStringLiteral("Нет соединения с сервером"));
+            scheduleReconnect();
         }
         emit connectedChanged();
     });
@@ -93,6 +96,40 @@ AppStore::AppStore(QObject* parent)
 void AppStore::setServerUrl(const QUrl& url) {
     serverUrlText_ = url.toString();
     client_->setUrl(url);
+}
+
+bool AppStore::changeServerUrl(const QString& text) {
+    const QString value = text.trimmed();
+    const QUrl url(value);
+    if (!url.isValid() || (url.scheme() != QLatin1String("ws") && url.scheme() != QLatin1String("wss"))
+            || url.host().isEmpty()) {
+        setError(QStringLiteral("Адрес сервера начинается с ws:// или wss://"));
+        return false;
+    }
+    QSettings settings;
+    settings.setValue(QLatin1String(kServerKey), value);
+    setServerUrl(url);
+    reconnectDelayMs_ = 2000;
+    if (client_->state() == WebSocketClient::State::Disconnected) {
+        client_->connectToServer();
+    } else {
+        // Текущее соединение закроется, обработчик Disconnected подключится к новому адресу.
+        client_->disconnectFromServer();
+    }
+    setStatus(QStringLiteral("Подключаемся к %1").arg(value));
+    emit connectedChanged();
+    return true;
+}
+
+void AppStore::scheduleReconnect() {
+    if (reconnectScheduled_) return;
+    reconnectScheduled_ = true;
+    const int delay = reconnectDelayMs_;
+    reconnectDelayMs_ = qMin(reconnectDelayMs_ * 2, 15000);
+    QTimer::singleShot(delay, this, [this]() {
+        reconnectScheduled_ = false;
+        if (client_->state() == WebSocketClient::State::Disconnected) client_->connectToServer();
+    });
 }
 
 void AppStore::start() {
@@ -121,8 +158,11 @@ bool AppStore::connected() const { return client_->isConnected(); }
 QString AppStore::serverUrl() const { return serverUrlText_; }
 
 QString AppStore::connectionLabel() const {
-    if (!client_->isConnected()) {
+    if (client_->state() == WebSocketClient::State::Connecting) {
         return QStringLiteral("подключение к %1…").arg(serverUrlText_);
+    }
+    if (!client_->isConnected()) {
+        return QStringLiteral("нет связи с %1 — пробуем снова, проверьте адрес сервера").arg(serverUrlText_);
     }
     return authenticated() ? QStringLiteral("Аура на связи") : QStringLiteral("сервер: %1").arg(serverUrlText_);
 }

@@ -16,7 +16,6 @@ int main(int argc, char* argv[]) {
     QGuiApplication app(argc, argv);
     QGuiApplication::setOrganizationName(QStringLiteral("Aura"));
     QGuiApplication::setApplicationName(QStringLiteral("Aura"));
-    QGuiApplication::setApplicationDisplayName(QStringLiteral("Aura — сеть ИИ-агентов"));
 
     // Manrope из ресурсов — шрифт макетов на любой системе.
     QDirIterator fonts(QStringLiteral(":/fonts"), {QStringLiteral("*.ttf")});
@@ -26,9 +25,11 @@ int main(int argc, char* argv[]) {
     QQuickStyle::setStyle(QStringLiteral("Basic"));
 
     aura::AppStore store;
-    const QString serverUrl =
-        qEnvironmentVariable("AURA_SERVER_URL", QStringLiteral("ws://127.0.0.1:9000"));
-    store.setServerUrl(QUrl(serverUrl));
+    // AURA_SERVER_URL — для разработки; иначе адрес из настроек (его меняют на
+    // экране входа и в настройках), по умолчанию ws://127.0.0.1:9000.
+    if (qEnvironmentVariableIsSet("AURA_SERVER_URL")) {
+        store.setServerUrl(QUrl(qEnvironmentVariable("AURA_SERVER_URL")));
+    }
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("App"), &store);

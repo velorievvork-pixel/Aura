@@ -31,6 +31,10 @@ iOS (SwiftUI). База — PostgreSQL, 22 таблицы (`schema/schema.sql` +
   и `app` (Compose-клиент, пакет `ai.aura.app`).
 - `ios/` — SwiftUI-клиент.
 - `schema/` — схема БД и миграции; `docs/` — PROTOCOL.md, DATABASE.md, SETUP.md, ANDROID.md.
+- `bot/` — отдельный продукт «Aura Bot»: Python 3.11 (aiogram 3 + FastAPI + SQLAlchemy/SQLite + APScheduler),
+  Telegram-бот и HTTP/WS API в одном процессе (`python -m aura_bot`), тесты `make bot-test`;
+  его Android-клиент — `bot/android` (пакет `ai.aura.agent`, workflow `build-bot-android.yml`).
+  С C++-сервером и протоколом `docs/PROTOCOL.md` не связан.
 - `tools/e2e.py` — эталонный клиент протокола на Python (141 проверка).
 - `.github/workflows/` — `ci.yml` (тесты), `build-windows.yml` (.exe), `build-android.yml` (.apk).
 

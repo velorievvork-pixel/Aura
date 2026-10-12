@@ -1,93 +1,74 @@
-# Дизайн-система Aura (full_mix)
+# Дизайн-система Aura (v3)
 
-Концепция «full_mix»: тёмный графит + стеклянные панели (glassmorphism) +
-два цветных «сияния» на фоне + акцентный фиолетовый. Единый источник
-токенов — `client/qml/theme/AuraTheme.qml` (QML-синглтон); iOS повторяет
-палитру системными средствами SwiftUI. Полное описание дизайна —
-[DESIGN.md](DESIGN.md).
+Токены одни на все клиенты; описание дизайна — [DESIGN.md](DESIGN.md).
+Эталон — `client/qml/theme/AuraTheme.qml`; Android — `ui/theme/Theme.kt`,
+iOS — `Support/Theme.swift`, веб — `preview/styles.css`.
 
-## Токены
+## Цвета
 
-### Цвета фона
 | токен | значение | назначение |
 | --- | --- | --- |
-| `bgDeep` | `#0D0D0F` | фон окна |
-| `bgBase` | `#16161A` | верх градиента |
-| `bgRaised` | `#1E1E24` | карточки, секции |
-| `bgElevated` | `#26262E` | модалки, дропдауны |
+| `bgDeep` | `#09080E` | фон окна |
+| `bgBase` | `#0F0D17` | низ градиента фона |
+| `bgPanel` | `#14111D` | подложка стеклянных панелей |
+| `bgRaised` | `#16131F` | карточки, секции |
+| `bgElevated` | `#1E1A2B` | модалки, листы, дропдауны |
+| `glassFill` / `Hover` / `Pressed` | 0,055 / 0,09 / 0,13 | заливка белым |
+| `glassBorder` / `Hover` | 0,10 / 0,18 | обводка белым |
+| `glassHighlight` | 0,14 | верхний блик |
+| `glassEdge` | `#D9B8FF` | сиреневый блик по краю |
+| `accent` | `#8B5CF6` | акцент |
+| `accentSoft` | `#A78BFA` | Аура, подсветка |
+| `accentDeep` | `#6D28D9` | нажатое состояние |
+| `accentGlow` | `#738B5CF6` | свечение (45 %) |
+| `gradStart` / `gradMid` / `gradEnd` | `#E6B3FF` / `#A77BFF` / `#7346F5` | CTA |
+| `glowViolet` / `glowMagenta` / `glowIndigo` | `#6D28D9` / `#4C1D95` / `#3B3CC4` | орбиты фона |
+| `lilac` | `#D9B8FF` | индикатор, ссылки, курсор |
+| `pink` | `#E8A8FF` | дополнительный акцент |
+| `textPrimary` | `#F4F1FB` | основной текст |
+| `textSecondary` | `#B9B3C9` | вторичный текст |
+| `textMuted` | `#7D768F` | подписи, disabled |
+| `textOnAccent` | `#FFFFFF` | текст на CTA |
+| `success` / `online` | `#4ADE80` | |
+| `warning` | `#FBBF24` | |
+| `danger` | `#F87171` | |
 
-### Стекло
-| токен | значение | назначение |
+## Типографика
+
+Manrope (SIL OFL 1.1) встроен во все клиенты: Regular, Medium, SemiBold,
+Bold, ExtraBold. Размеры: `fontMicro` 11, `fontSmall` 13, `fontBody` 15,
+`fontLead` 18, `fontTitle` 22, `fontHero` 34, `fontDisplay` 54 (desktop);
+на телефоне дисплей приветствия 46, заголовок экрана 38.
+
+## Геометрия, тень, анимация
+
+- Радиусы: `radiusPill` 999, `radiusShell` 32, `radiusCard` 24,
+  `radiusBubble` 20, `radiusField` 14, `radiusSmall` 12.
+- Отступы: 4 / 8 / 16 / 24 / 32 / 48.
+- Тень: `#99000000`, blur 40, y 24.
+- Анимация: `pressMs` 180, `moveMs` 250, `slowMs` 350, `pressScale` 0,98,
+  кривая OutCubic.
+- Desktop: `breakpointWide` 1000, `sidebarWidth` 258, рельс 84.
+
+## Компоненты
+
+| QML (`client/qml/components`) | Compose (`ui/theme/Components.kt`) | SwiftUI (`Views/Components.swift`) |
 | --- | --- | --- |
-| `glassFill` / `glassFillHover` / `glassFillPressed` | 0.04 / 0.08 / 0.12 | прозрачность заполнения |
-| `glassBorder` / `glassBorderHover` | 0.08 / 0.15 | прозрачность обводки |
-| `glassHighlight` | 0.14 | верхний блик |
-| `glassTint` | `#FFFFFF` | оттенок стекла |
-
-### Акцент и статусы
-| токен | значение |
-| --- | --- |
-| `accent` | `#7C6AFF` (фиолетовый) |
-| `accentSoft` | `#A78BFA` (сообщения Ауры, подсветка) |
-| `accentDeep` | `#5B4DD6` |
-| `accentFill` | 0.20 |
-| `accentGlow` | `#407C6AFF` (свечение кнопок) |
-| `success` / `online` | `#4ADE80` |
-| `warning` | `#FBBF24` |
-| `danger` | `#F87171` |
-
-### Текст
-| токен | значение |
-| --- | --- |
-| `textPrimary` | `#F0F0F4` |
-| `textSecondary` | `#9A9AA4` |
-| `textMuted` | `#5C5C66` |
-| `textOnAccent` | `#FFFFFF` |
-
-### Типографика
-Стек: `Inter, 'SF Pro Text', 'Segoe UI', 'Noto Sans', sans-serif`.
-Размеры: `fontMicro` 11, `fontSmall` 12, `fontBody` 14, `fontTitle` 18,
-`fontHero` 28.
-
-### Радиусы, отступы, тень, анимация
-- Радиусы: `radiusPill` 999, `radiusCard` 22, `radiusBubble` 22,
-  `radiusField` 14, `radiusSmall` 14.
-- Отступы: `spaceXs` 4, `spaceSm` 8, `spaceMd` 16, `spaceLg` 24, `spaceXl` 32.
-- Тень: `#59000000`, blur 32, y 8.
-- Анимация: `pressMs` 200, `moveMs` 250.
-
-## Компоненты (QML, 11 штук)
-
-| компонент | назначение |
-| --- | --- |
-| `GlassSurface` | размывание фона под стеклом (общий backdrop) |
-| `GlassPanel` | стеклянная карточка/секция |
-| `GlassButton` | кнопка: quiet / accent / danger |
-| `GlassField` | текстовое поле |
-| `AuraAvatar` | аватар с инициалом и индикатором online |
-| `ChatBubble` | пузырь сообщения (своё/чужое/агент) |
-| `ChatList` | список чатов (общий для стека и master-detail) |
-| `ConfirmationPanel` | барьер подтверждения опасных операций |
-| `TasksPanel` | список задач |
-| `VoicePanel` | голосовой ввод (волна, состояние) |
-| `NotificationsPanel` | «входящая» уведомлений + push-устройства (этап 13) |
-
-Экраны: `Main` (роутер), `LoginPage`, `ChatsPage`, `ChatPage`,
-`SettingsPage`, `DesktopShell` (широкая раскладка).
-
-## Адаптивность (этап 12)
-
-- `breakpointWide` 1120: шире — `DesktopShell` (рельс `railWidth` 76 +
-  master-detail `masterWidth` 340); уже — стек ChatsPage → ChatPage.
-- Рельс: Чаты / Задачи / Ждут (бейдж подтверждений) / Пуши (бейдж
-  непрочитанных, этап 13) / Ещё.
-- Выбранный чат переживает смену раскладки (состояние в `Main`).
-- Геометрия окна сохраняется между запусками (Qt Settings).
+| `AuraBackground` | `AuraBackground` | `AuraBackground` |
+| `GlassSurface`, `GlassPanel` | `GlassCard` | `glassCard()` |
+| `GlassButton` (accent / glass / quiet / danger) | `GradientButton`, `GlassButton`, `RoundIconButton` | `GradientButton`, `GlassButton`, `RoundIconButton` |
+| `GlassField`, `GlassComboBox` | `AuraField` | `AuraField` |
+| `Chip` | `AuraChip` | `AuraChip` |
+| `Bubble`, `ChatBubble` | `Bubble` | `Bubble` |
+| `AuraAvatar`, `AgentCard` | `AuraAvatar` | `AuraAvatar`, `AgentCard` |
+| `AuraEmblem`, `AuraOrb` | `AuraEmblem`, `AuraOrb` | `AuraEmblem`, `AuraOrb` |
+| `Icon` (Lucide, ISC) | Material Icons | SF Symbols |
+| `LinkText` | `Link` | `LinkButton` |
+| `ConfirmationPanel`, `NotificationsPanel`, `VoicePanel` | экраны подтверждений, уведомлений, `VoiceSheet` | `ConfirmationsView`, `NotificationsView`, `VoiceOverlay` |
 
 ## Правила
 
-- Никаких «белых экранов-заглушек»: у каждого состояния есть UI
-  (пусто/загрузка/ошибка).
-- Цвет — только из токенов; хардкод цветов в компонентах запрещён.
-- Контраст текста к фону — не ниже WCAG AA (проверено на палитре).
-- Пиктограммы — юникод-глифы (без иконочных шрифтов и внешних ассетов).
+- Цвет — только из токенов; новый цвет сначала добавляется во все файлы токенов.
+- У каждого состояния есть UI: пусто, загрузка, ошибка.
+- Опасные действия (письмо, сообщение, бронь) — только по кнопке человека.
+- Контраст основного и вторичного текста к фону — не ниже WCAG AA; `textMuted` (4,3:1) — только для подписей.

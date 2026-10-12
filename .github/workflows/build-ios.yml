@@ -56,6 +56,17 @@ jobs:
           name: aura-ios-simulator
           path: ios/build/Build/Products/Debug-iphonesimulator/Aura.app
 
+      # Ошибки компилятора/тестов — в лог шага и аннотации прогона, чтобы их
+      # было видно без скачивания артефакта.
+      - name: Ошибки сборки
+        if: failure()
+        run: |
+          grep -nE "error:|: error|failed|Failing tests|XCTAssert" xcodebuild.log | grep -v "^.*builtin-" | head -80 || true
+          grep -E "^/.*error: " xcodebuild.log | sort -u | head -30 | while IFS= read -r l; do
+            f=${l%%:*}; rest=${l#*:}; line=${rest%%:*}
+            echo "::error file=${f#$GITHUB_WORKSPACE/},line=$line::${l##*error: }"
+          done || true
+
       - name: Лог сборки
         if: failure()
         uses: actions/upload-artifact@v4

@@ -1,4 +1,4 @@
-"""ORM-модели. Этап 1: пользователи, анкета, память (память заполняется с этапа 2)."""
+"""ORM-модели: пользователи, анкета, долгая память, история чата."""
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
@@ -9,6 +9,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 MEMORY_KINDS = ("fact", "preference", "schedule", "contact")
+CHAT_ROLES = ("user", "assistant")
 
 
 def utcnow() -> datetime:
@@ -37,6 +38,7 @@ class User(Base):
     memories: Mapped[list["Memory"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    messages: Mapped[list["ChatMessage"]] = relationship(cascade="all, delete-orphan")
 
 
 class Profile(Base):
@@ -68,3 +70,17 @@ class Memory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[User] = relationship(back_populates="memories")
+
+
+class ChatMessage(Base):
+    """История диалога — короткий контекст (последние реплики) для LLM."""
+    __tablename__ = "messages"
+    __table_args__ = (
+        CheckConstraint(f"role IN {CHAT_ROLES!r}", name="ck_messages_role"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(16))
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

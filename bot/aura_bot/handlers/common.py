@@ -1,18 +1,20 @@
-"""Фолбэк вне анкеты: без анкеты — отправляем на /start; чат с LLM появится на этапе 2."""
+"""Фолбэки: неизвестные команды, нетекстовые сообщения, устаревшие кнопки."""
 from __future__ import annotations
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.types import CallbackQuery, Message
 
-from ..models import User
-from ..repo import is_onboarded
+router_hint = "Команды: /memory — что я знаю, /forget — забыть, /start — анкета."
 
-async def fallback(message: Message, user: User) -> None:
-    if not is_onboarded(user):
-        await message.answer("Сначала короткая анкета — нажмите /start.")
-        return
-    await message.answer("Анкета учтена. Чат с агентом подключается на следующем этапе.")
+
+async def unknown_command(message: Message) -> None:
+    await message.answer("Не знаю такой команды. " + router_hint)
+
+
+async def non_text(message: Message) -> None:
+    """Голосовые подключим на этапе 4; фото/стикеры пока не обрабатываем."""
+    await message.answer("Пока понимаю только текст. " + router_hint)
 
 
 async def stale_button(cb: CallbackQuery) -> None:
@@ -22,6 +24,7 @@ async def stale_button(cb: CallbackQuery) -> None:
 
 def make_router() -> Router:
     r = Router(name="common")
-    r.message.register(fallback, StateFilter(None))
+    r.message.register(unknown_command, StateFilter(None), F.text.startswith("/"))
+    r.message.register(non_text, StateFilter(None))
     r.callback_query.register(stale_button)
     return r

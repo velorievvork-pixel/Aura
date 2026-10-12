@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, Chat, Message, Update, User as TgUser
 
 from aura_bot.bot import build_dispatcher
 from aura_bot.db import init_db, make_engine, make_sessionmaker
+from aura_bot.llm import LLMError
 
 
 @pytest.fixture
@@ -53,14 +54,35 @@ class FakeSession(BaseSession):
         yield b""
 
 
+class FakeLLM:
+    """LLM-заглушка: ответ чата и JSON извлечения задаются в тесте; все вызовы пишутся."""
+
+    def __init__(self, answer: str = "Ответ Aura", extraction: str = '{"memories": []}') -> None:
+        self.answer = answer
+        self.extraction = extraction
+        self.fail = False
+        self.calls: list[tuple[list[dict], bool]] = []
+
+    async def complete(self, messages, *, json_mode=False):
+        self.calls.append((messages, json_mode))
+        if self.fail:
+            raise LLMError("недоступна")
+        return self.extraction if json_mode else self.answer
+
+
+@pytest.fixture
+def llm():
+    return FakeLLM()
+
+
 class TgHarness:
     """Мини-эмулятор чата: шлёт апдейты в диспетчер и отдаёт ответы бота."""
 
-    def __init__(self, sessionmaker, user_id: int = 42) -> None:
+    def __init__(self, sessionmaker, user_id: int = 42, llm=None) -> None:
         self.fake = FakeSession()
         # Токен-заглушка нужного формата: в сеть он не уходит (FakeSession)
         self.bot = Bot("123456:" + "A" * 35, session=self.fake)
-        self.dp = build_dispatcher(sessionmaker, "Europe/Moscow")
+        self.dp = build_dispatcher(sessionmaker, "Europe/Moscow", llm)
         self.tg_user = TgUser(id=user_id, is_bot=False, first_name="Аня")
         self.chat = Chat(id=user_id, type="private")
         self._ids = itertools.count(1)
@@ -102,5 +124,5 @@ class TgHarness:
 
 
 @pytest.fixture
-def tg(sessionmaker):
-    return TgHarness(sessionmaker)
+def tg(sessionmaker, llm):
+    return TgHarness(sessionmaker, llm=llm)

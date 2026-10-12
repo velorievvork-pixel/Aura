@@ -15,6 +15,7 @@ class Settings:
     openai_api_key: str | None
     openai_base_url: str
     openai_model: str
+    llm_json_mode: bool
     default_tz: str
     free_messages_per_day: int
 
@@ -29,6 +30,7 @@ class Settings:
             openai_api_key=os.getenv("OPENAI_API_KEY") or None,
             openai_base_url=os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1",
             openai_model=os.getenv("OPENAI_MODEL") or "gpt-4o-mini",
+            llm_json_mode=(os.getenv("LLM_JSON_MODE") or "1") not in ("0", "false", "no"),
             default_tz=tz,
             free_messages_per_day=int(os.getenv("FREE_MESSAGES_PER_DAY") or 20),
         )

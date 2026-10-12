@@ -311,6 +311,11 @@ void Server::registerHandlers() {
                                                            request.payload.getString("device", "qt-client"),
                                                            session->remoteAddr());
                         if (!result.ok) return protocol::error(request.id, result.code, result.message);
+                        // Как после auth.login: соединение работает под новой сессией.
+                        // Иначе клиент, продливший истёкший токен, оставался неавторизованным
+                        // до переподключения, и повторные prefs.get/chat.list получали отказ.
+                        session->authenticate(result.userId, result.displayName, result.email, result.jwtId);
+                        connections_.add(session);
                         return protocol::ok(request.id, result.payload);
                     });
 

@@ -56,8 +56,11 @@ struct AuraApp: App {
                         store.ask(text)
                     }
                 }
-                .task {
-                    // Push (этап 13): разрешение → регистрация APNs.
+                .task(id: store.authState == .loggedIn) {
+                    // Push (этап 13): разрешение → регистрация APNs. Спрашиваем после
+                    // входа: системный диалог поверх экрана логина сбивает с толку,
+                    // а токен до входа всё равно не к кому привязать.
+                    guard store.authState == .loggedIn else { return }
                     AppDelegate.onPushToken = { token in
                         Task { @MainActor in store.registerPushToken(token) }
                     }

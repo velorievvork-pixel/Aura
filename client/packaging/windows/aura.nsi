@@ -8,6 +8,8 @@ Unicode true
 !define UNINST "Software\Microsoft\Windows\CurrentVersion\Uninstall\Aura"
 
 Name "${APP}"
+Icon "aura.ico"
+UninstallIcon "aura.ico"
 OutFile "..\..\..\Aura-Setup.exe"
 RequestExecutionLevel user
 InstallDir "$LOCALAPPDATA\Programs\Aura"

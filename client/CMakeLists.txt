@@ -75,6 +75,18 @@ qt_add_resources(aura-client "fonts"
         fonts/Manrope-ExtraBold.ttf
 )
 
+# Иконка окна (Linux/macOS — через setWindowIcon) из того же арта, что и у мобильных.
+qt_add_resources(aura-client "icons"
+    PREFIX "/"
+    FILES
+        icons/aura.png
+)
+
+# Windows: иконка exe, ярлыков и панели задач.
+if(WIN32)
+    target_sources(aura-client PRIVATE packaging/windows/aura.rc)
+endif()
+
 target_link_libraries(aura-client PRIVATE
     Qt6::Core
     Qt6::Gui

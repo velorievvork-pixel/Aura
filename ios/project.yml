@@ -72,6 +72,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.aura.app
+        # Иконка из Aura/Resources/Assets.xcassets (единый 1024×1024).
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
 

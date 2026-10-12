@@ -58,6 +58,17 @@ struct MainShell: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardShown = false
         }
+        // Затемнение под статус-баром: без него прокручиваемый контент шёл прямо
+        // под часами и индикаторами.
+        .overlay(alignment: .top) {
+            GeometryReader { geo in
+                LinearGradient(colors: [AuraColor.bgDeep.opacity(0.92), AuraColor.bgDeep.opacity(0)],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: geo.safeAreaInsets.top + 12)
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+            }
+        }
         .overlay(alignment: .bottom) {
             if store.voiceOverlayVisible {
                 VoiceOverlay(speech: store.speech)

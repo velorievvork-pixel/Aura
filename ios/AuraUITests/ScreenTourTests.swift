@@ -65,7 +65,6 @@ final class ScreenTourTests: XCTestCase {
             input.tap()
             sleep(1)
             shot("aura-keyboard")
-            app.swipeDown()
         }
 
         // Переговоры
@@ -123,6 +122,12 @@ final class ScreenTourTests: XCTestCase {
 
     /// Вкладка нижней панели: среди кнопок с этим текстом — самая нижняя.
     private func tapTab(_ title: String) {
+        // Пока открыта клавиатура, панель вкладок скрыта (так задумано) —
+        // закрываем её клавишей Return, как сделал бы человек.
+        if app.keyboards.firstMatch.exists {
+            app.typeText("\n")
+            sleep(1)
+        }
         let matches = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", title)).allElementsBoundByIndex
         guard let tab = matches.filter({ $0.isHittable }).max(by: { $0.frame.midY < $1.frame.midY }) else {
             XCTFail("нет вкладки «\(title)»")

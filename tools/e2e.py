@@ -699,6 +699,25 @@ async def main() -> int:
     # Регистрация → подтверждение → вход (2FA ещё не настроена).
     await register_and_login(vera, vera_email, "Вера")
 
+    # auth.refresh на неавторизованном соединении: новая пара токенов, и это же
+    # соединение сразу авторизовано (клиент продлевает истёкший токен без переподключения).
+    renew = Client("renew")
+    await renew.connect()
+    first = await renew.call("auth.login", {"email": vera_email, "password": "aura1234"})
+    vera_refresh = first.get("payload", {}).get("refresh_token", "")
+    await renew.close()
+    renew = Client("renew2")
+    await renew.connect()
+    before = await renew.call("auth.me", {})
+    check(before.get("type") == "error", "без токена auth.me отклонён", before)
+    refreshed = await renew.call("auth.refresh", {"refresh_token": vera_refresh})
+    check(refreshed.get("type") == "ok" and refreshed.get("payload", {}).get("refresh_token") not in ("", vera_refresh),
+          "auth.refresh выдал новую пару (ротация)", refreshed)
+    after = await renew.call("auth.me", {})
+    check(after.get("type") == "ok" and after.get("payload", {}).get("email") == vera_email,
+          "после auth.refresh соединение авторизовано", after)
+    await renew.close()
+
     # setup2fa: сервер выдаёт base32-секрет и otpauth:// URI.
     setup = await vera.call("auth.setup2fa", {})
     setup_payload = setup.get("payload", {})

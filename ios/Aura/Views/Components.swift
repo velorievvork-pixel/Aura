@@ -483,7 +483,7 @@ struct FlowLayout: Layout {
         for row in arrange(width: bounds.width, subviews: subviews) {
             var x = alignment == .trailing ? bounds.maxX - row.width : bounds.minX
             for index in row.items {
-                let size = subviews[index].sizeThatFits(.unspecified)
+                let size = measure(subviews[index], maxWidth: bounds.width)
                 subviews[index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
                 x += size.width + spacing
             }
@@ -497,10 +497,18 @@ struct FlowLayout: Layout {
         var height: CGFloat = 0
     }
 
+    /// Элемент шире контейнера (длинная подсказка) ужимается до его ширины,
+    /// иначе он вылезал за край экрана.
+    private func measure(_ subview: LayoutSubview, maxWidth: CGFloat) -> CGSize {
+        let ideal = subview.sizeThatFits(.unspecified)
+        guard maxWidth.isFinite, ideal.width > maxWidth else { return ideal }
+        return subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+    }
+
     private func arrange(width: CGFloat, subviews: Subviews) -> [Row] {
         var rows: [Row] = [Row()]
         for index in subviews.indices {
-            let size = subviews[index].sizeThatFits(.unspecified)
+            let size = measure(subviews[index], maxWidth: width)
             let extra = rows[rows.count - 1].items.isEmpty ? size.width : size.width + spacing
             if rows[rows.count - 1].width + extra > width, !rows[rows.count - 1].items.isEmpty {
                 rows.append(Row())

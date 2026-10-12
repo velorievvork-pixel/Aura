@@ -60,7 +60,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 | `auth.resendCode` | `email` | `message` (+`email_code` в dev); ответ не раскрывает существование email |
 | `auth.login` | `email`, `password`, `device?`, `device_id?` | `token`, `token_type`, `expires_in`, `refresh_token`, `refresh_expires_in`, `session_id`, `user`; до подтверждения email — `email_not_verified`; при включённой 2FA и недоверенном `device_id` — `requires_2fa` |
 | `auth.login2fa` | `email`, `password`, `code`, `trust_device?`, `device_id?`, `device?` | как `auth.login`; `code` — 6-значный TOTP или резервный `XXXXX-XXXXX`; `trust_device` помечает устройство доверенным на 90 дней |
-| `auth.refresh` | `refresh_token`, `device?` | новая пара `token`+`refresh_token` (ротация) |
+| `auth.refresh` | `refresh_token`, `device?` | новая пара `token`+`refresh_token` (ротация); текущее соединение авторизуется новой сессией, как после `auth.login` |
 | `auth.token` | `token` | `user` |
 | `auth.me` | — | `user` + `preferences` |
 | `auth.changePassword` | `old_password`, `new_password` | `changed`; прочие сессии и refresh-токены отзываются |

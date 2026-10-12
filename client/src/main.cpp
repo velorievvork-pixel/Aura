@@ -16,6 +16,7 @@ int main(int argc, char* argv[]) {
     QGuiApplication app(argc, argv);
     QGuiApplication::setOrganizationName(QStringLiteral("Aura"));
     QGuiApplication::setApplicationName(QStringLiteral("Aura"));
+    QGuiApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/aura.png")));
 
     // Manrope из ресурсов — шрифт макетов на любой системе.
     QDirIterator fonts(QStringLiteral(":/fonts"), {QStringLiteral("*.ttf")});

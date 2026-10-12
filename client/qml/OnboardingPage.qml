@@ -20,6 +20,8 @@ Item {
         contentHeight: card.height + 2 * AuraTheme.spaceXl
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        // Без полосы не видно, что «Сохранить» ниже края окна.
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
         GlassPanel {
             id: card

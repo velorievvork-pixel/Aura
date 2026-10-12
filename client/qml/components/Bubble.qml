@@ -17,10 +17,19 @@ Item {
     property bool wide: false
     default property alias extra: below.data
 
-    implicitWidth: wide ? maxWidth : Math.min(maxWidth, label.implicitWidth + 44)
+    // Ширину меряем копией текста без переноса: implicitWidth переносимого Text
+    // внутри Layout занижен, и короткие реплики переносились на две строки.
+    implicitWidth: wide ? maxWidth : Math.min(maxWidth, Math.ceil(probe.implicitWidth) + 2 + 44)
     implicitHeight: column.implicitHeight + 36
     width: implicitWidth
     height: implicitHeight
+
+    Text {
+        id: probe
+        visible: false
+        text: root.text
+        font: label.font
+    }
 
     Rectangle {
         anchors.fill: parent

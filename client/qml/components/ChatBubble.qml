@@ -65,9 +65,18 @@ Item {
             id: bubble
             anchors.right: root.mine ? parent.right : undefined
             anchors.left: root.mine ? undefined : parent.left
-            width: Math.min(root.maxBubbleWidth, Math.max(80, bubbleText.implicitWidth + AuraTheme.spaceLg * 2))
+            // Ширина по копии текста без переноса (как в Bubble.qml): implicitWidth
+            // самого переносимого текста зависит от уже выставленной ширины.
+            width: Math.min(root.maxBubbleWidth, Math.max(80, Math.ceil(bubbleProbe.implicitWidth) + 2 + AuraTheme.spaceLg * 2))
             height: bubbleText.implicitHeight + AuraTheme.spaceLg
             radius: AuraTheme.radiusBubble
+
+            Text {
+                id: bubbleProbe
+                visible: false
+                text: root.text
+                font: bubbleText.font
+            }
             color: Qt.rgba(root.bubbleTint.r, root.bubbleTint.g, root.bubbleTint.b, root.bubbleFill)
             border.width: 1
             border.color: root.agent

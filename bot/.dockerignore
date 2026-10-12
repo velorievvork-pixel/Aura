@@ -1,0 +1,6 @@
+.env
+*.db
+tests/
+android/
+__pycache__/
+.pytest_cache/

@@ -1,0 +1,77 @@
+# Демо-версия Aura из web/ (React + Capacitor + Electron): работает без
+# сервера, на встроенных данных. Собирает APK и установщик Windows.
+# Результат: артефакты прогона и ветки builds/web-android, builds/web-windows
+# (песочница разработки забирает файлы оттуда обычным git).
+name: Build web demo
+
+on:
+  push:
+    branches: ["**"]
+    paths: ["web/**", ".github/workflows/build-web-demo.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: web
+
+jobs:
+  android:
+    name: Демо — APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 21 }
+      - name: Сборка
+        run: |
+          npm ci
+          npm test
+          npm run build && npx cap sync android
+          cd android && ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with: { name: aura-demo-android, path: web/android/app/build/outputs/apk/debug/*.apk }
+      - name: Публикация в ветку builds/web-android
+        working-directory: .
+        run: |
+          set -e
+          mkdir pub && cp web/android/app/build/outputs/apk/debug/app-debug.apk pub/Aura-demo.apk
+          cd pub && git init -q -b builds/web-android
+          git config user.name aura-ci && git config user.email ci@aura.local
+          git add -A && git commit -qm "web demo apk ${{ github.sha }} [skip ci]"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/web-android
+
+  windows:
+    name: Демо — Windows
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
+      - name: Сборка
+        run: |
+          npm ci
+          npm run dist:win
+      - uses: actions/upload-artifact@v4
+        with: { name: aura-demo-windows, path: web/release/*.exe }
+      - name: Публикация в ветку builds/web-windows
+        working-directory: .
+        shell: bash
+        run: |
+          set -e
+          mkdir pub
+          for f in web/release/*.exe; do cp "$f" pub/Aura-demo-Setup.exe; break; done
+          cd pub
+          for f in *; do
+            if [ "$(wc -c < "$f")" -gt 94000000 ]; then split -b 90m -d "$f" "$f.part"; rm "$f"; fi
+          done
+          git init -q -b builds/web-windows
+          git config user.name aura-ci && git config user.email ci@aura.local
+          git add -A && git commit -qm "web demo windows ${{ github.sha }} [skip ci]"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/web-windows

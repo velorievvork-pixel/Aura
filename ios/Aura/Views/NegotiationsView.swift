@@ -146,7 +146,7 @@ struct NegotiationsView: View {
             var facts: [String] = []
             if let place = n.place {
                 if !place.city.isEmpty { facts.append(place.city) }
-                if !place.tags.isEmpty { facts.append(place.tags.joined(separator: ", ")) }
+                if !place.tags.isEmpty { facts.append(Format.placeTags(place.tags)) }
                 if !place.rating.isEmpty { facts.append("★ \(place.rating)") }
             }
             steps.append(Step(mine: false, text: "\(auraThem) предложила \(n.place?.name ?? "место")",

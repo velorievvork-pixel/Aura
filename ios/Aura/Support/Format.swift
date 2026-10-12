@@ -155,6 +155,23 @@ enum Format {
     }
 
     /// Понятное описание инструмента; серверное — запасной вариант для новых инструментов.
+    /// Теги места из каталога (coffee, gluten_free…) — по-русски.
+    static func placeTags(_ tags: [String]) -> String {
+        tags.map { tag -> String in
+            switch tag {
+                case "coffee": return "кофе"
+                case "brunch": return "бранчи"
+                case "dinner": return "ужины"
+                case "vegan": return "веганское меню"
+                case "gluten_free": return "без глютена"
+                case "meat": return "мясо"
+                case "quiet": return "тихо"
+                case "workspace": return "можно поработать"
+            default: return tag.replacingOccurrences(of: "_", with: " ")
+            }
+        }.joined(separator: ", ")
+    }
+
     static func toolDescription(_ tool: String, fallback: String) -> String {
         switch tool {
         case "send_message": return "Писать сообщения вашим контактам"

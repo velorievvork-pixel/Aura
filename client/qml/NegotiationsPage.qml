@@ -42,7 +42,7 @@ Item {
         if (accepted) {
             out.push({ who: "them", text: them + " проверила календарь " + F.genitive(theirName),
                        detail: "общее окно: " + F.dayPhrase(result.slot.start, true) + " в " + F.time(result.slot.start) })
-            const tags = result.place && result.place.tags ? result.place.tags.join(", ") : ""
+            const tags = result.place ? F.placeTags(result.place.tags) : ""
             out.push({ who: "them", text: them + " предложила " + (result.place ? result.place.name : "место"),
                        detail: [result.place && result.place.city, tags, result.place && result.place.rating ? "★ " + result.place.rating : ""]
                                .filter(x => x).join(" · ") })

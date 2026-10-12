@@ -62,9 +62,13 @@ struct MainShell: View {
         // под часами и индикаторами.
         .overlay(alignment: .top) {
             GeometryReader { geo in
-                LinearGradient(colors: [AuraColor.bgDeep.opacity(0.92), AuraColor.bgDeep.opacity(0)],
+                // Только в пределах статус-бара: ниже начинается шапка экрана
+                // (кнопка «назад»), её не затемняем и не перекрываем.
+                LinearGradient(stops: [.init(color: AuraColor.bgDeep.opacity(0.97), location: 0),
+                                       .init(color: AuraColor.bgDeep.opacity(0.9), location: 0.7),
+                                       .init(color: AuraColor.bgDeep.opacity(0), location: 1)],
                                startPoint: .top, endPoint: .bottom)
-                    .frame(height: geo.safeAreaInsets.top + 12)
+                    .frame(height: geo.safeAreaInsets.top)
                     .ignoresSafeArea(edges: .top)
                     .allowsHitTesting(false)
             }

@@ -149,6 +149,21 @@ function toolTitle(tool) {
               check_calendar: "Календарь", suggest_time: "Подбор времени" })[tool] || tool || ""
 }
 
+// Теги места из каталога (coffee, gluten_free…) — по-русски.
+var PLACE_TAGS = {
+    coffee: "кофе",
+    brunch: "бранчи",
+    dinner: "ужины",
+    vegan: "веганское меню",
+    gluten_free: "без глютена",
+    meat: "мясо",
+    quiet: "тихо",
+    workspace: "можно поработать"
+}
+function placeTags(tags) {
+    return (tags || []).map(function (t) { return PLACE_TAGS[t] || String(t).replace(/_/g, " ") }).join(", ")
+}
+
 function toolDescription(tool, fallback) {
     var known = {
         send_message: "Писать сообщения вашим контактам",

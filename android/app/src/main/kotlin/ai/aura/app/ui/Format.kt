@@ -109,6 +109,21 @@ fun windowPhrase(hours: Int): String =
     else ((hours + 12) / 24).let { "ближайшие $it ${plural(it.toLong(), "день", "дня", "дней")}" }
 
 /** Понятное описание инструмента; серверное — запасной вариант для новых инструментов. */
+/** Теги места из каталога (coffee, gluten_free…) — по-русски. */
+fun placeTags(tags: List<String>): String = tags.joinToString(", ") { tag ->
+    when (tag) {
+        "coffee" -> "кофе"
+        "brunch" -> "бранчи"
+        "dinner" -> "ужины"
+        "vegan" -> "веганское меню"
+        "gluten_free" -> "без глютена"
+        "meat" -> "мясо"
+        "quiet" -> "тихо"
+        "workspace" -> "можно поработать"
+        else -> tag.replace('_', ' ')
+    }
+}
+
 fun toolDescription(tool: String, fallback: String): String = when (tool) {
     "send_message" -> "Писать сообщения вашим контактам"
     "create_note" -> "Сохранять заметки в память Ауры"

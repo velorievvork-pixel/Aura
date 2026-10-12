@@ -64,8 +64,11 @@ struct AuraApp: App {
                     AppDelegate.onPushToken = { token in
                         Task { @MainActor in store.registerPushToken(token) }
                     }
+                    // Push недоступен (симулятор, сборка без подписи/entitlement) —
+                    // это не ошибка пользователя: системный текст вроде «no valid
+                    // aps-environment entitlement» в плашку не выводим, только в лог.
                     AppDelegate.onPushError = { message in
-                        Task { @MainActor in store.fail(AuraError(code: "push", message: message)) }
+                        print("push: регистрация APNs не удалась: \(message)")
                     }
                     let center = UNUserNotificationCenter.current()
                     let granted = (try? await center.requestAuthorization(

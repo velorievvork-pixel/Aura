@@ -175,7 +175,7 @@ private fun buildSteps(n: AppStore.Negotiation, me: String, them: String): List<
     if (n.accepted && n.slot != null) {
         steps += Step(false, "$auraThem проверила календарь", "общее окно: ${dayPhrase(n.slot.start)} в ${timeOf(n.slot.start)}")
         steps += Step(false, "$auraThem предложила ${n.place?.name ?: "место"}",
-            listOfNotNull(n.place?.city, n.place?.tags?.joinToString(", ")?.ifEmpty { null },
+            listOfNotNull(n.place?.city, n.place?.tags?.let { placeTags(it) }?.ifEmpty { null },
                 n.place?.rating?.ifEmpty { null }?.let { "★ $it" }).joinToString(" · "))
         steps += Step(true, "$auraMe приняла место и время", n.message, done = true)
     } else {

@@ -111,24 +111,42 @@ private struct TabBar: View {
                     .foregroundStyle(active ? AuraColor.textPrimary : AuraColor.textMuted)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(active ? AuraColor.accent.opacity(0.18) : .clear))
+                    .background {
+                        // Активная вкладка — стеклянная «линза» внутри капсулы.
+                        if active {
+                            Capsule()
+                                .fill(LinearGradient(colors: [.white.opacity(0.22), .white.opacity(0.05)],
+                                                     startPoint: .top, endPoint: .bottom))
+                                .background(Capsule().fill(AuraColor.accent.opacity(0.22)))
+                                .overlay(Capsule().strokeBorder(
+                                    LinearGradient(colors: [.white.opacity(0.4), .clear],
+                                                   startPoint: .top, endPoint: .bottom), lineWidth: 1))
+                        }
+                    }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(active ? .isSelected : [])
             }
         }
-        .padding(.horizontal, 6)
-        .padding(.top, 8)
+        .padding(6)
+        // Парящая стеклянная капсула (как в iOS): системное размытие фона,
+        // блик сверху и светлый кант; под ней — фон приложения, без тёмной полосы.
+        .background {
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .overlay(Capsule().fill(Color(hex: 0x161124).opacity(0.45)))
+                .overlay(Capsule().fill(LinearGradient(
+                    colors: [.white.opacity(0.16), .white.opacity(0.04), .white.opacity(0.08)],
+                    startPoint: .top, endPoint: .bottom)))
+                .overlay(Capsule().strokeBorder(LinearGradient(
+                    colors: [.white.opacity(0.42), .white.opacity(0.06)],
+                    startPoint: .top, endPoint: .bottom), lineWidth: 1))
+                .shadow(color: .black.opacity(0.45), radius: 18, y: 10)
+        }
+        .environment(\.colorScheme, .dark)
+        .padding(.horizontal, 12)
         .padding(.bottom, 4)
-        .background(
-            UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24, style: .continuous)
-                .fill(Color(hex: 0x100D18))
-                .overlay(UnevenRoundedRectangle(topLeadingRadius: 24, topTrailingRadius: 24, style: .continuous)
-                    .stroke(.white.opacity(0.08), lineWidth: 1))
-                .ignoresSafeArea(edges: .bottom)
-        )
     }
 }
 

@@ -37,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
@@ -93,34 +94,63 @@ private val tabs = listOf(
     TabItem(AppStore.Tab.CONTACTS, "Контакты", Icons.Outlined.People),
 )
 
+/*
+  Панель вкладок — парящая стеклянная капсула (как в iOS): отступ от краёв,
+  под ней фон приложения, а не тёмная полоса во всю ширину. Стекло — заливка
+  с бликом сверху и светлый кант; активная вкладка — своя «линза».
+*/
 @Composable
 private fun BottomBar(current: AppStore.Tab) {
-    val shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-    Row(
-        modifier = Modifier
+    val shape = RoundedCornerShape(percent = 50)
+    Box(
+        Modifier
             .fillMaxWidth()
-            .clip(shape)
-            .background(Color(0xFF100D18))
-            .border(1.dp, Color.White.copy(alpha = 0.08f), shape)
             .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 6.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.SpaceAround,
+            .padding(start = 12.dp, end = 12.dp, bottom = 10.dp, top = 4.dp),
     ) {
-        tabs.forEach { item ->
-            val active = current == item.tab
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(if (active) Accent.copy(alpha = 0.18f) else Color.Transparent)
-                    .clickable { AppStore.selectTab(item.tab) }
-                    .padding(vertical = 7.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Icon(item.icon, contentDescription = item.label,
-                    tint = if (active) TextPrimary else TextMuted, modifier = Modifier.size(22.dp))
-                Text(item.label, style = MaterialTheme.typography.labelSmall,
-                    color = if (active) TextPrimary else TextMuted, maxLines = 1)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .background(Color(0xCC161124))
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.White.copy(alpha = 0.16f),
+                        0.5f to Color.White.copy(alpha = 0.04f),
+                        1f to Color.White.copy(alpha = 0.08f),
+                    ),
+                )
+                .border(
+                    1.dp,
+                    Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.42f), Color.White.copy(alpha = 0.06f))),
+                    shape,
+                )
+                .padding(6.dp),
+            horizontalArrangement = Arrangement.SpaceAround,
+        ) {
+            tabs.forEach { item ->
+                val active = current == item.tab
+                val lens = RoundedCornerShape(percent = 50)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(lens)
+                        .then(
+                            if (active) Modifier
+                                .background(Accent.copy(alpha = 0.22f))
+                                .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.22f), Color.White.copy(alpha = 0.05f))))
+                                .border(1.dp, Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.4f), Color.Transparent)), lens)
+                            else Modifier,
+                        )
+                        .clickable { AppStore.selectTab(item.tab) }
+                        .padding(vertical = 7.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(item.icon, contentDescription = item.label,
+                        tint = if (active) TextPrimary else TextMuted, modifier = Modifier.size(22.dp))
+                    Text(item.label, style = MaterialTheme.typography.labelSmall,
+                        color = if (active) TextPrimary else TextMuted, maxLines = 1)
+                }
             }
         }
     }

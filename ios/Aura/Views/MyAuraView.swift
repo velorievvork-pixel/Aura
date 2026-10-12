@@ -168,13 +168,22 @@ struct Bubble<Extra: View>: View {
         .padding(.horizontal, 18)
         .padding(.vertical, 14)
         .frame(maxWidth: 320, alignment: .leading)
-        .background(shape.fill(fromAura
-            ? LinearGradient(colors: [.white.opacity(0.2), Color(hex: 0xABA1DB, alpha: 0.12)],
-                             startPoint: .top, endPoint: .bottom)
-            : LinearGradient(colors: [.white.opacity(0.09), .white.opacity(0.06)],
-                             startPoint: .top, endPoint: .bottom)))
-        .overlay(shape.strokeBorder(error ? AuraColor.danger.opacity(0.6) : .white.opacity(fromAura ? 0.28 : 0.1),
-                                    lineWidth: 1))
+        // «Жидкое стекло»: системный материал с размытием, тонировка (у Ауры —
+        // сиреневая), блик сверху и светлый кант по верхнему краю.
+        .background {
+            shape.fill(.ultraThinMaterial)
+                .overlay(shape.fill(fromAura ? Color(hex: 0x3C2C64).opacity(0.38) : Color(hex: 0x120E1E).opacity(0.45)))
+                .overlay(shape.fill(LinearGradient(
+                    colors: [.white.opacity(fromAura ? 0.24 : 0.15), .white.opacity(0.04), .white.opacity(0.09)],
+                    startPoint: .top, endPoint: .bottom)))
+                .shadow(color: fromAura ? AuraColor.accentSoft.opacity(0.35) : .black.opacity(0.4), radius: 16, y: 8)
+        }
+        .overlay(shape.strokeBorder(error
+            ? AnyShapeStyle(AuraColor.danger.opacity(0.6))
+            : AnyShapeStyle(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0.06)],
+                                           startPoint: .top, endPoint: .bottom)),
+            lineWidth: 1))
+        .environment(\.colorScheme, .dark)
     }
 }
 

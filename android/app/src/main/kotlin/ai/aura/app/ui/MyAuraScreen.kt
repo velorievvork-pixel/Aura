@@ -172,11 +172,22 @@ fun Bubble(
         Modifier
             .widthIn(max = 320.dp)
             .clip(shape)
+            // «Жидкое стекло»: тонировка (у Ауры — сиреневая), блик сверху и
+            // светлый кант по верхнему краю.
+            .background(if (fromAura) Color(0x613C2C64) else Color(0x73120E1E))
             .background(
-                if (fromAura) Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.2f), Color(0x1FABA1DB)))
-                else Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.09f), Color.White.copy(alpha = 0.06f))),
+                Brush.verticalGradient(
+                    0f to Color.White.copy(alpha = if (fromAura) 0.24f else 0.15f),
+                    0.5f to Color.White.copy(alpha = 0.04f),
+                    1f to Color.White.copy(alpha = 0.09f),
+                ),
             )
-            .border(1.dp, if (error) Danger.copy(alpha = 0.6f) else Color.White.copy(alpha = if (fromAura) 0.28f else 0.1f), shape)
+            .border(
+                1.dp,
+                if (error) Brush.verticalGradient(listOf(Danger.copy(alpha = 0.6f), Danger.copy(alpha = 0.6f)))
+                else Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.White.copy(alpha = 0.06f))),
+                shape,
+            )
             .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {

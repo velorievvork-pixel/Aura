@@ -30,6 +30,8 @@ struct RootView: View {
 struct MainShell: View {
 
     @EnvironmentObject private var store: AppStore
+    /// Пока открыта клавиатура, панель вкладок прячется и не висит над ней.
+    @State private var keyboardShown = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -46,7 +48,15 @@ struct MainShell: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            TabBar()
+            if !keyboardShown {
+                TabBar()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            keyboardShown = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardShown = false
         }
         .overlay(alignment: .bottom) {
             if store.voiceOverlayVisible {

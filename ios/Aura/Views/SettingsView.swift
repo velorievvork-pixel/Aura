@@ -69,7 +69,7 @@ struct SettingsView: View {
                                 .overlay(Capsule().strokeBorder(AuraColor.warning.opacity(0.5), lineWidth: 1))
                         }
                     }
-                    if !row.description.isEmpty { Muted(row.description) }
+                    Muted(Format.toolDescription(row.tool, fallback: row.description))
                     ModePicker(mode: row.mode) { store.setPermission(tool: row.tool, mode: $0) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

@@ -89,7 +89,7 @@ fun genitive(name: String): String {
 
 fun firstName(full: String): String = full.trim().split(Regex("\\s+")).firstOrNull().orEmpty()
 
-/** Окно переговоров в часах: до конца воскресенья, двое суток, неделя. */
+/** Окно переговоров в часах от текущего момента: двое суток, до конца недели, две недели. */
 fun windowHours(key: String): Int {
     val now = LocalDateTime.now()
     return when (key) {
@@ -99,6 +99,24 @@ fun windowHours(key: String): Int {
             Duration.between(now, end).toHours().toInt().coerceAtLeast(12)
         }
         "tomorrow" -> 48
-        else -> 168
+        else -> 336
     }
+}
+
+/** «ближайшие 36 часов» / «ближайшие 7 дней» — окно переговоров для людей, а не в часах. */
+fun windowPhrase(hours: Int): String =
+    if (hours < 48) "ближайшие $hours ${plural(hours.toLong(), "час", "часа", "часов")}"
+    else ((hours + 12) / 24).let { "ближайшие $it ${plural(it.toLong(), "день", "дня", "дней")}" }
+
+/** Понятное описание инструмента; серверное — запасной вариант для новых инструментов. */
+fun toolDescription(tool: String, fallback: String): String = when (tool) {
+    "send_message" -> "Писать сообщения вашим контактам"
+    "create_note" -> "Сохранять заметки в память Ауры"
+    "create_reminder" -> "Ставить напоминания"
+    "send_email" -> "Отправлять письма от вашего имени"
+    "find_cafe" -> "Подбирать место под питание, бюджет и дорогу обоих"
+    "book_table" -> "Бронировать столик в выбранном месте"
+    "check_calendar" -> "Смотреть, свободны ли вы в нужное время"
+    "suggest_time" -> "Предлагать время встречи"
+    else -> fallback
 }

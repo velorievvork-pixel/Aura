@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import Aura
+import "Format.js" as F
 
 /*
   SettingsPage — профиль, предпочтения Ауры, долговременная память, выход.
@@ -1084,7 +1085,7 @@ Item {
                                 }
                                 Text {
                                     Layout.fillWidth: true
-                                    text: toolRow.modelData.description || ""
+                                    text: F.toolDescription(toolRow.modelData.tool, toolRow.modelData.description)
                                     font.family: AuraTheme.fontFamily
                                     font.pixelSize: AuraTheme.fontMicro
                                     color: AuraTheme.textMuted
@@ -1093,22 +1094,66 @@ Item {
                             }
 
                             // Переключатель режима: разрешить / спрашивать / запретить.
-                            RowLayout {
-                                spacing: AuraTheme.spaceXs
+                            // Сегментированный трек, как на Android/iOS: яркая акцентная
+                            // кнопка в каждой строке слишком шумит в списке из 8 инструментов.
+                            Rectangle {
+                                implicitWidth: segRow.implicitWidth + 6
+                                implicitHeight: 34
+                                radius: height / 2
+                                color: Qt.rgba(1, 1, 1, AuraTheme.glassFill)
+                                border.width: 1
+                                border.color: Qt.rgba(1, 1, 1, AuraTheme.glassBorder)
 
-                                Repeater {
-                                    model: [
-                                        { mode: "allow", label: "Разрешить" },
-                                        { mode: "ask", label: "Спрашивать" },
-                                        { mode: "deny", label: "Запретить" }
-                                    ]
+                                Row {
+                                    id: segRow
+                                    anchors.centerIn: parent
+                                    spacing: 2
 
-                                    delegate: GlassButton {
-                                        required property var modelData
-                                        text: modelData.label
-                                        variant: toolRow.modelData.mode === modelData.mode ? "accent" : "quiet"
-                                        implicitHeight: 32
-                                        onClicked: App.setToolPermission(toolRow.modelData.tool, modelData.mode)
+                                    Repeater {
+                                        model: [
+                                            { mode: "allow", label: "Разрешить" },
+                                            { mode: "ask", label: "Спрашивать" },
+                                            { mode: "deny", label: "Запретить" }
+                                        ]
+
+                                        delegate: Rectangle {
+                                            id: seg
+                                            required property var modelData
+                                            readonly property bool active: toolRow.modelData.mode === modelData.mode
+                                            readonly property bool isDeny: modelData.mode === "deny"
+                                            width: segLabel.implicitWidth + 2 * AuraTheme.spaceMd
+                                            height: 28
+                                            radius: height / 2
+                                            color: active
+                                                   ? Qt.rgba(isDeny ? 0.97 : 0.545, isDeny ? 0.44 : 0.36, isDeny ? 0.44 : 0.965,
+                                                             isDeny ? 0.30 : 0.35)
+                                                   : (segMouse.containsMouse ? Qt.rgba(1, 1, 1, AuraTheme.glassFillHover)
+                                                                             : "transparent")
+                                            Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
+
+                                            Text {
+                                                id: segLabel
+                                                anchors.centerIn: parent
+                                                text: seg.modelData.label
+                                                font.family: AuraTheme.fontFamily
+                                                font.pixelSize: AuraTheme.fontSmall
+                                                font.weight: seg.active ? Font.DemiBold : Font.Normal
+                                                color: seg.active ? AuraTheme.textPrimary : AuraTheme.textSecondary
+                                            }
+
+                                            MouseArea {
+                                                id: segMouse
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: if (!seg.active)
+                                                               App.setToolPermission(toolRow.modelData.tool, seg.modelData.mode)
+                                            }
+
+                                            Accessible.role: Accessible.RadioButton
+                                            Accessible.name: seg.modelData.label
+                                            Accessible.checked: seg.active
+                                        }
                                     }
                                 }
                             }

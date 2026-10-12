@@ -1,5 +1,7 @@
 package ai.aura.app.ui
 
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -46,6 +48,7 @@ import ai.aura.app.ui.theme.TextPrimary
  * вкладок снизу. Пять разделов во вкладках; настройки, подтверждения и входящая
  * открываются из шапки Home и закрываются кнопкой «назад».
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MainScaffold() {
     val tab by AppStore.tab.collectAsState()
@@ -69,7 +72,8 @@ fun MainScaffold() {
                     AppStore.Tab.NOTICES -> NotificationsScreen()
                 }
             }
-            BottomBar(tab)
+            // Пока открыта клавиатура, панель вкладок не нужна и не должна висеть над ней.
+            if (!WindowInsets.isImeVisible) BottomBar(tab)
         }
     }
 }

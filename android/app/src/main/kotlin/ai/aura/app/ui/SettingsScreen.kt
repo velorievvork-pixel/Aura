@@ -113,7 +113,7 @@ fun SettingsScreen() {
                             }
                         }
                     }
-                    Muted(row.description)
+                    Muted(toolDescription(row.tool, row.description))
                     Segmented(row.mode) { AppStore.setPermission(row.tool, it) }
                 }
             }

@@ -138,7 +138,7 @@ fun NegotiationsScreen() {
                                 n.counterSlots.forEach { AuraChip("${dayPhrase(it.start)}, ${timeOf(it.start)}", enabled = false) {} }
                             }
                             if (n.round < MAX_ROUNDS) {
-                                GradientButton("Следующий раунд: неделя",
+                                GradientButton("Следующий раунд: две недели",
                                     { AppStore.negotiate(n.target, n.topic, n.durationMinutes, windowHours("week")) },
                                     Modifier.fillMaxWidth(), busy = busy)
                             }
@@ -170,7 +170,7 @@ private fun buildSteps(n: AppStore.Negotiation, me: String, them: String): List<
     val auraThem = "Аура ${genitive(them)}"
     val steps = mutableListOf(
         Step(true, "$auraMe предложила встречу: ${n.durationMinutes} мин",
-            "окно — ближайшие ${n.windowHours} ${plural(n.windowHours.toLong(), "час", "часа", "часов")}"),
+            "окно — ${windowPhrase(n.windowHours)}"),
     )
     if (n.accepted && n.slot != null) {
         steps += Step(false, "$auraThem проверила календарь", "общее окно: ${dayPhrase(n.slot.start)} в ${timeOf(n.slot.start)}")
@@ -312,7 +312,7 @@ private fun NegotiationForm(
             AuraField(topic, { topic = it }, "Тема, например «обсудить стартап»")
             Text("Когда", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("tomorrow" to "сегодня–завтра", "weekend" to "в эти выходные", "week" to "на неделе")
+                listOf("tomorrow" to "сегодня–завтра", "weekend" to "до конца недели", "week" to "две недели")
                     .forEach { (k, l) -> AuraChip(l, active = window == k) { window = k } }
             }
             Text("Длительность", style = MaterialTheme.typography.labelMedium, color = TextSecondary)

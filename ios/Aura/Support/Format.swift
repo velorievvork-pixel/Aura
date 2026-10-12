@@ -130,7 +130,7 @@ enum Format {
         full.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
     }
 
-    /// Окно переговоров в часах: до конца воскресенья, двое суток или неделя.
+    /// Окно переговоров в часах от текущего момента: двое суток, до конца недели, две недели.
     static func windowHours(_ key: String) -> Int {
         switch key {
         case "weekend":
@@ -143,7 +143,29 @@ enum Format {
         case "tomorrow":
             return 48
         default:
-            return 168
+            return 336
+        }
+    }
+
+    /// «ближайшие 36 часов» / «ближайшие 7 дней» — окно переговоров для людей.
+    static func windowPhrase(_ hours: Int) -> String {
+        if hours < 48 { return "ближайшие \(hours) \(plural(hours, "час", "часа", "часов"))" }
+        let days = (hours + 12) / 24
+        return "ближайшие \(days) \(plural(days, "день", "дня", "дней"))"
+    }
+
+    /// Понятное описание инструмента; серверное — запасной вариант для новых инструментов.
+    static func toolDescription(_ tool: String, fallback: String) -> String {
+        switch tool {
+        case "send_message": return "Писать сообщения вашим контактам"
+        case "create_note": return "Сохранять заметки в память Ауры"
+        case "create_reminder": return "Ставить напоминания"
+        case "send_email": return "Отправлять письма от вашего имени"
+        case "find_cafe": return "Подбирать место под питание, бюджет и дорогу обоих"
+        case "book_table": return "Бронировать столик в выбранном месте"
+        case "check_calendar": return "Смотреть, свободны ли вы в нужное время"
+        case "suggest_time": return "Предлагать время встречи"
+        default: return fallback
         }
     }
 

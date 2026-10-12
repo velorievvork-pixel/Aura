@@ -37,7 +37,7 @@ Item {
         const them = "Аура " + F.genitive(theirName)
         const hours = result.window_hours || 96
         const out = [{ who: "me", text: me + " предложила встречу: " + (result.duration_minutes || 60) + " мин",
-                       detail: "окно — ближайшие " + hours + " " + F.plural(hours, "час", "часа", "часов")
+                       detail: "окно — " + F.windowPhrase(hours)
                                + (result.topic ? " · " + result.topic : "") }]
         if (accepted) {
             out.push({ who: "them", text: them + " проверила календарь " + F.genitive(theirName),
@@ -409,8 +409,8 @@ Item {
                         GlassButton {
                             visible: page.round < page.maxRounds
                             variant: "accent"
-                            text: "Следующий раунд: неделя"
-                            onClicked: App.negotiateAgent(page.result.target, page.result.topic || "", page.result.duration_minutes || 60, 168)
+                            text: "Следующий раунд: две недели"
+                            onClicked: App.negotiateAgent(page.result.target, page.result.topic || "", page.result.duration_minutes || 60, F.windowHours("week"))
                         }
                         GlassButton {
                             text: "Написать собеседнику"
@@ -477,7 +477,7 @@ Item {
                         spacing: 8
                         Text { text: "Когда:"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontSmall; color: AuraTheme.textSecondary; Layout.preferredWidth: 90 }
                         Repeater {
-                            model: [{ k: "tomorrow", l: "сегодня–завтра" }, { k: "weekend", l: "в эти выходные" }, { k: "week", l: "на неделе" }]
+                            model: [{ k: "tomorrow", l: "сегодня–завтра" }, { k: "weekend", l: "до конца недели" }, { k: "week", l: "две недели" }]
                             delegate: Chip {
                                 required property var modelData
                                 text: modelData.l

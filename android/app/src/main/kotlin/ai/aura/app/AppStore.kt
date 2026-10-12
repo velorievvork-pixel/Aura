@@ -806,7 +806,8 @@ object AppStore {
         if (_auth.value !is AuthState.LoggedIn) return
         val context = contextRef ?: return
         if (FirebaseApp.getApps(context).isEmpty()) {
-            _pushStatus.value = "Push не настроен: нет app/google-services.json (см. README)"
+            // Сборка без google-services.json (см. docs/ANDROID.md): честно, но без путей к файлам.
+            _pushStatus.value = "Push-уведомления в этой сборке не подключены"
             return
         }
         scope.launch {

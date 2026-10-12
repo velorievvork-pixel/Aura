@@ -112,7 +112,7 @@ function genitive(name) {
     return n
 }
 
-// Окно переговоров в часах: до конца воскресенья, сутки, неделя.
+// Окно переговоров в часах от текущего момента: двое суток, до конца недели, две недели.
 function windowHours(key) {
     var now = new Date()
     if (key === "weekend") {
@@ -120,7 +120,29 @@ function windowHours(key) {
         return Math.max(12, Math.round((end - now) / 3600000))
     }
     if (key === "tomorrow") return 48
-    return 168
+    return 336
+}
+
+// «ближайшие 36 часов» / «ближайшие 7 дней» — окно переговоров для людей.
+function windowPhrase(hours) {
+    if (hours < 48) return "ближайшие " + hours + " " + plural(hours, "час", "часа", "часов")
+    var days = Math.floor((hours + 12) / 24)
+    return "ближайшие " + days + " " + plural(days, "день", "дня", "дней")
+}
+
+// Понятное описание инструмента; серверное — запасной вариант для новых инструментов.
+function toolDescription(tool, fallback) {
+    var known = {
+        send_message: "Писать сообщения вашим контактам",
+        create_note: "Сохранять заметки в память Ауры",
+        create_reminder: "Ставить напоминания",
+        send_email: "Отправлять письма от вашего имени",
+        find_cafe: "Подбирать место под питание, бюджет и дорогу обоих",
+        book_table: "Бронировать столик в выбранном месте",
+        check_calendar: "Смотреть, свободны ли вы в нужное время",
+        suggest_time: "Предлагать время встречи"
+    }
+    return known[tool] || fallback || ""
 }
 
 // Люди из чатов (кроме меня), без повторов: основа экрана контактов и выбора собеседника.

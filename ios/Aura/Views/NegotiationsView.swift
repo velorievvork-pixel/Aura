@@ -123,7 +123,7 @@ struct NegotiationsView: View {
                 }
             }
             if !exhausted {
-                GradientButton(title: "Следующий раунд: неделя", busy: store.busy) {
+                GradientButton(title: "Следующий раунд: две недели", busy: store.busy) {
                     store.negotiate(target: n.target, topic: n.topic, durationMinutes: n.durationMinutes,
                                     windowHours: Format.windowHours("week"))
                 }
@@ -139,7 +139,7 @@ struct NegotiationsView: View {
         let auraMe = "Аура \(Format.genitive(me))"
         let auraThem = "Аура \(Format.genitive(them))"
         var steps = [Step(mine: true, text: "\(auraMe) предложила встречу: \(n.durationMinutes) мин",
-                          detail: "окно: ближайшие \(n.windowHours) \(Format.plural(n.windowHours, "час", "часа", "часов"))")]
+                          detail: "окно: \(Format.windowPhrase(n.windowHours))")]
         if n.accepted, let slot = n.slot {
             steps.append(Step(mine: false, text: "\(auraThem) проверила календарь",
                               detail: "общее окно: \(Format.dayPhrase(slot.start)) в \(Format.timeOf(slot.start))"))
@@ -301,8 +301,8 @@ private struct NegotiationForm: View {
 
     private static let windows = [
         WindowOption(key: "tomorrow", title: "сегодня–завтра"),
-        WindowOption(key: "weekend", title: "в эти выходные"),
-        WindowOption(key: "week", title: "на неделе")
+        WindowOption(key: "weekend", title: "до конца недели"),
+        WindowOption(key: "week", title: "две недели")
     ]
 
     init(onCancel: (() -> Void)?, onStart: @escaping () -> Void) {

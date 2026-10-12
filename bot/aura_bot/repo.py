@@ -1,12 +1,12 @@
 """Доступ к БД: пользователи, анкета, память, история чата."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import ChatMessage, Memory, Profile, User, utcnow
+from .models import ChatMessage, Memory, Profile, Task, User, utcnow
 from .onboarding import clean_diets, profile_prompt
 
 
@@ -109,3 +109,48 @@ async def recent_messages(session: AsyncSession, user: User, limit: int) -> list
     q = (select(ChatMessage).where(ChatMessage.user_id == user.id)
          .order_by(ChatMessage.id.desc()).limit(limit))
     return list(reversed((await session.scalars(q)).all()))
+
+
+# ---------- задачи ----------
+
+async def create_task(session: AsyncSession, user: User, due: datetime, text: str, repeat: str = "none") -> Task:
+    t = Task(user_id=user.id, text=text[:500], due_at=due, repeat=repeat)
+    session.add(t)
+    await session.commit()
+    return t
+
+
+async def list_tasks(session: AsyncSession, user: User, limit: int = 50) -> list[Task]:
+    """Активные задачи: ждущие и уже напомненные, но не отмеченные выполненными."""
+    q = (select(Task).where(Task.user_id == user.id, Task.status.in_(("pending", "sent")))
+         .order_by(Task.due_at).limit(limit))
+    return list((await session.scalars(q)).all())
+
+
+async def get_own_task(session: AsyncSession, user: User, task_id: int) -> Task | None:
+    return await session.scalar(select(Task).where(Task.id == task_id, Task.user_id == user.id))
+
+
+async def busy_times(session: AsyncSession, user: User, start: datetime, end: datetime) -> list[datetime]:
+    q = select(Task.due_at).where(Task.user_id == user.id, Task.status == "pending",
+                                  Task.due_at >= start, Task.due_at <= end).order_by(Task.due_at)
+    return list((await session.scalars(q)).all())
+
+
+async def find_user_by_ref(session: AsyncSession, ref: str) -> User | None:
+    """@username (Telegram) или email (APK)."""
+    ref = ref.strip()
+    if ref.startswith("@"):
+        name = ref[1:].lower()
+        return await session.scalar(select(User).where(func.lower(User.tg_username) == name)) if name else None
+    if "@" in ref:
+        return await session.scalar(select(User).where(User.email == ref.lower()))
+    return None
+
+
+def display_name(user: User) -> str:
+    if user.name:
+        return user.name
+    if user.tg_username:
+        return "@" + user.tg_username
+    return (user.email or "пользователь").split("@")[0]

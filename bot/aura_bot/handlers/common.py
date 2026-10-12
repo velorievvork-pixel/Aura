@@ -5,7 +5,8 @@ from aiogram import F, Router
 from aiogram.filters import StateFilter
 from aiogram.types import CallbackQuery, Message
 
-router_hint = "Команды: /memory — что я знаю, /forget — забыть, /start — анкета."
+router_hint = ("Команды: /tasks — задачи, /memory — что я знаю, /forget — забыть, /meet — встреча, "
+               "/settings — настройки, /stats — статистика, /premium — подписка.")
 
 
 async def unknown_command(message: Message) -> None:
@@ -13,8 +14,8 @@ async def unknown_command(message: Message) -> None:
 
 
 async def non_text(message: Message) -> None:
-    """Голосовые подключим на этапе 4; фото/стикеры пока не обрабатываем."""
-    await message.answer("Пока понимаю только текст. " + router_hint)
+    """Фото/стикеры/документы агент пока не обрабатывает."""
+    await message.answer("Понимаю текст и голосовые. " + router_hint)
 
 
 async def stale_button(cb: CallbackQuery) -> None:

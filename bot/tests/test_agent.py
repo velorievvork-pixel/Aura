@@ -17,27 +17,28 @@ async def user(sessionmaker):
         return u
 
 
-async def test_context_contains_profile_memory_time_history(sessionmaker, user, llm):
+async def test_context_contains_profile_memory_time_history(sessionmaker, user, llm, settings):
     async with sessionmaker() as s:
         await add_memories(s, user, [("contact", "Жена Маша")])
-        await agent.reply(s, user, "Привет", llm)
+        await agent.handle(s, user, "Привет", llm, settings)
         msgs = await agent.build_messages(s, user, "Что подарить Маше?",
                                           now=datetime(2026, 10, 12, 9, 0, tzinfo=ZoneInfo("UTC")))
     system = msgs[0]["content"]
     assert msgs[0]["role"] == "system" and "Aura" in system
     assert "арахис" in system and "НИКОГДА" in system      # анкета сразу в контексте
     assert "Жена Маша" in system                           # долгая память
-    assert "12.10.2026 15:00" in system                    # время в поясе пользователя (Омск, UTC+6)
+    assert "2026-10-12 15:00" in system                    # время в поясе пользователя (Омск, UTC+6)
+    assert '"task"' in system and '"meeting"' in system      # формат действий
     assert [m["role"] for m in msgs[1:]] == ["user", "assistant", "user"]
     assert msgs[-1]["content"] == "Что подарить Маше?"
 
 
-async def test_reply_saves_history_only_on_success(sessionmaker, user, llm):
+async def test_reply_saves_history_only_on_success(sessionmaker, user, llm, settings):
     async with sessionmaker() as s:
-        assert await agent.reply(s, user, "  Привет  ", llm) == "Ответ Aura"
+        assert (await agent.handle(s, user, "  Привет  ", llm, settings)).reply == "Ответ Aura"
         llm.fail = True
         with pytest.raises(LLMError):
-            await agent.reply(s, user, "ещё", llm)
+            await agent.handle(s, user, "ещё", llm, settings)
         hist = await recent_messages(s, user, 10)
     assert [(m.role, m.text) for m in hist] == [("user", "Привет"), ("assistant", "Ответ Aura")]
 

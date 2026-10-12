@@ -8,14 +8,7 @@ from aura_bot.models import Memory
 from aura_bot.repo import add_memories, get_or_create_tg_user, list_memories, recent_messages
 
 
-async def onboard(tg, allergies="арахис"):
-    await tg.send("/start")
-    await tg.press("ob:skip")
-    await tg.send(allergies)
-    await tg.press("ob:diets_done")
-    await tg.press("ob:skip")
-    await tg.press("tz:Europe/Moscow")
-    await tg.press("ob:save")
+from conftest import TgHarness, onboard
 
 
 async def db_user(sessionmaker, tg):
@@ -32,8 +25,8 @@ async def test_chat_answers_with_profile_and_learns(tg, llm, sessionmaker):
     assert tg.texts(calls) == ["Советую кешью — без арахиса."]
 
     chat_prompt, json_mode = llm.calls[0]
-    assert not json_mode and "арахис" in chat_prompt[0]["content"]  # анкета применена в ответе
-    assert llm.calls[1][1] is True                                   # затем извлечение памяти
+    assert json_mode and "арахис" in chat_prompt[0]["content"]      # анкета применена в ответе
+    assert llm.calls[1][0][0]["content"].startswith("Ты модуль памяти")  # затем извлечение памяти
 
     s, u = await db_user(sessionmaker, tg)
     async with s:
@@ -47,7 +40,6 @@ async def test_chat_answers_with_profile_and_learns(tg, llm, sessionmaker):
 async def test_chat_requires_onboarding_and_llm(tg, sessionmaker, llm):
     assert "/start" in tg.texts(await tg.send("привет"))[0]
     assert llm.calls == []
-    from conftest import TgHarness
     no_llm = TgHarness(sessionmaker, user_id=99, llm=None)
     await onboard(no_llm)
     assert "OPENAI_API_KEY" in no_llm.texts(await no_llm.send("привет"))[0]
@@ -110,7 +102,7 @@ async def test_wipe_requires_confirmation(tg, llm, sessionmaker):
 
 async def test_unknown_command_not_sent_to_llm(tg, llm):
     await onboard(tg)
-    assert "Не знаю такой команды" in tg.texts(await tg.send("/tasks"))[0]
+    assert "Не знаю такой команды" in tg.texts(await tg.send("/nonsense"))[0]
     assert llm.calls == []
 
 

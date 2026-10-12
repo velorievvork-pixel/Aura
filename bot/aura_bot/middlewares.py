@@ -25,7 +25,10 @@ class DbMiddleware(BaseMiddleware):
             data["session"] = session
             tg_user: TgUser | None = data.get("event_from_user")
             if tg_user is not None and not tg_user.is_bot:
-                data["user"] = await get_or_create_tg_user(
-                    session, tg_user.id, tg_user.full_name, self.default_tz
-                )
+                user = await get_or_create_tg_user(session, tg_user.id, tg_user.full_name, self.default_tz)
+                uname = (tg_user.username or "")[:64] or None
+                if user.tg_username != uname:  # нужен для /meet @username
+                    user.tg_username = uname
+                    await session.commit()
+                data["user"] = user
             return await handler(event, data)

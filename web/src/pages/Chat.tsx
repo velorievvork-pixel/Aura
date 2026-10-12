@@ -1,4 +1,4 @@
-import { ArrowRight, Brain, HelpCircle, LogOut, MessageCircle, Mic, Paperclip, SendHorizontal, Settings, Shield, X } from 'lucide-react';
+import { ArrowRight, Brain, HelpCircle, LogOut, MessageCircle, Mic, SendHorizontal, Settings, Shield, X } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { Orb } from '../components/ui';
@@ -163,7 +163,6 @@ export function Chat() {
             </button>
             <div className="bar">
               <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Напишите что-нибудь…" aria-label="Сообщение" />
-              <Paperclip size={18} className="muted" aria-hidden="true" />
             </div>
             <button className="icon-btn accent send" aria-label="Отправить" disabled={!text.trim()}>
               <SendHorizontal size={22} />

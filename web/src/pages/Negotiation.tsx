@@ -127,7 +127,7 @@ export function NegotiationView() {
             </div>
           )}
           {n.status === 'booked' && (
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
               <span className="badge green">
                 <Check size={14} /> Столик забронирован
               </span>

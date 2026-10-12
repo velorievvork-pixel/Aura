@@ -68,6 +68,7 @@ targets:
     scheme:
       testTargets:
         - AuraTests
+        - AuraUITests
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.aura.app
@@ -84,4 +85,17 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.aura.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+  # Проход по экранам со скриншотами (без dev-стека пропускается).
+  AuraUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - AuraUITests
+    dependencies:
+      - target: Aura
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.aura.app.uitests
         GENERATE_INFOPLIST_FILE: YES

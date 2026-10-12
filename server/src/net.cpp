@@ -18,6 +18,12 @@
 
 #include "aura/log.h"
 
+// macOS: MSG_NOSIGNAL может отсутствовать; SIGPIPE там всё равно игнорируется
+// процессом (main.cpp: signal(SIGPIPE, SIG_IGN)), поэтому флаг можно опустить.
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
 namespace aura::net {
 
 namespace {

@@ -1,0 +1,186 @@
+# Проверка клиентов на настоящих платформах со скриншотами:
+#   Android — APK из builds/android на эмуляторе (API 34) + dev-стек с демо-данными;
+#   Windows — установщик из builds/windows: тихая установка, запуск, снимки;
+#   iOS     — сборка в Xcode, UI-тест AuraUITests на симуляторе + dev-стек на macOS.
+# Снимки — в артефактах прогона и в ветках builds/shots-{android,windows,ios}.
+# Пароль демо-аккаунтов генерируется на каждый прогон.
+name: Device check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/device-check.yml"
+      - "tools/android_tour.py"
+      - "ios/AuraUITests/**"
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    name: Android — эмулятор
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with: { ref: builds/android, path: apk }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Сервер и AI-сервис
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build >/dev/null
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAURA_WITH_LIBPQ=OFF -DAURA_BUILD_TESTS=OFF
+          cmake --build build -j"$(nproc)"
+          python -m pip install -q -r ai/requirements.txt websockets
+          PYTHON=python tools/dev_stack.sh
+          echo "AURA_DEMO_PASSWORD=Demo$(openssl rand -hex 8)7" >> "$GITHUB_ENV"
+      - name: Демо-данные
+        run: python tools/demo_seed.py
+      - name: KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Эмулятор и проход по экранам
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: |
+            adb install -r apk/Aura-debug.apk
+            python tools/android_tour.py shots/android
+      - name: Логи стека
+        if: always()
+        run: |
+          mkdir -p shots/android
+          cp build/devstack/*.log shots/android/ 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: shots-android, path: shots/android }
+      - name: Снимки в ветку builds/shots-android
+        if: always()
+        run: |
+          cd shots/android && git init -q -b builds/shots-android
+          git config user.name aura-ci && git config user.email ci@aura.local
+          git add -A && git commit -qm "android shots ${{ github.sha }} [skip ci]"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/shots-android
+
+  windows:
+    name: Windows — установка и запуск
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: builds/windows, path: setup }
+      - name: Тихая установка, запуск, снимки
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force shots | Out-Null
+          $log = "shots\check.log"
+          Start-Process setup\Aura-Setup.exe -ArgumentList "/S" -Wait
+          $exe = "$env:LOCALAPPDATA\Programs\Aura\aura-client.exe"
+          Add-Content $log "установлен: $(Test-Path $exe)"
+          Add-Content $log "ярлык на рабочем столе: $(Test-Path "$env:USERPROFILE\Desktop\Aura.lnk")"
+          Add-Content $log "ярлык в Пуске: $(Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Aura\Aura.lnk")"
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Shot($name) {
+            $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+            $bmp.Save("shots\$name.png")
+          }
+          $p = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 12
+          Shot "01-start"
+          $p.Refresh()
+          Add-Content $log "процесс жив через 12 с: $(-not $p.HasExited)"
+          if (-not $p.HasExited) {
+            Add-Content $log "окно: '$($p.MainWindowTitle)'"
+            Add-Content $log "память: $([math]::Round($p.WorkingSet64 / 1MB)) МБ"
+            # Вход без сервера: должно появиться сообщение об ошибке соединения.
+            $shell = New-Object -ComObject WScript.Shell
+            $null = $shell.AppActivate($p.Id)
+            Start-Sleep -Seconds 1
+            [System.Windows.Forms.SendKeys]::SendWait("{TAB}")
+            Start-Sleep -Seconds 1
+            [System.Windows.Forms.SendKeys]::SendWait("{ENTER}")
+            Start-Sleep -Seconds 4
+            Shot "02-login-attempt"
+            Stop-Process -Id $p.Id -Force
+          } else {
+            Add-Content $log "код выхода: $($p.ExitCode)"
+          }
+          Get-Content $log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: shots-windows, path: shots }
+      - name: Снимки в ветку builds/shots-windows
+        if: always()
+        shell: bash
+        run: |
+          cd shots && git init -q -b builds/shots-windows
+          git config user.name aura-ci && git config user.email ci@aura.local
+          git add -A && git commit -qm "windows shots ${{ github.sha }} [skip ci]"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/shots-windows
+
+  ios:
+    name: iOS — симулятор
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Xcode 15.4 и XcodeGen
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app
+          brew install xcodegen >/dev/null
+      - name: Сервер и AI-сервис (macOS)
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAURA_WITH_LIBPQ=OFF -DAURA_BUILD_TESTS=OFF
+          cmake --build build -j"$(sysctl -n hw.ncpu)"
+          python -m pip install -q -r ai/requirements.txt websockets
+          PYTHON=python tools/dev_stack.sh
+          echo "AURA_DEMO_PASSWORD=Demo$(openssl rand -hex 8)7" >> "$GITHUB_ENV"
+      - name: Демо-данные
+        run: python tools/demo_seed.py
+      - name: Сборка и проход по экранам
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodegen generate
+          DEST=$(xcrun simctl list devices available -j \
+            | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone 15')))")
+          mkdir -p "$GITHUB_WORKSPACE/shots/ios"
+          TEST_RUNNER_AURA_TOUR_EMAIL=alex@aura.local \
+          TEST_RUNNER_AURA_TOUR_PASSWORD="$AURA_DEMO_PASSWORD" \
+          TEST_RUNNER_AURA_TOUR_SHOTS="$GITHUB_WORKSPACE/shots/ios" \
+          xcodebuild test -project Aura.xcodeproj -scheme Aura -destination "id=$DEST" \
+            -only-testing:AuraUITests/ScreenTourTests -derivedDataPath build \
+            -resultBundlePath "$GITHUB_WORKSPACE/shots/ios/Tour.xcresult" \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee "$GITHUB_WORKSPACE/shots/ios/xcodebuild.log" | grep -E "error:|warning: .*Aura|Test Case|TEST|XCTAssert|failed" || true
+      - name: Логи стека
+        if: always()
+        run: |
+          mkdir -p shots/ios
+          cp build/devstack/*.log shots/ios/ 2>/dev/null || true
+          tail -c 200000 shots/ios/xcodebuild.log > shots/ios/xcodebuild-tail.log 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: shots-ios, path: shots/ios }
+      - name: Снимки в ветку builds/shots-ios
+        if: always()
+        run: |
+          cd shots/ios && rm -rf Tour.xcresult && rm -f xcodebuild.log
+          git init -q -b builds/shots-ios
+          git config user.name aura-ci && git config user.email ci@aura.local
+          git add -A && git commit -qm "ios shots ${{ github.sha }} [skip ci]"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/shots-ios

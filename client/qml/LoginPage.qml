@@ -24,6 +24,8 @@ Item {
     property string lastEmail: ""
     property bool showServer: false
     readonly property bool wideCard: flow === "login"
+    // Невысокое окно (ноутбук 1366×768 за вычетом панели задач): плотнее.
+    readonly property bool compact: height < 760
     readonly property string timezone: {
         const m = -new Date().getTimezoneOffset()
         const h = Math.floor(Math.abs(m) / 60), mm = Math.abs(m) % 60
@@ -115,7 +117,7 @@ Item {
                 anchors.centerIn: parent
                 width: Math.min(page.wideCard ? 720 : 460, parent.width - 32)
                 radius: page.wideCard ? 40 : 34
-                padding: page.wideCard ? (page.height < 820 ? 36 : 56) : 34
+                padding: page.wideCard ? (page.compact ? 26 : page.height < 820 ? 36 : 56) : 34
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
                 Behavior on width { NumberAnimation { duration: AuraTheme.moveMs; easing.type: AuraTheme.ease } }
 
@@ -154,7 +156,7 @@ Item {
                 ColumnLayout {
                     anchors.horizontalCenter: parent.horizontalCenter
                     width: card.width - card.padding * 2
-                    spacing: 16
+                    spacing: page.compact ? 9 : 16
                     // Поля широкой карточки входа — узкой колонкой по центру, как в макете.
                     readonly property real formWidth: page.wideCard ? Math.min(340, width) : width
 
@@ -163,7 +165,7 @@ Item {
                         visible: page.flow !== "register"
                         Layout.alignment: Qt.AlignHCenter
                         Layout.bottomMargin: 8
-                        size: page.wideCard ? 84 : 64
+                        size: page.compact ? 56 : page.wideCard ? 84 : 64
                     }
                     RowLayout {
                         visible: page.flow === "register"

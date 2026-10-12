@@ -12,7 +12,8 @@ struct CreateTaskIntent: AppIntent {
     @Parameter(title: "Задача", requestValueDialog: "Какую задачу создать?")
     var taskTitle: String
 
-    @Parameter(title: "Напомнить (дата)", description: "Необязательно", default: Date?.none)
+    // Необязательный параметр: без default (вариант с default требует iOS 18).
+    @Parameter(title: "Напомнить (дата)", description: "Необязательно")
     var remindDate: Date?
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -23,9 +24,15 @@ struct CreateTaskIntent: AppIntent {
             remindAt = formatter.string(from: remindDate)
         }
         _ = try await IntentSession.shared.createTask(title: taskTitle, remindAt: remindAt)
-        let dialog = remindAt.isEmpty
-            ? "Задача «\(taskTitle)» создана"
-            : "Задача «\(taskTitle)» создана, напомню \(remindAt)"
+        let dialog: String
+        if let remindDate {
+            let spoken = DateFormatter()
+            spoken.locale = Locale(identifier: "ru_RU")
+            spoken.dateFormat = "d MMMM 'в' HH:mm"
+            dialog = "Задача «\(taskTitle)» создана, напомню \(spoken.string(from: remindDate))"
+        } else {
+            dialog = "Задача «\(taskTitle)» создана"
+        }
         return .result(dialog: IntentDialog(stringLiteral: dialog))
     }
 }

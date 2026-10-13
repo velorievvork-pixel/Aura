@@ -32,11 +32,15 @@ class AppStore : public QObject {
     Q_PROPERTY(QString userName READ userName NOTIFY profileChanged)
     Q_PROPERTY(QString userEmail READ userEmail NOTIFY profileChanged)
     Q_PROPERTY(qint64 userId READ userId NOTIFY profileChanged)
+    Q_PROPERTY(QString userBio READ userBio NOTIFY profileChanged)
     Q_PROPERTY(QVariantList chats READ chats NOTIFY chatsChanged)
     Q_PROPERTY(QVariantList messages READ messages NOTIFY messagesChanged)
     Q_PROPERTY(QVariantList memory READ memory NOTIFY memoryChanged)
     Q_PROPERTY(QVariantMap preferences READ preferences NOTIFY preferencesChanged)
     Q_PROPERTY(bool needOnboarding READ needOnboarding NOTIFY preferencesChanged)
+    // Приватность ИИ (prefs.privacy): share_free_slots_only, hide_event_titles,
+    // allow_place_choice — все три флага всегда есть, по умолчанию true.
+    Q_PROPERTY(QVariantMap privacy READ privacy NOTIFY preferencesChanged)
     Q_PROPERTY(QString chatTitle READ chatTitle NOTIFY chatChanged)
     Q_PROPERTY(bool peerOnline READ peerOnline NOTIFY chatChanged)
     Q_PROPERTY(QString statusMessage READ statusMessage NOTIFY statusMessageChanged)
@@ -110,6 +114,7 @@ public:
     QString userName() const { return userName_; }
     QString userEmail() const { return userEmail_; }
     qint64 userId() const { return userId_; }
+    QString userBio() const { return userBio_; }
     QVariantList chats() const { return chats_; }
     QVariantList messages() const { return messages_; }
     QVariantList memory() const { return memory_; }
@@ -121,6 +126,11 @@ public:
                !preferences_.value(QStringLiteral("onboarded")).toBool();
     }
     void dismissOnboarding() { onboardingDismissed_ = true; emit preferencesChanged(); }
+    QVariantMap privacy() const;
+    // Профиль (profile.update): имя 1–80 символов, «о себе» до 300.
+    Q_INVOKABLE void updateProfile(const QString& displayName, const QString& bio);
+    // Приватность ИИ: prefs.set {"privacy": {key: value}}; при ошибке значение откатывается.
+    Q_INVOKABLE void setPrivacy(const QString& key, bool value);
     QString chatTitle() const { return chatTitle_; }
     bool peerOnline() const { return peerOnline_; }
     QString statusMessage() const { return statusMessage_; }
@@ -274,6 +284,9 @@ signals:
     void messagesChanged();
     void memoryChanged();
     void preferencesChanged();
+    void profileSaved();                        // profile.update принят сервером
+    void profileSaveFailed(const QString& message);
+    void privacySaveFailed(const QString& key, const QString& message);  // флаг откатан
     void chatChanged();
     void statusMessageChanged();
     void errorMessageChanged();
@@ -348,6 +361,7 @@ private:
     QString refreshToken_;
     QString userName_;
     QString userEmail_;
+    QString userBio_;
     qint64 userId_ = 0;
     bool busy_ = false;
     int reconnectDelayMs_ = 2000;     // переподключение: 2 → 4 → 8 → 15 с
@@ -360,6 +374,7 @@ private:
     QVariantList memory_;
     QVariantMap preferences_;
     bool onboardingDismissed_ = false;
+    int privacyPending_ = 0;          // prefs.set с privacy в полёте (не затираем оптимистичные значения)
     QString statusMessage_;
     QString errorMessage_;
     // auth v3

@@ -17,6 +17,27 @@ Item {
     property bool embedded: false
 
     property var prefs: App ? App.preferences : ({})
+    property var privacy: App ? App.privacy : ({})
+
+    // Длина в кодовых точках — так же считает сервер (эмодзи — один символ).
+    function charCount(text) { return Array.from(text || "").length }
+
+    // Поля профиля заполняются из App; правки пользователя не затираются,
+    // пока поле в фокусе.
+    function resetProfileFields() {
+        if (!nameField.activeFocus) nameField.text = App ? App.userName : ""
+        if (!bioField.activeFocus) bioField.text = App ? App.userBio : ""
+    }
+
+    Component.onCompleted: resetProfileFields()
+
+    Connections {
+        target: App
+        function onProfileChanged() { page.resetProfileFields() }
+        function onProfileSaved() { profileError.text = "" }
+        function onProfileSaveFailed(message) { profileError.text = message }
+        function onPrivacySaveFailed(key, message) { privacyError.text = "Не сохранилось: " + message }
+    }
 
     // v3: заголовок секции с lilac-индикатором слева (как в макете Settings)
     // Переключатель в стиле стекла: стандартный Basic-Switch бело-серый и
@@ -247,10 +268,124 @@ Item {
                             color: AuraTheme.textSecondary
                         }
                         Text {
+                            Layout.fillWidth: true
+                            visible: text.length > 0
+                            text: App ? App.userBio : ""
+                            textFormat: Text.PlainText
+                            wrapMode: Text.WordWrap
+                            maximumLineCount: 3
+                            elide: Text.ElideRight
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontSmall
+                            color: AuraTheme.textSecondary
+                        }
+                        Text {
                             text: "Сервер: " + (App ? App.serverUrl : "") + " · " + (App && App.connected ? "подключено" : "офлайн")
                             font.family: AuraTheme.fontFamily
                             font.pixelSize: AuraTheme.fontMicro
                             color: App && App.connected ? AuraTheme.textMuted : AuraTheme.warning
+                        }
+                    }
+                }
+            }
+
+            // ------------------------------------------ редактирование профиля
+            GlassPanel {
+                visible: page.section === "profile"
+                Layout.fillWidth: true
+                backdrop: page.Window.window ? page.Window.window.contentItem : null
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: AuraTheme.spaceSm
+
+                    SectionTitle { title: "Профиль" }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Имя и «о себе» видят ваши контакты и их Ауры при переговорах."
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontMicro
+                        color: AuraTheme.textMuted
+                        wrapMode: Text.WordWrap
+                    }
+
+                    GlassField {
+                        id: nameField
+                        Layout.fillWidth: true
+                        label: "Имя · " + chars + "/80"
+                        placeholderText: "Как вас называть"
+                        readonly property int chars: page.charCount(text.trim())
+                        readonly property bool valid: chars >= 1 && chars <= 80
+                        invalid: !valid
+                        onTextEdited: profileError.text = ""
+                    }
+
+                    GlassField {
+                        id: bioField
+                        Layout.fillWidth: true
+                        label: "О себе · " + chars + "/300"
+                        placeholderText: "Пара слов о себе (необязательно)"
+                        readonly property int chars: page.charCount(text.trim())
+                        readonly property bool valid: chars <= 300
+                        invalid: !valid
+                        onTextEdited: profileError.text = ""
+                    }
+
+                    Text {
+                        id: profileHint
+                        Layout.fillWidth: true
+                        visible: text.length > 0
+                        text: !nameField.valid
+                              ? (nameField.chars === 0 ? "Имя не может быть пустым" : "Имя — не длиннее 80 символов")
+                              : (!bioField.valid ? "«О себе» — не длиннее 300 символов" : "")
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontMicro
+                        color: AuraTheme.danger
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Text {
+                        id: profileError
+                        Layout.fillWidth: true
+                        visible: text.length > 0 && !profileHint.visible
+                        text: ""
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontMicro
+                        color: AuraTheme.danger
+                        wrapMode: Text.WordWrap
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: AuraTheme.spaceSm
+
+                        GlassButton {
+                            variant: "accent"
+                            text: "Сохранить профиль"
+                            glyph: "✓"
+                            busy: App ? App.busy : false
+                            enabled: nameField.valid && bioField.valid
+                                     && (nameField.text.trim() !== (App ? App.userName : "")
+                                         || bioField.text.trim() !== (App ? App.userBio : ""))
+                            onClicked: {
+                                nameField.focus = false
+                                bioField.focus = false
+                                App.updateProfile(nameField.text, bioField.text)
+                            }
+                        }
+
+                        GlassButton {
+                            variant: "quiet"
+                            text: "Отменить"
+                            visible: nameField.text !== (App ? App.userName : "")
+                                     || bioField.text !== (App ? App.userBio : "")
+                            onClicked: {
+                                nameField.focus = false
+                                bioField.focus = false
+                                profileError.text = ""
+                                page.resetProfileFields()
+                            }
                         }
                     }
                 }
@@ -421,6 +556,96 @@ Item {
                             diet: dietFlow.selected,
                             preferred_hours: hoursFlow.selected
                         })
+                    }
+                }
+            }
+
+            // ------------------------------------------------ приватность ИИ
+            GlassPanel {
+                visible: page.section === "profile"
+                Layout.fillWidth: true
+                backdrop: page.Window.window ? page.Window.window.contentItem : null
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: AuraTheme.spaceMd
+
+                    SectionTitle { title: "Приватность ИИ" }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Что ваша Аура раскрывает чужой Ауре, когда договаривается о встрече."
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontMicro
+                        color: AuraTheme.textSecondary
+                        wrapMode: Text.WordWrap
+                    }
+
+                    Repeater {
+                        model: [
+                            { key: "share_free_slots_only",
+                              title: "Делиться только свободными слотами",
+                              hint: "Другой Ауре уходят только занятость и настройки, нужные для времени и места. "
+                                    + "Факты из памяти, день рождения и аллергии не передаются." },
+                            { key: "allow_place_choice",
+                              title: "Разрешить выбор локаций",
+                              hint: "Аура может предложить место встречи. Если выключено у вас или у собеседника, "
+                                    + "место не предлагается — выберете сами." },
+                            { key: "hide_event_titles",
+                              title: "Скрывать названия других событий",
+                              hint: "Названия событий вашего календаря заменяются на «занято»." }
+                        ]
+
+                        delegate: RowLayout {
+                            id: privacyRow
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: AuraTheme.spaceMd
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: privacyRow.modelData.title
+                                    font.family: AuraTheme.fontFamily
+                                    font.pixelSize: AuraTheme.fontSmall
+                                    color: AuraTheme.textPrimary
+                                    wrapMode: Text.WordWrap
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: privacyRow.modelData.hint
+                                    font.family: AuraTheme.fontFamily
+                                    font.pixelSize: AuraTheme.fontMicro
+                                    color: AuraTheme.textMuted
+                                    wrapMode: Text.WordWrap
+                                }
+                            }
+
+                            GlassSwitch {
+                                checked: page.privacy[privacyRow.modelData.key] === true
+                                Accessible.name: privacyRow.modelData.title
+                                onToggled: {
+                                    privacyError.text = ""
+                                    App.setPrivacy(privacyRow.modelData.key, checked)
+                                    // Переключение рвёт привязку checked — восстанавливаем,
+                                    // чтобы откат при ошибке сервера был виден.
+                                    checked = Qt.binding(() => page.privacy[privacyRow.modelData.key] === true)
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        id: privacyError
+                        Layout.fillWidth: true
+                        visible: text.length > 0
+                        text: ""
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontMicro
+                        color: AuraTheme.danger
+                        wrapMode: Text.WordWrap
                     }
                 }
             }

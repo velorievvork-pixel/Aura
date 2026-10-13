@@ -201,12 +201,18 @@ final class AppStore: ObservableObject {
     @Published var userId: Int64 = 0
     @Published var userName = ""
     @Published var userEmail = ""
+    @Published var userBio = ""
+    /// Ошибка последнего сохранения профиля (показывается под полями).
+    @Published var profileError = ""
+    @Published var savingProfile = false
 
     @Published var tab: AppTab = .home
 
     @Published var dialog: [DialogEntry] = []
     @Published var memory: [MemoryEntry] = []
     @Published var prefs: JSONValue = .emptyObject
+    /// prefs.privacy: что Аура раскрывает чужой Ауре в переговорах.
+    @Published var privacy = AuraPrivacy()
 
     @Published var negotiation: Negotiation?
     @Published var negotiationHistory: [Negotiation] = []
@@ -419,9 +425,7 @@ final class AppStore: ObservableObject {
     }
 
     private func signedIn(user: JSONValue) async throws {
-        userId = user.int("id")
-        userName = user.string("display_name", default: user.string("email"))
-        userEmail = user.string("email")
+        applyUser(AuraUser(json: user))
         authState = .loggedIn
         tab = .home
         startEventLoop()
@@ -439,6 +443,13 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private func applyUser(_ user: AuraUser) {
+        userId = user.id
+        userName = user.displayName.isEmpty ? user.email : user.displayName
+        userEmail = user.email
+        userBio = user.bio
+    }
+
     private func deviceId() -> String {
         if let saved = keychain.load(.deviceId), !saved.isEmpty { return saved }
         let fresh = UUID().uuidString
@@ -447,13 +458,13 @@ final class AppStore: ObservableObject {
     }
 
     private func resetData() {
-        dialog = []; memory = []; prefs = .emptyObject
+        dialog = []; memory = []; prefs = .emptyObject; privacy = AuraPrivacy()
         negotiation = nil; negotiationHistory = []
         chats = []; contacts = []; foundUsers = []; openChatId = 0; messages = []
         tasks = []; confirmations = []; permissions = []; connections = []; providers = []
         notices = []; unreadNotifications = 0; pushDevices = []
         twoFaEnabled = false; twoFaSecret = ""; recoveryCodes = []
-        userId = 0; userName = ""; userEmail = ""; tab = .home
+        userId = 0; userName = ""; userEmail = ""; userBio = ""; profileError = ""; tab = .home
         updateBadge()
     }
 
@@ -509,7 +520,7 @@ final class AppStore: ObservableObject {
         if value != .contacts { openChatId = 0 }
         switch value {
         case .settings:
-            loadPermissions(); loadIntegrations(); load2faStatus()
+            loadPermissions(); loadIntegrations(); load2faStatus(); loadPrivacy()
         case .confirmations:
             loadConfirmations()
         case .notifications:
@@ -528,7 +539,7 @@ final class AppStore: ObservableObject {
     func checkOnboarding() async {
         do {
             let value = try await client.prefsGet()
-            prefs = value
+            applyPrefs(value)
             needOnboarding = !value.bool("onboarded")
         } catch {
             fail(error)
@@ -556,6 +567,70 @@ final class AppStore: ObservableObject {
     /// «Пропустить»: пустую анкету не сохраняем, но больше не показываем.
     func skipOnboarding() {
         needOnboarding = false
+    }
+
+    // MARK: Профиль
+
+    /// profile.update: имя (1–80) и «о себе» (≤300). Уходят только изменённые поля;
+    /// ответ сервера (user) — новое состояние профиля. onSaved — после успеха.
+    func updateProfile(displayName: String, bio: String, onSaved: @escaping () -> Void = {}) {
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let about = bio.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let problem = AuraProfileRules.validate(displayName: name, bio: about) {
+            profileError = problem
+            return
+        }
+        let newName: String? = name == userName ? nil : name
+        let newBio: String? = about == userBio ? nil : about
+        guard newName != nil || newBio != nil else {
+            profileError = ""
+            onSaved()
+            return
+        }
+        profileError = ""
+        savingProfile = true
+        run {
+            defer { self.savingProfile = false }
+            do {
+                let user = try await self.client.updateProfile(displayName: newName, bio: newBio)
+                self.applyUser(user)
+                self.setStatus("Профиль сохранён")
+                onSaved()
+            } catch {
+                self.profileError = self.describe(error)
+                throw error
+            }
+        }
+    }
+
+    // MARK: Приватность переговоров
+
+    private func applyPrefs(_ value: JSONValue) {
+        prefs = value
+        privacy = AuraPrivacy(preferences: value)
+    }
+
+    func loadPrivacy() {
+        Task {
+            guard let value = try? await client.prefsGet() else { return }
+            applyPrefs(value)
+        }
+    }
+
+    /// Переключатель сохраняется сразу (prefs.set {"privacy": {flag: value}});
+    /// при ошибке сервера возвращаем прежнее значение и показываем ошибку.
+    func setPrivacy(_ flag: AuraPrivacy.Flag, _ value: Bool) {
+        let previous = privacy[flag]
+        guard previous != value else { return }
+        privacy[flag] = value
+        run {
+            do {
+                self.applyPrefs(try await self.client.privacySet([flag: value]))
+            } catch {
+                self.privacy[flag] = previous
+                throw error
+            }
+        }
     }
 
     // MARK: Аура

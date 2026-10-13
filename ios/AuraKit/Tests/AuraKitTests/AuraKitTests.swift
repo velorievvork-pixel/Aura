@@ -93,3 +93,74 @@ final class DeepLinkTests: XCTestCase {
         XCTAssertNil(DeepLink(url: URL(string: "aura://oauth?provider=x")!))  // нет code/state
     }
 }
+
+final class ProfileTests: XCTestCase {
+
+    func testUserDecodesBioAndOldPayloads() throws {
+        let fresh = """
+        {"id": 7, "email": "a@b.c", "display_name": "Алекс", "bio": "люблю кофе", "avatar_url": ""}
+        """
+        let user = try JSONDecoder().decode(AuraUser.self, from: Data(fresh.utf8))
+        XCTAssertEqual(user, AuraUser(id: 7, email: "a@b.c", displayName: "Алекс", bio: "люблю кофе"))
+
+        // Старый сервер: ни bio, ни avatar_url — декодируется с пустыми строками.
+        let old = """
+        {"id": 7, "email": "a@b.c", "display_name": "Алекс"}
+        """
+        let legacy = try JSONDecoder().decode(AuraUser.self, from: Data(old.utf8))
+        XCTAssertEqual(legacy.bio, "")
+        XCTAssertEqual(legacy.avatarUrl, "")
+
+        let dynamic = try JSONDecoder().decode(JSONValue.self, from: Data(fresh.utf8))
+        XCTAssertEqual(AuraUser(json: dynamic), user)
+    }
+
+    func testProfileUpdatePayloadHasOnlyPassedFields() {
+        XCTAssertEqual(AuraClient.profileUpdatePayload(displayName: "Алекс"),
+                       ["display_name": .string("Алекс")])
+        XCTAssertEqual(AuraClient.profileUpdatePayload(displayName: "Алекс", bio: ""),
+                       ["display_name": .string("Алекс"), "bio": .string("")])
+        XCTAssertEqual(AuraClient.profileUpdatePayload(avatarUrl: "https://x.y/a.png"),
+                       ["avatar_url": .string("https://x.y/a.png")])
+        XCTAssertEqual(AuraClient.profileUpdatePayload(), [:])
+    }
+
+    func testProfileRules() {
+        XCTAssertNil(AuraProfileRules.validate(displayName: "Алекс", bio: ""))
+        XCTAssertNotNil(AuraProfileRules.validate(displayName: "   ", bio: ""))
+        XCTAssertNil(AuraProfileRules.validate(displayName: String(repeating: "я", count: 80), bio: ""))
+        XCTAssertNotNil(AuraProfileRules.validate(displayName: String(repeating: "я", count: 81), bio: ""))
+        XCTAssertNil(AuraProfileRules.validate(displayName: "А", bio: String(repeating: "б", count: 300)))
+        XCTAssertNotNil(AuraProfileRules.validate(displayName: "А", bio: String(repeating: "б", count: 301)))
+    }
+}
+
+final class PrivacyTests: XCTestCase {
+
+    func testDefaultsAreTrue() throws {
+        XCTAssertEqual(AuraPrivacy(json: nil), AuraPrivacy())
+        XCTAssertEqual(AuraPrivacy(preferences: .emptyObject),
+                       AuraPrivacy(shareFreeSlotsOnly: true, hideEventTitles: true, allowPlaceChoice: true))
+        let partial = try JSONDecoder().decode(AuraPrivacy.self, from: Data(#"{"hide_event_titles": false}"#.utf8))
+        XCTAssertEqual(partial, AuraPrivacy(hideEventTitles: false))
+    }
+
+    func testFromPreferences() throws {
+        let json = """
+        {"theme": "dark", "privacy": {"share_free_slots_only": false, "hide_event_titles": true,
+                                      "allow_place_choice": false}}
+        """
+        let prefs = try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))
+        let privacy = AuraPrivacy(preferences: prefs)
+        XCTAssertFalse(privacy[.shareFreeSlotsOnly])
+        XCTAssertTrue(privacy[.hideEventTitles])
+        XCTAssertFalse(privacy[.allowPlaceChoice])
+        XCTAssertEqual(privacy.json, prefs["privacy"])
+    }
+
+    func testSetPayloadIsAtRootWithoutWrapper() {
+        let payload = AuraClient.privacyPayload([.allowPlaceChoice: false])
+        XCTAssertEqual(payload, .object(["privacy": .object(["allow_place_choice": .bool(false)])]))
+        XCTAssertNil(payload["preferences"])
+    }
+}

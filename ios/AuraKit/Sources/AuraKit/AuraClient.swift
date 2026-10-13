@@ -132,6 +132,29 @@ public final class AuraClient: @unchecked Sendable {
         ])
     }
 
+    // MARK: - Профиль
+
+    /// profile.update: меняются только переданные (не nil) поля. Сервер проверяет
+    /// имя 1–80, «о себе» ≤300 и аватар (пусто, https://… или data:image/…;base64);
+    /// неверное значение или пустой payload — AuraError(code: "bad_request").
+    public func updateProfile(displayName: String? = nil, bio: String? = nil,
+                              avatarUrl: String? = nil) async throws -> AuraUser {
+        let response = try await request("profile.update",
+                                         Self.profileUpdatePayload(displayName: displayName, bio: bio,
+                                                                   avatarUrl: avatarUrl))
+        return AuraUser(json: response["user"] ?? response)
+    }
+
+    /// Payload profile.update: только переданные поля, ключи как в протоколе.
+    public static func profileUpdatePayload(displayName: String? = nil, bio: String? = nil,
+                                            avatarUrl: String? = nil) -> [String: JSONValue] {
+        var payload: [String: JSONValue] = [:]
+        if let displayName { payload["display_name"] = .string(displayName) }
+        if let bio { payload["bio"] = .string(bio) }
+        if let avatarUrl { payload["avatar_url"] = .string(avatarUrl) }
+        return payload
+    }
+
     // MARK: - Чаты и сообщения
 
     public func chatList() async throws -> JSONValue {
@@ -222,6 +245,24 @@ public final class AuraClient: @unchecked Sendable {
         // Сервер читает поля настроек прямо из payload (docs/PROTOCOL.md):
         // prefs.set { "theme": ..., "notifications": {...} } — без обёртки.
         try await request("prefs.set", preferences)
+    }
+
+    /// Приватность переговоров из prefs.get (сервер всегда отдаёт все три флага).
+    public func privacyGet() async throws -> AuraPrivacy {
+        AuraPrivacy(preferences: try await prefsGet())
+    }
+
+    /// prefs.set {"privacy": {...}} — в корне payload, без обёртки; сервер сливает
+    /// переданные флаги с текущими. Ответ — обновлённые настройки целиком.
+    public func privacySet(_ changes: [AuraPrivacy.Flag: Bool]) async throws -> JSONValue {
+        try await prefsSet(Self.privacyPayload(changes))
+    }
+
+    /// Payload prefs.set для частичного обновления приватности.
+    public static func privacyPayload(_ changes: [AuraPrivacy.Flag: Bool]) -> JSONValue {
+        var flags: [String: JSONValue] = [:]
+        for (flag, value) in changes { flags[flag.rawValue] = .bool(value) }
+        return .object(["privacy": .object(flags)])
     }
 
     // MARK: - Задачи (этап 8)

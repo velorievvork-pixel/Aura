@@ -84,6 +84,9 @@ AppStore::AppStore(QObject* parent)
             loadMemory();
             reconnectDelayMs_ = 2000;
         } else if (state == WebSocketClient::State::Disconnected) {
+            // Ответы на запросы в полёте уже не придут — счётчик privacy сбрасываем,
+            // после переподключения prefs.get вернёт актуальные флаги.
+            privacyPending_ = 0;
             setStatus(QStringLiteral("Нет соединения с сервером"));
             scheduleReconnect();
         }
@@ -217,6 +220,7 @@ void AppStore::applyAuth(const QJsonObject& payload) {
     }
     userName_ = user.value(QStringLiteral("display_name")).toString();
     userEmail_ = user.value(QStringLiteral("email")).toString();
+    userBio_ = user.value(QStringLiteral("bio")).toString();
 
     if (payload.contains(QStringLiteral("preferences"))) {
         preferences_ = payload.value(QStringLiteral("preferences")).toObject().toVariantMap();
@@ -281,6 +285,8 @@ void AppStore::clearSession() {
     userId_ = 0;
     userName_.clear();
     userEmail_.clear();
+    userBio_.clear();
+    privacyPending_ = 0;
     chats_.clear();
     messages_.clear();
     memory_.clear();
@@ -527,6 +533,51 @@ void AppStore::changePassword(const QString& oldPassword, const QString& newPass
                                  return;
                              }
                              setStatus(QStringLiteral("Пароль изменён, прочие устройства отключены"));
+                         });
+}
+
+void AppStore::updateProfile(const QString& displayName, const QString& bio) {
+    // Те же ограничения, что на сервере: имя 1–80 символов, «о себе» до 300
+    // (считаем кодовые точки, как сервер, а не UTF-16).
+    const QString name = displayName.trimmed();
+    const QString about = bio.trimmed();
+    QString problem;
+    if (name.isEmpty() || name.toUcs4().size() > 80) {
+        problem = QStringLiteral("Имя — от 1 до 80 символов");
+    } else if (about.toUcs4().size() > 300) {
+        problem = QStringLiteral("«О себе» — до 300 символов");
+    }
+    if (!problem.isEmpty()) {
+        setError(problem);
+        emit profileSaveFailed(problem);
+        return;
+    }
+    setBusy(true);
+    QJsonObject payload;
+    payload.insert(QStringLiteral("display_name"), name);
+    payload.insert(QStringLiteral("bio"), about);
+    client_->sendRequest(QStringLiteral("profile.update"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             setBusy(false);
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 emit profileSaveFailed(error);
+                                 return;
+                             }
+                             const QJsonObject user = response.value(QStringLiteral("payload"))
+                                                          .toObject()
+                                                          .value(QStringLiteral("user"))
+                                                          .toObject();
+                             if (user.contains(QStringLiteral("display_name"))) {
+                                 userName_ = user.value(QStringLiteral("display_name")).toString();
+                             }
+                             if (user.contains(QStringLiteral("email"))) {
+                                 userEmail_ = user.value(QStringLiteral("email")).toString();
+                             }
+                             userBio_ = user.value(QStringLiteral("bio")).toString();
+                             emit profileChanged();
+                             emit profileSaved();
+                             setStatus(QStringLiteral("Профиль сохранён"));
                          });
 }
 
@@ -888,6 +939,62 @@ void AppStore::negotiateAgent(const QString& target, const QString& topic,
                          });
 }
 
+QVariantMap AppStore::privacy() const {
+    // Сервер всегда отдаёт все три флага; значения по умолчанию — на случай
+    // старого сервера или ещё не загруженных настроек.
+    QVariantMap result{{QStringLiteral("share_free_slots_only"), true},
+                       {QStringLiteral("hide_event_titles"), true},
+                       {QStringLiteral("allow_place_choice"), true}};
+    const QVariantMap stored = preferences_.value(QStringLiteral("privacy")).toMap();
+    for (auto it = stored.cbegin(); it != stored.cend(); ++it) {
+        if (result.contains(it.key()) && it.value().typeId() == QMetaType::Bool) {
+            result.insert(it.key(), it.value());
+        }
+    }
+    return result;
+}
+
+void AppStore::setPrivacy(const QString& key, bool value) {
+    QVariantMap current = privacy();
+    if (!current.contains(key)) {
+        const QString problem = QStringLiteral("Неизвестная настройка приватности: %1").arg(key);
+        setError(problem);
+        emit privacySaveFailed(key, problem);
+        return;
+    }
+    const bool previous = current.value(key).toBool();
+    if (previous == value) return;
+    // Оптимистично: переключатель меняется сразу, при ошибке — откат.
+    current.insert(key, value);
+    preferences_.insert(QStringLiteral("privacy"), current);
+    emit preferencesChanged();
+    ++privacyPending_;
+    QJsonObject flags;
+    flags.insert(key, value);
+    QJsonObject payload;
+    payload.insert(QStringLiteral("privacy"), flags);  // в корне payload, без обёртки
+    client_->sendRequest(QStringLiteral("prefs.set"), payload,
+                         [this, key, previous](const QJsonObject& response, const QString& error) {
+                             privacyPending_ = qMax(0, privacyPending_ - 1);
+                             if (!error.isEmpty()) {
+                                 QVariantMap rolledBack = privacy();
+                                 rolledBack.insert(key, previous);
+                                 preferences_.insert(QStringLiteral("privacy"), rolledBack);
+                                 emit preferencesChanged();
+                                 setError(QStringLiteral("Настройка приватности не сохранена: %1").arg(error));
+                                 emit privacySaveFailed(key, error);
+                                 return;
+                             }
+                             // Пока летят другие переключения, ответ не затирает их значения.
+                             if (privacyPending_ == 0) {
+                                 preferences_ =
+                                     response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                                 emit preferencesChanged();
+                             }
+                             setStatus(QStringLiteral("Приватность ИИ обновлена"));
+                         });
+}
+
 void AppStore::savePreferences(const QVariantMap& preferences) {
     setBusy(true);
     client_->sendRequest(QStringLiteral("prefs.set"), QJsonObject::fromVariantMap(preferences),
@@ -897,8 +1004,10 @@ void AppStore::savePreferences(const QVariantMap& preferences) {
                                  setError(error);
                                  return;
                              }
+                             const QVariant privacyNow = preferences_.value(QStringLiteral("privacy"));
                              preferences_ =
                                  response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                             if (privacyPending_ > 0) preferences_.insert(QStringLiteral("privacy"), privacyNow);
                              emit preferencesChanged();
                              setStatus(QStringLiteral("Настройки Ауры сохранены"));
                          });
@@ -948,7 +1057,9 @@ void AppStore::loadMessages(qint64 chatId) {
 void AppStore::loadPreferences() {
     client_->sendRequest(QStringLiteral("prefs.get"), {}, [this](const QJsonObject& response, const QString& error) {
         if (!error.isEmpty()) return;
+        const QVariant privacyNow = preferences_.value(QStringLiteral("privacy"));
         preferences_ = response.value(QStringLiteral("payload")).toObject().toVariantMap();
+        if (privacyPending_ > 0) preferences_.insert(QStringLiteral("privacy"), privacyNow);
         emit preferencesChanged();
     });
 }

@@ -1,6 +1,8 @@
-// SettingsView.swift — профиль, что разрешено Ауре (allow / ask / deny по
-// инструментам), голос, безопасность (2FA), интеграции Google, Back Tap,
+// SettingsView.swift — профиль (имя и «о себе», profile.update), что разрешено
+// Ауре (allow / ask / deny по инструментам), приватность в переговорах
+// (prefs.privacy), голос, безопасность (2FA), интеграции Google, Back Tap,
 // адрес сервера и выход. Кнопки делают только то, что умеет сервер.
+import AuraKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -10,6 +12,9 @@ struct SettingsView: View {
     @State private var totpCode = ""
     @State private var disablePassword = ""
     @State private var showQuickActions = false
+    @State private var editingProfile = false
+    @State private var nameDraft = ""
+    @State private var bioDraft = ""
 
     var body: some View {
         ScrollView {
@@ -18,6 +23,7 @@ struct SettingsView: View {
                 ScreenHeader("Настройки")
                 profile
                 permissionsSection
+                section("Приватность ИИ") { privacy }
                 section("Голос") { voice }
                 section("Безопасность") { security }
                 section("Интеграции") { integrations }
@@ -37,7 +43,10 @@ struct SettingsView: View {
             .padding(20)
         }
         .scrollDismissesKeyboard(.interactively)
-        .onAppear { serverURL = store.serverURLText }
+        .onAppear {
+            serverURL = store.serverURLText
+            store.loadPrivacy()
+        }
         .sheet(isPresented: $showQuickActions) {
             NavigationStack { QuickActionsView() }
         }
@@ -80,15 +89,84 @@ struct SettingsView: View {
     }
 
     private var profile: some View {
-        HStack(spacing: 14) {
-            AuraAvatar(name: store.userName, size: 52, online: store.connected)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(store.userName).font(AuraFont.manrope(20, .bold)).foregroundStyle(AuraColor.textPrimary)
-                Text(store.userEmail).font(AuraFont.small).foregroundStyle(AuraColor.textSecondary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 14) {
+                AuraAvatar(name: store.userName, size: 52, online: store.connected)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(store.userName).font(AuraFont.manrope(20, .bold)).foregroundStyle(AuraColor.textPrimary)
+                    Text(store.userEmail).font(AuraFont.small).foregroundStyle(AuraColor.textSecondary)
+                }
+                Spacer(minLength: 0)
+                if !editingProfile {
+                    RoundIconButton(systemImage: "pencil", label: "Изменить профиль", size: 38) { startEditing() }
+                }
             }
-            Spacer(minLength: 0)
+            if editingProfile {
+                profileEditor
+            } else if !store.userBio.isEmpty {
+                Text(store.userBio).font(AuraFont.body).foregroundStyle(AuraColor.textSecondary)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .glassCard()
+    }
+
+    /// Имя 1–80 символов, «о себе» до 300; ошибка сервера — под полями.
+    private var profileEditor: some View {
+        let nameCount = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines).count
+        let bioCount = bioDraft.trimmingCharacters(in: .whitespacesAndNewlines).count
+        let problem = AuraProfileRules.validate(displayName: nameDraft, bio: bioDraft)
+        let message = problem ?? store.profileError
+        return VStack(alignment: .leading, spacing: 10) {
+            AuraField(text: $nameDraft, placeholder: "Как к вам обращаться", label: "Имя")
+            Muted("\(nameCount)/\(AuraProfileRules.displayNameMax)")
+            AuraField(text: $bioDraft, placeholder: "Пара слов о себе", label: "О себе")
+            Muted("\(bioCount)/\(AuraProfileRules.bioMax)")
+            if !message.isEmpty {
+                Text(message).font(AuraFont.small).foregroundStyle(AuraColor.danger)
+            }
+            HStack(spacing: 10) {
+                GlassButton(title: "Отмена", quiet: true, height: 44) {
+                    editingProfile = false
+                    store.profileError = ""
+                }
+                GradientButton(title: "Сохранить", enabled: problem == nil, busy: store.savingProfile, height: 44) {
+                    store.updateProfile(displayName: nameDraft, bio: bioDraft) { editingProfile = false }
+                }
+            }
+        }
+    }
+
+    private func startEditing() {
+        nameDraft = store.userName
+        bioDraft = store.userBio
+        store.profileError = ""
+        editingProfile = true
+    }
+
+    /// Три флага prefs.privacy; переключение сохраняется сразу, при ошибке откатывается.
+    private var privacy: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Muted("Что ваша Аура раскрывает чужой Ауре, когда договаривается о встрече.")
+            privacyToggle(.shareFreeSlotsOnly, title: "Делиться только свободными слотами",
+                          hint: "Другой Ауре уходят только занятость и настройки, нужные для времени и места. Факты из памяти, день рождения и аллергии не передаются.")
+            privacyToggle(.allowPlaceChoice, title: "Разрешить выбор локаций",
+                          hint: "Аура предлагает место встречи. Если выключено у вас или у собеседника, место не предлагается — выберете сами.")
+            privacyToggle(.hideEventTitles, title: "Скрывать названия других событий",
+                          hint: "Названия событий вашего календаря заменяются на «занято».")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassCard()
+    }
+
+    private func privacyToggle(_ flag: AuraPrivacy.Flag, title: String, hint: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: Binding(get: { store.privacy[flag] }, set: { store.setPrivacy(flag, $0) })) {
+                Text(title).font(AuraFont.titleSmall).foregroundStyle(AuraColor.textPrimary)
+            }
+            .tint(AuraColor.accent)
+            Muted(hint)
+        }
     }
 
     private var voice: some View {

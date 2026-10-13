@@ -207,15 +207,55 @@ Json MemoryManager::extract(long long userId, const std::string& message, bool c
     return result;
 }
 
+Json MemoryManager::defaultPrivacy() {
+    Json privacy = Json::object();
+    privacy.set("share_free_slots_only", Json(true));
+    privacy.set("hide_event_titles", Json(true));
+    privacy.set("allow_place_choice", Json(true));
+    return privacy;
+}
+
 Json MemoryManager::preferences(long long userId) {
     Json preferences = database_.db().getPreferences(userId);
     if (!preferences.isObject()) preferences = Json::object();
     preferences.set("user_id", Json(userId));
+    // Старые строки настроек без privacy (или с частью ключей) — дополняем
+    // значениями по умолчанию, чтобы клиенты всегда видели все три флага.
+    Json privacy = defaultPrivacy();
+    const Json stored = preferences.get("privacy");
+    if (stored.isObject()) {
+        for (const auto& member : stored.members()) {
+            if (privacy.contains(member.first) && member.second.isBool()) privacy.set(member.first, member.second);
+        }
+    }
+    preferences.set("privacy", privacy);
     return preferences;
 }
 
-bool MemoryManager::setPreferences(long long userId, const Json& preferences, std::string& error) {
+Json MemoryManager::privacy(long long userId) { return preferences(userId).get("privacy"); }
+
+bool MemoryManager::setPreferences(long long userId, const Json& preferences, std::string& error, bool* invalid) {
     Json toSave = preferences;
+    if (invalid) *invalid = false;
+    // privacy: только известные булевы флаги; частичное обновление сливаем с текущими.
+    if (toSave.contains("privacy")) {
+        const Json incoming = toSave.get("privacy");
+        if (!incoming.isObject()) {
+            error = "privacy — объект с флагами";
+            if (invalid) *invalid = true;
+            return false;
+        }
+        Json merged = privacy(userId);
+        for (const auto& member : incoming.members()) {
+            if (!merged.contains(member.first) || !member.second.isBool()) {
+                error = "privacy." + member.first + ": неизвестный флаг или не true/false";
+                if (invalid) *invalid = true;
+                return false;
+            }
+            merged.set(member.first, member.second);
+        }
+        toSave.set("privacy", merged);
+    }
     // Онбординг-опрос после регистрации: как только пользователь прислал
     // хотя бы одно поле анкеты (день рождения, аллергии, диета, город, …),
     // помечаем опрос пройденным — клиенты по этому флагу показывают анкету.

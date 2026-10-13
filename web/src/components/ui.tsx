@@ -1,84 +1,78 @@
-import type { CSSProperties } from 'react';
-import type { Presence } from '../lib/types';
+import { Eye, EyeOff } from 'lucide-react';
+import { useState, type InputHTMLAttributes, type ReactNode } from 'react';
 
-/** The swirl of dashes from the sign-in screen. */
-export function AuraMark({ size = 72 }: { size?: number }) {
-  const n = 12;
+/** Знак Aura: тонкое кольцо без свечения. */
+export function Logo({ size = 22 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden="true">
-      <defs>
-        <linearGradient id="aura-mark" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stopColor="#f6e6ff" />
-          <stop offset="1" stopColor="#b18cff" />
-        </linearGradient>
-      </defs>
-      <g fill="none" stroke="url(#aura-mark)" strokeWidth="5" strokeLinecap="round">
-        {Array.from({ length: n }, (_, i) => (
-          <path key={i} d="M50 9 Q 60 9.5 66 19" transform={`rotate(${(360 / n) * i} 50 50)`} />
-        ))}
-      </g>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="2" opacity="0.35" />
+      <path d="M12 3.5a8.5 8.5 0 0 1 8.5 8.5" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" />
+      <circle cx="12" cy="12" r="2.5" fill="currentColor" />
     </svg>
   );
 }
 
-/** Small ring logo used in the sidebar. */
-export function AuraRing({ size = 26 }: { size?: number }) {
+// Приглушённые оттенки для аватаров без фото — по имени, стабильно.
+const HUES = ['#5b5fc7', '#3f8f7a', '#a0673d', '#8a4f8f', '#4f7aa8', '#7d7a3e', '#a14f5f'];
+
+export function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '·';
+  return (parts[0][0] + (parts[1]?.[0] ?? '')).toUpperCase();
+}
+
+export function Avatar({ name, src, size = 36 }: { name: string; src?: string; size?: number }) {
+  const hue = HUES[[...name].reduce((sum, ch) => sum + ch.charCodeAt(0), 0) % HUES.length];
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
-      <circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" strokeWidth="3.5" />
-      <circle cx="16" cy="16" r="4.5" fill="currentColor" />
-    </svg>
+    <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.38, background: src ? undefined : hue }} aria-hidden="true">
+      {src ? <img src={src} alt="" /> : initials(name)}
+    </span>
   );
 }
 
-export function Orb({ size = 64, style }: { size?: number; style?: CSSProperties }) {
-  return <div className="orb" style={{ width: size, height: size, ...style }} aria-hidden="true" />;
+export function Spinner({ small }: { small?: boolean }) {
+  return <span className={`spinner ${small ? 'sm' : ''}`} role="status" aria-label="Загрузка" />;
 }
 
-export function Avatar({ name, hue = 265, size = 44, ring }: { name: string; hue?: number; size?: number; ring?: boolean }) {
-  const initials = name
-    .split(/\s+/)
-    .map((p) => p[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase();
+export function Field({ label, error, hint, children }: { label: string; error?: string | null; hint?: ReactNode; children: ReactNode }) {
   return (
-    <div
-      className={`avatar${ring ? ' ring' : ''}`}
-      style={{
-        width: size,
-        height: size,
-        fontSize: size * 0.36,
-        background: `radial-gradient(circle at 30% 25%, hsl(${hue} 90% 78%), hsl(${hue} 70% 52%) 55%, hsl(${(hue + 30) % 360} 70% 28%))`,
-      }}
-      aria-hidden="true"
-    >
-      {initials}
+    <label className="field">
+      <span>{label}</span>
+      {children}
+      {error ? <span className="field-error">{error}</span> : hint ? <span className="hint">{hint}</span> : null}
+    </label>
+  );
+}
+
+export function PasswordInput(props: InputHTMLAttributes<HTMLInputElement> & { invalid?: boolean }) {
+  const [shown, setShown] = useState(false);
+  const { invalid, className, ...rest } = props;
+  return (
+    <span className="input-wrap">
+      <input {...rest} type={shown ? 'text' : 'password'} className={`input ${invalid ? 'invalid' : ''} ${className ?? ''}`} />
+      <button type="button" className="icon-btn" onClick={() => setShown((v) => !v)} aria-label={shown ? 'Скрыть пароль' : 'Показать пароль'}>
+        {shown ? <EyeOff size={16} /> : <Eye size={16} />}
+      </button>
+    </span>
+  );
+}
+
+export function Switch({ on, onChange, label, disabled }: { on: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+  return <button type="button" role="switch" aria-checked={on} aria-label={label} disabled={disabled} className={`switch ${on ? 'on' : ''}`} onClick={() => onChange(!on)} />;
+}
+
+export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
+  return (
+    <div className="segmented" role="radiogroup" aria-label={label}>
+      {options.map((o) => (
+        <button key={o.value} type="button" role="radio" aria-checked={value === o.value} className={`${value === o.value ? 'on' : ''} ${o.value}`} onClick={() => value !== o.value && onChange(o.value)}>
+          {o.label}
+        </button>
+      ))}
     </div>
   );
 }
 
-export const PRESENCE: Record<Presence, { label: string; dot: string }> = {
-  active: { label: 'Аура активна', dot: 'violet' },
-  available: { label: 'Свободен', dot: 'green' },
-  away: { label: 'Не на месте', dot: 'amber' },
-  offline: { label: 'Нет Ауры', dot: 'gray' },
-};
-
-export function Backdrop() {
-  return (
-    <div className="backdrop" aria-hidden="true">
-      <div className="blob b1" />
-      <div className="blob b2" />
-      <div className="blob b3" />
-    </div>
-  );
-}
-
-export function GoogleIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
-      <path fill="#fff" d="M44.5 20H24v8.5h11.8C34.7 33.9 30.1 37 24 37c-7.2 0-13-5.8-13-13s5.8-13 13-13c3.1 0 5.9 1.1 8.1 2.9l6.4-6.4C34.6 4.1 29.6 2 24 2 11.8 2 2 11.8 2 24s9.8 22 22 22c11 0 21-8 21-22 0-1.3-.2-2.7-.5-4z" />
-    </svg>
-  );
+export function Empty({ children }: { children: ReactNode }) {
+  return <div className="empty">{children}</div>;
 }

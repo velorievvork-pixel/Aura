@@ -127,7 +127,7 @@ jobs:
           R="$GITHUB_REPOSITORY"
           gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
             --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
-            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — клиенты с новым дизайном, нужен сервер Aura. Aura-demo.apk и Aura-demo-Setup.exe — демо без сервера." || true
+            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — нативные клиенты (Compose, Qt). Aura-web.apk и Aura-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Aura." || true
           gh release upload builds Aura-Setup.exe Aura-portable-windows.zip -R "$R" --clobber
 
       - name: Артефакт — exe

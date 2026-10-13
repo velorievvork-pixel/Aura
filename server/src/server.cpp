@@ -29,6 +29,42 @@ int boundedLimit(const Json& payload, const char* key, int fallback, int ceiling
     return static_cast<int>(std::min<long long>(requested, ceiling));
 }
 
+// Длина строки в символах UTF-8 (а не в байтах): лимиты профиля — для людей.
+std::size_t utf8Length(const std::string& text) {
+    std::size_t count = 0;
+    for (const unsigned char ch : text) {
+        if ((ch & 0xC0) != 0x80) ++count;
+    }
+    return count;
+}
+
+std::string trimmed(const std::string& text) {
+    const auto first = text.find_first_not_of(" \t\r\n");
+    if (first == std::string::npos) return "";
+    const auto last = text.find_last_not_of(" \t\r\n");
+    return text.substr(first, last - first + 1);
+}
+
+// Аватар: пусто (сброс), https-ссылка или небольшая картинка data:image/*;base64.
+// Клиенты ужимают фото до ~256 px, поэтому 150 КБ хватает с запасом, а участники
+// чатов, получающие профиль в members[], не скачивают мегабайты.
+bool validAvatar(const std::string& value, std::string& error) {
+    if (value.empty()) return true;
+    if (value.rfind("https://", 0) == 0) {
+        if (value.size() > 2048) { error = "ссылка на аватар слишком длинная"; return false; }
+        return true;
+    }
+    static const char* kPrefixes[] = {"data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,"};
+    for (const char* prefix : kPrefixes) {
+        if (value.rfind(prefix, 0) == 0) {
+            if (value.size() > 150000) { error = "аватар слишком большой (до ~100 КБ)"; return false; }
+            return true;
+        }
+    }
+    error = "аватар — https-ссылка или картинка PNG/JPEG/WebP";
+    return false;
+}
+
 }  // namespace
 
 Server::Server(Config config) : config_(std::move(config)) {
@@ -468,6 +504,15 @@ void Server::registerHandlers() {
                         if (!authorize(session, token, payload)) {
                             return protocol::error(request.id, protocol::code::kUnauthorized, "токен недействителен");
                         }
+                        // Сессию уже авторизовал этим же токеном общий обработчик (auth.token
+                        // не публичный метод) — authorize() тогда отдаёт пустой payload.
+                        // По протоколу ответ содержит user: дополняем.
+                        if (!payload.contains("user")) {
+                            if (const auto user = database_->db().findUserById(session->userId())) {
+                                if (!payload.isObject()) payload = Json::object();
+                                payload.set("user", user->toJson());
+                            }
+                        }
                         return protocol::ok(request.id, payload);
                     });
 
@@ -477,6 +522,41 @@ void Server::registerHandlers() {
         Json payload = user->toJson();
         payload.set("online", Json(true));
         payload.set("preferences", memory_->preferences(session->userId()));
+        return protocol::ok(request.id, payload);
+    });
+
+    // Профиль: имя, «о себе», аватар. Меняются только переданные поля.
+    registerHandler("profile.update", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        Json fields = Json::object();
+        if (request.payload.contains("display_name")) {
+            const std::string name = trimmed(request.payload.getString("display_name"));
+            if (name.empty() || utf8Length(name) > 80) {
+                return protocol::error(request.id, protocol::code::kBadRequest, "имя — от 1 до 80 символов");
+            }
+            fields.set("display_name", Json(name));
+        }
+        if (request.payload.contains("bio")) {
+            const std::string bio = trimmed(request.payload.getString("bio"));
+            if (utf8Length(bio) > 300) {
+                return protocol::error(request.id, protocol::code::kBadRequest, "«о себе» — до 300 символов");
+            }
+            fields.set("bio", Json(bio));
+        }
+        if (request.payload.contains("avatar_url")) {
+            const std::string avatar = request.payload.getString("avatar_url");
+            std::string error;
+            if (!validAvatar(avatar, error)) return protocol::error(request.id, protocol::code::kBadRequest, error);
+            fields.set("avatar_url", Json(avatar));
+        }
+        if (fields.members().empty()) {
+            return protocol::error(request.id, protocol::code::kBadRequest, "нет полей профиля для изменения");
+        }
+        const DatabaseError stored = database_->db().updateProfile(session->userId(), fields);
+        if (!stored.ok) return protocol::error(request.id, protocol::code::kInternal, stored.message);
+        const auto user = database_->db().findUserById(session->userId());
+        if (!user) return protocol::error(request.id, protocol::code::kNotFound, "пользователь не найден");
+        Json payload = Json::object();
+        payload.set("user", user->toJson());
         return protocol::ok(request.id, payload);
     });
 
@@ -661,8 +741,9 @@ void Server::registerHandlers() {
 
     registerHandler("prefs.set", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
         std::string error;
-        if (!memory_->setPreferences(session->userId(), request.payload, error)) {
-            return protocol::error(request.id, protocol::code::kInternal, error);
+        bool invalid = false;
+        if (!memory_->setPreferences(session->userId(), request.payload, error, &invalid)) {
+            return protocol::error(request.id, invalid ? protocol::code::kBadRequest : protocol::code::kInternal, error);
         }
         return protocol::ok(request.id, memory_->preferences(session->userId()));
     });

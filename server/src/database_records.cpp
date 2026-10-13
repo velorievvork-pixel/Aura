@@ -39,6 +39,7 @@ Json UserRecord::toJson(bool includeSecret) const {
     json.set("email", Json(email));
     json.set("display_name", Json(displayName));
     json.set("avatar_url", Json(avatarUrl));
+    json.set("bio", Json(bio));
     json.set("timezone", Json(timezone));
     json.set("is_active", Json(active));
     json.set("email_verified", Json(emailVerified));

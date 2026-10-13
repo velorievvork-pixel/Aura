@@ -75,9 +75,9 @@ aura-main/
 ├── docs/            Документация (17 MD-файлов, 520+ страниц)
 ├── tools/           e2e.py (эталонный клиент протокола), check_*_protocol.py
 ├── preview/         HTML-превью дизайна (glassmorphism UI)
-├── web/             Демо-версия: React + Capacitor (APK) + Electron (Windows),
-│                    работает без сервера, на встроенных данных
-└── .github/         CI/CD (tests, Windows .exe, Android .apk, iOS, web demo)
+├── web/             Веб-клиент: React + Capacitor (APK/iOS) + Electron (Windows/macOS),
+│                    тот же протокол, что у остальных клиентов (web/README.md)
+└── .github/         CI/CD (tests, Windows .exe, Android .apk, iOS, web client)
 ```
 
 ## 🛠️ Технологии

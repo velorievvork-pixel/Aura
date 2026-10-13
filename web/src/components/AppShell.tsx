@@ -1,74 +1,77 @@
-import { CheckSquare, Handshake, Home, LogOut, MessageCircle, Settings, Users } from 'lucide-react';
-import { NavLink, Navigate, Outlet, useNavigate } from 'react-router-dom';
-import { useAura } from '../state/store';
-import { AuraRing, Avatar } from './ui';
+import { Bell, CheckSquare, Handshake, Home, MessageCircle, Settings, Users } from 'lucide-react';
+import { NavLink, Outlet } from 'react-router-dom';
+import { useData } from '../state/data';
+import { useSession } from '../state/session';
+import { OfflineBanner } from './ConnectionScreen';
+import { Avatar, Logo } from './ui';
 
-const NAV = [
+const MAIN = [
   { to: '/', label: 'Главная', icon: Home, end: true },
-  { to: '/aura', label: 'Моя Аура', icon: MessageCircle },
+  { to: '/aura', label: 'Аура', icon: MessageCircle },
   { to: '/negotiations', label: 'Переговоры', icon: Handshake },
   { to: '/tasks', label: 'Задачи', icon: CheckSquare },
   { to: '/contacts', label: 'Контакты', icon: Users },
-  { to: '/settings', label: 'Настройки', icon: Settings },
 ];
 
 export function AppShell() {
-  const { state, logout } = useAura();
-  const navigate = useNavigate();
-  if (!state.user) return <Navigate to="/login" replace />;
-
-  const live = state.negotiations.filter((n) => n.status === 'running' || n.status === 'awaiting').length;
+  const { user } = useSession();
+  const { unread, confirmations, toast } = useData();
+  const inbox = unread + confirmations.length;
 
   return (
-    <div className="shell">
-      <aside className="sidebar glass edge">
+    <div className="app">
+      <aside className="sidebar" aria-label="Навигация">
         <div className="brand">
-          <AuraRing />
-          Aura
+          <Logo /> Aura
         </div>
-        <nav className="nav" aria-label="Основная навигация">
-          {NAV.map(({ to, label, icon: Icon, end }) => (
-            <NavLink key={to} to={to} end={end}>
-              <Icon size={18} strokeWidth={1.8} />
-              {label}
-              {to === '/negotiations' && live > 0 && <span className="count">{live}</span>}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="sidebar-foot">
-          <NavLink to="/settings" className="me-row">
-            <Avatar name={state.user.name} size={34} hue={280} />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontWeight: 600, fontSize: 14 }}>{state.user.name}</div>
-              <div className="faint tiny" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {state.user.email}
-              </div>
-            </div>
+        {MAIN.map(({ to, label, icon: Icon, end }) => (
+          <NavLink key={to} to={to} end={end} className="nav-item">
+            <Icon size={16} strokeWidth={1.8} /> {label}
           </NavLink>
-          <button
-            className="me-row muted small"
-            onClick={() => {
-              logout();
-              navigate('/login');
-            }}
-          >
-            <LogOut size={16} /> Выйти
-          </button>
+        ))}
+        <NavLink to="/inbox" className="nav-item">
+          <Bell size={16} strokeWidth={1.8} /> Входящие
+          {inbox > 0 && <span className="count">{inbox}</span>}
+        </NavLink>
+        <div className="sidebar-foot">
+          <NavLink to="/settings" className="nav-item">
+            <Settings size={16} strokeWidth={1.8} /> Настройки
+          </NavLink>
+          {user && (
+            <NavLink to="/settings" className="me-row">
+              <Avatar name={user.display_name || user.email} src={user.avatar_url} size={28} />
+              <span style={{ minWidth: 0 }}>
+                <span className="small ellipsis" style={{ display: 'block', fontWeight: 500 }}>
+                  {user.display_name}
+                </span>
+                <span className="tiny faint ellipsis" style={{ display: 'block' }}>
+                  {user.email}
+                </span>
+              </span>
+            </NavLink>
+          )}
         </div>
       </aside>
 
-      <main className="main glass edge">
+      <main className="main">
+        <OfflineBanner />
         <Outlet />
       </main>
 
-      <nav className="mobile-nav glass" aria-label="Навигация">
-        {NAV.slice(0, 5).map(({ to, label, icon: Icon, end }) => (
+      <nav className="tab-bar" aria-label="Вкладки">
+        {MAIN.map(({ to, label, icon: Icon, end }) => (
           <NavLink key={to} to={to} end={end}>
             <Icon size={20} strokeWidth={1.8} />
-            {label.replace('Моя ', '')}
+            {label}
           </NavLink>
         ))}
       </nav>
+
+      {toast && (
+        <div key={toast.id} className={`toast ${toast.kind === 'error' ? 'error' : ''}`} role="status">
+          {toast.text}
+        </div>
+      )}
     </div>
   );
 }

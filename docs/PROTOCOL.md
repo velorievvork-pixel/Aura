@@ -67,6 +67,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 | `auth.forgotPassword` | `email` | `message` (+`reset_code` в dev); ответ всегда «ок» |
 | `auth.resetPassword` | `email`, `code`, `new_password` | `reset`; все сессии и refresh-токены отзываются |
 | `auth.logout` | — | `revoked` |
+| `profile.update` | `display_name?` (1–80 симв.), `bio?` (≤300 симв.), `avatar_url?` (пусто, `https://…` или `data:image/{png,jpeg,webp};base64,…` до ~100 КБ) | `user`; меняются только переданные поля; пустой payload или неверное значение → `bad_request` |
 
 ### Сессии
 
@@ -182,7 +183,18 @@ AVSpeechSynthesizer), отдельного сетевого метода не т
 
 Поля настроек: `diet[]`, `transport`, `preferred_hours[]`, `work_hours[]`,
 `birthday` (`YYYY-MM-DD`), `allergies[]`, `onboarded` (bool),
-`budget_limit`, `city`, `lat`, `lon`, `theme`, `notifications{}`.
+`budget_limit`, `city`, `lat`, `lon`, `theme`, `notifications{}`, `privacy{}`.
+
+`privacy` — что Аура раскрывает чужой Ауре в переговорах (`agent.negotiate`,
+A2A из `agent.ask`); все флаги по умолчанию `true`, `prefs.get` всегда отдаёт
+все три, `prefs.set` принимает любую их часть (неизвестный ключ или не bool →
+`bad_request`):
+
+| флаг | что делает сервер |
+| --- | --- |
+| `share_free_slots_only` | в контекст респондента для AI идут только занятость и настройки, нужные для времени и места: факты памяти, `birthday`, `allergies` вырезаются |
+| `hide_event_titles` | названия событий календаря респондента заменяются на «занято» |
+| `allow_place_choice` | `false` у любой из сторон — место не предлагается (`place` пустой, в `message` «Место выберете сами») |
 
 ### Инструменты
 

@@ -1,0 +1,89 @@
+import { useState } from 'react';
+import { useSession } from '../state/session';
+import { getPlatform } from '../platform';
+
+/** Адрес сервера: показать текущий и поменять. Используется на экране ожидания, входе и в настройках. */
+export function ServerAddress({ compact }: { compact?: boolean }) {
+  const { serverUrl, setServer } = useSession();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(serverUrl);
+  const [error, setError] = useState('');
+  const phone = getPlatform() === 'android' || getPlatform() === 'ios';
+
+  const save = (e: React.FormEvent) => {
+    e.preventDefault();
+    const url = setServer(value);
+    if (!url) {
+      setError('Адрес вида ws://192.168.1.10:9000 или wss://aura.example.com');
+      return;
+    }
+    setError('');
+    setEditing(false);
+  };
+
+  if (!editing) {
+    return (
+      <div className={`row wrap ${compact ? 'small' : ''}`} style={{ justifyContent: 'center', gap: 6 }}>
+        <span className="faint">Сервер:</span>
+        <span className="mono muted small">{serverUrl || '—'}</span>
+        <button
+          type="button"
+          className="link small"
+          onClick={() => {
+            setValue(serverUrl);
+            setEditing(true);
+          }}
+        >
+          Изменить
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form className="stack" onSubmit={save} style={{ width: '100%', textAlign: 'left' }}>
+      <label className="field">
+        <span>Адрес сервера Aura</span>
+        <input
+          className={`input mono ${error ? 'invalid' : ''}`}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="ws://192.168.1.10:9000"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          inputMode="url"
+          autoFocus
+        />
+        {error ? (
+          <span className="field-error">{error}</span>
+        ) : (
+          <span className="hint">
+            {phone
+              ? 'На телефоне укажите IP компьютера с сервером в той же Wi-Fi сети или публичный wss-адрес. localhost здесь — сам телефон.'
+              : 'Можно ввести IP или домен: порт 9000 подставится сам, https:// превратится в wss://.'}
+          </span>
+        )}
+      </label>
+      <div className="row">
+        <button className="btn btn-primary" type="submit">
+          Подключиться
+        </button>
+        <button className="btn btn-ghost" type="button" onClick={() => setEditing(false)}>
+          Отмена
+        </button>
+        <span className="spacer" />
+        <button
+          className="btn btn-ghost btn-sm"
+          type="button"
+          onClick={() => {
+            setServer(null);
+            setEditing(false);
+          }}
+        >
+          По умолчанию
+        </button>
+      </div>
+    </form>
+  );
+}

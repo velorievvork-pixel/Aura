@@ -124,6 +124,8 @@ class NegotiateRequest(BaseModel):
     topic: str = ""
     duration_minutes: int = 60
     window_hours: int = 96
+    # prefs.privacy.allow_place_choice обеих сторон: false — место не предлагаем.
+    choose_place: bool = True
 
 
 class NegotiateResponse(BaseModel):

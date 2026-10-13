@@ -297,7 +297,7 @@ class AuraAgent:
             max_slots=8,
         )
         shared = planner.intersect_slots(initiator_slots, responder_slots, duration_minutes=duration)
-        place = self._place(request.initiator, request.responder)
+        place = self._place(request.initiator, request.responder) if request.choose_place else {}
 
         if not shared:
             return NegotiateResponse(
@@ -314,7 +314,8 @@ class AuraAgent:
             place=place,
             message=(
                 f"Да, {best.start.strftime('%d.%m в %H:%M')} подходит. "
-                f"Предлагаю {place.get('name', 'место на полпути')}."
+                + (f"Предлагаю {place.get('name', 'место на полпути')}." if request.choose_place
+                   else "Место выберете сами.")
             ),
             counter_slots=shared[1:4],
         )

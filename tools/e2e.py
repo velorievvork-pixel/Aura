@@ -360,6 +360,8 @@ async def main() -> int:
     await fresh.connect()
     reauth = await fresh.call("auth.token", {"token": token})
     check(reauth.get("type") == "ok", "токен принят повторно (сессия есть в БД)", reauth)
+    check(reauth.get("payload", {}).get("user", {}).get("email") == f"anna.{RUN}@example.com",
+          "auth.token на свежем соединении отдаёт user", reauth.get("payload"))
     await fresh.close()
 
     # Управление сессиями: второй вход даёт вторую сессию; список, отзыв, проверка.
@@ -403,6 +405,41 @@ async def main() -> int:
           and survey.get("payload", {}).get("onboarded") is True,
           "онбординг: birthday/allergies сохранены, onboarded=true",
           survey.get("payload"))
+
+    # Профиль: имя/«о себе»/аватар — profile.update меняет только переданные поля.
+    profile = await anna.call("profile.update", {"bio": "Делаю стартап про ИИ-агентов",
+                                                 "avatar_url": "data:image/png;base64,iVBORw0KGgo="})
+    profile_user = profile.get("payload", {}).get("user", {})
+    check(profile.get("type") == "ok" and profile_user.get("bio") == "Делаю стартап про ИИ-агентов"
+          and profile_user.get("display_name") == "Анна"
+          and profile_user.get("avatar_url", "").startswith("data:image/png"),
+          "profile.update: bio и аватар сохранены, имя не тронуто", profile)
+    me_profile = await anna.call("auth.me", {})
+    check(me_profile.get("payload", {}).get("bio") == "Делаю стартап про ИИ-агентов",
+          "auth.me отдаёт bio", me_profile.get("payload", {}).get("bio"))
+    bad_avatar = await anna.call("profile.update", {"avatar_url": "javascript:alert(1)"})
+    check(bad_avatar.get("type") == "error" and bad_avatar.get("code") == "bad_request",
+          "profile.update: недопустимый аватар отклонён", bad_avatar)
+    empty_name = await anna.call("profile.update", {"display_name": "   "})
+    check(empty_name.get("type") == "error", "profile.update: пустое имя отклонено", empty_name)
+
+    # Приватность Ауры (prefs.privacy): по умолчанию все флаги true, частичное
+    # обновление, неизвестный флаг — bad_request.
+    privacy = (await anna.call("prefs.get", {})).get("payload", {}).get("privacy", {})
+    check(privacy == {"share_free_slots_only": True, "hide_event_titles": True, "allow_place_choice": True},
+          "prefs.privacy: значения по умолчанию", privacy)
+    no_place = await anya.call("prefs.set", {"privacy": {"allow_place_choice": False}})
+    check(no_place.get("payload", {}).get("privacy", {}).get("allow_place_choice") is False
+          and no_place.get("payload", {}).get("privacy", {}).get("hide_event_titles") is True,
+          "prefs.privacy: частичное обновление сохранило остальные флаги", no_place.get("payload"))
+    bad_privacy = await anya.call("prefs.set", {"privacy": {"share_everything": True}})
+    check(bad_privacy.get("type") == "error" and bad_privacy.get("code") == "bad_request",
+          "prefs.privacy: неизвестный флаг отклонён", bad_privacy)
+    placeless = await anna.call("agent.negotiate", {"target": f"anya.{RUN}@example.com", "topic": "кофе",
+                                                    "duration_minutes": 60, "window_hours": 96})
+    check(placeless.get("type") == "ok" and not placeless.get("payload", {}).get("place"),
+          "A2A: собеседник запретил выбор места — место не предложено", placeless.get("payload"))
+    await anya.call("prefs.set", {"privacy": {"allow_place_choice": True}})
 
     # Память
     await anna.call("memory.add", {"text": "Люблю тихие кофейни", "kind": "preference"})

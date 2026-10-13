@@ -135,7 +135,7 @@ public:
         PGresult* result = nullptr;
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
-                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio "
                      "FROM users WHERE lower(email) = LOWER($1) LIMIT 1",
                      {lower(email)}, &result)) {
             return std::nullopt;
@@ -151,7 +151,7 @@ public:
         PGresult* result = nullptr;
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
-                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio "
                      "FROM users WHERE id = $1",
                      {std::to_string(id)}, &result)) {
             return std::nullopt;
@@ -160,6 +160,23 @@ public:
         if (PQntuples(result) > 0) record = readUser(result, 0);
         PQclear(result);
         return record;
+    }
+
+    DatabaseError updateProfile(long long userId, const Json& fields) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE users SET "
+                     "display_name = COALESCE($2::jsonb->>'display_name', display_name), "
+                     "bio = COALESCE($2::jsonb->>'bio', bio), "
+                     "avatar_url = COALESCE($2::jsonb->>'avatar_url', avatar_url) "
+                     "WHERE id = $1",
+                     {std::to_string(userId), fields.dump()}, &result)) {
+            return DatabaseError::failure(lastError_);
+        }
+        const bool updated = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        if (!updated) return DatabaseError::failure("пользователь не найден");
+        return DatabaseError::success();
     }
 
     std::vector<UserRecord> searchUsers(const std::string& query, int limit) override {
@@ -176,7 +193,7 @@ public:
         const std::string pattern = "%" + escaped + "%";
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
-                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio "
                      "FROM users WHERE lower(email) LIKE LOWER($1) ESCAPE '\\' "
                      "OR lower(display_name) LIKE LOWER($1) ESCAPE '\\' "
                      "ORDER BY id LIMIT $2",
@@ -1002,7 +1019,7 @@ public:
                 "SELECT jsonb_build_object("
                 "'diet', diet, 'transport', transport, 'preferred_hours', preferred_hours, "
                 "'work_hours', work_hours, 'budget_limit', budget_limit, 'city', city, "
-                "'lat', lat, 'lon', lon, 'theme', theme, 'notifications', notifications, "
+                "'lat', lat, 'lon', lon, 'theme', theme, 'notifications', notifications, 'privacy', privacy, "
                 "'birthday', birthday, 'allergies', allergies, 'onboarded', onboarded, "
                 "'updated_at', to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))::text "
                 "FROM user_preferences WHERE user_id = $1",
@@ -1033,6 +1050,7 @@ public:
                 "lon = COALESCE(($2::jsonb->>'lon')::double precision, lon), "
                 "theme = COALESCE($2::jsonb->>'theme', theme), "
                 "notifications = COALESCE($2::jsonb->'notifications', notifications), "
+                "privacy = COALESCE(privacy || ($2::jsonb->'privacy'), privacy), "
                 "birthday = COALESCE($2::jsonb->>'birthday', birthday), "
                 "allergies = COALESCE((SELECT array_agg(x) FROM jsonb_array_elements_text($2::jsonb->'allergies') x), allergies), "
                 "onboarded = COALESCE(($2::jsonb->>'onboarded')::boolean, onboarded), "
@@ -1683,6 +1701,7 @@ private:
         record.createdAt = value_(result, row, 7);
         record.lastSeenAt = value_(result, row, 8);
         record.emailVerified = value_(result, row, 9) == "t";
+        record.bio = value_(result, row, 10);
         return record;
     }
 

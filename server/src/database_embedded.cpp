@@ -81,6 +81,7 @@ public:
         user.set("password_hash", Json(passwordHash));
         user.set("display_name", Json(displayName));
         user.set("avatar_url", Json(""));
+        user.set("bio", Json(""));
         user.set("timezone", Json("Europe/Moscow"));
         user.set("is_active", Json(true));
         user.set("email_verified", Json(false));  // подтверждается через auth.verifyEmail
@@ -108,6 +109,11 @@ public:
         notifications.set("push", Json(true));
         notifications.set("email", Json(false));
         preferences.set("notifications", notifications);
+        Json privacy = Json::object();
+        privacy.set("share_free_slots_only", Json(true));
+        privacy.set("hide_event_titles", Json(true));
+        privacy.set("allow_place_choice", Json(true));
+        preferences.set("privacy", privacy);
         preferences.set("updated_at", Json(isoNow()));
         table("user_preferences").push(preferences);
 
@@ -150,6 +156,19 @@ public:
                 flush();
                 return DatabaseError::success();
             }
+        }
+        return DatabaseError::failure("пользователь не найден");
+    }
+
+    DatabaseError updateProfile(long long userId, const Json& fields) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("id") != userId) continue;
+            for (const char* key : {"display_name", "bio", "avatar_url"}) {
+                if (fields.contains(key)) item.set(key, Json(fields.getString(key)));
+            }
+            flush();
+            return DatabaseError::success();
         }
         return DatabaseError::failure("пользователь не найден");
     }
@@ -1499,6 +1518,7 @@ private:
         record.passwordHash = json.getString("password_hash");
         record.displayName = json.getString("display_name");
         record.avatarUrl = json.getString("avatar_url");
+        record.bio = json.getString("bio");
         record.timezone = json.getString("timezone", "Europe/Moscow");
         record.createdAt = json.getString("created_at");
         record.lastSeenAt = json.getString("last_seen_at");

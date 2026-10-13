@@ -1,166 +1,133 @@
-import { ArrowRight, CalendarClock, FileText, MessageSquare, Mic, Presentation, Send, User } from 'lucide-react';
-import { useState, type FormEvent } from 'react';
+import { Bell, Check, ChevronRight, Handshake, ShieldAlert } from 'lucide-react';
+import { useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Avatar } from '../components/ui';
-import { greeting, hhmm } from '../lib/time';
-import { useSpeech } from '../lib/useSpeech';
-import { tap } from '../platform/native';
-import { useAura, plural } from '../state/store';
+import { CommandBar } from '../components/CommandBar';
+import { Avatar, Empty } from '../components/ui';
+import { firstName, shortWhen, toolTitle } from '../lib/format';
+import { auraOf } from '../lib/negotiationSteps';
+import { greeting } from '../lib/time';
+import { useData } from '../state/data';
+import { useSession } from '../state/session';
 
-const QUICK = [
-  { label: 'Назначить встречу', text: 'Хочу встретиться с Димой в эти выходные и обсудить стартап' },
-  { label: 'Моё расписание', text: 'Что у меня сегодня в расписании?' },
-  { label: 'Написать письмо', text: 'Напиши письмо Кире про демо-день' },
-  { label: 'Создать напоминание', text: 'Напомни мне позвонить юристу' },
-];
-
-const TASK_ICONS = [User, FileText, Presentation];
+const QUICK = ['Что у меня сегодня?', 'Напомни завтра в 10 позвонить юристу', 'Хочу встретиться с Димой в выходные'];
 
 export function Home() {
-  const { state, command, contacts } = useAura();
+  const { user } = useSession();
+  const { tasks, confirmations, negotiations, unread, toggleTask, ask, thinking } = useData();
   const navigate = useNavigate();
-  const [text, setText] = useState('');
-  const speech = useSpeech(setText);
-  const now = new Date();
-  const first = state.user!.name.split(' ')[0];
 
-  const run = (t: string) => {
-    if (!t.trim()) return;
-    tap();
-    const route = command(t.trim());
-    setText('');
-    navigate(route ?? '/aura');
-  };
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    run(text);
-  };
+  const run = useCallback(
+    (text: string) => {
+      navigate('/aura');
+      ask(text);
+    },
+    [navigate, ask],
+  );
 
-  const doneToday = state.tasks.filter((t) => t.state === 'done').length + state.negotiations.filter((n) => n.status === 'booked').length;
-  const upcoming = state.tasks.filter((t) => t.state !== 'done').sort((a, b) => a.due.localeCompare(b.due)).slice(0, 4);
-  const live = state.negotiations.filter((n) => n.status === 'running' || n.status === 'awaiting');
+  const upcoming = tasks
+    .filter((t) => t.status === 'pending')
+    .sort((a, b) => (a.due_at || a.remind_at || '9').localeCompare(b.due_at || b.remind_at || '9'))
+    .slice(0, 5);
+  const date = new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' });
+  const today = date.charAt(0).toUpperCase() + date.slice(1); // «Вторник, 13 октября»
 
   return (
     <div className="page">
-      <div className="page-head" style={{ justifyContent: 'flex-end', marginBottom: 6 }}>
-        <span className="status-line">
-          <i className="dot green" style={{ width: 7, height: 7 }} /> Все системы работают
-        </span>
-      </div>
-
-      <div className="home-grid">
-        <div className="stack" style={{ gap: 26 }}>
-          <h1 className="display">
-            {greeting(now)},
-            <br />
-            {first}
+      <header className="page-head">
+        <div>
+          <h1 className="title-xl">
+            {greeting(new Date())}, {firstName(user?.display_name ?? '')}
           </h1>
+          <div className="sub">{today}</div>
+        </div>
+        <div className="row hide-desktop">
+          <Link to="/inbox" className="icon-btn" aria-label="Входящие" style={{ position: 'relative' }}>
+            <Bell size={18} />
+            {unread + confirmations.length > 0 && <span className="dot accent" style={{ position: 'absolute', top: 8, right: 8 }} />}
+          </Link>
+          <Link to="/settings" aria-label="Настройки">
+            <Avatar name={user?.display_name || user?.email || ''} src={user?.avatar_url} size={32} />
+          </Link>
+        </div>
+      </header>
 
-          <form className="command" onSubmit={submit} style={{ marginTop: 34 }}>
-            <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Что нужно сделать?" aria-label="Команда для Ауры" />
-            {text ? (
-              <button className="icon-btn accent" aria-label="Отправить" style={{ width: 48, height: 48 }}>
-                <Send size={20} />
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="icon-btn accent"
-                aria-label={speech.listening ? 'Остановить запись' : 'Голосовой ввод'}
-                title={speech.supported ? 'Сказать голосом' : 'Голосовой ввод не поддерживается этим браузером'}
-                disabled={!speech.supported}
-                style={{ width: 48, height: 48, opacity: speech.listening ? 0.7 : 1 }}
-                onClick={speech.toggle}
-              >
-                <Mic size={20} />
-              </button>
-            )}
-          </form>
-
-          <div className="quick">
+      <div className="stack-lg">
+        <div className="stack">
+          <CommandBar onSubmit={run} busy={thinking} />
+          <div className="suggestions">
+            <button className="chip" onClick={() => navigate('/negotiations?new=1')}>
+              <Handshake size={14} /> Договориться о встрече
+            </button>
             {QUICK.map((q) => (
-              <button key={q.label} onClick={() => run(q.text)} title={q.text}>
-                {q.label}
+              <button key={q} className="chip" onClick={() => run(q)}>
+                {q}
               </button>
             ))}
           </div>
-
-          <section style={{ marginTop: 10 }}>
-            <div className="section-title">
-              Ближайшие задачи
-              <Link to="/tasks" className="small muted" style={{ fontWeight: 500 }}>
-                Все задачи
-              </Link>
-            </div>
-            <div className="list">
-              {upcoming.map((t, i) => {
-                const Icon = TASK_ICONS[i % TASK_ICONS.length];
-                return (
-                  <Link key={t.id} to="/tasks" className="row">
-                    <span className="row-icon">
-                      <Icon size={16} />
-                    </span>
-                    <span style={{ flex: 1 }}>{t.title}</span>
-                    <span className="faint small">{hhmm(new Date(t.due))}</span>
-                  </Link>
-                );
-              })}
-            </div>
-          </section>
         </div>
 
-        <div className="stack" style={{ gap: 30, alignContent: 'start' }}>
-          <div className="active-card">
-            <h2 style={{ fontSize: 22, fontWeight: 600 }}>Ваша Аура активна</h2>
-            <p className="small" style={{ margin: '4px 0 18px', opacity: 0.85 }}>
-              {doneToday} {plural(doneToday, 'задача выполнена', 'задачи выполнены', 'задач выполнено')} сегодня
-            </p>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <Link to="/contacts" className="icon-btn" aria-label="Контакты" style={{ width: 38, height: 38 }}>
-                <User size={16} />
-              </Link>
-              <Link to="/aura" className="icon-btn" aria-label="Чат с Аурой" style={{ width: 38, height: 38 }}>
-                <MessageSquare size={16} />
-              </Link>
-            </div>
-          </div>
-
-          {live.length > 0 && (
-            <section>
-              <div className="section-title">Идут переговоры</div>
-              <div className="stack" style={{ gap: 10 }}>
-                {live.map((n) => {
-                  const c = contacts.find((x) => x.id === n.request.contactId)!;
-                  return (
-                    <Link key={n.id} to={`/negotiations/${n.id}`} className="tile neg-mini">
-                      <Avatar name={c.fullName} hue={c.hue} size={36} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 700, fontSize: 14 }}>Аура {c.nameGen}</div>
-                        <div className="faint tiny">{n.status === 'running' ? `Раунд ${Math.max(1, n.revealed)} из ${n.steps.length}` : 'Ждёт вашего решения'}</div>
-                      </div>
-                      {n.status === 'awaiting' ? <span className="badge">Подтвердить</span> : <CalendarClock size={18} className="muted" />}
-                    </Link>
-                  );
-                })}
+        {confirmations.length > 0 && (
+          <Link to="/inbox" className="card row" style={{ gap: 12 }}>
+            <ShieldAlert size={18} style={{ color: 'var(--warning)' }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 500 }}>Ждут вашего решения: {confirmations.length}</div>
+              <div className="small muted ellipsis">
+                {toolTitle(confirmations[0].tool)} · {confirmations[0].summary}
               </div>
-            </section>
-          )}
-
-          <section>
-            <div className="section-title">Недавние действия Ауры</div>
-            <div className="feed">
-              {state.activity.slice(0, 7).map((a) => (
-                <div key={a.id}>
-                  <span className="t">{hhmm(new Date(a.at))}</span> Аура {a.verb}: <b>{a.object}</b>
-                </div>
-              ))}
             </div>
-            <Link to="/aura" className="small muted" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 18 }}>
-              Открыть диалог <ArrowRight size={14} />
+            <ChevronRight size={16} className="faint" />
+          </Link>
+        )}
+
+        <section>
+          <div className="section-title">
+            <h2 className="title-sm">Ближайшие задачи</h2>
+            <Link to="/tasks" className="link small">
+              Все задачи
             </Link>
-          </section>
-        </div>
+          </div>
+          <div className="card flush list">
+            {upcoming.length === 0 && <Empty>Задач нет. Скажите Ауре, о чём напомнить.</Empty>}
+            {upcoming.map((t) => (
+              <div key={t.id} className="list-row">
+                <button className="check" onClick={() => toggleTask(t)} aria-label={`Выполнено: ${t.title}`}>
+                  <Check size={13} strokeWidth={3} />
+                </button>
+                <div className="body ellipsis">{t.title}</div>
+                <span className="meta">{shortWhen(t.due_at || t.remind_at)}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section>
+          <div className="section-title">
+            <h2 className="title-sm">Переговоры</h2>
+            <Link to="/negotiations" className="link small">
+              Все
+            </Link>
+          </div>
+          <div className="card flush list">
+            {negotiations.length === 0 && <Empty>Попросите Ауру договориться о встрече — переговоры появятся здесь.</Empty>}
+            {negotiations.slice(0, 3).map((n) => (
+              <Link key={n.id} to={`/negotiations/${n.id}`} className="list-row">
+                <Handshake size={16} className="faint" />
+                <div className="body">
+                  <div className="ellipsis">{auraOf(n.targetName)}</div>
+                  <div className="small muted ellipsis">{n.result.accepted && n.result.slot ? `${shortWhen(n.result.slot.start)}${n.result.place?.name ? ` · ${n.result.place.name}` : ''}` : 'Общего времени не нашлось'}</div>
+                </div>
+                <NegotiationBadge accepted={n.result.accepted} booked={n.booked} />
+              </Link>
+            ))}
+          </div>
+        </section>
       </div>
     </div>
   );
+}
+
+export function NegotiationBadge({ accepted, booked }: { accepted: boolean; booked?: boolean }) {
+  if (booked) return <span className="badge green">В задачах</span>;
+  if (accepted) return <span className="badge accent">Договорились</span>;
+  return <span className="badge amber">Нет общего окна</span>;
 }

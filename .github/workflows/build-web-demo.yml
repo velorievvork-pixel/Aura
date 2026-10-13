@@ -1,8 +1,16 @@
-# Демо-версия Aura из web/ (React + Capacitor + Electron): работает без
-# сервера, на встроенных данных. Собирает APK и установщик Windows.
-# Результат: артефакты прогона и ветки builds/web-android, builds/web-windows
-# (песочница разработки забирает файлы оттуда обычным git).
-name: Build web demo
+# Клиент Aura из web/ (React + Capacitor + Electron) — работает с настоящим
+# сервером Aura по WebSocket. Собирает APK и установщик Windows.
+#
+# Адрес сервера вшивается при сборке из переменных репозитория
+# (Settings → Secrets and variables → Actions → Variables):
+#   AURA_SERVER_URL   — основной, wss://… (продакшн за TLS);
+#   AURA_FALLBACK_URL — запасной, клиент переключается на него сам.
+# Без них: Android-эмулятор → ws://10.0.2.2:9000, Windows → ws://127.0.0.1:9000;
+# адрес всегда можно поменять в приложении («Адрес сервера» на экране входа).
+#
+# Результат: артефакты прогона, релиз «builds» и ветки builds/web-android,
+# builds/web-windows (песочница разработки забирает файлы оттуда обычным git).
+name: Build web client
 
 on:
   push:
@@ -17,9 +25,13 @@ defaults:
   run:
     working-directory: web
 
+env:
+  VITE_AURA_SERVER_URL: ${{ vars.AURA_SERVER_URL }}
+  VITE_AURA_FALLBACK_URL: ${{ vars.AURA_FALLBACK_URL }}
+
 jobs:
   android:
-    name: Демо — APK
+    name: Веб-клиент — APK
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,9 +46,9 @@ jobs:
           npm run build && npx cap sync android
           cd android && ./gradlew assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
-        with: { name: aura-demo-android, path: web/android/app/build/outputs/apk/debug/*.apk }
+        with: { name: aura-web-android, path: web/android/app/build/outputs/apk/debug/*.apk }
       # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
-      - name: Публикация в релиз «builds» (демо APK)
+      - name: Публикация в релиз «builds» (APK)
         if: success() && github.ref == 'refs/heads/main'
         shell: bash
         working-directory: .
@@ -46,22 +58,24 @@ jobs:
           R="$GITHUB_REPOSITORY"
           gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
             --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
-            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — клиенты с новым дизайном, нужен сервер Aura. Aura-demo.apk и Aura-demo-Setup.exe — демо без сервера." || true
-          mkdir -p pubrel && cp web/android/app/build/outputs/apk/debug/app-debug.apk pubrel/Aura-demo.apk
-          gh release upload builds pubrel/Aura-demo.apk -R "$R" --clobber
+            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — нативные клиенты (Compose, Qt). Aura-web.apk и Aura-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Aura." || true
+          gh release edit builds -R "$R" --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — нативные клиенты (Compose, Qt). Aura-web.apk и Aura-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Aura." || true
+          mkdir -p pubrel && cp web/android/app/build/outputs/apk/debug/app-debug.apk pubrel/Aura-web.apk
+          gh release upload builds pubrel/Aura-web.apk -R "$R" --clobber
+          gh release delete-asset builds Aura-demo.apk -R "$R" -y || true
 
       - name: Публикация в ветку builds/web-android
         working-directory: .
         run: |
           set -e
-          mkdir pub && cp web/android/app/build/outputs/apk/debug/app-debug.apk pub/Aura-demo.apk
+          mkdir pub && cp web/android/app/build/outputs/apk/debug/app-debug.apk pub/Aura-web.apk
           cd pub && git init -q -b builds/web-android
           git config user.name aura-ci && git config user.email ci@aura.local
-          git add -A && git commit -qm "web demo apk ${{ github.sha }} [skip ci]"
+          git add -A && git commit -qm "web apk ${{ github.sha }} [skip ci]"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/web-android
 
   windows:
-    name: Демо — Windows
+    name: Веб-клиент — Windows
     runs-on: windows-latest
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -74,9 +88,9 @@ jobs:
           npm ci
           npm run dist:win
       - uses: actions/upload-artifact@v4
-        with: { name: aura-demo-windows, path: web/release/*.exe }
+        with: { name: aura-web-windows, path: web/release/*.exe }
       # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
-      - name: Публикация в релиз «builds» (демо Windows)
+      - name: Публикация в релиз «builds» (Windows)
         if: success() && github.ref == 'refs/heads/main'
         shell: bash
         working-directory: .
@@ -84,11 +98,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           R="$GITHUB_REPOSITORY"
-          mkdir -p pubrel && for f in web/release/*.exe; do cp "$f" pubrel/Aura-demo-Setup.exe; break; done
+          mkdir -p pubrel && for f in web/release/*.exe; do cp "$f" pubrel/Aura-web-Setup.exe; break; done
           gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
             --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
-            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — клиенты с новым дизайном, нужен сервер Aura. Aura-demo.apk и Aura-demo-Setup.exe — демо без сервера." || true
-          gh release upload builds pubrel/Aura-demo-Setup.exe -R "$R" --clobber
+            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — нативные клиенты (Compose, Qt). Aura-web.apk и Aura-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Aura." || true
+          gh release upload builds pubrel/Aura-web-Setup.exe -R "$R" --clobber
+          gh release delete-asset builds Aura-demo-Setup.exe -R "$R" -y || true
 
       - name: Публикация в ветку builds/web-windows
         working-directory: .
@@ -96,12 +111,12 @@ jobs:
         run: |
           set -e
           mkdir pub
-          for f in web/release/*.exe; do cp "$f" pub/Aura-demo-Setup.exe; break; done
+          for f in web/release/*.exe; do cp "$f" pub/Aura-web-Setup.exe; break; done
           cd pub
           for f in *; do
             if [ "$(wc -c < "$f")" -gt 94000000 ]; then split -b 90m -d "$f" "$f.part"; rm "$f"; fi
           done
           git init -q -b builds/web-windows
           git config user.name aura-ci && git config user.email ci@aura.local
-          git add -A && git commit -qm "web demo windows ${{ github.sha }} [skip ci]"
+          git add -A && git commit -qm "web windows ${{ github.sha }} [skip ci]"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/web-windows

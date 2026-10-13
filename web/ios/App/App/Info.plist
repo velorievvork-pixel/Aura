@@ -66,6 +66,14 @@
 	<string>Aura слушает голосовые команды, пока вы держите включённым микрофон.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Aura превращает вашу речь в текст команды.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- ws:// к серверу Aura в локальной сети (IP или *.local) при разработке; остальное — только TLS. -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Aura подключается к вашему серверу Aura в локальной сети.</string>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
 	<key>UIViewControllerBasedStatusBarAppearance</key>

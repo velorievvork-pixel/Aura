@@ -21,6 +21,7 @@ struct UserRecord {
     std::string passwordHash;
     std::string displayName;
     std::string avatarUrl;
+    std::string bio;
     std::string timezone = "Europe/Moscow";
     std::string createdAt;
     std::string lastSeenAt;
@@ -296,6 +297,9 @@ public:
     virtual std::optional<UserRecord> findUserById(long long id) = 0;
     virtual std::vector<UserRecord> searchUsers(const std::string& query, int limit) = 0;
     virtual DatabaseError touchUser(long long userId) = 0;
+    // Профиль (profile.update): меняются только переданные поля
+    // display_name / bio / avatar_url; значения уже проверены сервером.
+    virtual DatabaseError updateProfile(long long userId, const Json& fields) = 0;
     // Миграция хэша пароля (PBKDF2 → Argon2id) при успешном входе.
     virtual DatabaseError updatePasswordHash(long long userId, const std::string& hash) = 0;
     virtual DatabaseError setEmailVerified(long long userId, bool verified) = 0;

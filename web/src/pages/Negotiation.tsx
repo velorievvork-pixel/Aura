@@ -1,256 +1,284 @@
-import { ArrowLeft, Check, Clock, MapPin, Plus, Users, Utensils, Wallet } from 'lucide-react';
-import { useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
-import { Avatar } from '../components/ui';
-import { DIET_LABEL, makeMe } from '../data/mock';
-import { WINDOW_LABEL } from '../lib/intent';
-import { dateLabel, dayTitle, hhmm, rub } from '../lib/time';
-import type { Contact, Negotiation as N, NegotiationStatus, Person, Window } from '../lib/types';
-import { tap } from '../platform/native';
-import { useAura } from '../state/store';
+import { ArrowLeft, CalendarCheck, Check, Clock, Handshake, MapPin, Plus, Star, X } from 'lucide-react';
+import { useState, type FormEvent } from 'react';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Avatar, Empty, Segmented, Spinner } from '../components/ui';
+import { placeTags, shortWhen, when, WINDOWS } from '../lib/format';
+import { auraOf, negotiationSteps } from '../lib/negotiationSteps';
+import { emailError } from '../lib/validate';
+import { useData } from '../state/data';
+import { useSession } from '../state/session';
+import { NegotiationBadge } from './Home';
 
-const STATUS: Record<NegotiationStatus, { label: string; tone: string }> = {
-  running: { label: 'Идут', tone: '' },
-  awaiting: { label: 'Ждёт решения', tone: '' },
-  booked: { label: 'Забронировано', tone: 'green' },
-  stopped: { label: 'Остановлены', tone: 'gray' },
-  failed: { label: 'Не договорились', tone: 'red' },
-};
+const DURATIONS = [
+  { value: '30', label: '30 мин' },
+  { value: '60', label: '1 час' },
+  { value: '90', label: '1,5 часа' },
+];
 
-const km = (n: number) => `${n.toLocaleString('ru-RU')} км`;
+export function Negotiations() {
+  const { negotiations } = useData();
+  const [params] = useSearchParams();
+  const [open, setOpen] = useState(params.get('new') === '1' || negotiations.length === 0);
+
+  return (
+    <div className="page">
+      <header className="page-head">
+        <div>
+          <h1 className="title-xl">Переговоры</h1>
+          <div className="sub">Ваша Аура договаривается с Аурами других людей о времени и месте.</div>
+        </div>
+        {!open && (
+          <button className="btn btn-primary" onClick={() => setOpen(true)}>
+            <Plus size={16} /> Новые
+          </button>
+        )}
+      </header>
+      <div className="stack-lg">
+        {open && <NewNegotiation onCancel={negotiations.length ? () => setOpen(false) : undefined} />}
+        <section>
+          <h2 className="title-sm section-title">История</h2>
+          <div className="card flush list">
+            {negotiations.length === 0 && <Empty>Здесь появятся переговоры вашей Ауры.</Empty>}
+            {negotiations.map((n) => (
+              <Link key={n.id} to={`/negotiations/${n.id}`} className="list-row">
+                <Avatar name={n.targetName} size={30} />
+                <div className="body">
+                  <div className="ellipsis">
+                    {auraOf(n.targetName)}
+                    {n.topic ? <span className="muted"> · {n.topic}</span> : null}
+                  </div>
+                  <div className="small muted ellipsis">{n.result.accepted && n.result.slot ? when(n.result.slot.start) : `Запуск ${shortWhen(n.at)}`}</div>
+                </div>
+                <NegotiationBadge accepted={n.result.accepted} booked={n.booked} />
+              </Link>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function NewNegotiation({ onCancel }: { onCancel?: () => void }) {
+  const { contacts, negotiate } = useData();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  // ?to=<email> — переход из переписки «Договориться».
+  const preset = contacts.find((c) => c.email === params.get('to')) ?? contacts[0];
+  const [target, setTarget] = useState<{ email: string; name: string } | null>(preset ? { email: preset.email, name: preset.name } : null);
+  const [email, setEmail] = useState('');
+  const [topic, setTopic] = useState('');
+  const [windowHours, setWindowHours] = useState('168');
+  const [duration, setDuration] = useState('60');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const typed = email.trim().toLowerCase();
+    // Введён email знакомого — берём его имя; иначе — часть до «@» («Аура dima»).
+    const known = contacts.find((c) => c.email.toLowerCase() === typed);
+    const who = typed ? { email: typed, name: known?.name ?? typed.split('@')[0] } : target;
+    if (!who) return setError('Выберите человека или введите email');
+    if (typed && emailError(typed)) return setError('Похоже, в email опечатка');
+    setError('');
+    setBusy(true);
+    const id = await negotiate(who.email, who.name, topic.trim(), Number(duration), Number(windowHours));
+    setBusy(false);
+    if (id) navigate(`/negotiations/${id}`);
+  };
+
+  return (
+    <form className="card stack" onSubmit={submit}>
+      <div className="card-head" style={{ marginBottom: 0 }}>
+        <h2 className="title-md">Договориться о встрече</h2>
+        {onCancel && (
+          <button type="button" className="icon-btn" onClick={onCancel} aria-label="Закрыть">
+            <X size={16} />
+          </button>
+        )}
+      </div>
+      <div className="field">
+        <span>С кем</span>
+        {contacts.length > 0 && (
+          <div className="suggestions">
+            {contacts.map((c) => (
+              <button
+                key={c.userId}
+                type="button"
+                className={`chip ${!email && target?.email === c.email ? 'active' : ''}`}
+                onClick={() => {
+                  setTarget({ email: c.email, name: c.name });
+                  setEmail('');
+                }}
+              >
+                <Avatar name={c.name} src={c.avatar} size={18} /> {c.name}
+              </button>
+            ))}
+          </div>
+        )}
+        <input className="input" type="email" inputMode="email" placeholder={contacts.length ? 'или email собеседника' : 'email собеседника'} value={email} onChange={(e) => setEmail(e.target.value)} />
+      </div>
+      <label className="field">
+        <span>Тема</span>
+        <input className="input" placeholder="Например, обсудить стартап" value={topic} onChange={(e) => setTopic(e.target.value)} maxLength={120} />
+      </label>
+      <div className="row wrap" style={{ gap: 16 }}>
+        <div className="field">
+          <span>Когда</span>
+          <Segmented label="Окно" value={windowHours} onChange={setWindowHours} options={WINDOWS.map((w) => ({ value: String(w.hours), label: w.label }))} />
+        </div>
+        <div className="field">
+          <span>Длительность</span>
+          <Segmented label="Длительность" value={duration} onChange={setDuration} options={DURATIONS} />
+        </div>
+      </div>
+      {error && <div className="field-error">{error}</div>}
+      <div className="row wrap">
+        <button className="btn btn-primary" type="submit" disabled={busy}>
+          {busy ? (
+            <>
+              <Spinner small /> Ауры договариваются…
+            </>
+          ) : (
+            <>
+              <Handshake size={16} /> Начать переговоры
+            </>
+          )}
+        </button>
+        <span className="hint">Ауры сверят свободное время; место — с учётом питания обоих. Бронь — только после вашего подтверждения.</span>
+      </div>
+    </form>
+  );
+}
 
 export function NegotiationView() {
   const { id } = useParams();
-  const { state, contacts, approve, stop, startNegotiation } = useAura();
+  const { negotiations, book, negotiate } = useData();
+  const { user } = useSession();
   const navigate = useNavigate();
-  const n = state.negotiations.find((x) => x.id === id);
+  const [busy, setBusy] = useState(false);
+  const n = negotiations.find((x) => x.id === id);
+
   if (!n) {
     return (
       <div className="page">
-        <div className="empty">
-          Переговоры не найдены. <Link to="/negotiations">К списку</Link>
-        </div>
+        <Empty>
+          Переговоры не найдены. <Link className="link" to="/negotiations">К списку</Link>
+        </Empty>
       </div>
     );
   }
-  const c = contacts.find((x) => x.id === n.request.contactId)!;
-  const me = makeMe(state.user!.name);
-  const shown = n.steps.slice(0, n.revealed);
-  const st = STATUS[n.status];
-  const start = n.outcome ? new Date(n.outcome.start) : null;
+
+  const r = n.result;
+  const steps = negotiationSteps(n);
+  const retryWider = async () => {
+    setBusy(true);
+    const next = await negotiate(n.target, n.targetName, n.topic, n.durationMinutes, 336);
+    setBusy(false);
+    if (next) navigate(`/negotiations/${next}`, { replace: true });
+  };
 
   return (
     <div className="page">
-      <div className="page-head">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
-          <Link to="/negotiations" className="icon-btn" aria-label="Назад">
-            <ArrowLeft size={18} />
-          </Link>
-          <h1 style={{ fontSize: 26 }}>Организация встречи</h1>
-          <span className={`badge ${st.tone}`}>
-            {n.status === 'running' && <i className="dot violet" style={{ width: 6, height: 6 }} />}
-            {st.label}
+      <Link to="/negotiations" className="btn btn-ghost btn-sm" style={{ marginLeft: -10, marginBottom: 12 }}>
+        <ArrowLeft size={15} /> Переговоры
+      </Link>
+      <header className="page-head" style={{ alignItems: 'center' }}>
+        <div className="row" style={{ gap: 12 }}>
+          <span className="row" style={{ gap: 0 }}>
+            <Avatar name={user?.display_name ?? 'Вы'} src={user?.avatar_url} size={36} />
+            <span style={{ marginLeft: -8, borderRadius: '50%', boxShadow: '0 0 0 2px var(--bg)' }}>
+              <Avatar name={n.targetName} size={36} />
+            </span>
           </span>
-        </div>
-        <span className="rounds">
-          Раунд {Math.max(1, Math.min(n.revealed, n.steps.length))} из {n.steps.length}
-        </span>
-      </div>
-
-      <div className="progress" style={{ marginBottom: 30 }}>
-        <i style={{ width: `${(n.revealed / n.steps.length) * 100}%` }} />
-      </div>
-
-      <div className="neg-stage">
-        <AgentCard person={me} title={state.user!.name.split(' ')[0]} hue={280} active={n.status === 'running' && shown.at(-1)?.actor !== 'me'} side="me" />
-
-        <div className="steps" aria-live="polite">
-          <div className="faint small" style={{ textAlign: 'center' }}>
-            Тема: <span className="muted">{n.request.topic}</span> · {WINDOW_LABEL[n.request.window]} · {n.request.durationMin} мин
+          <div>
+            <h1 className="title-lg">Ваша Аура ↔ {auraOf(n.targetName)}</h1>
+            <div className="sub">{n.topic || 'Встреча'} · {n.durationMinutes} мин</div>
           </div>
-          {shown.map((s) => (
-            <div key={s.round + s.kind} className={`step ${s.actor} ${s.kind === 'fail' ? 'fail' : ''}`}>
-              <span className="num">{s.kind === 'accept' ? <Check size={16} /> : s.round}</span>
-              <span className="msg">
-                {s.text}
-                <small>{s.detail}</small>
-              </span>
-            </div>
-          ))}
-          {n.status === 'running' && (
-            <div className={`step pending ${n.steps[n.revealed]?.actor ?? 'me'}`}>
-              <span className="num faint">{n.revealed + 1}</span>
-              <span className="msg thinking" style={{ alignSelf: 'auto' }}>
-                {n.steps[n.revealed]?.actor === 'them' ? `Аура ${c.nameGen}` : `Аура ${me.nameGen}`} отвечает <i /> <i /> <i />
-              </span>
-            </div>
-          )}
         </div>
+        <NegotiationBadge accepted={r.accepted} booked={n.booked} />
+      </header>
 
-        <AgentCard person={c} title={c.name} hue={c.hue} active={n.status === 'running' && shown.at(-1)?.actor === 'me'} side="them" />
-      </div>
-
-      {n.outcome && start && n.revealed >= n.steps.length && (
-        <div className="result" id="result">
-          <div style={{ flex: '1 1 260px' }}>
-            <h2>
-              {dayTitle(start)}, {hhmm(start)}
-              <br />
-              {n.outcome.venueName}
-            </h2>
-            <div className="muted small" style={{ display: 'flex', gap: 18, marginTop: 12, flexWrap: 'wrap' }}>
-              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                <Users size={15} /> Двое
-              </span>
-              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                <Wallet size={15} /> Примерно {rub(n.outcome.cost)}
-              </span>
-              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                <MapPin size={15} /> {km(n.outcome.distanceMe)} от вас · {km(n.outcome.distanceThem)} от {c.nameGen}
-              </span>
-              <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                <Clock size={15} /> {dateLabel(start)}, до {hhmm(new Date(n.outcome.end))}
-              </span>
-            </div>
-          </div>
-          {n.status === 'awaiting' && (
-            <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-              <button className="btn btn-primary btn-pill" style={{ height: 52, padding: '0 34px' }} onClick={() => {
-                  tap('success');
-                  approve(n.id);
-                }}>
-                Подтвердить и забронировать
-              </button>
-              <button className="btn btn-text" onClick={() => stop(n.id)}>
-                Остановить
-              </button>
-            </div>
-          )}
-          {n.status === 'booked' && (
-            <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span className="badge green">
-                <Check size={14} /> Столик забронирован
-              </span>
-              <Link to="/tasks" className="btn btn-ghost btn-pill">
-                В задачах
-              </Link>
-            </div>
-          )}
-          {n.status === 'stopped' && <span className="badge gray">Вы остановили переговоры</span>}
-        </div>
-      )}
-
-      {n.status === 'running' && (
-        <div style={{ marginTop: 26, textAlign: 'right' }}>
-          <button className="btn btn-text" onClick={() => stop(n.id)}>
-            Остановить переговоры
-          </button>
-        </div>
-      )}
-
-      {n.status === 'failed' && <Retry n={n} contact={c} onStart={(route) => navigate(route)} startNegotiation={startNegotiation} />}
-    </div>
-  );
-}
-
-function Retry({ n, contact, onStart, startNegotiation }: { n: N; contact: Contact; onStart: (r: string) => void; startNegotiation: ReturnType<typeof useAura>['startNegotiation'] }) {
-  const [win, setWin] = useState<Window>('week');
-  const [budget, setBudget] = useState<number | null>(n.request.budget === null ? null : Math.max(n.request.budget, 2000));
-  return (
-    <div className="result" style={{ borderColor: 'rgba(248,113,113,.4)' }}>
-      <div style={{ flex: '1 1 260px' }}>
-        <h2 style={{ fontSize: 22 }}>Не договорились</h2>
-        <p className="muted small" style={{ margin: '8px 0 0' }}>
-          {n.failure}. Измените условия — Аура попробует ещё раз с Аурой {contact.nameGen}.
-        </p>
-      </div>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-        {(['tomorrow', 'weekend', 'week'] as Window[]).map((w) => (
-          <button key={w} className={`chip ${w === win ? 'active' : ''}`} onClick={() => setWin(w)}>
-            {WINDOW_LABEL[w]}
-          </button>
-        ))}
-        <button className={`chip ${budget === null ? 'active' : ''}`} onClick={() => setBudget(budget === null ? 2000 : null)}>
-          {budget === null ? 'Без лимита' : `до ${rub(budget)}`}
-        </button>
-        <button className="btn btn-primary btn-pill" onClick={() => onStart(startNegotiation({ ...n.request, window: win, budget }))}>
-          Повторить
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function AgentCard({ person, title, hue, active, side }: { person: Person; title: string; hue: number; active: boolean; side: 'me' | 'them' }) {
-  // A deterministic "voice print" per person; it pulses while that agent is talking.
-  const bars = useMemo(() => Array.from({ length: 28 }, (_, i) => 25 + Math.abs(Math.sin(i * 1.7 + hue)) * 65), [hue]);
-  const diet = person.diet.map((d) => DIET_LABEL[d]).join(', ') || 'без ограничений';
-  return (
-    <div className={`agent-card ${side}`}>
-      <Avatar name={title} hue={hue} size={78} ring />
-      <div style={{ fontSize: 22, fontWeight: 700, marginTop: 10 }}>{title}</div>
-      <div className="muted small">Аура {person.nameGen}</div>
-      <div className="wave" aria-hidden="true">
-        {bars.map((h, i) => (
-          <i key={i} style={{ height: `${active ? h : h * 0.35}%`, animation: active ? `blink ${0.6 + (i % 5) * 0.15}s infinite` : undefined }} />
-        ))}
-      </div>
-      <div className="facts">
-        <div>
-          <Utensils size={13} /> {diet}
-        </div>
-        <div>
-          <Clock size={13} /> Делится только свободными окнами
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export function Negotiations() {
-  const { state, contacts } = useAura();
-  const list = state.negotiations;
-  return (
-    <div className="page">
-      <div className="page-head">
-        <h1 className="page-title">Переговоры</h1>
-        <Link to="/contacts" className="btn btn-primary btn-pill">
-          <Plus size={18} /> Новые
-        </Link>
-      </div>
-      {list.length === 0 ? (
-        <div className="empty tile">
-          <p style={{ marginTop: 0 }}>Пока ни одних переговоров.</p>
-          <p className="small">
-            Скажите Ауре на главной: «Хочу встретиться с Димой в эти выходные и обсудить стартап» — или выберите человека в контактах.
-          </p>
-          <Link to="/" className="btn btn-ghost btn-pill" style={{ marginTop: 8 }}>
-            На главную
-          </Link>
-        </div>
-      ) : (
-        <div className="stack" style={{ gap: 12 }}>
-          {list.map((n) => {
-            const c = contacts.find((x) => x.id === n.request.contactId)!;
-            const st = STATUS[n.status];
-            const start = n.outcome ? new Date(n.outcome.start) : null;
-            return (
-              <Link key={n.id} to={`/negotiations/${n.id}`} className="tile neg-mini" style={{ padding: '16px 20px' }}>
-                <Avatar name={c.fullName} hue={c.hue} size={44} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 700 }}>
-                    {c.fullName} · {n.request.topic}
-                  </div>
-                  <div className="faint small">
-                    {start && n.revealed >= n.steps.length ? `${dayTitle(start)}, ${hhmm(start)} · ${n.outcome!.venueName} · ${rub(n.outcome!.cost)}` : n.failure && n.status === 'failed' ? n.failure : `Раунд ${Math.max(1, n.revealed)} из ${n.steps.length}`}
-                  </div>
+      <div className="stack-lg">
+        <section className="card outcome">
+          {r.accepted && r.slot ? (
+            <>
+              <div className="title-sm">Итог</div>
+              <div className="title-lg" style={{ textTransform: 'capitalize' }}>
+                {when(r.slot.start)}
+              </div>
+              <div className="facts">
+                <span>
+                  <Clock size={14} /> {n.durationMinutes} мин
+                </span>
+                {r.place?.name && (
+                  <span>
+                    <MapPin size={14} /> {r.place.name}
+                    {r.place.city ? `, ${r.place.city}` : ''}
+                  </span>
+                )}
+                {r.place?.rating ? (
+                  <span>
+                    <Star size={14} /> {r.place.rating}
+                  </span>
+                ) : null}
+                {r.place?.tags?.length ? <span>{placeTags(r.place.tags)}</span> : null}
+              </div>
+              {n.booked ? (
+                <div className="status-line">
+                  <Check size={15} style={{ color: 'var(--success)' }} /> Встреча в задачах{r.place?.name ? ', столик забронирован' : ''}.
+                  <Link className="link" to="/tasks">
+                    Открыть задачи
+                  </Link>
                 </div>
-                <span className={`badge ${st.tone}`}>{st.label}</span>
-              </Link>
-            );
-          })}
-        </div>
-      )}
+              ) : (
+                <div className="row wrap">
+                  <button
+                    className="btn btn-primary"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      await book(n.id);
+                      setBusy(false);
+                    }}
+                  >
+                    {busy ? <Spinner small /> : <CalendarCheck size={16} />}
+                    {r.place?.name ? 'Забронировать и добавить в задачи' : 'Добавить в задачи'}
+                  </button>
+                  <span className="hint">Бронирование — опасное действие: Аура делает его только по вашей кнопке.</span>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="title-sm">Итог</div>
+              <div className="title-md">Общего времени в этом окне нет</div>
+              <div className="row wrap">
+                <button className="btn btn-secondary" onClick={retryWider} disabled={busy}>
+                  {busy ? <Spinner small /> : null} Попробовать на две недели
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+
+        <section>
+          <h2 className="title-sm section-title">Как договорились</h2>
+          <div className="card">
+            <ol className="timeline" style={{ margin: 0, listStyle: 'none' }}>
+              {steps.map((s, i) => (
+                <li key={i} className={`tl-item ${s.state}`}>
+                  <span className="mark">{s.state === 'ok' ? <Check size={11} strokeWidth={3} /> : s.state === 'fail' ? <X size={11} strokeWidth={3} /> : <span className="tiny">{i + 1}</span>}</span>
+                  <div className="who">{s.actor}</div>
+                  <div className="what">{s.text}</div>
+                  {s.detail && <div className="detail">{s.detail}</div>}
+                </li>
+              ))}
+            </ol>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

@@ -1,172 +1,181 @@
-import { CalendarDays, Lock, Search, Star, UserPlus } from 'lucide-react';
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Avatar, PRESENCE } from '../components/ui';
-import { DIET_LABEL } from '../data/mock';
-import { WINDOW_LABEL } from '../lib/intent';
-import { rub } from '../lib/time';
-import type { Contact, Window } from '../lib/types';
-import { useAura } from '../state/store';
-
-type Tab = 'all' | 'favorites' | 'recent';
+import { ArrowLeft, Handshake, Search, UserPlus } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { CommandBar } from '../components/CommandBar';
+import { Avatar, Empty, Spinner } from '../components/ui';
+import { shortWhen } from '../lib/format';
+import type { FoundUser, Message } from '../net/api';
+import { useData } from '../state/data';
+import { errorText, useSession } from '../state/session';
 
 export function Contacts() {
-  const { state, contacts, toggleFavorite, invite } = useAura();
-  const [q, setQ] = useState('');
-  const [tab, setTab] = useState<Tab>('all');
-  const [selId, setSelId] = useState(contacts[0].id);
+  const { api, user } = useSession();
+  const { contacts, openChat } = useData();
+  const navigate = useNavigate();
+  const [query, setQuery] = useState('');
+  const [found, setFound] = useState<FoundUser[]>([]);
+  const [searching, setSearching] = useState(false);
 
-  const recent = new Set(state.negotiations.map((n) => n.request.contactId));
-  const list = contacts
-    .filter((c) => (tab === 'favorites' ? state.favorites.includes(c.id) : tab === 'recent' ? recent.has(c.id) : true))
-    .filter((c) => !q || c.fullName.toLowerCase().includes(q.toLowerCase()) || c.role.toLowerCase().includes(q.toLowerCase()));
-  const sel = contacts.find((c) => c.id === selId)!;
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setFound([]);
+      return;
+    }
+    setSearching(true);
+    const t = setTimeout(() => {
+      api
+        .searchUsers(q)
+        .then((r) => setFound((r.users ?? []).filter((u) => u.id !== user?.id && !contacts.some((c) => c.userId === u.id))))
+        .catch(() => setFound([]))
+        .finally(() => setSearching(false));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query, api, user?.id, contacts]);
+
+  const visible = contacts.filter((c) => {
+    const q = query.trim().toLowerCase();
+    return !q || c.name.toLowerCase().includes(q) || c.email.toLowerCase().includes(q);
+  });
+
+  const add = async (u: FoundUser) => {
+    const chatId = await openChat(u.email);
+    if (chatId) navigate(`/contacts/${chatId}`);
+  };
 
   return (
-    <div className="page" style={{ position: 'relative' }}>
-      <span className="bubble-deco" style={{ width: 120, height: 120, right: 300, top: 30 }} />
-      <span className="bubble-deco" style={{ width: 26, height: 26, right: 380, bottom: 60 }} />
-      <div className="contacts-grid">
+    <div className="page">
+      <header className="page-head">
         <div>
-          <h1 className="page-title" style={{ marginBottom: 18 }}>
-            Контакты
-          </h1>
-          <label className="search">
-            <Search size={18} />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Искать людей или Ауры" aria-label="Поиск контактов" />
-          </label>
-          <div style={{ display: 'flex', gap: 10, margin: '20px 0 22px' }}>
-            {(
-              [
-                ['all', 'Все'],
-                ['favorites', 'Избранные'],
-                ['recent', 'Недавние'],
-              ] as [Tab, string][]
-            ).map(([k, l]) => (
-              <button key={k} className={`chip ${tab === k ? 'active' : ''}`} onClick={() => setTab(k)}>
-                {l}
-              </button>
-            ))}
-          </div>
+          <h1 className="title-xl">Контакты</h1>
+          <div className="sub">Люди, с Аурами которых ваша Аура может договариваться.</div>
+        </div>
+      </header>
+      <div className="stack-lg">
+        <label className="command" style={{ height: 44 }}>
+          <Search size={16} className="faint" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Найти по имени или email" aria-label="Поиск людей" />
+          {searching && <Spinner small />}
+        </label>
 
-          <div className="stack" style={{ gap: 4 }}>
-            {list.length === 0 && <div className="faint small">Никого не нашли</div>}
-            {list.map((c) => {
-              const p = c.hasAura || !state.invited.includes(c.id) ? PRESENCE[c.presence] : { label: 'Приглашён', dot: 'amber' };
-              return (
-                <button key={c.id} className={`contact-row ${c.id === selId ? 'sel' : ''}`} onClick={() => setSelId(c.id)}>
-                  <Avatar name={c.fullName} hue={c.hue} size={46} />
-                  <span style={{ fontWeight: 700 }}>{c.fullName}</span>
-                  <span className="sep" />
-                  <span className="muted small" style={{ flex: 1 }}>
-                    {p.label}
-                  </span>
-                  <i className={`dot ${p.dot}`} />
-                </button>
-              );
-            })}
-          </div>
-
-          <button className="btn btn-ghost btn-pill" style={{ marginTop: 36, height: 50, padding: '0 34px' }} onClick={() => setSelId('ildar')}>
-            <UserPlus size={18} /> Пригласить в Aura
-          </button>
+        <div className="card flush list">
+          {visible.length === 0 && !found.length && <Empty>{query ? 'Никого не нашли' : 'Пока никого. Найдите человека по имени или email.'}</Empty>}
+          {visible.map((c) => (
+            <Link key={c.userId} to={`/contacts/${c.chatId}`} className="list-row">
+              <Avatar name={c.name} src={c.avatar} size={36} />
+              <div className="body">
+                <div className="ellipsis" style={{ fontWeight: 500 }}>
+                  {c.name}
+                </div>
+                <div className="small muted ellipsis">{c.lastBody || c.email}</div>
+              </div>
+              {c.lastAt && <span className="meta">{shortWhen(c.lastAt)}</span>}
+            </Link>
+          ))}
         </div>
 
-        <Profile contact={sel} favorite={state.favorites.includes(sel.id)} invited={state.invited.includes(sel.id)} onFavorite={() => toggleFavorite(sel.id)} onInvite={() => invite(sel.id)} />
+        {found.length > 0 && (
+          <section>
+            <h2 className="title-sm section-title">Найдено в Aura</h2>
+            <div className="card flush list">
+              {found.map((u) => (
+                <div key={u.id} className="list-row">
+                  <Avatar name={u.display_name || u.email} src={u.avatar_url} size={36} />
+                  <div className="body">
+                    <div className="ellipsis">{u.display_name}</div>
+                    <div className="small muted ellipsis">{u.email}</div>
+                  </div>
+                  <button className="btn btn-secondary btn-sm" onClick={() => add(u)}>
+                    <UserPlus size={14} /> Написать
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );
 }
 
-function Profile({ contact: c, favorite, invited, onFavorite, onInvite }: { contact: Contact; favorite: boolean; invited: boolean; onFavorite: () => void; onInvite: () => void }) {
-  const { startNegotiation } = useAura();
+export function ContactChat() {
+  const { chatId } = useParams();
+  const id = Number(chatId);
+  const { api, user } = useSession();
+  const { contacts, chatPulse, notify } = useData();
   const navigate = useNavigate();
-  const [planning, setPlanning] = useState(false);
-  const [win, setWin] = useState<Window>('weekend');
-  const [budget, setBudget] = useState<number | null>(1000);
-  const [topic, setTopic] = useState('');
+  const contact = contacts.find((c) => c.chatId === id);
+  const [messages, setMessages] = useState<Message[] | null>(null);
+  const end = useRef<HTMLDivElement>(null);
+
+  const load = useCallback(() => {
+    api
+      .history(id)
+      .then((r) => setMessages([...(r.messages ?? [])].sort((a, b) => a.id - b.id)))
+      .catch(() => setMessages((m) => m ?? []));
+  }, [api, id]);
+
+  useEffect(load, [load, chatPulse]);
+  useEffect(() => {
+    end.current?.scrollIntoView({ block: 'end' });
+  }, [messages?.length]);
+
+  const send = useCallback(
+    async (text: string) => {
+      try {
+        await api.send(id, text);
+        load();
+      } catch (error) {
+        notify(errorText(error), 'error');
+      }
+    },
+    [api, id, load, notify],
+  );
 
   return (
-    <aside className="profile" key={c.id}>
-      <button className="icon-btn" style={{ position: 'absolute', right: 18, top: 18, width: 36, height: 36, color: favorite ? 'var(--amber)' : undefined }} onClick={onFavorite} aria-pressed={favorite} aria-label="В избранное">
-        <Star size={16} fill={favorite ? 'currentColor' : 'none'} />
-      </button>
-      <div style={{ display: 'grid', justifyItems: 'center', gap: 4, textAlign: 'center' }}>
-        <Avatar name={c.fullName} hue={c.hue} size={104} ring />
-        <h2 style={{ fontSize: 22, marginTop: 12 }}>{c.fullName}</h2>
-        <div className="small" style={{ opacity: 0.8 }}>
-          {c.hasAura ? 'Аура доступна' : invited ? 'Приглашение отправлено' : 'Ауры пока нет'} · {c.role}
+    <div className="chat">
+      <header className="chat-head">
+        <Link to="/contacts" className="icon-btn" aria-label="Назад">
+          <ArrowLeft size={18} />
+        </Link>
+        <Avatar name={contact?.name ?? 'Чат'} src={contact?.avatar} size={34} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div className="title-md ellipsis">{contact?.name ?? 'Переписка'}</div>
+          {contact && <div className="tiny muted ellipsis">{contact.email}</div>}
+        </div>
+        {contact && (
+          <button className="btn btn-secondary btn-sm" onClick={() => navigate(`/negotiations?new=1&to=${encodeURIComponent(contact.email)}`)}>
+            <Handshake size={14} /> Договориться
+          </button>
+        )}
+      </header>
+      <div className="messages">
+        <div className="messages-inner">
+          {messages === null && (
+            <div className="row" style={{ justifyContent: 'center' }}>
+              <Spinner />
+            </div>
+          )}
+          {messages?.length === 0 && <Empty>Сообщений пока нет — напишите первым.</Empty>}
+          {messages?.map((m) => {
+            const mine = m.sender_id === user?.id;
+            const agent = m.kind !== 'text';
+            return (
+              <div key={m.id} style={{ display: 'contents' }}>
+                <div className={`msg ${mine ? 'mine' : 'theirs'}`}>{m.body}</div>
+                <div className={`msg-meta ${mine ? 'mine' : ''}`}>
+                  {agent ? 'Аура · ' : ''}
+                  {shortWhen(m.created_at)}
+                </div>
+              </div>
+            );
+          })}
+          <div ref={end} />
         </div>
       </div>
-
-      {c.hasAura ? (
-        <>
-          <div>
-            <h4>
-              <span className="icon-dot">
-                <CalendarDays size={14} />
-              </span>
-              Общие встречи
-            </h4>
-            <ul>{c.sharedMeetings.length ? c.sharedMeetings.map((m) => <li key={m}>{m}</li>) : <li className="faint">Пока нет</li>}</ul>
-          </div>
-          <div>
-            <h4>
-              <span className="icon-dot">
-                <Lock size={14} />
-              </span>
-              Разрешения для вашей Ауры
-            </h4>
-            <ul>
-              {c.permissions.map((p) => (
-                <li key={p}>{p}</li>
-              ))}
-              {c.diet.length > 0 && <li className="faint">Питание: {c.diet.map((d) => DIET_LABEL[d]).join(', ')}</li>}
-            </ul>
-          </div>
-
-          {planning ? (
-            <form
-              className="stack"
-              style={{ gap: 12 }}
-              onSubmit={(e) => {
-                e.preventDefault();
-                navigate(startNegotiation({ contactId: c.id, window: win, durationMin: 90, budget, topic: topic.trim() || 'Встреча' }));
-              }}
-            >
-              <input className="input" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="Тема, например «обсудить стартап»" aria-label="Тема встречи" />
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {(['tomorrow', 'weekend', 'week'] as Window[]).map((w) => (
-                  <button type="button" key={w} className={`chip ${win === w ? 'active' : ''}`} onClick={() => setWin(w)}>
-                    {WINDOW_LABEL[w]}
-                  </button>
-                ))}
-              </div>
-              <label className="small">
-                <div className="row-between">
-                  <span>Бюджет</span>
-                  <b>{budget === null ? 'без лимита' : `до ${rub(budget)}`}</b>
-                </div>
-                <input className="range" type="range" min={500} max={5500} step={500} value={budget ?? 5500} onChange={(e) => setBudget(Number(e.target.value) > 5000 ? null : Number(e.target.value))} />
-              </label>
-              <button className="btn btn-primary btn-pill">Начать переговоры</button>
-            </form>
-          ) : (
-            <button className="btn btn-ghost btn-pill btn-block" style={{ height: 52, background: 'rgba(0,0,0,.18)' }} onClick={() => setPlanning(true)}>
-              Начать переговоры
-            </button>
-          )}
-        </>
-      ) : (
-        <div className="stack">
-          <p className="small" style={{ margin: 0, opacity: 0.85 }}>
-            Чтобы ваши Ауры договаривались напрямую, у {c.nameGen} тоже должна быть Аура.
-          </p>
-          <button className="btn btn-primary btn-pill" disabled={invited} onClick={onInvite}>
-            <UserPlus size={18} /> {invited ? 'Приглашение отправлено' : 'Пригласить в Aura'}
-          </button>
-        </div>
-      )}
-    </aside>
+      <div className="composer">
+        <CommandBar onSubmit={send} placeholder="Сообщение…" />
+      </div>
+    </div>
   );
 }

@@ -249,7 +249,37 @@ AgentManager::Result AgentManager::negotiate(long long initiatorId,
                                              int windowHours) {
     Json request = Json::object();
     request.set("initiator", memory_.context(initiatorId, topic));
-    request.set("responder", memory_.context(responderId, topic));
+
+    // Приватность респондента (prefs.privacy): AI-сервис получает только то,
+    // что человек разрешил раскрывать чужой Ауре.
+    Json responder = memory_.context(responderId, topic);
+    const Json responderPrivacy = memory_.privacy(responderId);
+    if (responderPrivacy.getBool("hide_event_titles", true)) {
+        Json calendar = Json::array();
+        for (const auto& event : responder.get("calendar").items()) {
+            Json redacted = event;
+            redacted.set("title", Json("занято"));
+            redacted.erase("tags");
+            calendar.push(redacted);
+        }
+        responder.set("calendar", calendar);
+    }
+    if (responderPrivacy.getBool("share_free_slots_only", true)) {
+        // Только занятость и то, что нужно для времени и места; прочие факты памяти,
+        // день рождения и аллергии чужой Ауре не уходят.
+        responder.set("memory", Json::array());
+        Json preferences = responder.get("preferences");
+        if (preferences.isObject()) {
+            preferences.erase("birthday");
+            preferences.erase("allergies");
+            responder.set("preferences", preferences);
+        }
+    }
+    request.set("responder", responder);
+    // Место предлагается, только если обе стороны это разрешили.
+    const bool choosePlace = memory_.privacy(initiatorId).getBool("allow_place_choice", true) &&
+                             responderPrivacy.getBool("allow_place_choice", true);
+    request.set("choose_place", Json(choosePlace));
     request.set("intent", Json("schedule_meeting"));
     request.set("topic", Json(topic));
     request.set("duration_minutes", Json(durationMinutes));

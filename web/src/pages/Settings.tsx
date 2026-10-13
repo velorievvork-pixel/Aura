@@ -1,60 +1,678 @@
-import { useState } from 'react';
-import { useAura } from '../state/store';
+/*
+  Настройки: профиль, предпочтения Ауры, приватность ИИ и разрешения,
+  безопасность (пароль, 2FA, доверенные устройства, сессии), сервер и выход.
+*/
+import { Copy, Download, KeyRound, LogOut, Monitor, ShieldCheck, Smartphone, Trash2, Upload } from 'lucide-react';
+import QRCode from 'qrcode';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { ServerAddress } from '../components/ServerAddress';
+import { Avatar, Field, PasswordInput, Segmented, Spinner, Switch } from '../components/ui';
+import { DIETS, toolDescription, toolTitle, when } from '../lib/format';
+import { cleanCode, nameError, otpError, passwordError } from '../lib/validate';
+import { secureStore } from '../net/secureStore';
+import type { Permission, Privacy, SessionRow, TrustedDevice, TwoFaSetup } from '../net/api';
+import { useData } from '../state/data';
+import { errorText, useSession } from '../state/session';
 
-const SWITCHES = [
-  { id: 'autoBook', title: 'Бронировать без подтверждения', hint: 'Если сумма в пределах бюджета и встреча с человеком из избранного' },
-  { id: 'shareSlots', title: 'Показывать другим Аурам свободные окна', hint: 'Только «свободен / занят» на предложенное время, без названий событий' },
-  { id: 'diet', title: 'Учитывать питание при выборе места', hint: 'Ваши ограничения и ограничения собеседника' },
-  { id: 'night', title: 'Не беспокоить с 22:00 до 9:00', hint: 'Переговоры продолжатся утром' },
-];
+const SECTIONS = [
+  { id: 'profile', label: 'Профиль' },
+  { id: 'aura', label: 'Предпочтения' },
+  { id: 'privacy', label: 'Приватность ИИ' },
+  { id: 'security', label: 'Безопасность' },
+  { id: 'app', label: 'Приложение' },
+] as const;
+type SectionId = (typeof SECTIONS)[number]['id'];
 
 export function Settings() {
-  const { state } = useAura();
-  const [on, setOn] = useState<Record<string, boolean>>({ autoBook: false, shareSlots: true, diet: true, night: true });
-  const [budget, setBudget] = useState(1000);
-  const u = state.user!;
-
+  const [section, setSection] = useState<SectionId>('profile');
   return (
-    <div className="page">
-      <div className="page-head">
-        <h1 className="page-title">Настройки</h1>
-      </div>
-      <div className="grid-2" style={{ alignItems: 'start' }}>
-        <section className="tile stack" style={{ padding: 24 }}>
-          <h2 style={{ fontSize: 18 }}>Профиль</h2>
-          <div className="small">
-            <div className="faint tiny">Имя</div>
-            {u.name}
-          </div>
-          <div className="small">
-            <div className="faint tiny">Email</div>
-            {u.email}
-          </div>
-          <div className="small">
-            <div className="faint tiny">Часовой пояс</div>
-            {u.timezone}
-          </div>
-          <label className="small">
-            <div className="row-between">
-              <span>Бюджет встречи по умолчанию</span>
-              <b>до {budget.toLocaleString('ru-RU')} ₽</b>
-            </div>
-            <input className="range" type="range" min={500} max={5000} step={250} value={budget} onChange={(e) => setBudget(Number(e.target.value))} />
-          </label>
-        </section>
-        <section className="tile stack" style={{ padding: 24 }} id="privacy">
-          <h2 style={{ fontSize: 18 }}>Что может Аура</h2>
-          {SWITCHES.map((s) => (
-            <div key={s.id} className="row-between">
-              <div>
-                <div style={{ fontWeight: 600 }}>{s.title}</div>
-                <div className="faint small">{s.hint}</div>
-              </div>
-              <button className={`toggle ${on[s.id] ? 'on' : ''}`} role="switch" aria-checked={on[s.id]} aria-label={s.title} onClick={() => setOn({ ...on, [s.id]: !on[s.id] })} />
-            </div>
+    <div className="page wide">
+      <header className="page-head">
+        <h1 className="title-xl">Настройки</h1>
+      </header>
+      <div className="settings">
+        <nav className="settings-nav" aria-label="Разделы настроек">
+          {SECTIONS.map((s) => (
+            <button key={s.id} className={`nav-item ${section === s.id ? 'active' : ''}`} onClick={() => setSection(s.id)}>
+              {s.label}
+            </button>
           ))}
-        </section>
+        </nav>
+        <div className="stack-lg">
+          {section === 'profile' && <ProfileSection />}
+          {section === 'aura' && <PrefsSection />}
+          {section === 'privacy' && <PrivacySection />}
+          {section === 'security' && (
+            <>
+              <PasswordSection />
+              <TwoFactorSection />
+              <SessionsSection />
+            </>
+          )}
+          {section === 'app' && <AppSection />}
+        </div>
       </div>
     </div>
+  );
+}
+
+function Card({ title, desc, children }: { title: string; desc?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="card stack">
+      <div>
+        <h2 className="title-md">{title}</h2>
+        {desc && <p className="small muted" style={{ margin: '4px 0 0' }}>{desc}</p>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+// ------------------------------------------------------------------ Профиль
+
+/** Фото → квадрат 256 px JPEG (data URL): сервер принимает до ~100 КБ. */
+async function resizeAvatar(file: File): Promise<string> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('Не удалось открыть изображение'));
+      i.src = url;
+    });
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Не удалось обработать изображение');
+    ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, 256, 256);
+    return canvas.toDataURL('image/jpeg', 0.85);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function ProfileSection() {
+  const { api, user, setUser } = useSession();
+  const { notify } = useData();
+  const [name, setName] = useState(user?.display_name ?? '');
+  const [bio, setBio] = useState(user?.bio ?? '');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const file = useRef<HTMLInputElement>(null);
+
+  if (!user) return null;
+  const dirty = name.trim() !== user.display_name || bio.trim() !== (user.bio ?? '');
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    const problem = nameError(name);
+    setError(problem);
+    if (problem) return;
+    setBusy(true);
+    try {
+      setUser((await api.updateProfile({ display_name: name.trim(), bio: bio.trim() })).user);
+      notify('Профиль сохранён');
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setAvatar = async (avatar_url: string) => {
+    try {
+      setUser((await api.updateProfile({ avatar_url })).user);
+    } catch (err) {
+      notify(errorText(err), 'error');
+    }
+  };
+
+  return (
+    <Card title="Профиль" desc="Имя и фото видят люди, с которыми вы общаетесь, и их Ауры.">
+      <div className="row" style={{ gap: 16 }}>
+        <Avatar name={user.display_name || user.email} src={user.avatar_url} size={64} />
+        <div className="row wrap">
+          <button className="btn btn-secondary btn-sm" type="button" onClick={() => file.current?.click()}>
+            <Upload size={14} /> Загрузить фото
+          </button>
+          {user.avatar_url && (
+            <button className="btn btn-ghost btn-sm" type="button" onClick={() => setAvatar('')}>
+              Убрать
+            </button>
+          )}
+          <input
+            ref={file}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            hidden
+            onChange={async (e) => {
+              const f = e.target.files?.[0];
+              e.target.value = '';
+              if (!f) return;
+              try {
+                await setAvatar(await resizeAvatar(f));
+              } catch (err) {
+                notify(err instanceof Error ? err.message : 'Не удалось загрузить фото', 'error');
+              }
+            }}
+          />
+        </div>
+      </div>
+      <form className="stack" onSubmit={save} noValidate>
+        <Field label="Имя" error={error}>
+          <input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} autoComplete="name" />
+        </Field>
+        <Field label="О себе" hint={`${[...bio].length}/300 — Аура учитывает это в переговорах`}>
+          <textarea className="textarea" value={bio} onChange={(e) => setBio(e.target.value.slice(0, 300))} placeholder="Чем занимаетесь, что любите" />
+        </Field>
+        <Field label="Email">
+          <input className="input" value={user.email} disabled />
+        </Field>
+        <div>
+          <button className="btn btn-primary" type="submit" disabled={!dirty || busy}>
+            {busy ? <Spinner small /> : null} Сохранить
+          </button>
+        </div>
+      </form>
+    </Card>
+  );
+}
+
+// ------------------------------------------------------------- Предпочтения
+
+function PrefsSection() {
+  const { prefs, savePrefs, notify } = useData();
+  const [city, setCity] = useState(prefs?.city ?? '');
+  const [budget, setBudget] = useState(prefs?.budget_limit ? String(prefs.budget_limit) : '');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setCity(prefs?.city ?? '');
+    setBudget(prefs?.budget_limit ? String(prefs.budget_limit) : '');
+  }, [prefs?.city, prefs?.budget_limit]);
+
+  if (!prefs) return <Spinner />;
+  const diet = new Set(prefs.diet ?? []);
+
+  const toggleDiet = (value: string) => {
+    const next = new Set(diet);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    savePrefs({ diet: [...next] });
+  };
+
+  const save = async (e: FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    const amount = Math.max(0, Math.round(Number(budget.replace(/\s/g, '')) || 0));
+    const ok = await savePrefs({ city: city.trim(), budget_limit: amount });
+    setBusy(false);
+    if (ok) notify('Сохранено');
+  };
+
+  return (
+    <Card title="Предпочтения" desc="Аура учитывает их, когда выбирает место и время встречи.">
+      <div className="field">
+        <span>Питание</span>
+        <div className="suggestions">
+          {DIETS.map((d) => (
+            <button key={d.value} type="button" className={`chip ${diet.has(d.value) ? 'active' : ''}`} onClick={() => toggleDiet(d.value)} aria-pressed={diet.has(d.value)}>
+              {d.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <form className="stack" onSubmit={save}>
+        <div className="grid-2">
+          <Field label="Город">
+            <input className="input" value={city} onChange={(e) => setCity(e.target.value)} placeholder="Москва" autoComplete="address-level2" />
+          </Field>
+          <Field label="Средний чек на встречу, ₽" hint="0 — без ограничений">
+            <input className="input" value={budget} onChange={(e) => setBudget(e.target.value.replace(/[^\d\s]/g, ''))} inputMode="numeric" placeholder="1500" />
+          </Field>
+        </div>
+        <div>
+          <button className="btn btn-primary" type="submit" disabled={busy}>
+            {busy ? <Spinner small /> : null} Сохранить
+          </button>
+        </div>
+      </form>
+    </Card>
+  );
+}
+
+// ------------------------------------------------------------- Приватность
+
+const PRIVACY: { key: keyof Privacy; label: string; desc: string }[] = [
+  { key: 'share_free_slots_only', label: 'Делиться только свободными слотами', desc: 'Чужая Аура узнаёт, когда вы свободны, но не видит ваших заметок, дня рождения и аллергий.' },
+  { key: 'allow_place_choice', label: 'Разрешить выбор локаций', desc: 'Аура может предлагать место встречи. Если выключено — договаривается только о времени.' },
+  { key: 'hide_event_titles', label: 'Скрывать названия других событий', desc: 'В переговорах ваши события видны как «занято», без названий.' },
+];
+
+const MODES: { value: Permission['mode']; label: string }[] = [
+  { value: 'allow', label: 'Сама' },
+  { value: 'ask', label: 'Спросить' },
+  { value: 'deny', label: 'Нельзя' },
+];
+
+function PrivacySection() {
+  const { prefs, savePrivacy, permissions, setPermission } = useData();
+  return (
+    <>
+      <Card title="Приватность ИИ" desc="Чем ваша Аура делится с Аурами других людей. Сервер применяет это при каждых переговорах.">
+        {!prefs ? (
+          <Spinner />
+        ) : (
+          <div>
+            {PRIVACY.map((p) => (
+              <div key={p.key} className="setting">
+                <div className="body">
+                  <div className="label">{p.label}</div>
+                  <div className="desc">{p.desc}</div>
+                </div>
+                <Switch label={p.label} on={prefs.privacy?.[p.key] ?? true} onChange={(v) => savePrivacy({ [p.key]: v })} />
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+      <Card title="Что Аура делает сама" desc="Опасные действия по умолчанию — только с вашего подтверждения.">
+        <div>
+          {permissions.map((p) => (
+            <div key={p.tool} className="setting" style={{ flexWrap: 'wrap' }}>
+              <div className="body">
+                <div className="label">
+                  {toolTitle(p.tool)} {p.dangerous && <span className="badge amber">важное</span>}
+                </div>
+                <div className="desc">{toolDescription(p.tool, p.description)}</div>
+              </div>
+              <Segmented label={toolTitle(p.tool)} value={p.mode} options={MODES} onChange={(mode) => setPermission(p.tool, mode)} />
+            </div>
+          ))}
+        </div>
+      </Card>
+    </>
+  );
+}
+
+// ------------------------------------------------------------- Безопасность
+
+function PasswordSection() {
+  const { api } = useSession();
+  const { notify } = useData();
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [errors, setErrors] = useState<{ current?: string | null; next?: string | null; form?: string }>({});
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const found = { current: current ? null : 'Введите текущий пароль', next: passwordError(next) ?? (next === current ? 'Новый пароль совпадает с текущим' : null) };
+    setErrors(found);
+    if (found.current || found.next) return;
+    setBusy(true);
+    try {
+      await api.changePassword(current, next);
+      setCurrent('');
+      setNext('');
+      notify('Пароль изменён. Другие устройства вышли из аккаунта.');
+    } catch (err) {
+      setErrors({ form: errorText(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="Пароль" desc="После смены все другие устройства выйдут из аккаунта.">
+      <form className="stack" onSubmit={submit} noValidate>
+        {errors.form && <div className="notice error">{errors.form}</div>}
+        <div className="grid-2">
+          <Field label="Текущий пароль" error={errors.current}>
+            <PasswordInput autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} invalid={Boolean(errors.current)} />
+          </Field>
+          <Field label="Новый пароль" error={errors.next} hint="8+ символов, буквы и цифры">
+            <PasswordInput autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} invalid={Boolean(errors.next)} />
+          </Field>
+        </div>
+        <div>
+          <button className="btn btn-primary" type="submit" disabled={busy}>
+            {busy ? <Spinner small /> : <KeyRound size={15} />} Сменить пароль
+          </button>
+        </div>
+      </form>
+    </Card>
+  );
+}
+
+/** Секрет группами по 4 — так его проще перепечатать в приложение вручную. */
+const grouped = (secret: string) => secret.replace(/(.{4})/g, '$1 ').trim();
+
+function download(name: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function TwoFactorSection() {
+  const { api } = useSession();
+  const { notify } = useData();
+  const [status, setStatus] = useState<{ enabled: boolean; recovery_codes_left: number } | null>(null);
+  const [setup, setSetup] = useState<(TwoFaSetup & { qr: string }) | null>(null);
+  const [code, setCode] = useState('');
+  const [codes, setCodes] = useState<string[] | null>(null);
+  const [disabling, setDisabling] = useState(false);
+  const [password, setPassword] = useState('');
+  const [devices, setDevices] = useState<TrustedDevice[]>([]);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    api.twoFaStatus().then(setStatus).catch(() => undefined);
+    api
+      .trustedDevices()
+      .then((r) => setDevices(r.devices ?? []))
+      .catch(() => setDevices([]));
+  };
+  useEffect(load, [api]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const begin = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const s = await api.twoFaSetup();
+      const qr = await QRCode.toDataURL(s.otpauth_uri, { margin: 0, width: 296, color: { dark: '#0b0c10', light: '#ffffff' } });
+      setSetup({ ...s, qr });
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirm = async (e: FormEvent) => {
+    e.preventDefault();
+    const problem = otpError(code);
+    if (problem) return setError(problem);
+    setBusy(true);
+    try {
+      const r = await api.twoFaConfirm(code);
+      setCodes(r.recovery_codes);
+      setSetup(null);
+      setCode('');
+      setError('');
+      load();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!password) return setError('Введите пароль');
+    setBusy(true);
+    try {
+      await api.twoFaDisable(password);
+      setDisabling(false);
+      setPassword('');
+      setError('');
+      notify('2FA отключена');
+      load();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card
+      title="Двухфакторная аутентификация"
+      desc="При входе, кроме пароля, нужен код из Google Authenticator, Яндекс Ключа или другого TOTP-приложения."
+    >
+      {!status && <Spinner />}
+
+      {codes && (
+        <div className="stack">
+          <div className="notice">Сохраните резервные коды — они показываются один раз. Каждый работает один раз, если телефона с приложением нет под рукой.</div>
+          <div className="codes mono">
+            {codes.map((c) => (
+              <span key={c}>{c}</span>
+            ))}
+          </div>
+          <div className="row wrap">
+            <button className="btn btn-secondary btn-sm" onClick={() => navigator.clipboard?.writeText(codes.join('\n')).then(() => notify('Коды скопированы'))}>
+              <Copy size={14} /> Скопировать
+            </button>
+            <button className="btn btn-secondary btn-sm" onClick={() => download('aura-recovery-codes.txt', codes.join('\n'))}>
+              <Download size={14} /> Скачать
+            </button>
+            <button className="btn btn-primary btn-sm" onClick={() => setCodes(null)}>
+              Я сохранил коды
+            </button>
+          </div>
+        </div>
+      )}
+
+      {status && !status.enabled && !setup && !codes && (
+        <div className="row wrap">
+          <span className="badge">Выключена</span>
+          <button className="btn btn-primary" onClick={begin} disabled={busy}>
+            {busy ? <Spinner small /> : <ShieldCheck size={16} />} Включить 2FA
+          </button>
+          {error && <span className="field-error">{error}</span>}
+        </div>
+      )}
+
+      {setup && (
+        <form className="stack" onSubmit={confirm} noValidate>
+          <ol className="small muted" style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4 }}>
+            <li>Откройте приложение-аутентификатор и добавьте аккаунт по QR-коду.</li>
+            <li>Нет камеры? Введите ключ вручную (тип — по времени).</li>
+            <li>Введите 6-значный код, который покажет приложение.</li>
+          </ol>
+          <div className="row wrap" style={{ gap: 20, alignItems: 'flex-start' }}>
+            <img className="qr" src={setup.qr} alt="QR-код для приложения-аутентификатора" />
+            <div className="stack" style={{ flex: '1 1 220px' }}>
+              <div className="field">
+                <span>Ключ</span>
+                <div className="row">
+                  <code className="secret mono" style={{ flex: 1 }}>
+                    {grouped(setup.secret)}
+                  </code>
+                  <button type="button" className="icon-btn" aria-label="Скопировать ключ" onClick={() => navigator.clipboard?.writeText(setup.secret).then(() => notify('Ключ скопирован'))}>
+                    <Copy size={15} />
+                  </button>
+                </div>
+              </div>
+              <Field label="Код из приложения" error={error}>
+                <input className={`input code-input mono ${error ? 'invalid' : ''}`} inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(cleanCode(e.target.value))} placeholder="000000" />
+              </Field>
+              <div className="row">
+                <button className="btn btn-primary" type="submit" disabled={busy}>
+                  {busy ? <Spinner small /> : null} Подтвердить и включить
+                </button>
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  onClick={() => {
+                    setSetup(null);
+                    setError('');
+                  }}
+                >
+                  Отмена
+                </button>
+              </div>
+            </div>
+          </div>
+        </form>
+      )}
+
+      {status?.enabled && !codes && (
+        <div className="stack">
+          <div className="row wrap">
+            <span className="badge green">
+              <ShieldCheck size={13} /> Включена
+            </span>
+            <span className="small muted">Резервных кодов осталось: {status.recovery_codes_left}</span>
+            <span className="spacer" />
+            {!disabling && (
+              <button className="btn btn-danger btn-sm" onClick={() => setDisabling(true)}>
+                Отключить
+              </button>
+            )}
+          </div>
+          {disabling && (
+            <form className="row wrap" onSubmit={disable} noValidate style={{ alignItems: 'flex-end' }}>
+              <div style={{ flex: '1 1 220px' }}>
+                <Field label="Пароль для отключения" error={error}>
+                  <PasswordInput autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus />
+                </Field>
+              </div>
+              <button className="btn btn-danger" type="submit" disabled={busy}>
+                Отключить 2FA
+              </button>
+              <button className="btn btn-ghost" type="button" onClick={() => setDisabling(false)}>
+                Отмена
+              </button>
+            </form>
+          )}
+          {devices.length > 0 && (
+            <div className="stack" style={{ gap: 6 }}>
+              <div className="title-sm">Доверенные устройства — вход без кода</div>
+              <div className="card flush list" style={{ background: 'var(--bg)' }}>
+                {devices.map((d) => (
+                  <div key={d.id} className="list-row">
+                    <Smartphone size={16} className="faint" />
+                    <div className="body">
+                      <div className="small">{d.device || 'Устройство'}</div>
+                      <div className="tiny faint">до {when(d.expires_at)}</div>
+                    </div>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={async () => {
+                        await api.revokeTrustedDevice(d.id).catch(() => undefined);
+                        load();
+                      }}
+                    >
+                      Забыть
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function SessionsSection() {
+  const { api } = useSession();
+  const { notify } = useData();
+  const [sessions, setSessions] = useState<SessionRow[] | null>(null);
+
+  const load = () => {
+    api
+      .sessions()
+      .then((r) => setSessions(r.sessions ?? []))
+      .catch(() => setSessions([]));
+  };
+  useEffect(load, [api]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const others = (sessions ?? []).filter((s) => !s.current);
+  return (
+    <Card title="Активные сессии" desc="Устройства, где выполнен вход в ваш аккаунт.">
+      {!sessions && <Spinner />}
+      {sessions && (
+        <div className="card flush list" style={{ background: 'var(--bg)' }}>
+          {sessions.map((s) => (
+            <div key={s.id} className="list-row">
+              <Monitor size={16} className="faint" />
+              <div className="body">
+                <div className="small">
+                  {s.device || 'Устройство'} {s.current && <span className="badge accent">это устройство</span>}
+                </div>
+                <div className="tiny faint">
+                  {[/^:/.test(s.remote_addr) ? '' : s.remote_addr, s.created_at ? `вход ${when(s.created_at)}` : ''].filter(Boolean).join(' · ')}
+                </div>
+              </div>
+              {!s.current && (
+                <button
+                  className="icon-btn"
+                  aria-label="Завершить сессию"
+                  onClick={async () => {
+                    await api.revokeSession(s.id).catch(() => undefined);
+                    load();
+                  }}
+                >
+                  <Trash2 size={15} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {others.length > 0 && (
+        <div>
+          <button
+            className="btn btn-danger btn-sm"
+            onClick={async () => {
+              await api.revokeOtherSessions().catch(() => undefined);
+              notify('Другие сессии завершены');
+              load();
+            }}
+          >
+            Завершить все другие
+          </button>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// -------------------------------------------------------------- Приложение
+
+function AppSection() {
+  const { logout } = useSession();
+  const [encrypted, setEncrypted] = useState<boolean | null>(null);
+  useEffect(() => {
+    secureStore.encrypted().then(setEncrypted, () => setEncrypted(false));
+  }, []);
+  const desktop = typeof window !== 'undefined' && Boolean(window.auraSecure);
+  const storage =
+    encrypted === null
+      ? ''
+      : encrypted
+        ? 'Токены входа зашифрованы средствами системы (Keychain / DPAPI / libsecret).'
+        : desktop
+          ? 'В системе нет хранилища ключей (keyring) — токены входа лежат в профиле приложения без шифрования.'
+          : 'Токены входа хранятся в песочнице приложения на этом устройстве. Пароль не сохраняется.';
+  return (
+    <>
+      <Card title="Сервер" desc="Адрес сервера Aura, к которому подключено приложение.">
+        <ServerAddress />
+      </Card>
+      <Card title="Хранение входа" desc={storage}>
+        <div className="row small muted" style={{ gap: 8 }}>
+          <ShieldCheck size={15} style={{ color: encrypted ? 'var(--success)' : 'var(--text-3)' }} />
+          {encrypted ? 'Шифрование ОС включено' : 'Без шифрования ОС'}
+        </div>
+      </Card>
+      <Card title="Выход" desc="Токены удаляются с этого устройства; на других устройствах вход сохранится.">
+        <div>
+          <button className="btn btn-danger" onClick={logout}>
+            <LogOut size={15} /> Выйти из аккаунта
+          </button>
+        </div>
+      </Card>
+    </>
   );
 }

@@ -31,7 +31,12 @@ public:
     static Json extractLocally(const std::string& message);
 
     Json preferences(long long userId);
-    bool setPreferences(long long userId, const Json& preferences, std::string& error);
+    // invalid=true — ошибка во входных данных (bad_request), иначе — сбой хранилища.
+    bool setPreferences(long long userId, const Json& preferences, std::string& error, bool* invalid = nullptr);
+    // Приватность Ауры: что она раскрывает чужой Ауре в переговорах.
+    // Ключи share_free_slots_only, hide_event_titles, allow_place_choice (по умолчанию все true).
+    Json privacy(long long userId);
+    static Json defaultPrivacy();
 
     std::vector<MemoryRecord> schedule(long long userId);
 

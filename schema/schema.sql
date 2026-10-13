@@ -214,6 +214,9 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     birthday         TEXT        NOT NULL DEFAULT '',      -- YYYY-MM-DD
     allergies        TEXT[]      NOT NULL DEFAULT '{}',
     onboarded        BOOLEAN     NOT NULL DEFAULT FALSE,   -- опрос пройден
+    -- Приватность Ауры в переговорах с чужими Аурами (сервер применяет при A2A).
+    privacy          JSONB       NOT NULL DEFAULT
+                     '{"share_free_slots_only": true, "hide_event_titles": true, "allow_place_choice": true}'::jsonb,
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

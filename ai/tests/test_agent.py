@@ -202,3 +202,20 @@ def test_plan_contains_window_constraint():
     response = make_agent().run(AgentRequest(context=user_context()))
     assert response.plan.constraints["person"] == "Аней"
     assert response.plan.constraints["window"]["label"] == "выходные"
+
+
+def test_negotiate_without_place_when_privacy_forbids():
+    """prefs.privacy.allow_place_choice=false у одной из сторон: время ищем, место — нет."""
+    result = make_agent().negotiate(
+        NegotiateRequest(
+            initiator=user_context(),
+            responder=peer_context(),
+            duration_minutes=60,
+            window_hours=72,
+            choose_place=False,
+        )
+    )
+    assert result.accepted is True
+    assert not result.place
+    assert "Место выберете сами" in result.message
+

@@ -4,18 +4,22 @@ const config: CapacitorConfig = {
   appId: 'app.aura.network',
   appName: 'Aura',
   webDir: 'dist',
-  backgroundColor: '#09080e',
+  backgroundColor: '#0b0c10',
   ios: {
     contentInset: 'never',
-    backgroundColor: '#09080e',
+    backgroundColor: '#0b0c10',
   },
   android: {
-    backgroundColor: '#09080e',
+    backgroundColor: '#0b0c10',
+    // Страница приложения открыта как https://localhost, а сервер в локальной сети —
+    // ws://192.168.x.x:9000. Без этого WebView блокирует такое соединение как
+    // «смешанное содержимое». Продакшн-адрес — wss://, ему это не нужно.
+    allowMixedContent: true,
   },
   plugins: {
     SplashScreen: {
       launchAutoHide: false,
-      backgroundColor: '#09080e',
+      backgroundColor: '#0b0c10',
       showSpinner: false,
     },
     Keyboard: {

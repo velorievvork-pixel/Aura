@@ -1,0 +1,32 @@
+2026-10-13T18:09:35.819Z INFO  [db] встроенное хранилище: /Users/runner/work/Aura/Aura/build/devstack/db.json
+2026-10-13T18:09:35.821Z INFO  [listener] слушаю 0.0.0.0:9000
+2026-10-13T18:09:35.821Z INFO  [server] Aura server запущен: host=0.0.0.0:9000 db=embedded(/Users/runner/work/Aura/Aura/build/devstack/db.json) ai=http://127.0.0.1:8000 tools=sandbox token_ttl=604800s refresh_ttl=2592000s mail=dev
+2026-10-13T18:09:35.849Z INFO  [server] AI-сервис доступен: http://127.0.0.1:8000
+2026-10-13T18:09:35.849Z INFO  [main] WebSocket: ws://0.0.0.0:9000  (Ctrl+C — остановка)
+2026-10-13T18:09:36.879Z INFO  [listener] новое подключение от 127.0.0.1:49177
+2026-10-13T18:09:36.879Z WARN  [server] рукопожатие не удалось: соединение закрыто до рукопожатия
+2026-10-13T18:09:42.759Z INFO  [listener] новое подключение от 127.0.0.1:49178
+2026-10-13T18:09:42.847Z INFO  [mail] КОД ПОДТВЕРЖДЕНИЯ для alex@aura.local: 983745
+2026-10-13T18:09:42.848Z INFO  [auth] регистрация alex@aura.local (id=1), ждём подтверждения email
+2026-10-13T18:09:42.850Z INFO  [auth] email подтверждён: alex@aura.local
+2026-10-13T18:09:42.925Z INFO  [auth] вход alex@aura.local из 127.0.0.1:49178
+2026-10-13T18:09:42.930Z INFO  [listener] новое подключение от 127.0.0.1:49179
+2026-10-13T18:09:43.020Z INFO  [mail] КОД ПОДТВЕРЖДЕНИЯ для dima@aura.local: 100497
+2026-10-13T18:09:43.020Z INFO  [auth] регистрация dima@aura.local (id=2), ждём подтверждения email
+2026-10-13T18:09:43.022Z INFO  [auth] email подтверждён: dima@aura.local
+2026-10-13T18:09:43.100Z INFO  [auth] вход dima@aura.local из 127.0.0.1:49179
+2026-10-13T18:09:43.104Z INFO  [listener] новое подключение от 127.0.0.1:49180
+2026-10-13T18:09:43.178Z INFO  [mail] КОД ПОДТВЕРЖДЕНИЯ для maria@aura.local: 816243
+2026-10-13T18:09:43.179Z INFO  [auth] регистрация maria@aura.local (id=3), ждём подтверждения email
+2026-10-13T18:09:43.181Z INFO  [auth] email подтверждён: maria@aura.local
+2026-10-13T18:09:43.262Z INFO  [auth] вход maria@aura.local из 127.0.0.1:49180
+2026-10-13T18:09:43.272Z INFO  [chat] создан чат 1 между 1 и 2
+2026-10-13T18:09:43.274Z INFO  [chat] создан чат 2 между 1 и 3
+2026-10-13T18:09:43.291Z INFO  [agent] user=1 intent=schedule_meeting действий=3
+2026-10-13T18:09:43.301Z INFO  [server] сессия 83270e74f1122a16 завершена
+2026-10-13T18:09:43.302Z INFO  [server] сессия bbf776f692d19654 завершена
+2026-10-13T18:09:43.303Z INFO  [server] сессия cdc8b77a915577e8 завершена
+2026-10-13T18:14:41.226Z INFO  [listener] новое подключение от 127.0.0.1:50018
+2026-10-13T18:14:41.391Z INFO  [auth] вход alex@aura.local из 127.0.0.1:50018
+2026-10-13T18:15:02.401Z INFO  [agent] user=1 intent=chat действий=0
+2026-10-13T18:16:36.732Z INFO  [server] сессия 8895b0043634e119 завершена

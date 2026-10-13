@@ -7,24 +7,40 @@ import { parseDate, when } from './format';
 import { dateLabel } from './time';
 
 export const AUDIT_LABEL: Record<string, string> = {
-  login_ok: 'Вход',
-  login_failed: 'Неудачный вход',
-  login_2fa_ok: 'Вход с 2FA',
-  registered: 'Регистрация',
+  // вход и регистрация (server/src/authmanager.cpp)
+  register: 'Регистрация',
   verification_sent: 'Отправлен код подтверждения',
   email_verified: 'Email подтверждён',
-  password_reset_requested: 'Запрошен сброс пароля',
-  password_reset: 'Пароль сброшен',
+  login_ok: 'Вход',
+  login_failed: 'Неудачный вход',
+  login_blocked: 'Вход заблокирован: много попыток',
+  login_2fa_required: 'Запрошен код 2FA',
+  login_trusted_device: 'Вход с доверенного устройства',
+  // пароль
   password_changed: 'Пароль изменён',
   password_change_failed: 'Неудачная смена пароля',
+  password_reset_requested: 'Запрошен сброс пароля',
+  password_reset: 'Пароль сброшен',
   password_reset_failed: 'Неудачный сброс пароля',
+  password_rehashed: 'Хэш пароля обновлён',
+  // сессии
   session_revoked: 'Сессия завершена',
-  sessions_revoked_all: 'Все сессии завершены',
+  sessions_revoked_all: 'Все другие сессии завершены',
   refresh_rotated: 'Обновлён токен',
   refresh_reuse_detected: 'Повторное использование токена',
-  two_factor_enabled: '2FA включена',
-  two_factor_disabled: '2FA отключена',
-  profile_updated: 'Профиль изменён',
+  // 2FA
+  '2fa_setup_started': 'Начата настройка 2FA',
+  '2fa_enabled': '2FA включена',
+  '2fa_disabled': '2FA отключена',
+  '2fa_confirm_failed': 'Неверный код при включении 2FA',
+  '2fa_disable_failed': 'Неудачное отключение 2FA',
+  '2fa_failed': 'Неверный код 2FA',
+  '2fa_blocked': '2FA: много неверных кодов',
+  '2fa_recovery_used': 'Вход по резервному коду',
+  '2fa_recovery_failed': 'Неверный резервный код',
+  '2fa_device_revoked': 'Доверенное устройство удалено',
+  '2fa_devices_revoked_all': 'Все доверенные устройства удалены',
+  // администрирование
   admin_role_changed: 'Изменена роль',
   admin_user_disabled: 'Заблокирован',
   admin_user_enabled: 'Разблокирован',
@@ -36,7 +52,18 @@ export const AUDIT_LABEL: Record<string, string> = {
 export const auditLabel = (kind: string): string => AUDIT_LABEL[kind] ?? kind;
 
 /** События, на которые стоит обратить внимание: неудачи, подозрения, блокировки. */
-const ALERT_KINDS = new Set(['login_failed', 'password_change_failed', 'password_reset_failed', 'refresh_reuse_detected', 'admin_user_disabled']);
+const ALERT_KINDS = new Set([
+  'login_failed',
+  'login_blocked',
+  'password_change_failed',
+  'password_reset_failed',
+  'refresh_reuse_detected',
+  '2fa_failed',
+  '2fa_blocked',
+  '2fa_recovery_failed',
+  '2fa_disable_failed',
+  'admin_user_disabled',
+]);
 
 export const isAuditAlert = (kind: string): boolean => ALERT_KINDS.has(kind);
 

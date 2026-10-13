@@ -24,5 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=build /src/build/aura-server /usr/local/bin/aura-server
 
+# Непривилегированный пользователь (порт 9000 > 1024, root не нужен).
+RUN useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin aura
+USER 10001:10001
+
 EXPOSE 9000
 ENTRYPOINT ["/usr/local/bin/aura-server"]

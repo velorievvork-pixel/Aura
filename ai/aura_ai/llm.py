@@ -11,11 +11,12 @@ C++-сервер не знает, кто именно отвечает: он п�
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from . import planner
-from .models import AgentContext, Preferences, utcnow
+from .models import MEMORY_KINDS, AgentContext, Preferences, utcnow
 
 SYSTEM_PROMPT = (
     "Ты — Аура, персональный ИИ-агент пользователя. Ты общаешься с другими Аурами "
@@ -259,26 +260,130 @@ def build_llm(settings: Any) -> BaseLLM:
     return MockLLM()
 
 
+# Пределы ответа модели. LLM — не источник истины: всё, что она вернула,
+# проверяется здесь, прежде чем попасть к серверу, в память или в инструменты.
+MAX_ACTIONS = 8
+MAX_MEMORY_UPDATES = 5
+MAX_MEMORY_TEXT = 300
+MAX_TAGS = 8
+MAX_TAG_LEN = 40
+MAX_REPLY_LEN = 4000
+MAX_INTENT_LEN = 64
+MAX_ACTION_ID_LEN = 32
+MAX_A2A_FIELD_LEN = 500
+
+
 def normalize_actions(raw: Any) -> List[Dict[str, Any]]:
-    """Приводит действия модели к безопасному виду (только известные инструменты)."""
+    """Приводит действия модели к безопасному виду.
+
+    Только известные инструменты, ``args`` — обязательно объект (иначе
+    действие отбрасывается, а не исполняется с пустыми аргументами), не
+    больше ``MAX_ACTIONS`` действий.
+    """
     if not isinstance(raw, list):
         return []
     cleaned: List[Dict[str, Any]] = []
     for index, item in enumerate(raw):
+        if len(cleaned) >= MAX_ACTIONS:
+            break
         if not isinstance(item, dict):
             continue
-        tool = str(item.get("tool", "")).strip()
-        if tool not in TOOL_NAMES:
+        tool = item.get("tool")
+        if not isinstance(tool, str) or tool.strip() not in TOOL_NAMES:
             continue
-        args = item.get("args")
-        cleaned.append(
-            {
-                "id": str(item.get("id") or f"a{index + 1}"),
-                "tool": tool,
-                "args": args if isinstance(args, dict) else {},
-            }
-        )
+        args = item.get("args", {})
+        if args is None:
+            args = {}
+        if not isinstance(args, dict):
+            continue
+        raw_id = item.get("id")
+        action_id = str(raw_id)[:MAX_ACTION_ID_LEN] if isinstance(raw_id, (str, int)) and str(raw_id) else f"a{index + 1}"
+        cleaned.append({"id": action_id, "tool": tool.strip(), "args": args})
     return cleaned
+
+
+def normalize_memory_updates(raw: Any) -> List[Dict[str, Any]]:
+    """Записи памяти от модели: только допустимые виды, короткий текст, не больше 5.
+
+    Слишком длинный текст отбрасывается целиком (а не обрезается): обрезанная
+    «инструкция» в памяти — та же постоянная prompt-инъекция.
+    """
+    if not isinstance(raw, list):
+        return []
+    cleaned: List[Dict[str, Any]] = []
+    for item in raw:
+        if len(cleaned) >= MAX_MEMORY_UPDATES:
+            break
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind", "fact")
+        if kind is None:
+            kind = "fact"
+        if not isinstance(kind, str) or kind.strip().lower() not in MEMORY_KINDS:
+            continue
+        text = item.get("text")
+        if not isinstance(text, str):
+            continue
+        text = text.strip()
+        if not text or len(text) > MAX_MEMORY_TEXT:
+            continue
+        tags_raw = item.get("tags")
+        tags: List[str] = []
+        if isinstance(tags_raw, list):
+            for tag in tags_raw:
+                if isinstance(tag, str) and tag.strip() and len(tag) <= MAX_TAG_LEN:
+                    tags.append(tag.strip())
+                if len(tags) >= MAX_TAGS:
+                    break
+        cleaned.append({"kind": kind.strip().lower(), "text": text, "tags": tags})
+    return cleaned
+
+
+def _confidence(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.5
+    number = float(value)
+    if not math.isfinite(number):
+        return 0.5
+    return min(1.0, max(0.0, number))
+
+
+def _short_str(value: Any, limit: int) -> str:
+    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+        return ""
+    return str(value).strip()[:limit]
+
+
+def _a2a(raw: Any) -> Optional[Dict[str, str]]:
+    if not isinstance(raw, dict):
+        return None
+    target = _short_str(raw.get("target"), 200)
+    if not target:
+        return None
+    return {
+        "target": target,
+        "intent": _short_str(raw.get("intent"), MAX_INTENT_LEN) or "schedule_meeting",
+        "topic": _short_str(raw.get("topic"), MAX_A2A_FIELD_LEN),
+        "message": _short_str(raw.get("message"), MAX_A2A_FIELD_LEN),
+    }
+
+
+def sanitize_payload(raw: Any) -> Dict[str, Any]:
+    """Проверяет JSON модели и приводит его к контракту AgentResponse.
+
+    Не-объект → ``LLMError`` (агент уйдёт в локальные правила). Поля с
+    неверными типами заменяются безопасными значениями, лишние — отбрасываются.
+    """
+    if not isinstance(raw, dict):
+        raise LLMError("LLM returned non-object JSON")
+    return {
+        "reply": _short_str(raw.get("reply"), MAX_REPLY_LEN),
+        "intent": _short_str(raw.get("intent"), MAX_INTENT_LEN),
+        "confidence": _confidence(raw.get("confidence")),
+        "actions": normalize_actions(raw.get("actions")),
+        "memory_updates": normalize_memory_updates(raw.get("memory_updates")),
+        "a2a": _a2a(raw.get("a2a")),
+    }
 
 
 def now_iso() -> str:

@@ -8,7 +8,10 @@
 * ``POST /v1/planner/slots``    — свободные слоты (Planner напрямую);
 * ``GET  /v1/tools``            — список инструментов (ToolManager).
 
-Запуск: ``uvicorn aura_ai.app:app --host 0.0.0.0 --port 8000``
+Запуск: ``AURA_AI_TOKEN=… uvicorn aura_ai.app:app --host 127.0.0.1 --port 8000``
+
+Без ``AURA_AI_TOKEN`` все эндпоинты, кроме ``/healthz``, отвечают 503, если не
+задан ``AURA_AI_INSECURE_DEV=1`` (только локальная разработка).
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ import binascii
 import logging
 import os
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -26,7 +29,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile
 
 from . import memory as memory_module
 from . import planner
@@ -39,10 +44,14 @@ from .models import (
     AgentRequest,
     AgentResponse,
     Calendar,
+    MAX_DURATION_MINUTES,
+    MAX_SLOTS,
+    MAX_WINDOW_HOURS,
     MemoryEntry,
     NegotiateRequest,
     NegotiateResponse,
     Preferences,
+    as_aware,
     utcnow,
 )
 
@@ -54,10 +63,17 @@ logger = logging.getLogger("aura.ai")
 async def _lifespan(_: FastAPI):
     settings = get_settings()
     if not settings.service_token:
-        logger.warning(
-            "AURA_AI_TOKEN не задан: эндпоинты AI-сервиса открыты без авторизации. "
-            "Для работы вне локальной машины задайте токен."
-        )
+        if settings.insecure_dev:
+            logger.warning(
+                "AURA_AI_TOKEN не задан, AURA_AI_INSECURE_DEV=1: эндпоинты открыты без "
+                "авторизации — только для локальной разработки, никогда в проде."
+            )
+        else:
+            logger.error(
+                "AURA_AI_TOKEN не задан: эндпоинты AI-сервиса закрыты (503). Задайте общий "
+                "с C++-сервером токен (openssl rand -hex 32) или для локальной разработки "
+                "AURA_AI_INSECURE_DEV=1."
+            )
     logger.info(
         "Aura AI Service запущен (llm=%s, stt=%s)",
         build_llm(settings).name,
@@ -119,22 +135,25 @@ def _settings() -> Settings:
 
 
 def require_token(x_aura_token: str = Header(default="")) -> None:
-    expected = get_settings().service_token
+    settings = get_settings()
+    expected = settings.service_token
     if not expected:
-        # Токен не задан — сервис открыт. Это удобно в разработке, но недопустимо
-        # в сети: предупреждение пишется при старте (см. _lifespan).
-        return
-    # compare_digest, а не «!=»: обычное сравнение строк измеряемо по времени.
-    if not secrets.compare_digest(x_aura_token, expected):
+        # Fail closed: без токена сервис открыт только при явном
+        # AURA_AI_INSECURE_DEV=1 (локальная разработка).
+        if settings.insecure_dev:
+            return
+        raise HTTPException(status_code=503, detail="AI service token is not configured")
+    # compare_digest по байтам: строки с не-ASCII символами compare_digest не
+    # принимает (TypeError → 500), а заголовок приходит от клиента.
+    if not secrets.compare_digest(x_aura_token.encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=401, detail="invalid service token")
-
-
 
 
 
 # ----------------------------------------------------------------- сервисные
 @app.get("/healthz")
 def healthz() -> Dict[str, Any]:
+    """Публичная проверка живости: только типы бэкендов, без DSN, путей и ключей."""
     settings = get_settings()
     agent = get_agent()
     return {
@@ -143,7 +162,7 @@ def healthz() -> Dict[str, Any]:
         "llm": agent.llm.name,
         "stt": get_stt().name,
         "tools_backend": settings.tools_backend,
-        "memory_backend": settings.memory_backend,
+        "memory_backend": settings.memory_backend_kind,
         "time": utcnow().isoformat(),
     }
 
@@ -172,36 +191,83 @@ class TranscribeResponse(BaseModel):
     provider: str = ""
 
 
-async def _read_audio(request: Request) -> tuple[bytes, str, str]:
+# JSON-путь несёт base64 (+~33%) и служебные поля; multipart — заголовки частей.
+_BODY_OVERHEAD = 64 * 1024
+
+
+def _body_limit(settings: Settings) -> int:
+    return settings.stt_max_bytes * 4 // 3 + _BODY_OVERHEAD
+
+
+async def _read_body_limited(request: Request, limit: int) -> bytes:
+    """Читает тело потоком и обрывает его на ``limit`` байтах (413).
+
+    Content-Length проверяется до чтения; для chunked-тела предел соблюдается
+    по мере чтения, а не после того, как всё тело уже в памяти.
+    """
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > limit:
+                raise HTTPException(status_code=413, detail="audio too large")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid content-length") from exc
+    chunks: List[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > limit:
+            raise HTTPException(status_code=413, detail="audio too large")
+        chunks.append(chunk)
+    body = b"".join(chunks)
+    # Starlette берёт уже прочитанное тело из request._body (form()/json()).
+    request._body = body
+    return body
+
+
+async def _read_audio(request: Request, limit: int) -> tuple[bytes, str, str]:
     """Читает аудио из запроса: multipart/form-data (Whisper) либо JSON (base64).
 
     Возвращает ``(audio_bytes, language, filename)``.
     """
+    await _read_body_limited(request, limit)
     ctype = request.headers.get("content-type", "")
     if ctype.startswith("multipart/form-data"):
-        form = await request.form()
+        try:
+            form = await request.form()
+        except Exception as exc:  # битый multipart → 400, а не 500
+            raise HTTPException(status_code=400, detail="invalid multipart body") from exc
         upload = form.get("file")
         if upload is None:
             raise HTTPException(status_code=400, detail="no audio file")
+        if not isinstance(upload, UploadFile):
+            raise HTTPException(status_code=400, detail="file must be an uploaded file")
         audio = await upload.read()
-        language = str(form.get("language", "") or "")
-        filename = getattr(upload, "filename", "") or "audio.webm"
-        return audio, language, filename
+        language = form.get("language", "")
+        language = language if isinstance(language, str) else ""
+        filename = upload.filename or "audio.webm"
+        return audio, language[:16], filename[:128]
     # JSON-путь (внутренний C++-клиент шлёт base64, чтобы не строить multipart).
     try:
         payload = await request.json()
     except Exception as exc:
         raise HTTPException(status_code=400, detail="invalid request body") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
     b64 = payload.get("audio") or payload.get("audio_base64") or ""
     if not b64:
         raise HTTPException(status_code=400, detail="no audio data")
+    if not isinstance(b64, str):
+        raise HTTPException(status_code=400, detail="audio must be a base64 string")
     try:
         audio = base64.b64decode(b64, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise HTTPException(status_code=400, detail="invalid base64 audio") from exc
-    language = str(payload.get("language", "") or "")
-    filename = str(payload.get("filename", "") or "audio.webm")
-    return audio, language, filename
+    language = payload.get("language", "")
+    filename = payload.get("filename", "")
+    language = language if isinstance(language, str) else ""
+    filename = filename if isinstance(filename, str) and filename else "audio.webm"
+    return audio, language[:16], filename[:128]
 
 
 @app.post("/v1/speech/transcribe", response_model=TranscribeResponse, dependencies=[Depends(require_token)])
@@ -214,7 +280,7 @@ async def speech_transcribe(request: Request) -> TranscribeResponse:
     (внутренний путь C++-сервера). Ответ: ``{text, language, provider}``.
     """
     settings = get_settings()
-    audio, language, filename = await _read_audio(request)
+    audio, language, filename = await _read_audio(request, _body_limit(settings))
     if not audio:
         raise HTTPException(status_code=400, detail="empty audio")
     if len(audio) > settings.stt_max_bytes:
@@ -223,10 +289,13 @@ async def speech_transcribe(request: Request) -> TranscribeResponse:
     stt = get_stt()
     lang = language or settings.stt_default_language
     try:
-        result = stt.transcribe(audio, lang, filename)
+        # Бэкенд синхронный (httpx.post) — в пул потоков, чтобы не блокировать
+        # event loop на время распознавания.
+        result = await run_in_threadpool(stt.transcribe, audio, lang, filename)
     except STTError as exc:
         # Бэкенд недоступен/ошибся — отдаём 502, клиент покажет fallback на текст.
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.warning("STT error: %s", exc)
+        raise HTTPException(status_code=502, detail="speech backend unavailable") from exc
     return TranscribeResponse(
         text=result.get("text", ""),
         language=result.get("language", ""),
@@ -236,7 +305,7 @@ async def speech_transcribe(request: Request) -> TranscribeResponse:
 
 # ------------------------------------------------------------------- память
 class MemoryExtractRequest(BaseModel):
-    user_key: str = ""
+    user_key: str = Field(default="", max_length=320)
     message: str = ""
     context: AgentContext = Field(default_factory=AgentContext)
     commit: bool = True
@@ -270,59 +339,75 @@ def memory_load(user_key: str, query: str = "") -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------- планировщик
+class SlotsWindow(BaseModel):
+    start: Optional[datetime] = None
+    end: Optional[datetime] = None
+    label: str = Field(default="окно", max_length=64)
+
+
 class SlotsRequest(BaseModel):
-    window: Optional[Dict[str, Any]] = None
+    window: Optional[SlotsWindow] = None
     calendar: Calendar = Field(default_factory=list)
     preferences: Preferences = Field(default_factory=Preferences)
-    duration_minutes: int = 60
-    max_slots: int = 5
+    duration_minutes: int = Field(default=60, ge=1, le=MAX_DURATION_MINUTES)
+    max_slots: int = Field(default=5, ge=1, le=MAX_SLOTS)
 
 
 @app.post("/v1/planner/slots", dependencies=[Depends(require_token)])
 def planner_slots(request: SlotsRequest) -> Dict[str, Any]:
     now = utcnow()
-    window = planner.TimeWindow(
-        start=_parse(request.window, "start") or now,
-        end=_parse(request.window, "end") or (now + timedelta(hours=24)),
-        label=str((request.window or {}).get("label", "окно")),
-    )
-    slots = planner.free_slots(
-        window,
-        request.calendar,
-        request.preferences,
-        duration_minutes=request.duration_minutes,
-        max_slots=request.max_slots,
-    )
+    window = request.window or SlotsWindow()
+    # Время без пояса — UTC (иначе сравнение с календарём падает в 500).
+    start = as_aware(window.start) if window.start else now
+    try:
+        end = as_aware(window.end) if window.end else start + timedelta(hours=24)
+    except OverflowError as exc:
+        raise HTTPException(status_code=422, detail="window is out of range") from exc
+    if end <= start:
+        raise HTTPException(status_code=422, detail="window.end must be after window.start")
+    if end - start > timedelta(hours=MAX_WINDOW_HOURS):
+        raise HTTPException(status_code=422, detail=f"window is longer than {MAX_WINDOW_HOURS} hours")
+    time_window = planner.TimeWindow(start=start, end=end, label=window.label)
+    try:
+        slots = planner.free_slots(
+            time_window,
+            request.calendar,
+            request.preferences,
+            duration_minutes=request.duration_minutes,
+            max_slots=request.max_slots,
+        )
+    except OverflowError as exc:  # окно у самой границы datetime.max
+        raise HTTPException(status_code=422, detail="window is out of range") from exc
     return {
-        "window": window.as_dict(),
+        "window": time_window.as_dict(),
         "slots": [slot.model_dump(mode="json") for slot in slots],
     }
 
 
 class UnderstandRequest(BaseModel):
-    text: str
+    text: str = Field(max_length=4000)
     now: Optional[Any] = None
 
 
 @app.post("/v1/planner/understand", dependencies=[Depends(require_token)])
 def planner_understand(request: UnderstandRequest) -> Dict[str, Any]:
     moment = _parse_dt(request.now)
-    return planner.understand(request.text, moment).as_dict()
+    try:
+        return planner.understand(request.text, moment).as_dict()
+    except OverflowError as exc:  # «через 10^9 недель»
+        raise HTTPException(status_code=422, detail="time is out of range") from exc
 
 
-def _parse(payload: Optional[Dict[str, Any]], key: str):
-    return _parse_dt((payload or {}).get(key))
-
-
-def _parse_dt(value: Any):
-    from datetime import datetime
-
+def _parse_dt(value: Any) -> Optional[datetime]:
+    """ISO-время из запроса (всегда с поясом); мусор → None (берём «сейчас»)."""
     if not value:
         return None
     if isinstance(value, datetime):
-        return value
+        return as_aware(value)
+    if not isinstance(value, str):
+        return None
     try:
-        return datetime.fromisoformat(str(value))
+        return as_aware(datetime.fromisoformat(value))
     except ValueError:
         return None
 
@@ -349,10 +434,18 @@ def mount_preview() -> None:
         return FileResponse(os.path.join(directory, "index.html"))
 
 
+@app.exception_handler(ValidationError)
+async def invalid_data(_request, exc: ValidationError) -> JSONResponse:
+    """Ошибка валидации внутри обработчика (не тела запроса) — 422 без деталей."""
+    logger.info("validation error: %d errors", exc.error_count())
+    return JSONResponse(status_code=422, content={"detail": "invalid input"})
+
+
 @app.exception_handler(Exception)
-async def unhandled(_request, exc: Exception) -> JSONResponse:  # pragma: no cover
+async def unhandled(_request, exc: Exception) -> JSONResponse:
+    # Текст исключения — только в лог: он может содержать DSN, пути и данные.
     logger.exception("unhandled error")
-    return JSONResponse(status_code=500, content={"detail": f"internal error: {exc}"})
+    return JSONResponse(status_code=500, content={"detail": "internal error"})
 
 
 mount_preview()

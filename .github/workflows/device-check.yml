@@ -2,7 +2,8 @@
 #   Android — APK из builds/android на эмуляторе (API 34) + dev-стек с демо-данными;
 #   Windows — установщик из builds/windows: тихая установка, запуск, снимки;
 #   iOS     — сборка в Xcode, UI-тест AuraUITests на симуляторе + dev-стек на macOS.
-# Снимки — в артефактах прогона и в ветках builds/shots-{android,windows,ios}.
+# Снимки — в артефактах прогона и в ветках builds/shots-{android,windows,ios}
+# (ветки — только для main, отдельным job'ом публикации).
 # Пароль демо-аккаунтов генерируется на каждый прогон.
 name: Device check
 
@@ -15,8 +16,11 @@ on:
       - "tools/android_tour.py"
       - "ios/AuraUITests/**"
 
+# Проверки исполняют код из репозитория — токен только на чтение. Запись
+# (ветки builds/shots-*) — в отдельном job'е publish, который лишь скачивает
+# артефакты.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   android:
@@ -25,8 +29,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with: { persist-credentials: false }
       - uses: actions/checkout@v4
-        with: { ref: builds/android, path: apk }
+        with: { ref: builds/android, path: apk, persist-credentials: false }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - name: Сервер и AI-сервис
@@ -64,15 +69,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: shots-android, path: shots/android }
-      - name: Снимки в ветку builds/shots-android
-        if: always()
-        run: |
-          mkdir -p shots/android && cd shots/android
-          [ -n "$(ls -A)" ] || echo "снимков нет — см. лог прогона" > README.txt
-          git init -q -b builds/shots-android
-          git config user.name aura-ci && git config user.email ci@aura.local
-          git add -A && git commit -qm "android shots ${{ github.sha }} [skip ci]"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/shots-android
 
   windows:
     name: Windows — установка и запуск
@@ -80,7 +76,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-        with: { ref: builds/windows, path: setup }
+        with: { ref: builds/windows, path: setup, persist-credentials: false }
       - name: Тихая установка, запуск, снимки
         shell: pwsh
         run: |
@@ -124,16 +120,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: shots-windows, path: shots }
-      - name: Снимки в ветку builds/shots-windows
-        if: always()
-        shell: bash
-        run: |
-          mkdir -p shots && cd shots
-          [ -n "$(ls -A)" ] || echo "снимков нет — см. лог прогона" > README.txt
-          git init -q -b builds/shots-windows
-          git config user.name aura-ci && git config user.email ci@aura.local
-          git add -A && git commit -qm "windows shots ${{ github.sha }} [skip ci]"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/shots-windows
 
   ios:
     name: iOS — симулятор
@@ -141,6 +127,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with: { persist-credentials: false }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       # Свежий XcodeGen пишет проект в формате Xcode 16 — нужен Xcode 16+.
@@ -184,12 +171,41 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with: { name: shots-ios, path: shots/ios }
-      - name: Снимки в ветку builds/shots-ios
-        if: always()
+
+  # Снимки → ветки builds/shots-*: только main; код из репозитория здесь не
+  # исполняется (только скачанные артефакты).
+  publish:
+    name: Снимки → ветки builds/shots-*
+    needs: [android, windows, ios]
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { name: shots-android, path: shots/android }
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { name: shots-windows, path: shots/windows }
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { name: shots-ios, path: shots/ios }
+      - name: Публикация снимков
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          mkdir -p shots/ios && cd shots/ios && rm -rf Tour.xcresult && rm -f xcodebuild.log
-          [ -n "$(ls -A)" ] || echo "снимков нет — см. лог прогона" > README.txt
-          git init -q -b builds/shots-ios
-          git config user.name aura-ci && git config user.email ci@aura.local
-          git add -A && git commit -qm "ios shots ${{ github.sha }} [skip ci]"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/shots-ios
+          set -e
+          for platform in android windows ios; do
+            dir="shots/$platform"
+            mkdir -p "$dir"
+            (
+              cd "$dir"
+              rm -rf Tour.xcresult xcodebuild.log
+              [ -n "$(ls -A)" ] || echo "снимков нет — см. лог прогона" > README.txt
+              git init -q -b "builds/shots-$platform"
+              git config user.name aura-ci && git config user.email ci@aura.local
+              git add -A && git commit -qm "$platform shots ${{ github.sha }} [skip ci]"
+              git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" "HEAD:refs/heads/builds/shots-$platform"
+            )
+          done

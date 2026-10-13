@@ -10,12 +10,19 @@ on:
     branches: ["**"]
   pull_request:
 
+# По умолчанию токен только читает. Запись (лог в arena/build-logs) — только в
+# отдельном job'е публикации, где не исполняется код из репозитория.
+permissions:
+  contents: read
+
 jobs:
   cpp:
     name: C++ сервер — сборка и тесты
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Зависимости
         run: |
@@ -39,6 +46,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -55,6 +64,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -73,9 +84,11 @@ jobs:
     name: Android — JVM-тесты AuraKit (протокол без SDK)
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # публикация лога в ветку arena/build-logs
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-java@v4
         with:
@@ -105,23 +118,45 @@ jobs:
           name: aurakit-test-log
           path: aurakit-test.log
 
-      # Дубль лога в ветку arena/build-logs (песочница не видит артефакты).
-      - name: Диагностика (аннотации + публикация лога)
+      - name: Ошибки в аннотации прогона
         if: always()
         run: |
-          # Шаг вспомогательный: git-ошибки не должны ронять job.
-          set +e
           if [ -f aurakit-test.log ]; then
             grep -E "^e: |error:|FAILED" aurakit-test.log | tail -20 | while IFS= read -r line; do
               printf '::error title=aurakit::%s\n' "$(printf '%s' "$line" | tr -d '\r' | cut -c1-400)"
             done
           fi
+          exit 0
+
+  # Дубль лога в ветку arena/build-logs (песочница не видит артефакты).
+  # Отдельный job: токен с правом записи не попадает туда, где исполняется
+  # код из репозитория (Gradle-сборка). Только push-события (не PR).
+  android-log:
+    name: Лог AuraKit → arena/build-logs
+    needs: android
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Лог тестов AuraKit
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: aurakit-test-log
+
+      - name: Публикация лога
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Шаг вспомогательный: git-ошибки не должны ронять job.
+          set +e
           rm -f push-diag.log
           echo "run ${{ github.run_id }} job aurakit" > push-diag.log
           for i in 1 2 3; do
             rm -rf logpub
             {
-              git -c http.extraHeader="Authorization: token ${{ github.token }}" \
+              git -c http.extraHeader="Authorization: token $GH_TOKEN" \
                 clone --depth 1 --branch arena/build-logs \
                 "https://github.com/${{ github.repository }}" logpub 2>&1
               echo "clone exit=$?"
@@ -133,7 +168,7 @@ jobs:
                 cd logpub
                 git init -q
                 git remote add origin "https://github.com/${{ github.repository }}"
-                git fetch --depth 1 origin arena/build-logs
+                git -c http.extraHeader="Authorization: token $GH_TOKEN" fetch --depth 1 origin arena/build-logs
                 git checkout -q -B arena/build-logs FETCH_HEAD
               ) >> push-diag.log 2>&1
             fi
@@ -144,7 +179,7 @@ jobs:
               git config user.email "ci@aura.local"
               git add -A 2>&1
               git commit -m "aurakit log ${{ github.sha }} [skip ci]" 2>&1
-              git -c http.extraHeader="Authorization: token ${{ github.token }}" push origin HEAD:arena/build-logs 2>&1
+              git -c http.extraHeader="Authorization: token $GH_TOKEN" push origin HEAD:arena/build-logs 2>&1
             ) >> push-diag.log 2>&1 && echo "push ok" >> push-diag.log && break
             sleep 10
           done

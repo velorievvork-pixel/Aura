@@ -19,12 +19,18 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from .models import AgentContext, Preferences, utcnow
+from .models import MAX_DURATION_MINUTES, MAX_WINDOW_HOURS, AgentContext, Preferences, utcnow
 from .planner import TimeWindow, free_slots
 
 
 class ToolError(RuntimeError):
     pass
+
+
+#: Действия с внешним эффектом (письмо, сообщение, бронь). Их исполняет только
+#: C++-сервер — после tool_permissions и подтверждения пользователя; AI-сервис
+#: их лишь планирует (см. AuraAgent._execute).
+SERVER_ONLY_TOOLS = frozenset({"send_message", "send_email", "book_table"})
 
 
 @dataclass
@@ -172,7 +178,7 @@ def send_email(
     if not to or "@" not in to:
         raise ToolError("send_email: нужен корректный адрес получателя")
     payload = {"to": to, "subject": subject or "Без темы", "body": body, "sent_at": utcnow().isoformat()}
-    return (backends or ToolBackends())._post("email", {"**payload": payload, **payload}, payload)
+    return (backends or ToolBackends())._post("email", payload, payload)
 
 
 def create_note(text: str, title: str = "", context: Optional[AgentContext] = None) -> Dict[str, Any]:
@@ -210,8 +216,7 @@ def check_calendar(
     window: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Показывает занятость пользователя в окне."""
-    start = _parse_dt((window or {}).get("start")) or utcnow()
-    end = _parse_dt((window or {}).get("end")) or (start + timedelta(hours=24))
+    start, end = _window(window)
     busy = [
         {"title": e.title, "start": e.start.isoformat(), "end": e.end.isoformat()}
         for e in context.calendar
@@ -227,10 +232,16 @@ def suggest_time(
     limit: int = 3,
 ) -> Dict[str, Any]:
     """Свободные слоты пользователя внутри окна."""
-    start = _parse_dt((window or {}).get("start")) or utcnow()
-    end = _parse_dt((window or {}).get("end")) or (start + timedelta(hours=24))
+    start, end = _window(window)
+    if isinstance(duration_minutes, bool) or not isinstance(duration_minutes, int):
+        raise ToolError("suggest_time: duration_minutes должно быть целым числом")
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        raise ToolError("suggest_time: limit должно быть целым числом")
+    duration_minutes = min(max(15, duration_minutes), MAX_DURATION_MINUTES)
+    limit = min(max(1, limit), 20)
+    label = (window or {}).get("label", "окно") if isinstance(window, dict) else "окно"
     slots = free_slots(
-        TimeWindow(start=start, end=end, label=(window or {}).get("label", "окно")),
+        TimeWindow(start=start, end=end, label=str(label)[:64]),
         context.calendar,
         context.preferences,
         duration_minutes=duration_minutes,
@@ -240,6 +251,19 @@ def suggest_time(
         "duration_minutes": duration_minutes,
         "slots": [s.model_dump(mode="json") for s in slots],
     }
+
+
+def _window(window: Any) -> tuple:
+    """Окно инструмента: aware-время, end > start, не длиннее MAX_WINDOW_HOURS."""
+    if window is not None and not isinstance(window, dict):
+        raise ToolError("window должно быть объектом {start, end}")
+    start = _parse_dt((window or {}).get("start")) or utcnow()
+    end = _parse_dt((window or {}).get("end")) or (start + timedelta(hours=24))
+    if end <= start:
+        raise ToolError("window: end должно быть позже start")
+    if end - start > timedelta(hours=MAX_WINDOW_HOURS):
+        end = start + timedelta(hours=MAX_WINDOW_HOURS)
+    return start, end
 
 
 def _parse_dt(value: Any) -> Optional[datetime]:
@@ -307,6 +331,8 @@ class ToolManager:
         if name not in HANDLERS:
             raise ToolError(f"неизвестный инструмент: {name}")
         spec = REGISTRY[name]
+        if args is not None and not isinstance(args, dict):
+            raise ToolError(f"{name}: args должны быть объектом")
         payload: Dict[str, Any] = dict(args or {})
         payload.update(extra or {})
         for key in spec.required:
@@ -336,7 +362,13 @@ class ToolManager:
         if name == "find_cafe":
             kwargs["at"] = _parse_dt(kwargs.get("at"))
 
-        result = handler(**kwargs)
+        try:
+            result = handler(**kwargs)
+        except ToolError:
+            raise
+        except (TypeError, ValueError, AttributeError, OverflowError) as exc:
+            # Аргументы от LLM неверного типа — ошибка инструмента, а не 500.
+            raise ToolError(f"{name}: некорректные аргументы") from exc
         entry = {"tool": name, "args": payload, "result": result, "at": utcnow().isoformat()}
         self.log.append(entry)
         return result

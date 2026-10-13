@@ -14,12 +14,17 @@ on:
     paths: ["ios/**", ".github/workflows/build-ios.yml"]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Xcode — симулятор и тесты
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # Свежий XcodeGen пишет проект в формате Xcode 16 — нужен Xcode 16+.
       - uses: maxim-lobanov/setup-xcode@v1

@@ -19,6 +19,7 @@ NOW = datetime(2026, 9, 17, 14, 0, tzinfo=timezone.utc)
 def client(monkeypatch):
     monkeypatch.setenv("AURA_MEMORY_BACKEND", "memory://")
     monkeypatch.delenv("AURA_AI_TOKEN", raising=False)
+    monkeypatch.setenv("AURA_AI_INSECURE_DEV", "1")  # без токена сервис закрыт (503)
     reset_settings()
     settings = Settings()
     settings.memory_backend = "memory://"
@@ -70,7 +71,7 @@ def test_agent_run_meeting_end_to_end(client):
     assert body["intent"] == "schedule_meeting"
     assert body["a2a"]["slots"], "A2A должен вернуть общие слоты"
     assert body["a2a"]["place"]["name"]
-    assert body["results"]
+    assert body["results"]  # execute=True явно: безопасные инструменты исполнены
 
 
 def test_agent_run_dry_run(client):

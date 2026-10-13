@@ -24,6 +24,8 @@
 | --- | --- |
 | `upstream_error` в ответе agent.ask | AI-сервис не запущен или неверный `AURA_AI_URL`; в логе сервера будет «AI-сервис не отвечает» |
 | AI отвечает 401 | не совпадает `AURA_AI_TOKEN` (сервер) и `AURA_AI_TOKEN` (AI-сервис); заголовок `X-Aura-Token` |
+| AI отвечает 503 «token is not configured» | у AI-сервиса не задан `AURA_AI_TOKEN`; задайте общий с сервером токен (`openssl rand -hex 32`) или для локальной разработки `AURA_AI_INSECURE_DEV=1` (`make ai-run`) |
+| `docker compose up`: «… is required» | не заполнен секрет в `.env` (см. `.env.example`, `openssl rand -hex 32`) |
 | ответы «как заглушка» | это `AURA_LLM_PROVIDER=mock` (по умолчанию); для реального LLM задайте `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`AURA_LLM_MODEL` |
 | STT возвращает mock-текст | не задан `AURA_STT_URL`/провайдер; без них — честный mock, не имитация |
 

@@ -362,7 +362,16 @@ Push-конверт для шлюза: `{platform, token, notification_id, kind,
 | `GET` | `/v1/tools` | список инструментов |
 | `GET` | `/healthz` | состояние (провайдер LLM, провайдер STT, бэкенды) |
 
-Если задан `AURA_AI_TOKEN`, все запросы требуют заголовок `X-Aura-Token`.
+Все запросы, кроме `/healthz`, требуют заголовок `X-Aura-Token` со значением
+`AURA_AI_TOKEN`. Без настроенного токена сервис отвечает `503` (fail closed),
+кроме локальной разработки с `AURA_AI_INSECURE_DEV=1`. `/healthz` отдаёт
+только типы бэкендов (без DSN и путей). `POST /v1/agent/run`: `execute`
+по умолчанию `false` — AI только планирует; даже при `execute: true`
+действия с внешним эффектом (`send_email`, `send_message`, `book_table`) не
+исполняются (`results[].error = "server_only: …"`) — их выполняет C++-сервер.
+Ответ LLM проверяется: `confidence` — число 0..1, `memory_updates` — не больше
+5 записей вида `fact|preference|schedule|contact` с текстом до 300 символов,
+`actions[].args` — только объект. Некорректный ввод — `4xx`, не `500`.
 Swagger — `/docs`.
 
 ### Гибридный RAG памяти (этап 8)

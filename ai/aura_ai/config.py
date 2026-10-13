@@ -38,7 +38,9 @@ def _env_list(name: str, default: str) -> List[str]:
 class Settings:
     """Настройки сервиса (snapshot переменных окружения)."""
 
-    host: str = field(default_factory=lambda: _env("AURA_AI_HOST", "0.0.0.0"))
+    # По умолчанию слушаем только loopback: AI-сервис — внутренний, к нему
+    # ходит C++-сервер. В контейнере адрес задаёт CMD (сеть compose без проброса порта).
+    host: str = field(default_factory=lambda: _env("AURA_AI_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: _env_int("AURA_AI_PORT", 8000))
 
     # LLM
@@ -64,10 +66,12 @@ class Settings:
     stt_default_language: str = field(default_factory=lambda: _env("AURA_STT_LANGUAGE", "auto"))
     stt_max_bytes: int = field(default_factory=lambda: _env_int("AURA_STT_MAX_BYTES", str(15 * 1024 * 1024)))
 
-    # Долговременная память: postgres://... или file://path (по умолчанию файл)
+    # Долговременная память: postgres (DSN из AURA_DATABASE_URL), postgresql://...,
+    # file (./.aura_memory.json), file://path или memory (только процесс).
     memory_backend: str = field(
         default_factory=lambda: _env("AURA_MEMORY_BACKEND", "file://./.aura_memory.json")
     )
+    database_url: str = field(default_factory=lambda: _env("AURA_DATABASE_URL", ""))
 
     # Гибридный RAG (этап 8): лексика (BM25) всегда + опциональная семантика.
     # rag_mode: lexical | hybrid | auto (auto = hybrid, если задан эндпоинт эмбеддингов).
@@ -91,10 +95,25 @@ class Settings:
     cors_origins: List[str] = field(
         default_factory=lambda: _env_list("AURA_CORS_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000")
     )
-    # Общий секрет между C++-сервером и AI-сервисом (заголовок X-Aura-Token)
+    # Общий секрет между C++-сервером и AI-сервисом (заголовок X-Aura-Token).
+    # Без токена сервис закрыт (503), если явно не включён режим разработки
+    # AURA_AI_INSECURE_DEV=1 (только localhost, никогда в проде).
     service_token: str = field(default_factory=lambda: _env("AURA_AI_TOKEN", ""))
+    insecure_dev: bool = field(
+        default_factory=lambda: _env("AURA_AI_INSECURE_DEV", "0").strip().lower() in ("1", "true", "yes")
+    )
 
     preview_dir: str = field(default_factory=lambda: _env("AURA_PREVIEW_DIR", ""))
+
+    @property
+    def memory_backend_kind(self) -> str:
+        """Тип хранилища памяти без DSN и путей (для /healthz и логов)."""
+        backend = self.memory_backend.strip().lower()
+        if backend.startswith("postgres"):
+            return "postgres"
+        if backend.startswith("file"):
+            return "file"
+        return "memory"
 
     @property
     def llm_is_remote(self) -> bool:

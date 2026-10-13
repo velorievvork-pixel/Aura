@@ -19,7 +19,9 @@
 git clone https://github.com/USER/aura-main.git
 cd aura-main
 cp .env.example .env
-# Отредактируйте .env: минимум AURA_JWT_SECRET, AURA_2FA_KEY, POSTGRES_PASSWORD
+# Заполните в .env все секреты (каждый: openssl rand -hex 32):
+# AURA_JWT_SECRET, AURA_2FA_KEY, AURA_AI_TOKEN, POSTGRES_PASSWORD,
+# AURA_DB_PASSWORD, AURA_AI_DB_PASSWORD — без них compose не стартует
 make docker-up
 # Откройте http://localhost:9000 или запустите клиент
 ```
@@ -31,7 +33,7 @@ make docker-up
 make schema-check
 
 # 2. Запустить AI-сервис (Python)
-make ai-run  # → http://localhost:8000
+make ai-run  # → http://127.0.0.1:8000 (AURA_AI_INSECURE_DEV=1, только localhost)
 
 # 3. Собрать и запустить C++-сервер
 make server-build

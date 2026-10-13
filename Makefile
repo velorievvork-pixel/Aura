@@ -1,4 +1,4 @@
-.PHONY: check ai-test server-build server-test protocol-check e2e schema-check docker-up docker-down docker-logs ai-run server-run
+.PHONY: check ai-test server-build server-test protocol-check e2e schema-check docker-build docker-up docker-down docker-logs ai-run server-run
 
 # Полный прогон всех проверок
 check: ai-test server-test protocol-check
@@ -7,9 +7,12 @@ check: ai-test server-test protocol-check
 ai-test:
 	cd ai && PYTHONPATH=. pytest -q
 
-# Python AI-сервис: запуск (dev)
+# Python AI-сервис: запуск (dev). Слушает 127.0.0.1:8000. Без AURA_AI_TOKEN
+# сервис закрыт (503), поэтому для локальной разработки включаем
+# AURA_AI_INSECURE_DEV=1; если токен задан — он проверяется всегда.
+# В production AURA_AI_INSECURE_DEV не задавать.
 ai-run:
-	cd ai && python -m aura_ai.app
+	cd ai && AURA_AI_INSECURE_DEV=$${AURA_AI_INSECURE_DEV:-1} PYTHONPATH=. python -m aura_ai.app
 
 # C++ сервер: сборка
 server-build:
@@ -38,7 +41,11 @@ schema-check:
 	psql "$(PG_URI)" -f schema/schema.sql
 	psql "$(PG_URI)" -f schema/seed.sql
 
-# Docker Compose: запуск prod-стека (postgres + ai + server)
+# Docker Compose: prod-стек (postgres + ai + server). Секреты — в .env
+# (см. .env.example); без них compose откажется стартовать.
+docker-build:
+	docker-compose build
+
 docker-up:
 	docker-compose up -d
 

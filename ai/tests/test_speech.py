@@ -21,6 +21,7 @@ AUDIO = b"\x1aE\xdf\xa3fake-webm-bytes" * 8
 def client(monkeypatch):
     monkeypatch.setenv("AURA_MEMORY_BACKEND", "memory://")
     monkeypatch.delenv("AURA_AI_TOKEN", raising=False)
+    monkeypatch.setenv("AURA_AI_INSECURE_DEV", "1")  # без токена сервис закрыт (503)
     monkeypatch.delenv("AURA_STT_URL", raising=False)
     monkeypatch.delenv("AURA_STT_API_KEY", raising=False)
     monkeypatch.setenv("AURA_STT_PROVIDER", "mock")

@@ -41,11 +41,12 @@ psql "$DATABASE_URL" -f schema/schema.sql
 psql "$DATABASE_URL" -f schema/migrations/2026_09_20_notifications.sql
 psql "$DATABASE_URL" -f schema/migrations/2026_09_20_push_fcm.sql
 
-# 2) AI-сервис:
+# 2) AI-сервис (общий с сервером токен; без него AI отвечает 503):
+export AURA_AI_TOKEN="$(openssl rand -hex 32)"
 cd ai && PYTHONPATH=. uvicorn aura_ai.app:app --host 127.0.0.1 --port 8000 &
 
 # 3) C++-сервер (webhook-драйвер push + mock-адреса Google):
-AURA_PORT=9000 AURA_DATABASE_URL="$DATABASE_URL" AURA_AI_URL=http://127.0.0.1:8000 \
+AURA_PORT=9000 AURA_DATABASE_URL="$DATABASE_URL" AURA_AI_URL=http://127.0.0.1:8000 AURA_AI_TOKEN="$AURA_AI_TOKEN" \
 AURA_2FA_KEY=... AURA_JWT_SECRET=... AURA_MAIL_DRIVER=dev \
 AURA_PUSH_DRIVER=webhook AURA_PUSH_WEBHOOK_URL=http://127.0.0.1:9082/push \
 AURA_GOOGLE_*=http://127.0.0.1:9081/... build/server/server/aura-server &

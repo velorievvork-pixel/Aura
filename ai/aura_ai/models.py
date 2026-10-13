@@ -7,10 +7,19 @@ C++-сервер (AgentManager / MemoryManager) общается с сервис
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Annotated, Any, Dict, List, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, BeforeValidator, Field, ValidationError
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    Field,
+    ValidationError,
+    model_validator,
+)
 
 log = logging.getLogger("aura.models")
 
@@ -19,12 +28,47 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_aware(value: datetime) -> datetime:
+    """Время без пояса считаем UTC: иначе сравнение с utcnow() падает (500)."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
+#: datetime, всегда с часовым поясом (наивное время → UTC).
+AwareDatetime = Annotated[datetime, AfterValidator(as_aware)]
+
+#: Допустимые виды записей долговременной памяти (CHECK в schema.sql).
+MEMORY_KINDS = ("fact", "preference", "schedule", "contact")
+
+# Пределы входных данных: сервер шлёт намного меньше, это защита от 500/DoS.
+MAX_DURATION_MINUTES = 24 * 60
+MAX_WINDOW_HOURS = 31 * 24
+MAX_SLOTS = 50
+
+
+def normalize_timezone(value: Any) -> str:
+    """Имя IANA-пояса; неизвестное/мусорное значение → UTC (а не 500)."""
+    name = str(value or "").strip()
+    if not name or len(name) > 64:
+        return "UTC"
+    try:
+        ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return "UTC"
+    return name
+
+
 class CalendarEvent(BaseModel):
     """Занятой слот пользователя (приходит из UserMemory/календаря C++-сервера)."""
 
     title: str = "event"
-    start: datetime
-    end: datetime
+    start: AwareDatetime
+    end: AwareDatetime
+
+    @model_validator(mode="after")
+    def _end_after_start(self) -> "CalendarEvent":
+        if self.end < self.start:
+            raise ValueError("end раньше start")
+        return self
 
 
 def _drop_invalid_events(value: Any) -> Any:
@@ -48,26 +92,61 @@ def _drop_invalid_events(value: Any) -> Any:
 Calendar = Annotated[List[CalendarEvent], BeforeValidator(_drop_invalid_events)]
 
 
+def _hours(value: Any) -> Any:
+    """Часы суток 0..23; мусорные элементы отбрасываем (а не роняем запрос)."""
+    if not isinstance(value, list):
+        return value
+    kept: List[int] = []
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, str) and item.strip().isdigit():
+            item = int(item.strip())
+        if isinstance(item, int) and 0 <= item <= 23:
+            kept.append(item)
+    return kept
+
+
+def _coordinate(limit: float):
+    def check(value: Any) -> Optional[float]:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(number) or abs(number) > limit:
+            return None
+        return number
+
+    return check
+
+
 class Preferences(BaseModel):
     """Срез UserPreferences."""
 
     diet: List[str] = Field(default_factory=list)
     transport: str = "walk"
-    preferred_hours: List[int] = Field(default_factory=lambda: [10, 11, 12, 16, 17, 18, 19])
-    budget_limit: float = 0.0
+    preferred_hours: Annotated[List[int], BeforeValidator(_hours)] = Field(
+        default_factory=lambda: [10, 11, 12, 16, 17, 18, 19]
+    )
+    budget_limit: float = Field(default=0.0, allow_inf_nan=False)
     city: str = ""
-    work_hours: List[int] = Field(default_factory=lambda: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18])
-    # Домашняя точка — нужна, чтобы искать место «на полпути» между двумя Аурами
-    lat: Optional[float] = None
-    lon: Optional[float] = None
+    work_hours: Annotated[List[int], BeforeValidator(_hours)] = Field(
+        default_factory=lambda: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+    )
+    # Домашняя точка — нужна, чтобы искать место «на полпути» между двумя Аурами.
+    # Некорректные координаты превращаются в None (место ищется без середины пути).
+    lat: Annotated[Optional[float], BeforeValidator(_coordinate(90.0))] = None
+    lon: Annotated[Optional[float], BeforeValidator(_coordinate(180.0))] = None
 
 
 class MemoryEntry(BaseModel):
     kind: str = "fact"  # fact | preference | schedule | contact
     text: str
-    weight: float = 1.0
+    weight: float = Field(default=1.0, allow_inf_nan=False)
     tags: List[str] = Field(default_factory=list)
-    updated_at: datetime = Field(default_factory=utcnow)
+    updated_at: AwareDatetime = Field(default_factory=utcnow)
 
 
 class AgentContext(BaseModel):
@@ -76,8 +155,8 @@ class AgentContext(BaseModel):
     user_id: int = 0
     display_name: str = ""
     email: str = ""
-    now: Optional[datetime] = None
-    timezone: str = "Europe/Moscow"
+    now: Optional[AwareDatetime] = None
+    timezone: Annotated[str, BeforeValidator(normalize_timezone)] = "Europe/Moscow"
     message: str = ""
     history: List[Dict[str, Any]] = Field(default_factory=list)
     memory: List[MemoryEntry] = Field(default_factory=list)
@@ -115,8 +194,8 @@ class Plan(BaseModel):
 
 
 class Slot(BaseModel):
-    start: datetime
-    end: datetime
+    start: AwareDatetime
+    end: AwareDatetime
     score: float = 0.0
     reason: str = ""
 
@@ -134,7 +213,10 @@ class A2AProposal(BaseModel):
 
 class AgentRequest(BaseModel):
     context: AgentContext = Field(default_factory=AgentContext)
-    execute: bool = True
+    # Исполнитель действий — C++-сервер (ToolManager + tool_permissions +
+    # подтверждения). AI-сервис по умолчанию только планирует; execute=true —
+    # явная просьба вызывающего, и даже тогда внешние действия здесь не исполняются.
+    execute: bool = False
     dry_run: bool = False
     peers: List[AgentContext] = Field(default_factory=list)
 
@@ -146,8 +228,8 @@ class NegotiateRequest(BaseModel):
     responder: AgentContext
     intent: str = "schedule_meeting"
     topic: str = ""
-    duration_minutes: int = 60
-    window_hours: int = 96
+    duration_minutes: int = Field(default=60, ge=1, le=MAX_DURATION_MINUTES)
+    window_hours: int = Field(default=96, ge=1, le=MAX_WINDOW_HOURS)
     # prefs.privacy.allow_place_choice обеих сторон: false — место не предлагаем.
     choose_place: bool = True
 

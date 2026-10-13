@@ -3,6 +3,11 @@
 # Результат: вкладка Actions → «Build Windows client» → Artifacts →
 # aura-desktop-windows.zip (aura-client.exe + Qt-рантайм + libpq).
 # Подпись кода и установщик (NSIS/MSI) — отдельно, нужны ваши сертификаты.
+#
+# Безопасность: сборка (исполняет код из репозитория) идёт с токеном только
+# на чтение; публикация — отдельными job'ами с правом записи, которые лишь
+# скачивают артефакты. Ветка builds/windows и релиз «builds» обновляются
+# только push'ем в main; лог — в arena/build-logs на любом push.
 name: Build Windows client
 
 on:
@@ -11,14 +16,19 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   windows:
     name: Qt 6 / MSVC — aura-client.exe
     runs-on: windows-2022
     permissions:
-      contents: write   # публикация лога в ветку arena/build-logs
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # Qt ставим напрямую aqt: перебираем связки версия/компилятор, пока
       # одна не встанет (зеркала и состав архивов со временем меняются).
@@ -100,36 +110,6 @@ jobs:
             Aura-Setup.exe
             Aura-portable-windows.zip
 
-      # Песочница разработки не видит blob-хосты артефактов: готовые файлы
-      # кладём в ветку builds/windows, откуда их забирают обычным git.
-      - name: Публикация в ветку builds/windows
-        if: success()
-        shell: bash
-        run: |
-          set -e
-          mkdir pub && cp Aura-Setup.exe Aura-portable-windows.zip pub/
-          cd pub
-          for f in *; do
-            if [ "$(wc -c < "$f")" -gt 94000000 ]; then split -b 90m -d "$f" "$f.part"; rm "$f"; fi
-          done
-          git init -q -b builds/windows
-          git config user.name aura-ci && git config user.email ci@aura.local
-          git add -A && git commit -qm "windows ${{ github.sha }} [skip ci]"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/windows
-
-      # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
-      - name: Публикация в релиз «builds» (Windows)
-        if: success() && github.ref == 'refs/heads/main'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          R="$GITHUB_REPOSITORY"
-          gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
-            --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
-            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — нативные клиенты (Compose, Qt). Aura-web.apk и Aura-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Aura." || true
-          gh release upload builds Aura-Setup.exe Aura-portable-windows.zip -R "$R" --clobber
-
       - name: Артефакт — exe
         if: success()
         uses: actions/upload-artifact@v4
@@ -146,11 +126,8 @@ jobs:
             qt-install.log
             build.log
 
-      # Песочница разработки не видит blob-хосты артефактов — дублируем логи
-      # в ветку arena/build-logs, откуда их можно прочитать обычным git.
-      # Ошибки компиляции — в аннотации прогона (читаются через API),
-      # сам лог — в ветку arena/build-logs.
-      - name: Диагностика (аннотации + публикация лога)
+      # Ошибки компиляции — в аннотации прогона (читаются через API).
+      - name: Диагностика (аннотации)
         if: always()
         shell: pwsh
         run: |
@@ -163,41 +140,101 @@ jobs:
               Write-Output "::error title=windows-build::$m"
             }
           }
-          $pub = New-Item -ItemType File -Force push-diag.log
-          Add-Content $pub "run ${{ github.run_id }} job windows"
-          for ($i = 1; $i -le 3; $i++) {
-            Remove-Item -Recurse -Force logpub -ErrorAction SilentlyContinue
-            git -c http.extraHeader="Authorization: token ${{ github.token }}" `
-              clone --depth 1 --branch arena/build-logs `
-              "https://github.com/${{ github.repository }}" logpub 2>&1 |
-              Add-Content $pub
-            Add-Content $pub "clone exit=$LASTEXITCODE"
-            if (-not (Test-Path logpub\.git)) {
+          exit 0
+
+  # Песочница разработки не видит blob-хосты артефактов: готовые файлы
+  # кладём в ветку builds/windows и в релиз «builds». Только push в main.
+  publish:
+    name: Публикация установщика (main)
+    needs: windows
+    if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: aura-setup-windows
+          path: setup
+
+      - name: Публикация в ветку builds/windows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          mkdir pub && cp setup/Aura-Setup.exe setup/Aura-portable-windows.zip pub/
+          cd pub
+          for f in *; do
+            if [ "$(wc -c < "$f")" -gt 94000000 ]; then split -b 90m -d "$f" "$f.part"; rm "$f"; fi
+          done
+          git init -q -b builds/windows
+          git config user.name aura-ci && git config user.email ci@aura.local
+          git add -A && git commit -qm "windows ${{ github.sha }} [skip ci]"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/windows
+
+      # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
+      - name: Публикация в релиз «builds» (Windows)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          R="$GITHUB_REPOSITORY"
+          gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
+            --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
+            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — нативные клиенты (Compose, Qt). Aura-web.apk и Aura-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Aura." || true
+          gh release upload builds setup/Aura-Setup.exe setup/Aura-portable-windows.zip -R "$R" --clobber
+
+  # Логи — в ветку arena/build-logs (песочница читает её обычным git).
+  log:
+    name: Лог сборки → arena/build-logs
+    needs: windows
+    if: always() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: build-log-windows
+
+      - name: Публикация лога
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Шаг вспомогательный: git-ошибки не должны ронять job.
+          set +e
+          rm -f push-diag.log
+          echo "run ${{ github.run_id }} job windows" > push-diag.log
+          for i in 1 2 3; do
+            rm -rf logpub
+            {
+              git -c http.extraHeader="Authorization: token $GH_TOKEN" \
+                clone --depth 1 --branch arena/build-logs \
+                "https://github.com/${{ github.repository }}" logpub 2>&1
+              echo "clone exit=$?"
+            } >> push-diag.log
+            if [ ! -d logpub/.git ]; then
               # клон не удался — создаём репозиторий локально
-              New-Item -ItemType Directory -Force logpub | Out-Null
-              Push-Location logpub
-              git init -q 2>&1 | Add-Content $pub
-              git remote add origin "https://github.com/${{ github.repository }}" 2>&1
-              git fetch --depth 1 origin arena/build-logs 2>&1 | Add-Content $pub
-              git checkout -q -B arena/build-logs FETCH_HEAD 2>&1 | Add-Content $pub
-              Pop-Location
-            }
-            if (Test-Path qt-install.log) { Copy-Item qt-install.log logpub\windows-qt-install.log -Force }
-            if (Test-Path build.log) { Copy-Item build.log logpub\windows-build.log -Force }
-            Push-Location logpub
-            git config user.name "aura-ci"
-            git config user.email "ci@aura.local"
-            git add -A 2>&1 | Add-Content $pub
-            git commit -m "windows log ${{ github.sha }} [skip ci]" 2>&1 | Add-Content $pub
-            git -c http.extraHeader="Authorization: token ${{ github.token }}" push origin HEAD:arena/build-logs 2>&1 | Add-Content $pub
-            $code = $LASTEXITCODE
-            Add-Content $pub "push exit=$code"
-            Pop-Location
-            if ($code -eq 0) { break }
-            Start-Sleep -Seconds 10
-          }
-          $m = ((Get-Content push-diag.log | Select-Object -Last 14) -join "~")
-          $m = ($m -replace "[\r\n]", " ")
-          if ($m.Length -gt 1500) { $m = $m.Substring(0, 1500) }
-          Write-Output "::error title=windows-publish::$m"
+              mkdir -p logpub
+              (
+                cd logpub
+                git init -q
+                git remote add origin "https://github.com/${{ github.repository }}"
+                git -c http.extraHeader="Authorization: token $GH_TOKEN" fetch --depth 1 origin arena/build-logs
+                git checkout -q -B arena/build-logs FETCH_HEAD
+              ) >> push-diag.log 2>&1
+            fi
+            [ -f qt-install.log ] && cp qt-install.log logpub/windows-qt-install.log
+            [ -f build.log ] && cp build.log logpub/windows-build.log
+            (
+              cd logpub
+              git config user.name "aura-ci"
+              git config user.email "ci@aura.local"
+              git add -A 2>&1
+              git commit -m "windows log ${{ github.sha }} [skip ci]" 2>&1
+              git -c http.extraHeader="Authorization: token $GH_TOKEN" push origin HEAD:arena/build-logs 2>&1
+            ) >> push-diag.log 2>&1 && echo "push ok" >> push-diag.log && break
+            sleep 10
+          done
+          printf '::error title=windows-publish::%s\n' "$(tail -14 push-diag.log | tr '\r' ' ' | tr '\n' '~' | cut -c1-1500)"
           exit 0

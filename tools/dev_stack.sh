@@ -19,6 +19,8 @@ wait_port() {  # host port seconds
     return 1
 }
 
+# Общий секрет сервер <-> AI: без него AI-сервис закрыт (503).
+export AURA_AI_TOKEN=${AURA_AI_TOKEN:-$(openssl rand -hex 32)}
 (cd "$ROOT/ai" && PYTHONPATH=. nohup "$PYTHON" -m aura_ai.app > "$RUN/ai.log" 2>&1 &)
 wait_port 127.0.0.1 8000 60 || { echo "AI-сервис не поднялся"; tail -40 "$RUN/ai.log"; exit 1; }
 

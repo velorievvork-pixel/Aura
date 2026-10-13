@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import re
+import tempfile
 import threading
 from collections import Counter
 from datetime import datetime
@@ -32,7 +33,7 @@ except ImportError:  # pragma: no cover
 _MEMORY_ERRORS: tuple = (ImportError, OSError, ValueError) + _DB_ERRORS
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from .models import AgentContext, MemoryEntry, utcnow
+from .models import MEMORY_KINDS, AgentContext, MemoryEntry, utcnow
 
 FACT_PATTERNS = (
     re.compile(r"я\s+(люблю|не люблю|предпочитаю|ем|не ем|живу|работаю)\s+([^.;!?]{2,60})", re.I),
@@ -64,7 +65,8 @@ class InMemoryStore(MemoryStore):
 
     def __init__(self) -> None:
         self._data: Dict[str, List[MemoryEntry]] = {}
-        self._lock = threading.Lock()
+        # RLock: FileMemoryStore пишет файл, удерживая ту же блокировку.
+        self._lock = threading.RLock()
 
     def load(self, user_key: str) -> List[MemoryEntry]:
         with self._lock:
@@ -97,31 +99,50 @@ class FileMemoryStore(InMemoryStore):
                 raw = json.load(handle)
         except (OSError, json.JSONDecodeError):
             return
+        try:
+            data = {key: [MemoryEntry(**item) for item in value] for key, value in raw.items()}
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning("файл памяти %s повреждён (%s), начинаю с пустой памяти", self.path, type(exc).__name__)
+            return
         with self._lock:
-            self._data = {
-                key: [MemoryEntry(**item) for item in value] for key, value in raw.items()
-            }
+            self._data = data
 
     def _flush(self) -> None:
-        directory = os.path.dirname(os.path.abspath(self.path))
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        with self._lock:
-            payload = {
-                key: [entry.model_dump(mode="json") for entry in value]
-                for key, value in self._data.items()
-            }
-        with open(self.path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        """Атомарная запись под блокировкой: временный файл → fsync → os.replace.
+
+        Вызывается только с удержанным ``self._lock`` — иначе два параллельных
+        сохранения могли перемешать данные или оставить файл недописанным.
+        """
+        directory = os.path.dirname(os.path.abspath(self.path)) or "."
+        os.makedirs(directory, exist_ok=True)
+        payload = {
+            key: [entry.model_dump(mode="json") for entry in value]
+            for key, value in self._data.items()
+        }
+        fd, tmp_path = tempfile.mkstemp(prefix=".aura_memory.", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def save(self, user_key: str, entries: Sequence[MemoryEntry]) -> List[MemoryEntry]:
-        merged = super().save(user_key, entries)
-        self._flush()
-        return merged
+        with self._lock:
+            merged = super().save(user_key, entries)
+            self._flush()
+            return merged
 
     def clear(self, user_key: str) -> None:
-        super().clear(user_key)
-        self._flush()
+        with self._lock:
+            super().clear(user_key)
+            self._flush()
 
 
 class PostgresMemoryStore(MemoryStore):
@@ -129,6 +150,9 @@ class PostgresMemoryStore(MemoryStore):
 
     В проде источником истины остаётся C++-сервер: он передаёт память в контексте
     запроса. Это хранилище нужно для автономного режима AI-сервиса.
+
+    Ключ пользователя — числовой ``users.id`` (так шлёт сервер в
+    ``/v1/memory/extract``) или email (``user_key(context)``).
     """
 
     def __init__(self, dsn: str):
@@ -138,22 +162,31 @@ class PostgresMemoryStore(MemoryStore):
     def _connect(self):
         import psycopg  # ленивый импорт: без драйвера работаем через fallback
 
-        return psycopg.connect(self.dsn)
+        return psycopg.connect(self.dsn, connect_timeout=5)
+
+    @staticmethod
+    def _user_filter(user_key: str) -> tuple:
+        """SQL-условие на users и параметр: id для числового ключа, иначе email."""
+        key = (user_key or "").strip()
+        if key.isdigit():
+            return "id = %s", int(key)
+        return "lower(email) = lower(%s)", key
 
     def load(self, user_key: str) -> List[MemoryEntry]:
+        where, value = self._user_filter(user_key)
         try:
             with self._connect() as conn, conn.cursor() as cur:
                 cur.execute(
                     "SELECT kind, text, weight, tags, updated_at FROM user_memory "
-                    "WHERE user_id = (SELECT id FROM users WHERE email = %s) "
+                    f"WHERE user_id = (SELECT id FROM users WHERE {where}) "
                     "ORDER BY weight DESC, updated_at DESC",
-                    (user_key,),
+                    (value,),
                 )
                 rows = cur.fetchall()
         except _MEMORY_ERRORS as exc:
-            # Падаем в файловое хранилище, но не молча: иначе проблемы с БД
+            # Падаем в память процесса, но не молча: иначе проблемы с БД
             # выглядят как «память просто пустая».
-            logger.warning("не удалось прочитать память из БД (%s), использую файл", exc)
+            logger.warning("не удалось прочитать память из БД (%s), использую память процесса", type(exc).__name__)
             return self._fallback.load(user_key)
         return [
             MemoryEntry(kind=r[0], text=r[1], weight=float(r[2]), tags=list(r[3] or []), updated_at=r[4])
@@ -161,13 +194,15 @@ class PostgresMemoryStore(MemoryStore):
         ]
 
     def save(self, user_key: str, entries: Sequence[MemoryEntry]) -> List[MemoryEntry]:
+        where, value = self._user_filter(user_key)
+        valid = [entry for entry in entries if entry.kind in MEMORY_KINDS and entry.text.strip()]
         try:
             with self._connect() as conn, conn.cursor() as cur:
-                for entry in entries:
+                for entry in valid:
                     cur.execute(
-                        """
+                        f"""
                         INSERT INTO user_memory (user_id, kind, text, weight, tags, updated_at)
-                        SELECT id, %s, %s, %s, %s, %s FROM users WHERE email = %s
+                        SELECT id, %s, %s, %s, %s, %s FROM users WHERE {where}
                         ON CONFLICT (user_id, text) DO UPDATE
                           SET weight = EXCLUDED.weight, updated_at = EXCLUDED.updated_at
                         """,
@@ -175,14 +210,16 @@ class PostgresMemoryStore(MemoryStore):
                             entry.kind,
                             entry.text,
                             entry.weight,
-                            json.dumps(entry.tags, ensure_ascii=False),
+                            # TEXT[]: psycopg адаптирует list[str] в массив
+                            # (json.dumps давал строку '["a"]' → ошибка типа).
+                            list(entry.tags),
                             entry.updated_at,
-                            user_key,
+                            value,
                         ),
                     )
                 conn.commit()
         except _MEMORY_ERRORS as exc:
-            logger.warning("не удалось сохранить память в БД (%s), использую файл", exc)
+            logger.warning("не удалось сохранить память в БД (%s), использую память процесса", type(exc).__name__)
             return self._fallback.save(user_key, entries)
         return self.load(user_key)
 
@@ -190,11 +227,30 @@ class PostgresMemoryStore(MemoryStore):
         self._fallback.clear(user_key)
 
 
-def build_store(backend: str) -> MemoryStore:
-    if backend.startswith("postgres"):
-        return PostgresMemoryStore(backend)
-    if backend.startswith("file://"):
-        return FileMemoryStore(backend[len("file://") :])
+DEFAULT_FILE_PATH = "./.aura_memory.json"
+
+
+def build_store(backend: str, database_url: str = "") -> MemoryStore:
+    """Хранилище по ``AURA_MEMORY_BACKEND``.
+
+    * ``postgres`` — DSN из ``AURA_DATABASE_URL`` (``database_url``);
+    * ``postgres://…`` / ``postgresql://…`` — DSN прямо в значении;
+    * ``file`` — ``./.aura_memory.json``; ``file://path`` — указанный файл;
+    * ``memory``/``memory://`` и прочее — память процесса.
+    """
+    value = (backend or "").strip()
+    lowered = value.lower()
+    if lowered in ("postgres", "postgresql"):
+        if not database_url:
+            logger.warning("AURA_MEMORY_BACKEND=postgres без AURA_DATABASE_URL — память только в процессе")
+            return InMemoryStore()
+        return PostgresMemoryStore(database_url)
+    if lowered.startswith(("postgres://", "postgresql://")):
+        return PostgresMemoryStore(value)
+    if lowered == "file":
+        return FileMemoryStore(DEFAULT_FILE_PATH)
+    if lowered.startswith("file://"):
+        return FileMemoryStore(value[len("file://") :] or DEFAULT_FILE_PATH)
     return InMemoryStore()
 
 
@@ -242,22 +298,14 @@ def extract_facts(text: str) -> List[MemoryEntry]:
 
 def extract_from_context(context: AgentContext, llm_payload: Optional[Dict[str, Any]] = None) -> List[MemoryEntry]:
     """Факты из контекста: сначала то, что предложила модель, потом правила."""
+    # Проверка повторяет sanitize_payload: вид из MEMORY_KINDS, текст ≤ 300,
+    # не больше 5 записей — функцию вызывают и с «сырым» payload.
+    from .llm import normalize_memory_updates
+
     entries: List[MemoryEntry] = []
-    if llm_payload:
-        for item in llm_payload.get("memory_updates") or []:
-            if not isinstance(item, dict):
-                continue
-            text = str(item.get("text", "")).strip()
-            if not text:
-                continue
-            tags = item.get("tags")
-            entries.append(
-                MemoryEntry(
-                    kind=str(item.get("kind") or "fact"),
-                    text=text,
-                    tags=[str(t) for t in tags] if isinstance(tags, list) else [],
-                )
-            )
+    if isinstance(llm_payload, dict):
+        for item in normalize_memory_updates(llm_payload.get("memory_updates")):
+            entries.append(MemoryEntry(kind=item["kind"], text=item["text"], tags=item["tags"]))
     entries.extend(extract_facts(context.message))
     return entries
 

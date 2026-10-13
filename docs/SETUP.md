@@ -31,17 +31,29 @@ psql aura -f schema/seed.sql
 
 ```bash
 make venv                     # .venv + ai/requirements.txt
+# общий с C++-сервером секрет (тот же AURA_AI_TOKEN задайте серверу):
+export AURA_AI_TOKEN="$(openssl rand -hex 32)"
 cd ai && PYTHONPATH=. uvicorn aura_ai.app:app --host 127.0.0.1 --port 8000
+# или для локальной разработки без токена (только 127.0.0.1):
+make ai-run                   # = AURA_AI_INSECURE_DEV=1 python -m aura_ai.app
 ```
+
+Без `AURA_AI_TOKEN` AI-сервис **закрыт**: все эндпоинты, кроме `/healthz`,
+отвечают `503` (fail closed). Открыть его без токена можно только явным
+`AURA_AI_INSECURE_DEV=1` — для локальной разработки; в продакшене эту
+переменную не задавать.
 
 Ключевые переменные (полный список — `ai/aura_ai/config.py`):
 
 | переменная | смысл |
 | --- | --- |
-| `AURA_AI_TOKEN` | общий секрет C++ ↔ AI (заголовок `X-Aura-Token`); без него эндпоинты открыты — только для localhost |
+| `AURA_AI_TOKEN` | общий секрет C++ ↔ AI (заголовок `X-Aura-Token`); без него — `503` на всё, кроме `/healthz` |
+| `AURA_AI_INSECURE_DEV` | `1` — разрешить работу без `AURA_AI_TOKEN` (только локальная разработка; если токен задан, он проверяется всё равно) |
+| `AURA_AI_HOST`, `AURA_AI_PORT` | адрес `python -m aura_ai.app` (по умолчанию `127.0.0.1:8000`) |
 | `AURA_LLM_PROVIDER` | `mock` (по умолчанию) или `openai` |
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `AURA_LLM_MODEL` | реальный LLM |
-| `AURA_MEMORY_BACKEND` | `file` (по умолчанию) или `postgres` |
+| `AURA_MEMORY_BACKEND` | `file` (по умолчанию, `./.aura_memory.json`), `file://путь`, `memory` или `postgres` (DSN — из `AURA_DATABASE_URL`) |
+| `AURA_DATABASE_URL` | DSN PostgreSQL для `AURA_MEMORY_BACKEND=postgres` (в compose — роль `aura_ai`) |
 | `AURA_RAG_MODE` | `auto`: BM25 всегда, эмбеддинги если заданы |
 | `AURA_EMBEDDINGS_URL/_MODEL/_API_KEY` | семантический поиск памяти |
 | `AURA_STT_PROVIDER/_URL/_MODEL/_API_KEY` | Whisper-совместимый STT; без них — mock |
@@ -55,6 +67,7 @@ cmake -S . -B build/server -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build build/server -j
 AURA_DATABASE_URL="postgresql://user:pass@host/aura" \
 AURA_AI_URL=http://127.0.0.1:8000 \
+AURA_AI_TOKEN="$AURA_AI_TOKEN" \
 AURA_JWT_SECRET="$(openssl rand -hex 32)" \
 AURA_2FA_KEY="$(openssl rand -hex 32)" \
 ./build/server/server/aura-server
@@ -169,11 +182,13 @@ cd ios && xcodegen generate && open Aura.xcodeproj
 одной командой; Qt-клиент собирается на хосте (нужен GUI), iOS — на Mac.
 
 ```bash
-# .env-файл рядом с docker-compose.yml (в git не коммитить):
-#   AURA_JWT_SECRET=…        AURA_2FA_KEY=…        POSTGRES_PASSWORD=…
-#   AURA_AI_TOKEN=…          OPENAI_API_KEY=…      AURA_LLM_PROVIDER=openai
-#   AURA_PUSH_DRIVER=webhook AURA_PUSH_WEBHOOK_URL=https://gateway/push
-#   AURA_GOOGLE_CLIENT_ID=…  AURA_GOOGLE_CLIENT_SECRET=…
+cp .env.example .env      # .env в git не коммитить (он в .gitignore)
+# Заполните ВСЕ секреты, каждый — openssl rand -hex 32:
+#   AURA_JWT_SECRET  AURA_2FA_KEY  AURA_AI_TOKEN
+#   POSTGRES_PASSWORD  AURA_DB_PASSWORD  AURA_AI_DB_PASSWORD
+# + по необходимости: AURA_MAIL_DRIVER=smtp и AURA_SMTP_*, OPENAI_API_KEY,
+#   AURA_LLM_PROVIDER=openai, AURA_PUSH_DRIVER=webhook AURA_PUSH_WEBHOOK_URL=…,
+#   AURA_GOOGLE_CLIENT_ID/_SECRET
 
 make docker-build   # собрать образы (server: multi-stage CMake+libpq; ai: python:3.12-slim)
 make docker-up      # поднять стек в фоне
@@ -183,20 +198,38 @@ make docker-down    # остановить
 
 Что делает compose:
 
-- **postgres** — при первом старте применяет `schema/schema.sql`,
-  `schema/seed.sql` и миграции из `schema/migrations/` (идемпотентно,
-  по алфавиту файлов в `docker-entrypoint-initdb.d`);
-- **ai** — образ с `psycopg` (память через PostgreSQL), healthcheck
-  `GET /healthz`;
-- **server** — образ без компилятора (только `libpq5`), стартует после
-  healthy-зависимостей; healthcheck — проверка порта 9000.
+- **postgres** — при первом старте пустого тома применяет только
+  `schema/schema.sql` (уже включает все миграции) и
+  `deploy/postgres/20-app-roles.sh`, который создаёт роли приложения.
+  `schema/seed.sql` (демо-аккаунты) в прод **не** монтируется. Порт 5432
+  наружу не публикуется; обслуживание — `docker compose exec postgres psql -U postgres aura`.
+  Новые миграции применяйте вручную под `postgres`
+  (`docker compose exec -T postgres psql -U postgres aura < schema/migrations/<файл>.sql`):
+  права `aura_app` на новые таблицы выдаются автоматически (default privileges).
+- **ai** — образ с `psycopg`, пользователь без root (uid 10001). Порт 8000
+  наружу не публикуется — к сервису ходит только `server` по сети compose с
+  `X-Aura-Token`. Healthcheck — `GET /healthz` средствами Python (curl в
+  slim-образе нет).
+- **server** — образ без компилятора (только `libpq5`), без root; стартует
+  после healthy-зависимостей; healthcheck — проверка порта 9000. Наружу
+  публикуется только 9000 (`AURA_BIND=127.0.0.1`, если TLS-прокси на этой же машине).
 
-Продакшен-чек-лист: смените `AURA_JWT_SECRET`/`AURA_2FA_KEY`/
-`POSTGRES_PASSWORD` (без них compose честно поднимется с dev-значениями),
-поставьте TLS-терминирующий прокси перед портом 9000 (`wss://`), для
-реального push — шлюз APNs (`AURA_PUSH_DRIVER=webhook`), для почты —
-`AURA_MAIL_DRIVER=smtp` + `AURA_SMTP_*` (см. «Почта» ниже). Бэкап — `pg_dump` тома
-`pgdata`.
+### Безопасность развёртывания
+
+| что | как устроено |
+| --- | --- |
+| секреты | `${VAR:?}` в `docker-compose.yml`: без `AURA_JWT_SECRET`, `AURA_2FA_KEY`, `AURA_AI_TOKEN`, `POSTGRES_PASSWORD`, `AURA_DB_PASSWORD`, `AURA_AI_DB_PASSWORD` стек не стартует; в `.env.example` значения пустые. Генерация — `openssl rand -hex 32` (hex безопасен внутри URL БД) |
+| роли БД | `postgres` — только инициализация и миграции; `aura_app` (C++-сервер) — `SELECT/INSERT/UPDATE/DELETE`, без DDL и суперпользователя; `aura_ai` (AI-сервис) — только `user_memory` и `users(id, email)` |
+| AI-сервис | fail closed без `AURA_AI_TOKEN` (`503`); `/healthz` не раскрывает DSN и пути; ошибки `500` без текста исключения; инструменты с внешним эффектом (`send_email`, `send_message`, `book_table`) исполняет только C++-сервер после `tool_permissions` и подтверждения |
+| режим разработки | `AURA_DEV_MODE` и `AURA_AI_INSECURE_DEV` в продакшене **не задавать**; почта в compose по умолчанию `AURA_MAIL_DRIVER=log` (для писем — `smtp` + `AURA_SMTP_*`) |
+| контейнеры | `ai` и `server` работают от непривилегированного пользователя |
+
+Продакшен-чек-лист: заполните все секреты (см. выше), поставьте
+TLS-терминирующий прокси перед портом 9000 (`wss://`), для реального push —
+шлюз APNs (`AURA_PUSH_DRIVER=webhook`), для почты — `AURA_MAIL_DRIVER=smtp` +
+`AURA_SMTP_*` (см. «Почта» выше). Бэкап — `pg_dump` тома `pgdata`.
+Сменить пароли ролей на существующем томе: `ALTER ROLE aura_app PASSWORD '…'`
+(init-скрипты выполняются только при создании тома).
 
 ## 9. Проверка установки
 
@@ -207,8 +240,11 @@ python3 tools/check_ios_protocol.py
 ```
 
 CI (GitHub Actions, `.github/workflows/ci.yml`) на каждый push гоняет
-три job'а: сборка C++ + ctest, pytest AI-сервиса, сверка протокола iOS и
-синтаксис e2e. Qt/iOS в CI не собираются (нужны Qt 6 и macOS) — это
+сборку C++ + ctest, pytest AI-сервиса, сверку протокола iOS/Android,
+синтаксис e2e и JVM-тесты AuraKit. Сборочные job'ы работают с токеном
+только на чтение (`persist-credentials: false`); запись (ветки `builds/*`,
+релиз «builds») — отдельными job'ами публикации и только для push в `main`,
+логи — в `arena/build-logs` на любом push. Qt/iOS в CI не собираются (нужны Qt 6 и macOS) — это
 локальные проверки из [TESTING.md](TESTING.md).
 
 Частые проблемы — [TROUBLESHOOTING.md](TROUBLESHOOTING.md).

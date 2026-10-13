@@ -60,11 +60,15 @@ def peer_context(**overrides: Any) -> AgentContext:
 
 
 def test_run_detects_meeting_and_plans_actions():
-    response = make_agent().run(AgentRequest(context=user_context()))
+    response = make_agent().run(AgentRequest(context=user_context(), execute=True))
     assert response.intent == "schedule_meeting"
     assert {call.tool for call in response.actions} >= {"check_calendar", "suggest_time", "send_message"}
     assert response.results, "действия должны выполниться"
-    assert all(result.ok for result in response.results)
+    by_tool = {result.tool: result for result in response.results}
+    assert by_tool["check_calendar"].ok and by_tool["suggest_time"].ok
+    # Внешнее действие AI-сервис не исполняет — только сервер (tool_permissions).
+    assert by_tool["send_message"].ok is False
+    assert by_tool["send_message"].error.startswith("server_only")
     assert response.plan.steps[0].title == "Понял задачу"
 
 
@@ -107,7 +111,7 @@ def test_dry_run_does_not_execute_or_persist():
 
 def test_reminder_intent_creates_reminder():
     response = make_agent().run(
-        AgentRequest(context=user_context(message="напомни завтра в 9:00 позвонить врачу"))
+        AgentRequest(context=user_context(message="напомни завтра в 9:00 позвонить врачу"), execute=True)
     )
     assert response.intent == "reminder"
     reminder = next(r for r in response.results if r.tool == "create_reminder")
@@ -119,12 +123,16 @@ def test_reminder_intent_creates_reminder():
 
 
 def test_reminder_hour_without_minutes_and_day_default():
-    lawyer = make_agent().run(AgentRequest(context=user_context(message="Напомни завтра в 10 позвонить юристу")))
+    lawyer = make_agent().run(
+        AgentRequest(context=user_context(message="Напомни завтра в 10 позвонить юристу"), execute=True)
+    )
     reminder = next(r for r in lawyer.results if r.tool == "create_reminder")
     assert reminder.data["fire_at"].startswith("2026-09-18T07:00")
     assert reminder.data["text"] == "Позвонить юристу"
 
-    coffee = make_agent().run(AgentRequest(context=user_context(message="напомни завтра купить кофе")))
+    coffee = make_agent().run(
+        AgentRequest(context=user_context(message="напомни завтра купить кофе"), execute=True)
+    )
     reminder = next(r for r in coffee.results if r.tool == "create_reminder")
     # День без часа — 9 утра по местному времени, не полночь.
     assert reminder.data["fire_at"].startswith("2026-09-18T06:00")
@@ -133,7 +141,7 @@ def test_reminder_hour_without_minutes_and_day_default():
 
 def test_memory_updates_are_saved():
     agent = make_agent()
-    agent.run(AgentRequest(context=user_context(message="Я люблю матча-латте, запомни")))
+    agent.run(AgentRequest(context=user_context(message="Я люблю матча-латте, запомни"), execute=True))
     stored = agent.store.load("anna@example.com")
     assert any("матча-латте" in entry.text for entry in stored)
 
@@ -153,7 +161,7 @@ def test_unknown_tool_from_llm_is_filtered():
                 ],
             }
 
-    response = make_agent(RogueLLM()).run(AgentRequest(context=user_context(message="привет")))
+    response = make_agent(RogueLLM()).run(AgentRequest(context=user_context(message="привет"), execute=True))
     assert [call.tool for call in response.actions] == ["create_note"]
     assert len(response.results) == 1
 

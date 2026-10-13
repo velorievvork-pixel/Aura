@@ -23,14 +23,15 @@ from typing import Any, Dict, List, Optional
 from . import memory as memory_module
 from . import planner
 from .config import Settings, get_settings
-from .llm import BaseLLM, LLMError, MockLLM, build_llm, normalize_actions
+from pydantic import ValidationError
+
+from .llm import BaseLLM, LLMError, MockLLM, build_llm, sanitize_payload
 from .models import (
     Step,
     A2AProposal,
     AgentContext,
     AgentRequest,
     AgentResponse,
-    CalendarEvent,
     MemoryEntry,
     NegotiateRequest,
     NegotiateResponse,
@@ -41,7 +42,7 @@ from .models import (
     ToolResult,
     utcnow,
 )
-from .tools import ToolBackends, ToolError, ToolManager
+from .tools import SERVER_ONLY_TOOLS, ToolBackends, ToolError, ToolManager
 
 logger = logging.getLogger("aura.agent")
 
@@ -58,7 +59,9 @@ class AuraAgent:
         self.settings = settings or get_settings()
         self.llm = llm or build_llm(self.settings)
         self.fallback_llm = MockLLM()
-        self.store = store or memory_module.build_store(self.settings.memory_backend)
+        self.store = store or memory_module.build_store(
+            self.settings.memory_backend, self.settings.database_url
+        )
         # Гибридный RAG: семантический клиент включается только в hybrid-режиме
         # с заданным эндпоинтом эмбеддингов; иначе ранжирование лексическое.
         if embed_client is not None:
@@ -91,17 +94,20 @@ class AuraAgent:
         # «завтра в 10» — по часам пользователя, а не по UTC.
         understanding = planner.understand(context.message, _local(now, context.timezone))
 
+        # payload уже проверен (sanitize_payload): типы, пределы, виды памяти.
         payload = self._complete(context, understanding)
-        intent = str(payload.get("intent") or understanding.intent)
-        reply = str(payload.get("reply") or "")
-        confidence = float(payload.get("confidence") or 0.5)
+        intent = payload["intent"] or understanding.intent
+        reply = payload["reply"]
+        confidence = payload["confidence"]
 
         relevant_memory = memory_module.load_context_memory(
             self.store, context, embed_client=self.embed_client
         )
-        actions = [ToolCall(**item) for item in normalize_actions(payload.get("actions"))]
+        actions = [ToolCall(**item) for item in payload["actions"]]
         results: List[ToolResult] = []
 
+        # Исполнять действия AI-сервис может только по явной просьбе
+        # (execute=true без dry_run); внешние действия — никогда (см. _execute).
         if actions and request.execute and not request.dry_run:
             results = self._execute(actions, context)
 
@@ -131,24 +137,37 @@ class AuraAgent:
         )
 
     def _complete(self, context: AgentContext, understanding: planner.Understanding) -> Dict[str, Any]:
+        """Ответ модели, прошедший проверку; при сбое/мусоре — локальные правила."""
         try:
-            return self.llm.complete_json(context, understanding)
+            return sanitize_payload(self.llm.complete_json(context, understanding))
         except LLMError as exc:
-            logger.warning("LLM unavailable (%s), falling back to local rules", exc)
-            return self.fallback_llm.complete_json(context, understanding)
+            logger.warning("LLM unavailable or invalid (%s), falling back to local rules", exc)
+            return sanitize_payload(self.fallback_llm.complete_json(context, understanding))
 
     def _execute(self, actions: List[ToolCall], context: AgentContext) -> List[ToolResult]:
         results: List[ToolResult] = []
         for call in actions:
+            if call.tool in SERVER_ONLY_TOOLS:
+                # Внешние действия (письма, сообщения, брони) исполняет только
+                # C++-сервер: там tool_permissions и подтверждение пользователя.
+                results.append(
+                    ToolResult(
+                        id=call.id,
+                        tool=call.tool,
+                        ok=False,
+                        error="server_only: действие исполняет сервер после проверки разрешений",
+                    )
+                )
+                continue
             try:
                 data = self.tools.run(call.tool, call.args, context)
                 results.append(ToolResult(id=call.id, tool=call.tool, ok=True, data=data))
             except ToolError as exc:
                 logger.info("tool %s failed: %s", call.tool, exc)
                 results.append(ToolResult(id=call.id, tool=call.tool, ok=False, error=str(exc)))
-            except Exception as exc:  # внешний API упал — агент продолжает работать
+            except Exception:  # внешний API упал — агент продолжает работать
                 logger.exception("tool %s crashed", call.tool)
-                results.append(ToolResult(id=call.id, tool=call.tool, ok=False, error=f"internal: {exc}"))
+                results.append(ToolResult(id=call.id, tool=call.tool, ok=False, error="internal error"))
         return results
 
     def _plan(
@@ -281,6 +300,7 @@ class AuraAgent:
     def negotiate(self, request: NegotiateRequest) -> NegotiateResponse:
         """Эндпоинт A2A: Аура-инициатор спрашивает Ауру-респондента."""
         start = utcnow()
+        # Пределы window_hours/duration_minutes проверены моделью (422 вместо 500).
         end = start + timedelta(hours=max(1, request.window_hours))
         duration = max(15, request.duration_minutes)
 
@@ -369,18 +389,30 @@ def _find_peer(
         contact_name = str(contact.get("name", "")).lower()
         contact_email = str(contact.get("email", "")).lower()
         if needle in (contact_name, contact_email) or (key and _normalize_name(contact_name) == key):
-            return AgentContext(
-                display_name=str(contact.get("name", "")),
-                email=str(contact.get("email", "")),
-                preferences=Preferences(
-                    diet=[str(d) for d in contact.get("diet", [])],
-                    city=str(contact.get("city", "")),
-                    lat=contact.get("lat"),
-                    lon=contact.get("lon"),
-                ),
-                calendar=[CalendarEvent(**event) for event in contact.get("calendar", [])],
-            )
+            return _contact_context(contact)
     return None
+
+
+def _contact_context(contact: Dict[str, Any]) -> Optional[AgentContext]:
+    """Контекст собеседника из записи контакта; мусор в полях не роняет запрос."""
+    diet = contact.get("diet")
+    calendar = contact.get("calendar")
+    try:
+        return AgentContext(
+            display_name=str(contact.get("name", "")),
+            email=str(contact.get("email", "")),
+            preferences=Preferences(
+                diet=[str(d) for d in diet] if isinstance(diet, list) else [],
+                city=str(contact.get("city", "")),
+                lat=contact.get("lat"),
+                lon=contact.get("lon"),
+            ),
+            # Calendar сам пропускает записи без корректных start/end.
+            calendar=calendar if isinstance(calendar, list) else [],
+        )
+    except ValidationError as exc:
+        logger.info("контакт пропущен: некорректные данные (%s)", exc.error_count())
+        return None
 
 
 def build_agent(settings: Optional[Settings] = None) -> AuraAgent:

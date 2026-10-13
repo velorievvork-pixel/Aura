@@ -95,25 +95,27 @@ final class ScreenTourTests: XCTestCase {
             if tapButton(containing: "Открыть чат") {
                 sleep(2)
                 shot("chat")
-                _ = tapButton(containing: "Назад")
+                tapBack()
             }
         }
 
         // Шапка «Главной»
         tapTab("Главная")
-        if tapButton(containing: "Настройки") {
+        // Строка «назад» вложенных разделов закреплена над прокруткой, поэтому
+        // кнопка доступна и после прокрутки длинных настроек.
+        if tapButton(containing: "Настройки", id: "home.settings") {
             shot("settings")
             app.swipeUp()
             shot("settings-scrolled")
-            _ = tapButton(containing: "Назад")
+            tapBack()
         }
-        if tapButton(containing: "Подтверждения") {
+        if tapButton(containing: "Подтверждения", id: "home.confirmations") {
             shot("confirmations")
-            _ = tapButton(containing: "Назад")
+            tapBack()
         }
-        if tapButton(containing: "Уведомления") {
+        if tapButton(containing: "Уведомления", id: "home.notifications") {
             shot("notifications")
-            _ = tapButton(containing: "Назад")
+            tapBack()
         }
         shot("end")
     }
@@ -137,16 +139,37 @@ final class ScreenTourTests: XCTestCase {
         sleep(2)
     }
 
+    /// Кнопка по подписи; если задан accessibilityIdentifier — подходит и он
+    /// (у значков шапки к подписи добавляется счётчик, у идентификатора — нет).
     @discardableResult
-    private func tapButton(containing text: String) -> Bool {
-        let button = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
-        guard button.waitForExistence(timeout: 5), button.isHittable else {
+    private func tapButton(containing text: String, id: String? = nil) -> Bool {
+        let predicate = id.map { NSPredicate(format: "identifier == %@ OR label CONTAINS %@", $0, text) }
+            ?? NSPredicate(format: "label CONTAINS %@", text)
+        let button = app.buttons.matching(predicate).firstMatch
+        guard button.waitForExistence(timeout: 5), waitUntilHittable(button) else {
+            shot("missing-\(id ?? text)")
             XCTFail("нет кнопки «\(text)»")
             return false
         }
         button.tap()
         sleep(2)
         return true
+    }
+
+    /// Кнопка может на миг перекрываться (анимация смены раздела, плашка-тост
+    /// сверху) — ждём, пока в неё можно попасть, а не проверяем один раз.
+    private func waitUntilHittable(_ element: XCUIElement, timeout: TimeInterval = 5) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !element.isHittable {
+            if Date() > deadline { return false }
+            usleep(250_000)
+        }
+        return true
+    }
+
+    /// «Назад» во вложенных разделах и в переписке (accessibilityIdentifier nav.back).
+    private func tapBack() {
+        _ = tapButton(containing: "Назад", id: "nav.back")
     }
 
     private func shot(_ name: String) {

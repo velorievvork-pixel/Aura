@@ -17,9 +17,22 @@ struct SettingsView: View {
     @State private var bioDraft = ""
 
     var body: some View {
+        VStack(spacing: 0) {
+            SubscreenBar()
+            content
+        }
+        .onAppear {
+            serverURL = store.serverURLText
+            store.loadPrivacy()
+        }
+        .sheet(isPresented: $showQuickActions) {
+            NavigationStack { QuickActionsView() }
+        }
+    }
+
+    private var content: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                BackToHomeButton()
                 ScreenHeader("Настройки")
                 profile
                 permissionsSection
@@ -40,16 +53,11 @@ struct SettingsView: View {
                 }
                 .padding(.top, 8)
             }
-            .padding(20)
+            .padding(.horizontal, 20)
+            .padding(.top, 6)
+            .padding(.bottom, 20)
         }
         .scrollDismissesKeyboard(.interactively)
-        .onAppear {
-            serverURL = store.serverURLText
-            store.loadPrivacy()
-        }
-        .sheet(isPresented: $showQuickActions) {
-            NavigationStack { QuickActionsView() }
-        }
     }
 
     /// Секция с сиреневым заголовком.

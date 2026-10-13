@@ -143,6 +143,7 @@ private struct ContactCard: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 RoundIconButton(systemImage: "chevron.left", label: "Назад", size: 40, action: onBack)
+                    .accessibilityIdentifier("nav.back")
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(spacing: 6) {
                         AuraAvatar(name: contact.name, size: 96, ring: true).padding(.bottom, 6)
@@ -217,6 +218,7 @@ private struct ChatView: View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 RoundIconButton(systemImage: "chevron.left", label: "Назад", size: 38) { store.closeChat() }
+                    .accessibilityIdentifier("nav.back")
                 AuraAvatar(name: title, size: 40)
                 Text(title).font(AuraFont.titleMedium).foregroundStyle(AuraColor.textPrimary).lineLimit(1)
                 Spacer()

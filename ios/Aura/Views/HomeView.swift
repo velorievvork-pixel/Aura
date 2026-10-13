@@ -63,10 +63,12 @@ struct HomeView: View {
                        count: store.confirmations.count, color: AuraColor.warning) {
                 store.selectTab(.confirmations)
             }
+            .accessibilityIdentifier("home.confirmations")
             HeaderIcon(systemImage: "bell", label: "Уведомления",
                        count: Int(store.unreadNotifications), color: AuraColor.accent) {
                 store.selectTab(.notifications)
             }
+            .accessibilityIdentifier("home.notifications")
             Button {
                 store.selectTab(.settings)
             } label: {
@@ -74,6 +76,7 @@ struct HomeView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Настройки")
+            .accessibilityIdentifier("home.settings")
             .padding(.leading, 4)
         }
     }

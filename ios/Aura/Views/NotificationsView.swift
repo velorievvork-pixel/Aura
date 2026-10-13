@@ -7,18 +7,23 @@ struct NotificationsView: View {
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                // «Прочитать все» — в строке «назад»: рядом с заголовком 38 pt ему не хватает места.
-                HStack {
-                    BackToHomeButton()
-                    Spacer()
-                    if store.notices.contains(where: { !$0.read }) {
-                        GlassButton(title: "Прочитать все", height: 38, fullWidth: false) {
-                            store.markNotificationsRead()
-                        }
+        VStack(spacing: 0) {
+            // «Прочитать все» — в строке «назад»: рядом с заголовком 38 pt ему не хватает места.
+            SubscreenBar {
+                if store.notices.contains(where: { !$0.read }) {
+                    GlassButton(title: "Прочитать все", height: 38, fullWidth: false) {
+                        store.markNotificationsRead()
                     }
                 }
+            }
+            list
+        }
+        .onAppear { store.loadPushDevices() }
+    }
+
+    private var list: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
                 ScreenHeader("Уведомления")
                 if store.notices.isEmpty {
                     Muted("Пока пусто.")
@@ -64,9 +69,10 @@ struct NotificationsView: View {
                     }
                 }
             }
-            .padding(20)
+            .padding(.horizontal, 20)
+            .padding(.top, 6)
+            .padding(.bottom, 20)
         }
         .refreshable { await store.loadNotifications() }
-        .onAppear { store.loadPushDevices() }
     }
 }

@@ -7,9 +7,15 @@ struct ConfirmationsView: View {
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
+        VStack(spacing: 0) {
+            SubscreenBar()
+            list
+        }
+    }
+
+    private var list: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                BackToHomeButton()
                 ScreenHeader("Подтверждения")
                 Text("Письма, сообщения и брони Аура не выполняет сама: каждое такое действие ждёт здесь вашего решения.")
                     .font(AuraFont.body)
@@ -40,7 +46,9 @@ struct ConfirmationsView: View {
                     .glassCard()
                 }
             }
-            .padding(20)
+            .padding(.horizontal, 20)
+            .padding(.top, 6)
+            .padding(.bottom, 20)
         }
         .refreshable { await store.loadConfirmations() }
     }

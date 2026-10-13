@@ -130,6 +130,8 @@ private struct TabBar: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(item.title)
+                .accessibilityIdentifier("tab.\(item.tab)")
                 .accessibilityAddTraits(active ? .isSelected : [])
             }
         }
@@ -202,5 +204,29 @@ struct BackToHomeButton: View {
         RoundIconButton(systemImage: "chevron.left", label: "Назад", size: 40) {
             store.selectTab(.home)
         }
+        .accessibilityIdentifier("nav.back")
+    }
+}
+
+/// Строка «назад» вложенного раздела. Стоит над ScrollView, а не внутри него:
+/// иначе после прокрутки длинного экрана (настройки) кнопка уезжала за верх
+/// и вернуться можно было, только долистав обратно. Справа — действия раздела.
+struct SubscreenBar<Trailing: View>: View {
+
+    @ViewBuilder var trailing: () -> Trailing
+
+    init(@ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }) {
+        self.trailing = trailing
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            BackToHomeButton()
+            Spacer(minLength: 8)
+            trailing()
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+        .padding(.bottom, 6)
     }
 }

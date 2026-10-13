@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Mail
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -39,6 +40,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import ai.aura.app.AppStore
+import ai.aura.kit.AuraUser
+import ai.aura.kit.Privacy
 import ai.aura.app.ui.theme.Accent
 import ai.aura.app.ui.theme.AccentSoft
 import ai.aura.app.ui.theme.AuraAvatar
@@ -57,8 +60,8 @@ import ai.aura.app.ui.theme.Warning
 import kotlinx.coroutines.launch
 
 /**
- * Настройки: профиль, сервер, что разрешено Ауре (allow/ask/deny по инструментам),
- * 2FA (setup → confirm → резервные коды, отключение по паролю), интеграции Google
+ * Настройки: профиль (имя и «о себе» через profile.update), сервер, что разрешено
+ * Ауре (allow/ask/deny по инструментам), приватность ИИ в переговорах (prefs.privacy), 2FA (setup → confirm → резервные коды, отключение по паролю), интеграции Google
  * (Custom Tabs → aura://oauth), выход. Кнопки делают только то, что умеет сервер.
  */
 @Composable
@@ -72,10 +75,27 @@ fun SettingsScreen() {
     val recoveryCodes by AppStore.recoveryCodes.collectAsState()
     val connections by AppStore.connections.collectAsState()
     val pushStatus by AppStore.pushStatus.collectAsState()
+    val privacy by AppStore.privacy.collectAsState()
+    val privacyError by AppStore.privacyError.collectAsState()
+    val profileSaving by AppStore.profileSaving.collectAsState()
+    val profileError by AppStore.profileError.collectAsState()
     var serverUrl by remember { mutableStateOf(AppStore.store.serverUrl) }
     var totpCode by remember { mutableStateOf("") }
     var disablePassword by remember { mutableStateOf("") }
     val me = auth as? AppStore.AuthState.LoggedIn
+    // Черновик профиля; после сохранения/входа заново берётся из стора.
+    var nameDraft by remember(me?.displayName) { mutableStateOf(me?.displayName.orEmpty()) }
+    var bioDraft by remember(me?.bio) { mutableStateOf(me?.bio.orEmpty()) }
+    val nameLength = nameDraft.trim().let { it.codePointCount(0, it.length) }
+    val bioLength = bioDraft.trim().let { it.codePointCount(0, it.length) }
+    val nameError = when {
+        nameLength == 0 -> "Имя не может быть пустым"
+        nameLength > AuraUser.DISPLAY_NAME_MAX -> "Имя — до ${AuraUser.DISPLAY_NAME_MAX} символов"
+        else -> null
+    }
+    val bioError = if (bioLength > AuraUser.BIO_MAX) "«О себе» — до ${AuraUser.BIO_MAX} символов" else null
+    val nameChanged = me != null && nameDraft.trim() != me.displayName
+    val bioChanged = me != null && bioDraft.trim() != me.bio
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -87,13 +107,36 @@ fun SettingsScreen() {
 
         item {
             GlassCard(Modifier.fillMaxWidth()) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AuraAvatar(me?.displayName.orEmpty(), size = 52.dp, online = true)
-                    Column(Modifier.weight(1f).padding(start = 14.dp)) {
-                        Text(me?.displayName.orEmpty(), style = MaterialTheme.typography.titleLarge, color = TextPrimary)
-                        Text(me?.email.orEmpty(), style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                        Muted(pushStatus)
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AuraAvatar(me?.displayName.orEmpty(), size = 52.dp, online = true)
+                        Column(Modifier.weight(1f).padding(start = 14.dp)) {
+                            Text(me?.displayName.orEmpty(), style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+                            Text(me?.email.orEmpty(), style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                            Muted(pushStatus)
+                        }
                     }
+                    AuraField(nameDraft, { nameDraft = it; AppStore.clearProfileError() }, "Как вас зовут", label = "Имя")
+                    if (nameError != null) Text(nameError, style = MaterialTheme.typography.bodySmall, color = Danger)
+                    AuraField(bioDraft, { bioDraft = it; AppStore.clearProfileError() }, "Пара слов о себе — увидят ваши контакты",
+                        label = "О себе", maxLines = 5)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(bioError.orEmpty(), style = MaterialTheme.typography.bodySmall, color = Danger, modifier = Modifier.weight(1f))
+                        Text("$bioLength/${AuraUser.BIO_MAX}", style = MaterialTheme.typography.labelSmall,
+                            color = if (bioError != null) Danger else TextSecondary)
+                    }
+                    profileError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = Danger) }
+                    GradientButton(
+                        "Сохранить профиль",
+                        {
+                            AppStore.saveProfile(
+                                displayName = nameDraft.trim().takeIf { nameChanged },
+                                bio = bioDraft.trim().takeIf { bioChanged },
+                            )
+                        },
+                        Modifier.fillMaxWidth(), height = 44.dp, busy = profileSaving,
+                        enabled = nameError == null && bioError == null && (nameChanged || bioChanged) && !profileSaving,
+                    )
                 }
             }
         }
@@ -115,6 +158,34 @@ fun SettingsScreen() {
                     }
                     Muted(toolDescription(row.tool, row.description))
                     Segmented(row.mode) { AppStore.setPermission(row.tool, it) }
+                }
+            }
+        }
+
+        item { SectionTitle("Приватность ИИ") }
+        item { Muted("Что ваша Аура раскрывает чужой Ауре, когда договаривается о встрече.") }
+        item {
+            GlassCard(Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    val current = privacy
+                    if (current == null) Muted("Загружаем настройки приватности…")
+                    val shown = current ?: Privacy()
+                    PrivacySwitch(
+                        "Делиться только свободными слотами",
+                        "Только занято/свободно и нужные для встречи настройки — без фактов памяти, дня рождения и аллергий.",
+                        shown.shareFreeSlotsOnly, enabled = current != null,
+                    ) { AppStore.setPrivacyFlag(Privacy.SHARE_FREE_SLOTS_ONLY, it) }
+                    PrivacySwitch(
+                        "Разрешить выбор локаций",
+                        "Если выключено у вас или у собеседника, Аура не предлагает место.",
+                        shown.allowPlaceChoice, enabled = current != null,
+                    ) { AppStore.setPrivacyFlag(Privacy.ALLOW_PLACE_CHOICE, it) }
+                    PrivacySwitch(
+                        "Скрывать названия других событий",
+                        "Названия событий вашего календаря собеседник видит как «занято».",
+                        shown.hideEventTitles, enabled = current != null,
+                    ) { AppStore.setPrivacyFlag(Privacy.HIDE_EVENT_TITLES, it) }
+                    privacyError?.let { Text("Не сохранилось: $it", style = MaterialTheme.typography.bodySmall, color = Danger) }
                 }
             }
         }
@@ -186,6 +257,18 @@ fun SettingsScreen() {
             GlassButton("Выйти", { AppStore.logout() }, Modifier.fillMaxWidth(), icon = Icons.AutoMirrored.Outlined.Logout,
                 danger = true, height = 50.dp)
         }
+    }
+}
+
+/** Флаг приватности: подпись, пояснение в одну строку и переключатель (сохраняется сразу). */
+@Composable
+private fun PrivacySwitch(title: String, hint: String, checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+            Muted(hint)
+        }
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -289,6 +290,8 @@ fun AuraField(
     readOnly: Boolean = false,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     onDone: (() -> Unit)? = null,
+    /** >1 — многострочное поле (например, «О себе»): растёт до maxLines строк. */
+    maxLines: Int = 1,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val focused by interaction.collectIsFocusedAsState()
@@ -299,7 +302,8 @@ fun AuraField(
             value = value,
             onValueChange = onValueChange,
             readOnly = readOnly,
-            singleLine = true,
+            singleLine = maxLines <= 1,
+            maxLines = maxLines.coerceAtLeast(1),
             interactionSource = interaction,
             textStyle = TextStyle(fontFamily = Manrope, fontSize = 15.sp, color = TextPrimary, fontWeight = FontWeight.Medium),
             cursorBrush = SolidColor(Lilac),
@@ -311,7 +315,7 @@ fun AuraField(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp)
+                        .then(if (maxLines <= 1) Modifier.height(48.dp) else Modifier.heightIn(min = 48.dp))
                         .clip(shape)
                         .background(if (filled) Color.White.copy(alpha = 0.09f) else Color(0x730A0812))
                         .border(
@@ -323,7 +327,8 @@ fun AuraField(
                             },
                             shape,
                         )
-                        .padding(start = 16.dp, end = 12.dp),
+                        .padding(start = 16.dp, end = 12.dp)
+                        .then(if (maxLines <= 1) Modifier else Modifier.padding(vertical = 13.dp)),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(Modifier.weight(1f)) {

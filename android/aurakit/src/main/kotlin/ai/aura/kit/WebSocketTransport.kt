@@ -29,8 +29,10 @@ import okio.ByteString
  *  - события ("type":"event") публикуются в SharedFlow [events];
  *  - при обрыве соединения незавершённые запросы падают AuraError("disconnected"),
  *    транспорт уходит в reconnecting и поднимается сам.
+ *
+ * Класс открыт (open), чтобы JVM-тесты aurakit подменяли [request] без сети.
  */
-class WebSocketTransport(private val client: OkHttpClient = defaultClient()) {
+open class WebSocketTransport(private val client: OkHttpClient = defaultClient()) {
 
     enum class State { DISCONNECTED, CONNECTING, CONNECTED, RECONNECTING }
 
@@ -67,7 +69,7 @@ class WebSocketTransport(private val client: OkHttpClient = defaultClient()) {
     }
 
     /** Запрос к серверу; возвращает payload кадра "ok" или бросает AuraError. */
-    suspend fun request(type: String, payload: JsonObject = JsonObject(emptyMap())): JsonObject? {
+    open suspend fun request(type: String, payload: JsonObject = JsonObject(emptyMap())): JsonObject? {
         val ws = socket ?: throw AuraError("disconnected", "соединение не установлено")
         val id = "req-${counter.getAndIncrement()}"
         val deferred = CompletableDeferred<JsonObject?>()

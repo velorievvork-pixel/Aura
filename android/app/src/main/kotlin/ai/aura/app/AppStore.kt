@@ -4,7 +4,9 @@ import android.content.Context
 import ai.aura.kit.AuraClient
 import ai.aura.kit.AuraError
 import ai.aura.kit.AuraEventName
+import ai.aura.kit.AuraUser
 import ai.aura.kit.DeepLink
+import ai.aura.kit.Privacy
 import ai.aura.kit.arr
 import ai.aura.kit.bool
 import ai.aura.kit.long
@@ -77,7 +79,7 @@ object AppStore {
         data class NeedsEmailCode(val email: String) : AuthState()
         data class Needs2fa(val email: String, val password: String) : AuthState()
         data class NeedsResetCode(val email: String) : AuthState()
-        data class LoggedIn(val displayName: String, val email: String) : AuthState()
+        data class LoggedIn(val displayName: String, val email: String, val bio: String = "") : AuthState()
     }
 
     /** Разделы v3: пять во вкладках снизу, остальные открываются из шапки Home. */
@@ -182,6 +184,21 @@ object AppStore {
     private val _prefs = MutableStateFlow<JsonObject?>(null)
     val prefs: StateFlow<JsonObject?> = _prefs
 
+    /** Приватность в переговорах (prefs.privacy); null — ещё не загружена. */
+    private val _privacy = MutableStateFlow<Privacy?>(null)
+    val privacy: StateFlow<Privacy?> = _privacy
+
+    /** Ошибка последнего переключения приватности (текст сервера). */
+    private val _privacyError = MutableStateFlow<String?>(null)
+    val privacyError: StateFlow<String?> = _privacyError
+
+    private val _profileSaving = MutableStateFlow(false)
+    val profileSaving: StateFlow<Boolean> = _profileSaving
+
+    /** Ошибка profile.update (текст сервера) — показывается в карточке профиля. */
+    private val _profileError = MutableStateFlow<String?>(null)
+    val profileError: StateFlow<String?> = _profileError
+
     /** Ответ «С чем помогать?» из регистрации — уходит в память после первого входа. */
     private var pendingFocus = ""
     private var dialogSeq = 0L
@@ -231,9 +248,7 @@ object AppStore {
                 }
                 // auth.me возвращает пользователя прямо в payload (без обёртки user).
                 val me = client.me()
-                val user = me.obj("user") ?: me
-                _userId.value = user.long("id")
-                _auth.value = AuthState.LoggedIn(user.str("display_name"), user.str("email"))
+                applyUser(AuraUser.from(me.obj("user") ?: me))
                 afterLogin()
             }
         }
@@ -341,10 +356,13 @@ object AppStore {
     private suspend fun applyAuth(payload: JsonObject?) {
         store.accessToken = payload.str("token")
         store.refreshToken = payload.str("refresh_token")
-        val user = payload.obj("user")
-        _userId.value = user.long("id")
-        _auth.value = AuthState.LoggedIn(user.str("display_name"), user.str("email"))
+        applyUser(AuraUser.from(payload.obj("user")))
         afterLogin()
+    }
+
+    private fun applyUser(user: AuraUser) {
+        _userId.value = user.id
+        _auth.value = AuthState.LoggedIn(user.displayName, user.email, user.bio)
     }
 
     private suspend fun afterLogin() {
@@ -370,8 +388,70 @@ object AppStore {
         runCatching {
             val prefs = client.prefsGet()
             _prefs.value = prefs
+            _privacy.value = Privacy.fromPrefs(prefs)
             _needOnboarding.value = !prefs.bool("onboarded")
         }
+    }
+
+    // ------------------------------------------------------------- профиль
+
+    /**
+     * profile.update: уходят только изменённые поля (null — не трогать).
+     * Успех — обновляем пользователя в сторе; ошибка — текст сервера в [profileError].
+     */
+    fun saveProfile(displayName: String?, bio: String?) = scope.launch {
+        if (displayName == null && bio == null) return@launch
+        _profileSaving.value = true
+        _profileError.value = null
+        try {
+            applyUser(client.profileUpdate(displayName = displayName, bio = bio))
+            _errorText.value = "Профиль сохранён"
+        } catch (error: AuraError) {
+            _profileError.value = if (error.code == "bad_request") error.serverMessage else describe(error)
+        } catch (error: Exception) {
+            _profileError.value = error.message ?: "неизвестная ошибка"
+        } finally {
+            _profileSaving.value = false
+        }
+    }
+
+    fun clearProfileError() { _profileError.value = null }
+
+    // ------------------------------------------------------------- приватность
+
+    fun refreshPrivacy() = scope.launch {
+        runCatching { client.privacyGet() }.onSuccess { _privacy.value = it }
+    }
+
+    /**
+     * Переключатель сохраняется сразу (prefs.set {"privacy":{flag}}). Показываем новое
+     * значение оптимистично; при ошибке возвращаем флаг назад и пишем текст ошибки.
+     */
+    fun setPrivacyFlag(flag: String, value: Boolean) = scope.launch {
+        val current = _privacy.value ?: return@launch
+        _privacyError.value = null
+        _privacy.value = current.with(flag, value)
+        try {
+            _privacy.value = when (flag) {
+                Privacy.SHARE_FREE_SLOTS_ONLY -> client.privacySet(shareFreeSlotsOnly = value)
+                Privacy.HIDE_EVENT_TITLES -> client.privacySet(hideEventTitles = value)
+                Privacy.ALLOW_PLACE_CHOICE -> client.privacySet(allowPlaceChoice = value)
+                else -> return@launch
+            }
+        } catch (error: Exception) {
+            _privacy.value = (_privacy.value ?: current).with(flag, !value)
+            _privacyError.value = when (error) {
+                is AuraError -> if (error.code == "bad_request") error.serverMessage else describe(error)
+                else -> error.message ?: "неизвестная ошибка"
+            }
+        }
+    }
+
+    private fun Privacy.with(flag: String, value: Boolean): Privacy = when (flag) {
+        Privacy.SHARE_FREE_SLOTS_ONLY -> copy(shareFreeSlotsOnly = value)
+        Privacy.HIDE_EVENT_TITLES -> copy(hideEventTitles = value)
+        Privacy.ALLOW_PLACE_CHOICE -> copy(allowPlaceChoice = value)
+        else -> this
     }
 
     /** Сохранить анкету (день рождения, аллергии, диета, …) через prefs.set. */
@@ -411,6 +491,7 @@ object AppStore {
         _contacts.value = emptyList(); _dialog.value = emptyList(); _negotiation.value = null
         _negotiationHistory.value = emptyList(); _userResults.value = emptyList(); _memory.value = emptyList()
         _userId.value = 0; _tab.value = Tab.HOME
+        _prefs.value = null; _privacy.value = null; _privacyError.value = null; _profileError.value = null
     }
 
     // ------------------------------------------------------------- Аура/голос
@@ -539,7 +620,7 @@ object AppStore {
         _tab.value = value
         if (value != Tab.CONTACTS) _openChatId.value = 0
         when (value) {
-            Tab.SETTINGS -> { refreshPermissions(); refreshIntegrations(); refresh2faStatus() }
+            Tab.SETTINGS -> { refreshPermissions(); refreshIntegrations(); refresh2faStatus(); refreshPrivacy() }
             Tab.CONFIRMATIONS -> refreshConfirmations()
             Tab.NOTICES -> refreshNotifications()
             Tab.TASKS -> refreshTasks()

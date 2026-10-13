@@ -102,6 +102,22 @@ class AuraClient(private val transport: WebSocketTransport = WebSocketTransport(
 
     suspend fun sessionsList(): JsonObject? = request("sessions.list")
 
+    /**
+     * Профиль (profile.update): уходят только переданные (не null) поля.
+     * Сервер: display_name 1–80 символов, bio ≤300, avatar_url — пусто, https://…
+     * или data:image/{png,jpeg,webp};base64,… (до ~100 КБ); иначе bad_request.
+     * Ответ — {user}, возвращаем его разобранным.
+     */
+    suspend fun profileUpdate(displayName: String? = null, bio: String? = null, avatarUrl: String? = null): AuraUser {
+        val payload = buildJsonObject {
+            displayName?.let { put("display_name", it) }
+            bio?.let { put("bio", it) }
+            avatarUrl?.let { put("avatar_url", it) }
+        }
+        if (payload.isEmpty()) throw AuraError("bad_request", "нет полей профиля для изменения")
+        return AuraUser.from(request("profile.update", payload).obj("user"))
+    }
+
     // ---------------------------------------------------------- чаты и Аура
 
     suspend fun chatList(limit: Int = 50): JsonObject? =
@@ -185,6 +201,32 @@ class AuraClient(private val transport: WebSocketTransport = WebSocketTransport(
      * payload — без обёртки (docs/PROTOCOL.md, метод prefs.set).
      */
     suspend fun prefsSet(preferences: JsonObject): JsonObject? = request("prefs.set", preferences)
+
+    /** Флаги приватности переговоров из prefs.get (нет ключа — true). */
+    suspend fun privacyGet(): Privacy = Privacy.fromPrefs(prefsGet())
+
+    /**
+     * Частичное обновление приватности: prefs.set с {"privacy":{...}} в корне payload,
+     * только переданные (не null) флаги — сервер сливает их с текущими.
+     * Возвращает итоговые флаги из ответа сервера.
+     */
+    suspend fun privacySet(
+        shareFreeSlotsOnly: Boolean? = null,
+        hideEventTitles: Boolean? = null,
+        allowPlaceChoice: Boolean? = null,
+    ): Privacy {
+        val flags = buildJsonObject {
+            shareFreeSlotsOnly?.let { put(Privacy.SHARE_FREE_SLOTS_ONLY, it) }
+            hideEventTitles?.let { put(Privacy.HIDE_EVENT_TITLES, it) }
+            allowPlaceChoice?.let { put(Privacy.ALLOW_PLACE_CHOICE, it) }
+        }
+        if (flags.isEmpty()) return privacyGet()
+        return Privacy.fromPrefs(prefsSet(buildJsonObject { put("privacy", flags) }))
+    }
+
+    /** Все три флага разом (например, восстановление после ошибки). */
+    suspend fun privacySet(privacy: Privacy): Privacy =
+        Privacy.fromPrefs(prefsSet(buildJsonObject { put("privacy", privacy.toJson()) }))
 
     // ---------------------------------------------------------------- задачи
 

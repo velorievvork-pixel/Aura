@@ -796,7 +796,10 @@ TEST(server_register_login_flow) {
     verify.set("email", Json("anna@example.com"));
     verify.set("code", Json(emailCode));
     CHECK(fixture.call(session, "auth.verifyEmail", verify).get("payload").getBool("verified"));
-    CHECK(fixture.call(session, "auth.verifyEmail", verify).get("payload").getBool("verified"));
+    const Json again = fixture.call(session, "auth.verifyEmail", verify);
+    CHECK(again.get("payload").getBool("verified"));
+    // Повтор для уже подтверждённого адреса не раскрывает данные пользователя.
+    CHECK(again.get("payload").get("user").isNull());
 
     // 4) Дубль email отклоняется.
     auto other = fixture.makeSession("other");
@@ -3082,6 +3085,459 @@ TEST(audit_a11_external_tools_get_no_ai_token) {
     CHECK(request.find("POST /places") != std::string::npos);
     CHECK(request.find("super-secret-ai-token") == std::string::npos);
     CHECK(request.find("X-Aura-Token") == std::string::npos);
+}
+
+// ------------------------------------------------------- админ-панель (admin.*)
+namespace admin_test {
+
+// Сессия на собственном socketpair: Fixture::makeSession закрывает конец
+// предыдущей сессии, а здесь нужно, чтобы несколько соединений были «живыми»
+// (иначе нечего проверять при выбивании соединений).
+struct Sockets {
+    std::vector<int> fds;
+    ~Sockets() {
+        for (const int fd : fds) ::close(fd);
+    }
+    std::shared_ptr<aura::Session> open(Fixture& fixture, const std::string& id) {
+        int pair[2] = {-1, -1};
+        if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) return nullptr;
+        fds.push_back(pair[0]);
+        fds.push_back(pair[1]);
+        return std::make_shared<aura::Session>(pair[1], id, "127.0.0.1:0", fixture.config);
+    }
+};
+
+long long userIdOf(const Json& loginResponse) {
+    return loginResponse.get("payload").get("user").getInt("id");
+}
+
+Json byId(long long userId) {
+    Json payload = Json::object();
+    payload.set("user_id", Json(userId));
+    return payload;
+}
+
+Json setActivePayload(long long userId, bool active, const std::string& reason) {
+    Json payload = byId(userId);
+    payload.set("active", Json(active));
+    payload.set("reason", Json(reason));
+    return payload;
+}
+
+Json setRolePayload(long long userId, const std::string& role) {
+    Json payload = byId(userId);
+    payload.set("role", Json(role));
+    return payload;
+}
+
+Json loginPayload(const std::string& email) {
+    Json payload = Json::object();
+    payload.set("email", Json(email));
+    payload.set("password", Json("aura1234"));
+    return payload;
+}
+
+}  // namespace admin_test
+
+TEST(admin_role_in_auth_payloads) {
+    Fixture fixture;
+    auto session = fixture.makeSession("role-user");
+    const Json login = fixture.registerUser(session, "plain@example.com", "Плейн");
+    CHECK_EQ(login.get("payload").get("user").getString("role"), std::string("user"));
+    CHECK_EQ(integration::payloadOf(fixture.call(session, "auth.me")).getString("role"), std::string("user"));
+    // Обычный пользователь в админ-панель не попадает.
+    CHECK_EQ(fixture.call(session, "admin.stats").getString("code"), std::string("forbidden"));
+    CHECK_EQ(fixture.call(session, "admin.users").getString("code"), std::string("forbidden"));
+    CHECK_EQ(fixture.call(session, "admin.audit").getString("code"), std::string("forbidden"));
+    // Без входа — unauthorized: методы admin.* не публичные.
+    auto anonymous = fixture.makeSession("role-anon");
+    CHECK_EQ(fixture.call(anonymous, "admin.stats").getString("code"), std::string("unauthorized"));
+}
+
+TEST(admin_bootstrap_from_env_verified_only) {
+    ::setenv("AURA_ADMIN_EMAILS", "Boss@Example.com, ghost@example.com;late@example.com", 1);
+    Fixture fixture;
+    ::unsetenv("AURA_ADMIN_EMAILS");
+    CHECK_EQ(fixture.config.adminEmails.empty(), false);
+
+    // Подтверждённый адрес из списка — admin сразу после verifyEmail; ответ входа уже с ролью.
+    auto boss = fixture.makeSession("boss");
+    const Json login = fixture.registerUser(boss, "boss@example.com", "Босс");
+    CHECK_EQ(login.get("payload").get("user").getString("role"), std::string("admin"));
+    CHECK_EQ(integration::payloadOf(fixture.call(boss, "auth.me")).getString("role"), std::string("admin"));
+    CHECK_EQ(fixture.call(boss, "admin.stats").getString("type"), std::string("ok"));
+
+    // Неподтверждённый адрес из списка роль не получает (иначе её взял бы тот,
+    // кто первым зарегистрировал чужой email).
+    auto ghost = fixture.makeSession("ghost");
+    Json reg = Json::object();
+    reg.set("email", Json("ghost@example.com"));
+    reg.set("password", Json("aura1234"));
+    reg.set("display_name", Json("Призрак"));
+    CHECK_EQ(fixture.call(ghost, "auth.register", reg).getString("type"), std::string("ok"));
+    auto& db = fixture.server->database().db();
+    CHECK_EQ(db.findUserByEmail("ghost@example.com")->role, std::string("user"));
+    CHECK_EQ(fixture.call(ghost, "auth.login", admin_test::loginPayload("ghost@example.com")).getString("code"),
+             std::string("email_not_verified"));
+    CHECK_EQ(db.findUserByEmail("ghost@example.com")->role, std::string("user"));
+
+    // Адрес не из списка — обычный пользователь.
+    auto other = fixture.makeSession("other");
+    fixture.registerUser(other, "other@example.com", "Другой");
+    CHECK_EQ(db.findUserByEmail("other@example.com")->role, std::string("user"));
+
+    // bootstrapAll при старте: пользователь подтвердился раньше, чем адрес попал в список.
+    fixture.config.adminEmails = "other@example.com";
+    fixture.server->stop();
+    fixture.server = std::make_unique<aura::Server>(fixture.config);
+    std::string error;
+    CHECK(fixture.server->start(error));
+    auto& restarted = fixture.server->database().db();
+    CHECK_EQ(restarted.findUserByEmail("other@example.com")->role, std::string("admin"));
+    bool bootstrapAudited = false;
+    const long long otherId = restarted.findUserByEmail("other@example.com")->id;
+    for (const auto& entry : restarted.listAuditPage(otherId, 0, 10)) {
+        if (entry.kind == "role_bootstrap") bootstrapAudited = true;
+    }
+    CHECK(bootstrapAudited);
+}
+
+TEST(admin_moderator_vs_admin_permissions) {
+    Fixture fixture;
+    admin_test::Sockets sockets;
+    auto adminSession = sockets.open(fixture, "perm-admin");
+    auto modSession = sockets.open(fixture, "perm-mod");
+    auto userSession = sockets.open(fixture, "perm-user");
+    auto peerSession = sockets.open(fixture, "perm-peer");
+    const long long adminId = admin_test::userIdOf(fixture.registerUser(adminSession, "padmin@example.com", "Админ"));
+    const long long modId = admin_test::userIdOf(fixture.registerUser(modSession, "pmod@example.com", "Модератор"));
+    const long long userId = admin_test::userIdOf(fixture.registerUser(userSession, "puser@example.com", "Юзер"));
+    const long long peerId = admin_test::userIdOf(fixture.registerUser(peerSession, "ppeer@example.com", "Пир"));
+    auto& db = fixture.server->database().db();
+    CHECK(db.setUserRole(adminId, "admin").ok);
+
+    // Администратор назначает модератора; роль видна в ответе.
+    const Json promoted = fixture.call(adminSession, "admin.setRole", admin_test::setRolePayload(modId, "moderator"));
+    CHECK_EQ(promoted.getString("type"), std::string("ok"));
+    CHECK_EQ(integration::payloadOf(promoted).get("user").getString("role"), std::string("moderator"));
+    CHECK_EQ(fixture.call(adminSession, "admin.setRole", admin_test::setRolePayload(modId, "root")).getString("code"),
+             std::string("bad_request"));
+
+    // Модератор: обзор и список — да; роли и журнал — нет.
+    CHECK_EQ(fixture.call(modSession, "admin.stats").getString("type"), std::string("ok"));
+    CHECK_EQ(fixture.call(modSession, "admin.users").getString("type"), std::string("ok"));
+    CHECK_EQ(fixture.call(modSession, "admin.audit").getString("code"), std::string("forbidden"));
+    CHECK_EQ(fixture.call(modSession, "admin.setRole", admin_test::setRolePayload(userId, "moderator")).getString("code"),
+             std::string("forbidden"));
+    // Модератор не трогает администраторов, модераторов и себя.
+    CHECK_EQ(fixture.call(modSession, "admin.setActive", admin_test::setActivePayload(adminId, false, "тест"))
+                 .getString("code"),
+             std::string("forbidden"));
+    CHECK_EQ(fixture.call(modSession, "admin.revokeSessions", admin_test::byId(adminId)).getString("code"),
+             std::string("forbidden"));
+    CHECK_EQ(fixture.call(modSession, "admin.setActive", admin_test::setActivePayload(modId, false, "тест"))
+                 .getString("code"),
+             std::string("forbidden"));
+    // Причина блокировки обязательна.
+    CHECK_EQ(fixture.call(modSession, "admin.setActive", admin_test::setActivePayload(userId, false, "  "))
+                 .getString("code"),
+             std::string("bad_request"));
+    // Обычного пользователя модератор блокирует и разблокирует.
+    const Json blocked = fixture.call(modSession, "admin.setActive", admin_test::setActivePayload(userId, false, "спам"));
+    CHECK_EQ(blocked.getString("type"), std::string("ok"));
+    CHECK_EQ(integration::payloadOf(blocked).get("user").getBool("is_active", true), false);
+    CHECK_EQ(fixture.call(modSession, "admin.setActive", admin_test::setActivePayload(userId, true, ""))
+                 .getString("type"),
+             std::string("ok"));
+
+    // Карточка пользователя: модератор видит события, но без IP-адресов.
+    const Json modView = integration::payloadOf(fixture.call(modSession, "admin.user", admin_test::byId(userId)));
+    CHECK_EQ(modView.get("user").getString("email"), std::string("puser@example.com"));
+    CHECK(modView.get("audit").items().size() > 0);
+    for (const auto& entry : modView.get("audit").items()) CHECK(entry.getString("remote_addr").empty());
+    const Json adminView = integration::payloadOf(fixture.call(adminSession, "admin.user", admin_test::byId(userId)));
+    bool anyAddress = false;
+    for (const auto& entry : adminView.get("audit").items()) anyAddress |= !entry.getString("remote_addr").empty();
+    CHECK(anyAddress);
+    CHECK_EQ(fixture.call(modSession, "admin.user", admin_test::byId(999999)).getString("code"),
+             std::string("not_found"));
+
+    // Свою роль и статус не меняет никто, в том числе единственный администратор
+    // (так последний администратор не может понизить сам себя).
+    CHECK_EQ(fixture.call(adminSession, "admin.setRole", admin_test::setRolePayload(adminId, "user")).getString("code"),
+             std::string("forbidden"));
+    CHECK_EQ(fixture.call(adminSession, "admin.setActive", admin_test::setActivePayload(adminId, false, "я"))
+                 .getString("code"),
+             std::string("forbidden"));
+    CHECK_EQ(db.findUserById(adminId)->role, std::string("admin"));
+
+    // Второй администратор может понизить первого; тогда последний — он сам, и себя не понизит.
+    CHECK_EQ(fixture.call(adminSession, "admin.setRole", admin_test::setRolePayload(peerId, "admin")).getString("type"),
+             std::string("ok"));
+    CHECK_EQ(fixture.call(peerSession, "admin.setRole", admin_test::setRolePayload(adminId, "user")).getString("type"),
+             std::string("ok"));
+    CHECK_EQ(fixture.call(peerSession, "admin.setRole", admin_test::setRolePayload(peerId, "moderator")).getString("code"),
+             std::string("forbidden"));
+    // Понижение действует сразу: бывший администратор без перевхода теряет доступ.
+    CHECK_EQ(fixture.call(adminSession, "admin.stats").getString("code"), std::string("forbidden"));
+
+    // Роль модератора/админа — только активному пользователю с подтверждённым email.
+    Json reg = Json::object();
+    reg.set("email", Json("pnew@example.com"));
+    reg.set("password", Json("aura1234"));
+    reg.set("display_name", Json("Новый"));
+    fixture.call(fixture.makeSession("perm-new"), "auth.register", reg);
+    const long long freshId = db.findUserByEmail("pnew@example.com")->id;
+    CHECK_EQ(fixture.call(peerSession, "admin.setRole", admin_test::setRolePayload(freshId, "moderator")).getString("code"),
+             std::string("bad_request"));
+
+    // Журнал: смена роли с old_role и актором.
+    bool roleAudited = false;
+    for (const auto& entry : db.listAuditPage(adminId, 0, 20)) {
+        if (entry.kind == "admin_role_changed" && entry.detail.getString("old_role") == "admin" &&
+            entry.detail.getString("role") == "user" && entry.detail.getString("actor_email") == "ppeer@example.com") {
+            roleAudited = true;
+        }
+    }
+    CHECK(roleAudited);
+}
+
+TEST(admin_disable_kicks_and_blocks_login) {
+    Fixture fixture;
+    admin_test::Sockets sockets;
+    auto adminSession = sockets.open(fixture, "dis-admin");
+    auto victim = sockets.open(fixture, "dis-victim");
+    auto victimSecond = sockets.open(fixture, "dis-victim-2");
+    const long long adminId = admin_test::userIdOf(fixture.registerUser(adminSession, "dadmin@example.com", "Админ"));
+    const Json victimLogin = fixture.registerUser(victim, "dvictim@example.com", "Нарушитель");
+    const long long victimId = admin_test::userIdOf(victimLogin);
+    const std::string victimToken = victimLogin.get("payload").getString("token");
+    const std::string victimRefresh = victimLogin.get("payload").getString("refresh_token");
+    CHECK_EQ(fixture.call(victimSecond, "auth.login", admin_test::loginPayload("dvictim@example.com")).getString("type"),
+             std::string("ok"));
+    auto& db = fixture.server->database().db();
+    CHECK(db.setUserRole(adminId, "admin").ok);
+    CHECK_EQ(fixture.server->connections().forUser(victimId).size(), std::size_t(2));
+
+    const Json stats = integration::payloadOf(fixture.call(adminSession, "admin.stats"));
+    CHECK_EQ(stats.getInt("online_now"), 2);  // два разных пользователя, у нарушителя два соединения
+
+    const Json disabled =
+        fixture.call(adminSession, "admin.setActive", admin_test::setActivePayload(victimId, false, "мошенничество"));
+    CHECK_EQ(disabled.getString("type"), std::string("ok"));
+    // Все открытые соединения выбиты, сессии и refresh-токены отозваны.
+    CHECK_EQ(victim->alive(), false);
+    CHECK_EQ(victimSecond->alive(), false);
+    CHECK_EQ(fixture.server->connections().forUser(victimId).size(), std::size_t(0));
+    CHECK_EQ(integration::payloadOf(fixture.call(adminSession, "admin.user", admin_test::byId(victimId)))
+                 .getInt("sessions_active", -1),
+             0);
+
+    // Вход, старый токен и refresh больше не работают.
+    auto retry = fixture.makeSession("dis-retry");
+    CHECK_EQ(fixture.call(retry, "auth.login", admin_test::loginPayload("dvictim@example.com")).getString("code"),
+             std::string("forbidden"));
+    Json tokenPayload = Json::object();
+    tokenPayload.set("token", Json(victimToken));
+    CHECK_EQ(fixture.call(retry, "auth.token", tokenPayload).getString("code"), std::string("unauthorized"));
+    CHECK(!retry->authenticated());
+    Json refreshPayload = Json::object();
+    refreshPayload.set("refresh_token", Json(victimRefresh));
+    CHECK_EQ(fixture.call(retry, "auth.refresh", refreshPayload).getString("code"), std::string("unauthorized"));
+
+    // Журнал: причина, актор и число завершённых сессий.
+    bool audited = false;
+    for (const auto& entry : db.listAuditPage(victimId, 0, 20)) {
+        if (entry.kind == "admin_user_disabled" && entry.detail.getString("reason") == "мошенничество" &&
+            entry.detail.getString("actor_email") == "dadmin@example.com" && entry.detail.getInt("revoked") == 2) {
+            audited = true;
+        }
+    }
+    CHECK(audited);
+
+    // Даже живая сессия в БД (созданная в обход) не пускает заблокированного по токену.
+    std::string jwtId;
+    const std::string forged = fixture.server->auth().issueToken(victimId, "dvictim@example.com", jwtId);
+    aura::SessionRecord record;
+    record.id = "00000000000000000000000000000001";
+    record.userId = victimId;
+    record.jwtId = jwtId;
+    record.expiresAt = "2999-01-01T00:00:00Z";
+    CHECK(db.createSession(record).ok);
+    auto forgedSession = fixture.makeSession("dis-forged");
+    Json forgedPayload = Json::object();
+    forgedPayload.set("token", Json(forged));
+    CHECK_EQ(fixture.call(forgedSession, "auth.token", forgedPayload).getString("code"), std::string("unauthorized"));
+    db.revokeAllSessions(victimId, "");
+
+    // Разблокировка: вход снова работает.
+    CHECK_EQ(fixture.call(adminSession, "admin.setActive", admin_test::setActivePayload(victimId, true, ""))
+                 .getString("type"),
+             std::string("ok"));
+    auto back = fixture.makeSession("dis-back");
+    CHECK_EQ(fixture.call(back, "auth.login", admin_test::loginPayload("dvictim@example.com")).getString("type"),
+             std::string("ok"));
+}
+
+TEST(admin_revoke_sessions_kicks) {
+    Fixture fixture;
+    admin_test::Sockets sockets;
+    auto adminSession = sockets.open(fixture, "rev-admin");
+    auto target = sockets.open(fixture, "rev-target");
+    const long long adminId = admin_test::userIdOf(fixture.registerUser(adminSession, "radmin@example.com", "Админ"));
+    const Json targetLogin = fixture.registerUser(target, "rtarget@example.com", "Цель");
+    const long long targetId = admin_test::userIdOf(targetLogin);
+    CHECK(fixture.server->database().db().setUserRole(adminId, "admin").ok);
+
+    const Json revoked = fixture.call(adminSession, "admin.revokeSessions", admin_test::byId(targetId));
+    CHECK_EQ(revoked.getString("type"), std::string("ok"));
+    CHECK_EQ(integration::payloadOf(revoked).getInt("revoked"), 1);
+    CHECK_EQ(target->alive(), false);
+    auto retry = fixture.makeSession("rev-retry");
+    Json tokenPayload = Json::object();
+    tokenPayload.set("token", Json(targetLogin.get("payload").getString("token")));
+    CHECK_EQ(fixture.call(retry, "auth.token", tokenPayload).getString("code"), std::string("unauthorized"));
+    // Аккаунт не заблокирован: войти заново можно.
+    CHECK_EQ(fixture.call(retry, "auth.login", admin_test::loginPayload("rtarget@example.com")).getString("type"),
+             std::string("ok"));
+    CHECK_EQ(fixture.call(adminSession, "admin.revokeSessions", admin_test::byId(adminId)).getString("code"),
+             std::string("forbidden"));
+    bool audited = false;
+    for (const auto& entry : fixture.server->database().db().listAuditPage(targetId, 0, 20)) {
+        if (entry.kind == "admin_sessions_revoked" && entry.detail.getInt("revoked") == 1) audited = true;
+    }
+    CHECK(audited);
+}
+
+TEST(admin_users_filters_and_stats) {
+    Fixture fixture;
+    admin_test::Sockets sockets;
+    auto adminSession = sockets.open(fixture, "flt-admin");
+    const long long adminId = admin_test::userIdOf(fixture.registerUser(adminSession, "fadmin@example.com", "Админ"));
+    auto& db = fixture.server->database().db();
+    CHECK(db.setUserRole(adminId, "admin").ok);
+    for (const char* name : {"ivan", "maria", "petr", "olga"}) {
+        auto session = fixture.makeSession(std::string("flt-") + name);
+        fixture.registerUser(session, std::string(name) + "@example.com", std::string("Имя ") + name);
+    }
+    // Неподтверждённый пользователь.
+    Json reg = Json::object();
+    reg.set("email", Json("unverified@example.com"));
+    reg.set("password", Json("aura1234"));
+    reg.set("display_name", Json("Ivan Unverified"));
+    fixture.call(fixture.makeSession("flt-unv"), "auth.register", reg);
+    // Модератор, заблокированный и пользователь с 2FA.
+    const long long ivanId = db.findUserByEmail("ivan@example.com")->id;
+    const long long mariaId = db.findUserByEmail("maria@example.com")->id;
+    const long long petrId = db.findUserByEmail("petr@example.com")->id;
+    CHECK(db.setUserRole(mariaId, "moderator").ok);
+    CHECK_EQ(fixture.call(adminSession, "admin.setActive", admin_test::setActivePayload(petrId, false, "спам"))
+                 .getString("type"),
+             std::string("ok"));
+    aura::TwoFactorRecord twoFactor;
+    twoFactor.userId = ivanId;
+    twoFactor.secretEncrypted = "x";
+    twoFactor.enabled = true;
+    CHECK(db.upsertTwoFactor(twoFactor).ok);
+
+    const auto list = [&](const std::string& query, const std::string& role, const std::string& status, int limit,
+                          int offset) {
+        Json payload = Json::object();
+        payload.set("query", Json(query));
+        payload.set("role", Json(role));
+        payload.set("status", Json(status));
+        payload.set("limit", Json(limit));
+        payload.set("offset", Json(offset));
+        return integration::payloadOf(fixture.call(adminSession, "admin.users", payload));
+    };
+    const Json all = list("", "", "", 50, 0);
+    CHECK_EQ(all.getInt("total"), 6);
+    CHECK_EQ(all.get("users").items().size(), std::size_t(6));
+    CHECK(all.get("users").at(0).getInt("id") > all.get("users").at(1).getInt("id"));  // новые первыми
+    const Json first = all.get("users").at(0);
+    for (const char* key : {"id", "email", "display_name", "avatar_url", "role", "is_active", "email_verified",
+                            "two_factor", "created_at", "last_seen_at"}) {
+        CHECK(first.contains(key));
+    }
+    CHECK(!first.contains("password_hash"));
+
+    // Поиск по email и имени без учёта регистра.
+    CHECK_EQ(list("IVAN", "", "", 50, 0).getInt("total"), 2);  // ivan@ и «Ivan Unverified»
+    CHECK_EQ(list("ivan", "", "unverified", 50, 0).getInt("total"), 1);
+    CHECK_EQ(list("", "", "unverified", 50, 0).get("users").at(0).getString("email"),
+             std::string("unverified@example.com"));
+    CHECK_EQ(list("", "", "disabled", 50, 0).get("users").at(0).getInt("id"), petrId);
+    CHECK_EQ(list("", "", "active", 50, 0).getInt("total"), 5);
+    CHECK_EQ(list("", "moderator", "", 50, 0).get("users").at(0).getInt("id"), mariaId);
+    CHECK_EQ(list("", "admin", "", 50, 0).getInt("total"), 1);
+    CHECK_EQ(list("ivan@", "", "", 50, 0).get("users").at(0).getBool("two_factor"), true);
+    CHECK_EQ(list("100%", "", "", 50, 0).getInt("total"), 0);  // спецсимволы LIKE — буквально
+    // Страницы: total не зависит от limit/offset.
+    const Json page1 = list("", "", "", 4, 0);
+    const Json page2 = list("", "", "", 4, 4);
+    CHECK_EQ(page1.get("users").items().size(), std::size_t(4));
+    CHECK_EQ(page2.get("users").items().size(), std::size_t(2));
+    CHECK_EQ(page2.getInt("total"), 6);
+    CHECK(page1.get("users").at(3).getInt("id") > page2.get("users").at(0).getInt("id"));
+    // Неверные фильтры.
+    Json badStatus = Json::object();
+    badStatus.set("status", Json("banned"));
+    CHECK_EQ(fixture.call(adminSession, "admin.users", badStatus).getString("code"), std::string("bad_request"));
+    Json badRole = Json::object();
+    badRole.set("role", Json("owner"));
+    CHECK_EQ(fixture.call(adminSession, "admin.users", badRole).getString("code"), std::string("bad_request"));
+
+    const Json stats = integration::payloadOf(fixture.call(adminSession, "admin.stats"));
+    CHECK_EQ(stats.getInt("users_total"), 6);
+    CHECK_EQ(stats.getInt("users_verified"), 5);
+    CHECK_EQ(stats.getInt("users_disabled"), 1);
+    CHECK_EQ(stats.getInt("users_2fa"), 1);
+    CHECK_EQ(stats.getInt("users_new_7d"), 6);
+    CHECK_EQ(stats.getInt("moderators"), 1);
+    CHECK_EQ(stats.getInt("admins"), 1);
+    CHECK_EQ(stats.getInt("sessions_active"), 4);  // 5 входов, сессия petr отозвана блокировкой
+    CHECK(stats.contains("online_now"));
+}
+
+TEST(admin_audit_paging) {
+    Fixture fixture;
+    admin_test::Sockets sockets;
+    auto adminSession = sockets.open(fixture, "aud-admin");
+    auto userSession = sockets.open(fixture, "aud-user");
+    const long long adminId = admin_test::userIdOf(fixture.registerUser(adminSession, "aadmin@example.com", "Админ"));
+    const long long userId = admin_test::userIdOf(fixture.registerUser(userSession, "auser@example.com", "Юзер"));
+    CHECK(fixture.server->database().db().setUserRole(adminId, "admin").ok);
+    for (int i = 0; i < 3; ++i) {
+        fixture.call(adminSession, "admin.setActive", admin_test::setActivePayload(userId, false, "раз"));
+        fixture.call(adminSession, "admin.setActive", admin_test::setActivePayload(userId, true, ""));
+    }
+
+    const auto page = [&](long long user, long long before, int limit) {
+        Json payload = Json::object();
+        payload.set("user_id", Json(user));
+        payload.set("before_id", Json(before));
+        payload.set("limit", Json(limit));
+        return integration::payloadOf(fixture.call(adminSession, "admin.audit", payload)).get("entries");
+    };
+    const Json first = page(0, 0, 5);
+    CHECK_EQ(first.items().size(), std::size_t(5));
+    for (std::size_t i = 1; i < first.items().size(); ++i) {
+        CHECK(first.at(i - 1).getInt("id") > first.at(i).getInt("id"));
+    }
+    const long long lastId = first.at(4).getInt("id");
+    const Json second = page(0, lastId, 5);
+    CHECK(second.items().size() > 0);
+    for (const auto& entry : second.items()) CHECK(entry.getInt("id") < lastId);
+    // Фильтр по пользователю + email в каждой записи.
+    const Json onlyUser = page(userId, 0, 200);
+    CHECK(onlyUser.items().size() >= 6);
+    for (const auto& entry : onlyUser.items()) {
+        CHECK_EQ(entry.getInt("user_id"), userId);
+        CHECK_EQ(entry.getString("user_email"), std::string("auser@example.com"));
+    }
+    // Дошли до конца — пустая страница.
+    const long long oldest = page(0, 0, 200).items().back().getInt("id");
+    CHECK_EQ(page(0, oldest, 10).items().size(), std::size_t(0));
 }
 
 int main(int argc, char** argv) {

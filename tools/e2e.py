@@ -350,6 +350,8 @@ async def main() -> int:
         check(verified.get("payload", {}).get("verified") is True, f"{name}: email подтверждён")
         logged = await client.call("auth.login", {"email": email, "password": "aura1234"})
         check(logged.get("type") == "ok", f"вход {name}", logged)
+        check(logged.get("payload", {}).get("user", {}).get("role") in ("user", "moderator", "admin"),
+              f"{name}: в user есть role", logged.get("payload", {}).get("user"))
         return logged.get("payload", {}).get("token", "")
 
     token = await register_and_login(anna, f"anna.{RUN}@example.com", "Анна")
@@ -362,6 +364,8 @@ async def main() -> int:
     check(reauth.get("type") == "ok", "токен принят повторно (сессия есть в БД)", reauth)
     check(reauth.get("payload", {}).get("user", {}).get("email") == f"anna.{RUN}@example.com",
           "auth.token на свежем соединении отдаёт user", reauth.get("payload"))
+    check(reauth.get("payload", {}).get("user", {}).get("role") == "user",
+          "auth.token: user.role = user", reauth.get("payload", {}).get("user"))
     await fresh.close()
 
     # Управление сессиями: второй вход даёт вторую сессию; список, отзыв, проверка.
@@ -1082,6 +1086,115 @@ async def main() -> int:
         check(providers == ["google_gmail"], "список: остался только Gmail", providers)
         gmail_revoked = await anna.call("integrations.revoke", {"id": gmail_conn.get("id")})
         check(gmail_revoked.get("type") == "ok", "revoke: Gmail отключён", gmail_revoked)
+
+    # ------------------------------------------------- администрирование
+    print("\n5a. Администрирование (admin.*)")
+    denied = await anna.call("admin.stats")
+    check(denied.get("code") == "forbidden", "admin.stats: обычному пользователю — forbidden", denied)
+    denied_users = await anna.call("admin.users", {"query": RUN})
+    check(denied_users.get("code") == "forbidden", "admin.users: обычному пользователю — forbidden",
+          denied_users)
+
+    admin_email = os.environ.get("AURA_E2E_ADMIN_EMAIL", "").strip().lower()
+    admin_password = os.environ.get("AURA_E2E_ADMIN_PASSWORD", "")
+    if not (admin_email and admin_password):
+        print("  — пропуск сценария администратора: задайте AURA_E2E_ADMIN_EMAIL и "
+              "AURA_E2E_ADMIN_PASSWORD (а серверу — AURA_ADMIN_EMAILS с этим адресом)")
+    else:
+        admin = Client("admin")
+        await admin.connect()
+        admin_login = await admin.call("auth.login", {"email": admin_email, "password": admin_password})
+        if admin_login.get("code") == "unauthorized":
+            # Аккаунта ещё нет: регистрируем (код подтверждения отдаёт dev-драйвер почты).
+            registered = await admin.call("auth.register", {"email": admin_email, "password": admin_password,
+                                                            "display_name": "Администратор"})
+            code = registered.get("payload", {}).get("email_code", "")
+            await admin.call("auth.verifyEmail", {"email": admin_email, "code": code})
+            admin_login = await admin.call("auth.login", {"email": admin_email, "password": admin_password})
+        admin_user = admin_login.get("payload", {}).get("user", {})
+        check(admin_login.get("type") == "ok" and admin_user.get("role") == "admin",
+              "администратор из AURA_ADMIN_EMAILS вошёл с ролью admin", admin_login)
+
+        stats = await admin.call("admin.stats")
+        stats_payload = stats.get("payload", {})
+        check(stats.get("type") == "ok" and all(key in stats_payload for key in (
+            "users_total", "users_verified", "users_disabled", "users_2fa", "users_new_7d",
+            "moderators", "admins", "sessions_active", "online_now")),
+            "admin.stats: все счётчики на месте", stats_payload)
+        check(stats_payload.get("admins", 0) >= 1 and stats_payload.get("online_now", 0) >= 2,
+              "admin.stats: есть администратор, онлайн ≥ 2", stats_payload)
+        listed = await admin.call("admin.users", {"query": RUN, "role": "", "status": "",
+                                                  "offset": 0, "limit": 50})
+        listed_emails = [u.get("email") for u in listed.get("payload", {}).get("users", [])]
+        check(listed.get("payload", {}).get("total", 0) >= 2
+              and f"anna.{RUN}@example.com" in listed_emails,
+              "admin.users: поиск по прогону находит Анну", listed_emails)
+
+        # Свежий пользователь: блокировка выбивает его открытое соединение и закрывает вход.
+        victim_email = f"victim.{RUN}@example.com"
+        victim = Client("victim")
+        await victim.connect()
+        await register_and_login(victim, victim_email, "Нарушитель")
+        found = await admin.call("admin.users", {"query": victim_email})
+        victim_id = (found.get("payload", {}).get("users") or [{}])[0].get("id", 0)
+        check(victim_id > 0, "admin.users: нарушитель найден по email", found.get("payload"))
+        blocked = await admin.call("admin.setActive", {"user_id": victim_id, "active": False,
+                                                       "reason": "e2e: проверка блокировки"})
+        check(blocked.get("type") == "ok"
+              and blocked.get("payload", {}).get("user", {}).get("is_active") is False,
+              "admin.setActive(false): пользователь заблокирован", blocked)
+        try:
+            await asyncio.wait_for(victim.ws.wait_closed(), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+        check(victim.ws.close_code == 4001, "открытое соединение заблокированного закрыто (4001)",
+              victim.ws.close_code)
+        await victim.close()
+        retry = Client("retry")
+        await retry.connect()
+        relogin = await retry.call("auth.login", {"email": victim_email, "password": "aura1234"})
+        check(relogin.get("code") == "forbidden", "заблокированный не может войти", relogin)
+        unblocked = await admin.call("admin.setActive", {"user_id": victim_id, "active": True, "reason": ""})
+        check(unblocked.get("payload", {}).get("user", {}).get("is_active") is True,
+              "admin.setActive(true): разблокирован", unblocked)
+        relogin = await retry.call("auth.login", {"email": victim_email, "password": "aura1234"})
+        check(relogin.get("type") == "ok", "после разблокировки вход работает", relogin)
+
+        # Модератор: видит обзор, но не меняет роли, не трогает админов и не читает журнал.
+        promoted = await admin.call("admin.setRole", {"user_id": victim_id, "role": "moderator"})
+        check(promoted.get("payload", {}).get("user", {}).get("role") == "moderator",
+              "admin.setRole: назначен модератор", promoted)
+        mod_stats = await retry.call("admin.stats")
+        check(mod_stats.get("type") == "ok", "модератор видит admin.stats", mod_stats)
+        mod_audit = await retry.call("admin.audit", {})
+        check(mod_audit.get("code") == "forbidden", "модератору admin.audit — forbidden", mod_audit)
+        mod_role = await retry.call("admin.setRole", {"user_id": victim_id, "role": "admin"})
+        check(mod_role.get("code") == "forbidden", "модератор не меняет роли", mod_role)
+        mod_block = await retry.call("admin.setActive", {"user_id": admin_user.get("id"), "active": False,
+                                                         "reason": "бунт"})
+        check(mod_block.get("code") == "forbidden", "модератор не блокирует администратора", mod_block)
+        own_role = await admin.call("admin.setRole", {"user_id": admin_user.get("id"), "role": "user"})
+        check(own_role.get("code") == "forbidden", "свою роль менять нельзя", own_role)
+
+        journal = await admin.call("admin.audit", {"user_id": victim_id, "before_id": 0, "limit": 50})
+        kinds = [entry.get("kind") for entry in journal.get("payload", {}).get("entries", [])]
+        check("admin_user_disabled" in kinds and "admin_role_changed" in kinds,
+              "admin.audit: блокировка и смена роли в журнале", kinds[:6])
+
+        # Отзыв сессий: соединение модератора закрыто, роль снимаем обратно.
+        revoked = await admin.call("admin.revokeSessions", {"user_id": victim_id})
+        check(revoked.get("payload", {}).get("revoked", 0) >= 1, "admin.revokeSessions: сессии отозваны",
+              revoked)
+        try:
+            await asyncio.wait_for(retry.ws.wait_closed(), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+        check(retry.ws.close_code == 4001, "соединение после отзыва сессий закрыто", retry.ws.close_code)
+        await retry.close()
+        demoted = await admin.call("admin.setRole", {"user_id": victim_id, "role": "user"})
+        check(demoted.get("payload", {}).get("user", {}).get("role") == "user", "роль снята обратно",
+              demoted)
+        await admin.close()
 
     # -------------------------------------------------------------- итоги
     # ---------------------------------------- безопасность (этап 14)

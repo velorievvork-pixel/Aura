@@ -445,9 +445,10 @@ AuthManager::Result AuthManager::verifyEmail(const std::string& email, const std
         return Result::failure(protocol::code::kBadRequest, "код неверен или истёк");
     }
     if (user->emailVerified) {
-        result.ok = true;  // идемпотентно: повторное подтверждение не ошибка
+        // Идемпотентно: повторное подтверждение не ошибка. Но без кода — никаких
+        // данных пользователя: иначе по одному email отдавались бы имя, id и роль.
+        result.ok = true;
         result.payload.set("verified", Json(true));
-        result.payload.set("user", Json(user->toJson()));
         return result;
     }
 

@@ -27,6 +27,7 @@ struct UserRecord {
     std::string lastSeenAt;
     bool active = true;
     bool emailVerified = true;  // подтверждён ли email
+    std::string role = "user";  // user | moderator | admin (админ-панель)
 
     Json toJson(bool includeSecret = false) const;
 };
@@ -470,6 +471,23 @@ public:
     virtual std::vector<PushDeviceRecord> listPushDevices(long long userId) = 0;
     virtual DatabaseError touchPushDevice(long long id) = 0;
     virtual DatabaseError deletePushDevice(long long userId, long long id) = 0;
+
+    // Админ-панель (admin.*): роли, блокировка, выборки и сводка.
+    virtual DatabaseError setUserRole(long long userId, const std::string& role) = 0;
+    // query — подстрока email или имени без учёта регистра; role — "" или роль;
+    // status — "" | active | disabled (is_active=false) | unverified (email не подтверждён).
+    // Порядок: id по убыванию; total — число строк без учёта limit/offset.
+    virtual std::vector<UserRecord> adminListUsers(const std::string& query,
+                                                   const std::string& role,
+                                                   const std::string& status,
+                                                   int limit,
+                                                   int offset,
+                                                   long long& total) = 0;
+    // users_total, users_verified, users_disabled, users_2fa, users_new_7d,
+    // moderators, admins, sessions_active (не отозванные и не истёкшие).
+    virtual Json adminStats() = 0;
+    // Журнал аудита страницами: userId 0 — все записи; beforeId 0 — с самых новых.
+    virtual std::vector<AuditRecord> listAuditPage(long long userId, long long beforeId, int limit) = 0;
 };
 
 std::unique_ptr<IDatabase> makePostgresDatabase(const std::string& url);

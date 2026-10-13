@@ -10,6 +10,7 @@
 #include <string>
 #include <thread>
 
+#include "aura/adminmanager.h"
 #include "aura/agentmanager.h"
 #include "aura/authmanager.h"
 #include "aura/chatmanager.h"
@@ -58,6 +59,7 @@ public:
     IntegrationManager& integrations() { return *integrations_; }
     NotificationsManager& notifications() { return *notifications_; }
     ConnectionManager& connections() { return connections_; }
+    AdminManager& admin() { return *admin_; }
 
     // Один проход планировщика напоминаний (публично для тестов).
     // userId = 0 — все пользователи; иначе только напоминания этого пользователя.
@@ -96,6 +98,7 @@ private:
     std::unique_ptr<TaskManager> taskManager_;
     std::unique_ptr<IntegrationManager> integrations_;
     std::unique_ptr<NotificationsManager> notifications_;
+    std::unique_ptr<AdminManager> admin_;
     std::unique_ptr<Listener> listener_;
     ConnectionManager connections_;
 

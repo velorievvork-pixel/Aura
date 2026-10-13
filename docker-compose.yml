@@ -91,6 +91,8 @@ services:
       AURA_GOOGLE_CLIENT_ID: ${AURA_GOOGLE_CLIENT_ID:-}
       AURA_GOOGLE_CLIENT_SECRET: ${AURA_GOOGLE_CLIENT_SECRET:-}
       AURA_LOG_LEVEL: ${AURA_LOG_LEVEL:-info}
+      # Админ-панель: email первых администраторов (только подтверждённые адреса).
+      AURA_ADMIN_EMAILS: ${AURA_ADMIN_EMAILS:-}
     healthcheck:
       # Порт 9000 принимает соединения (в образе есть bash, curl — нет).
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"]

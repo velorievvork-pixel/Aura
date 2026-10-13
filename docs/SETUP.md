@@ -20,6 +20,7 @@ createdb aura
 psql aura -v ON_ERROR_STOP=1 -f schema/schema.sql
 # обновления схемы — идемпотентные файлы из schema/migrations/:
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_09_20_notifications.sql
+psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_13_roles.sql   # роли админ-панели
 # демо-данные (необязательно):
 psql aura -f schema/seed.sql
 ```
@@ -86,6 +87,7 @@ AURA_2FA_KEY="$(openssl rand -hex 32)" \
 | почта | `AURA_MAIL_DRIVER` (по умолчанию `log`): `smtp` — письма с кодами (`AURA_SMTP_HOST/PORT/USER/PASSWORD/FROM/TLS`, `AURA_SMTP_CA_FILE`), `log` — без отправки, в лог пишется только факт выдачи кода, `dev` — код в ответе API (только вместе с `AURA_DEV_MODE=1`, иначе сервер не стартует) |
 | Google OAuth | `AURA_GOOGLE_CLIENT_ID/_SECRET`, `AURA_GOOGLE_AUTH_URL/_TOKEN_URL/_REVOKE_URL/_CALENDAR_URL/_GMAIL_URL`, `AURA_OAUTH_STATE_TTL` |
 | push | `AURA_PUSH_DRIVER` (`dev`/`webhook`), `AURA_PUSH_WEBHOOK_URL`, `AURA_APNS_TOPIC` (ai.aura.app), `AURA_APNS_URL`, `AURA_FCM_URL` (FCM HTTP v1, этап 11: замените `aura` на id проекта Firebase) |
+| админ-панель | `AURA_ADMIN_EMAILS` — email первых администраторов через запятую; роль `admin` выдаётся только подтверждённому адресу при старте сервера и при входе (см. PROTOCOL.md → «Администрирование»). Нужна миграция `schema/migrations/2026_10_13_roles.sql` |
 | прочее | `AURA_SCHEDULER_INTERVAL_MS` (0 — только ручной tick), `AURA_TOOLS_MODE`, `AURA_MAPS_API_URL`, `AURA_LOG_LEVEL` |
 
 Лимиты по IP считаются по адресу без порта. Если сервер стоит за обратным

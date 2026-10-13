@@ -67,12 +67,13 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 ### Авторизация
 
 Поток аккаунта (auth v3): регистрация → код подтверждения email → вход.
-Регистрация сессию не выдаёт.
+Регистрация сессию не выдаёт. В каждом `user` есть `role`
+(`user`|`moderator`|`admin`, см. «Администрирование»).
 
 | тип | payload | ответ |
 | --- | --- | --- |
 | `auth.register` | `display_name`, `email`, `password` | `requires_verification`, `user`, `email_code` (только `AURA_MAIL_DRIVER=dev` + `AURA_DEV_MODE=1`); занятый email → `conflict`; больше 10 регистраций с IP в час → `forbidden` |
-| `auth.verifyEmail` | `email`, `code` (6 цифр) | `verified`, `user`; после 5 неверных кодов код сгорает (нужен `auth.resendCode`) |
+| `auth.verifyEmail` | `email`, `code` (6 цифр) | `verified`, `user` (повтор для уже подтверждённого адреса — только `verified`, без данных пользователя); после 5 неверных кодов код сгорает (нужен `auth.resendCode`) |
 | `auth.resendCode` | `email` | `message` (+`email_code` в dev); ответ не раскрывает существование email; не больше 3 писем на адрес в час (сверх лимита ответ тот же, письмо не уходит) |
 | `auth.login` | `email`, `password`, `device?`, `device_id?` | `token`, `token_type`, `expires_in`, `refresh_token`, `refresh_expires_in`, `session_id`, `user`; до подтверждения email — `email_not_verified`; при включённой 2FA и недоверенном `device_id` — `requires_2fa`; отключённый аккаунт — `forbidden` «аккаунт отключён» (только при верном пароле) |
 | `auth.login2fa` | `email`, `password`, `code`, `trust_device?`, `device_id?`, `device?` | как `auth.login`; `code` — 6-значный TOTP или резервный `XXXXX-XXXXX`; `trust_device` помечает устройство доверенным на 90 дней; 5 неверных кодов за 15 мин → `forbidden` до конца окна (счётчик на аккаунт, верный пароль его не сбрасывает) |
@@ -368,6 +369,52 @@ Push-конверт для шлюза: `{platform, token, notification_id, kind,
 (`https://api.push.apple.com`), `AURA_FCM_URL`
 (`https://fcm.googleapis.com/v1/projects/aura/messages:send` — замените
 `aura` на id вашего проекта Firebase).
+
+### Администрирование
+
+Роли (`user.role`): `user` (по умолчанию), `moderator`, `admin`. Роль
+приходит в каждом `user` (`auth.login`, `auth.login2fa`, `auth.token`,
+`auth.me`, `auth.verifyEmail`), но права проверяет **сервер** — по роли из
+БД на каждый запрос, поэтому понижение действует сразу, без перевхода.
+Методы `admin.*` требуют входа (без него — `unauthorized`).
+
+| | moderator | admin |
+| --- | --- | --- |
+| `admin.stats`, `admin.users`, `admin.user` | да | да |
+| `admin.setActive`, `admin.revokeSessions` | только над `role=user` | над любым, кроме себя |
+| `admin.setRole`, `admin.audit` | нет (`forbidden`) | да |
+
+Первые администраторы — env **`AURA_ADMIN_EMAILS`** (адреса через запятую,
+`;` или пробел, без учёта регистра): пользователь с адресом из списка
+получает `admin` при старте сервера и при успешных `auth.login` /
+`auth.login2fa` / `auth.verifyEmail` — **только если email подтверждён**
+(иначе роль досталась бы тому, кто первым зарегистрировал чужой адрес).
+Список — источник истины: снятая вручную роль вернётся при следующем входе,
+пока адрес в списке. Каждое назначение пишется в журнал (`role_bootstrap`).
+
+`AdminUser` = `id`, `email`, `display_name`, `avatar_url`, `role`,
+`is_active`, `email_verified`, `two_factor`, `created_at`, `last_seen_at`
+(хэш пароля и токены не отдаются).
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `admin.stats` | — | `users_total`, `users_verified`, `users_disabled`, `users_2fa`, `users_new_7d`, `moderators`, `admins`, `sessions_active` (не отозваны и не истекли), `online_now` (разных пользователей с живым соединением) |
+| `admin.users` | `query?` (подстрока email или имени, ≤100 симв.), `role?` (`''`\|`user`\|`moderator`\|`admin`), `status?` (`''`\|`active`\|`disabled`\|`unverified`), `offset?`, `limit?` (1–100, по умолчанию 50) | `users[]` (AdminUser, новые первыми), `total` (без учёта `offset`/`limit`); неизвестные `role`/`status` → `bad_request` |
+| `admin.user` | `user_id` | `user` (AdminUser), `sessions_active`, `audit[]` (30 последних записей журнала пользователя; модератору — без `remote_addr`); нет такого — `not_found` |
+| `admin.setActive` | `user_id`, `active` (bool), `reason` (обязательна при блокировке, ≤200 симв.) | `user`; блокировка (`active=false`) отзывает все сессии и refresh-токены и закрывает открытые соединения пользователя (WS close `4001`, причина `account_disabled`); заблокированный не входит (`auth.login` → `forbidden`) и не проходит по старому токену (`unauthorized`) |
+| `admin.setRole` | `user_id`, `role` | `user`; свою роль менять нельзя, последнего активного администратора понизить нельзя (`forbidden`); `moderator`/`admin` — только активному пользователю с подтверждённым email (`bad_request`) |
+| `admin.revokeSessions` | `user_id` | `revoked` (сколько живых сессий завершено); refresh-токены отозваны, соединения закрыты (WS close `4001`, причина `sessions_revoked`); аккаунт не блокируется — войти заново можно |
+| `admin.audit` | `user_id?` (0 — все), `before_id?` (0 — с самых новых; иначе записи с `id < before_id`), `limit?` (1–200, по умолчанию 100) | `entries[]`: `id`, `user_id`, `user_email?`, `kind`, `detail`, `remote_addr`, `created_at` — новые первыми; следующая страница — `before_id` = `id` последней записи |
+
+Ошибки: `forbidden` — не хватает роли / цель выше по роли / действие над
+собой; `not_found` — нет пользователя; `bad_request` — неверные поля.
+
+Журнал (`audit_logs.kind`) действий панели; запись пишется и цели, и актору:
+`admin_user_disabled` / `admin_user_enabled` (`detail`: `actor_id`,
+`actor_email` | `target_id`, `target_email`; `reason`; `revoked` при
+блокировке), `admin_role_changed` (`role`, `old_role`, `actor_email` |
+`target_email`), `admin_sessions_revoked` (`revoked`, `actor_email` |
+`target_email`), `role_bootstrap` (`role`).
 
 ## HTTP API Python AI Service
 

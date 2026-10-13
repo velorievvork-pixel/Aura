@@ -14,7 +14,7 @@ e2e — на реальном PostgreSQL.
 ### Аутентификация и безопасность
 | таблица | назначение |
 | --- | --- |
-| `users` | аккаунты: email (уникальный, нормализованный), хэш пароля Argon2id, `email_verified`, `active` |
+| `users` | аккаунты: email (уникальный, нормализованный), хэш пароля Argon2id, `email_verified`, `active`, `role` (`user`/`moderator`/`admin`, админ-панель; миграция `2026_10_13_roles.sql`) |
 | `sessions` | живые сессии: jwt_id, устройство, адрес, `expires_at`, `revoked_at` (отзыв мгновенный) |
 | `auth_tokens` | одноразовые коды (подтверждение email, сброс пароля) — только SHA-256 хэш, TTL |
 | `refresh_tokens` | refresh-пары с ротацией: хэш, `family`, отозванные переиспользования |

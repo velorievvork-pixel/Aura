@@ -53,6 +53,10 @@ AURA_GOOGLE_*=http://127.0.0.1:9081/... build/server/server/aura-server &
 
 # 4) прогон (mock-серверы Google и push поднимаются сами):
 AURA_E2E_GOOGLE_MOCK=1 AURA_E2E_PUSH_MOCK=1 python3 tools/e2e.py
+
+# сценарий админ-панели (§5a) — только если сервер запущен с AURA_ADMIN_EMAILS,
+# содержащим этот адрес; без переменных секция печатает «пропуск»:
+AURA_E2E_ADMIN_EMAIL=root@example.com AURA_E2E_ADMIN_PASSWORD=... python3 tools/e2e.py
 ```
 
 Покрытие: регистрация → email-код → вход → JWT → сессии; чат между
@@ -97,6 +101,7 @@ Swift-сборка и Qt-сборка требуют macOS/Xcode и Qt 6 — в 
 | Утечка токенов | C++ `security_sessions_list_hides_secrets`, `integrations_list_hides_secret`, `server_push_devices`; e2e §5b | sessions.list/integrations.list/devices.push.list без токенов и хэшей |
 | Повторное использование refresh | C++ `server_refresh_rotation_and_reuse` | ротация при каждом обмене, старый refresh отклоняется |
 | Обход подтверждения | C++ `ai_permissions_ws_and_confirmation_barrier` | опасный инструмент без `confirmation.approve` не исполняется |
+| Админ-панель: права и блокировка | C++ `admin_*` (7 тестов); e2e §5a | модератор не меняет роли, не трогает админов, не читает журнал; блокировка выбивает соединения, закрывает вход и старые токены |
 | Доступ к чужой памяти/чату/задачам | C++ `security_cross_user_isolation`; e2e §5b; `server_chat_flow_and_delivery` (forbidden) | выборки строго по user_id |
 | Подделка JWT | C++ `jwt_sign_and_verify` | чужой секрет, истёкший, битый формат — отклоняются |
 | Раскрытие существования аккаунта | код authmanager | «неверный email или пароль» одинаково для несуществующего email и неверного пароля |

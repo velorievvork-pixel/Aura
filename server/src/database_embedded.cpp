@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <chrono>
+#include <ctime>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -43,6 +45,24 @@ std::string plainUuid(const std::string& value) {
         if (ch != '-') out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
     }
     return out;
+}
+
+// Отметки времени сравниваются по секундам: «YYYY-MM-DDTHH:MM:SS» (первые 19
+// символов) — у сессий и у created_at разная дробная часть.
+std::string isoSecondsAgo(long long seconds) {
+    const auto moment = std::chrono::system_clock::now() - std::chrono::seconds(seconds);
+    const std::time_t time = std::chrono::system_clock::to_time_t(moment);
+    std::tm tm{};
+    gmtime_r(&time, &tm);
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &tm);
+    return buffer;
+}
+
+bool sessionLiveJson(const Json& item, const std::string& nowSeconds) {
+    if (!item.getString("revoked_at").empty()) return false;
+    const std::string expiresAt = item.getString("expires_at");
+    return expiresAt.empty() || expiresAt.substr(0, 19) > nowSeconds;
 }
 
 class EmbeddedDatabase : public IDatabase {
@@ -1435,6 +1455,100 @@ public:
         return DatabaseError::failure("устройство не найдено");
     }
 
+    // ------------------------------------------------------------ admin
+    DatabaseError setUserRole(long long userId, const std::string& role) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("id") != userId) continue;
+            item.set("role", Json(role));
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("пользователь не найден");
+    }
+
+    std::vector<UserRecord> adminListUsers(const std::string& query,
+                                           const std::string& role,
+                                           const std::string& status,
+                                           int limit,
+                                           int offset,
+                                           long long& total) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<UserRecord> matched;
+        for (const auto& item : table("users").items()) {
+            const UserRecord user = toUser(item);
+            if (!query.empty() && !contains(user.email, query) && !contains(user.displayName, query)) continue;
+            if (!role.empty() && user.role != role) continue;
+            if (status == "active" && !user.active) continue;
+            if (status == "disabled" && user.active) continue;
+            if (status == "unverified" && user.emailVerified) continue;
+            matched.push_back(user);
+        }
+        std::sort(matched.begin(), matched.end(),
+                  [](const UserRecord& a, const UserRecord& b) { return a.id > b.id; });
+        total = static_cast<long long>(matched.size());
+        std::vector<UserRecord> page;
+        for (std::size_t i = static_cast<std::size_t>(std::max(0, offset));
+             i < matched.size() && static_cast<int>(page.size()) < limit; ++i) {
+            page.push_back(matched[i]);
+        }
+        return page;
+    }
+
+    Json adminStats() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const std::string weekAgo = isoSecondsAgo(7LL * 24 * 3600);
+        long long total = 0, verified = 0, disabled = 0, twoFactor = 0, fresh = 0, moderators = 0, admins = 0;
+        for (const auto& item : table("users").items()) {
+            const UserRecord user = toUser(item);
+            ++total;
+            if (user.emailVerified) ++verified;
+            if (!user.active) ++disabled;
+            if (user.createdAt.substr(0, 19) >= weekAgo) ++fresh;
+            if (user.role == "moderator") ++moderators;
+            if (user.role == "admin") ++admins;
+        }
+        for (const auto& item : table("two_factor_settings").items()) {
+            if (item.getBool("enabled")) ++twoFactor;
+        }
+        const std::string now = isoSecondsAgo(0);
+        long long sessions = 0;
+        for (const auto& item : table("sessions").items()) {
+            if (sessionLiveJson(item, now)) ++sessions;
+        }
+        Json stats = Json::object();
+        stats.set("users_total", Json(total));
+        stats.set("users_verified", Json(verified));
+        stats.set("users_disabled", Json(disabled));
+        stats.set("users_2fa", Json(twoFactor));
+        stats.set("users_new_7d", Json(fresh));
+        stats.set("moderators", Json(moderators));
+        stats.set("admins", Json(admins));
+        stats.set("sessions_active", Json(sessions));
+        return stats;
+    }
+
+    std::vector<AuditRecord> listAuditPage(long long userId, long long beforeId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<AuditRecord> result;
+        const auto& logs = table("audit_logs").items();
+        // id растут вместе с порядком вставки: идём с конца — самые новые первыми.
+        for (auto it = logs.rbegin(); it != logs.rend(); ++it) {
+            if (userId > 0 && it->getInt("user_id") != userId) continue;
+            if (beforeId > 0 && it->getInt("id") >= beforeId) continue;
+            AuditRecord record;
+            record.id = it->getInt("id");
+            record.userId = it->getInt("user_id");
+            record.kind = it->getString("kind");
+            record.detail = it->get("detail");
+            record.remoteAddr = it->getString("remote_addr");
+            record.createdAt = it->getString("created_at");
+            result.push_back(record);
+            if (static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
 private:
     NotificationRecord toNotification(const Json& entry) const {
         NotificationRecord record;
@@ -1598,6 +1712,8 @@ private:
         record.active = json.getBool("is_active", true);
         // Старые записи без поля считаем подтверждёнными (миграция схемы).
         record.emailVerified = json.getBool("email_verified", true);
+        record.role = json.getString("role", "user");
+        if (record.role.empty()) record.role = "user";
         return record;
     }
 

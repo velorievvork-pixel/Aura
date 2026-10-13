@@ -131,7 +131,7 @@ public:
         PGresult* result = nullptr;
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
-                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role "
                      "FROM users WHERE lower(email) = LOWER($1) LIMIT 1",
                      {lower(email)}, &result)) {
             return std::nullopt;
@@ -147,7 +147,7 @@ public:
         PGresult* result = nullptr;
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
-                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role "
                      "FROM users WHERE id = $1",
                      {std::to_string(id)}, &result)) {
             return std::nullopt;
@@ -189,7 +189,7 @@ public:
         const std::string pattern = "%" + escaped + "%";
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
-                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role "
                      "FROM users WHERE lower(display_name) LIKE LOWER($1) ESCAPE '\\' "
                      "ORDER BY id LIMIT $2",
                      {pattern, std::to_string(limit)}, &result)) {
@@ -1625,6 +1625,112 @@ public:
         return DatabaseError::success();
     }
 
+    // ------------------------------------------------------------ admin
+    DatabaseError setUserRole(long long userId, const std::string& role) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE users SET role = $2 WHERE id = $1", {std::to_string(userId), role}, &result)) {
+            return DatabaseError::failure(lastError_);
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched ? DatabaseError::success() : DatabaseError::failure("пользователь не найден");
+    }
+
+    std::vector<UserRecord> adminListUsers(const std::string& query,
+                                           const std::string& role,
+                                           const std::string& status,
+                                           int limit,
+                                           int offset,
+                                           long long& total) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<UserRecord> users;
+        total = 0;
+        // Экранируем LIKE-маски, как в searchUsers.
+        std::string escaped;
+        for (const char ch : query) {
+            if (ch == '\\' || ch == '%' || ch == '_') escaped.push_back('\\');
+            escaped.push_back(ch);
+        }
+        const std::string where =
+            "WHERE ($1::text = '' OR lower(email) LIKE lower($2::text) ESCAPE '\\' "
+            "OR lower(display_name) LIKE lower($2::text) ESCAPE '\\') "
+            "AND ($3::text = '' OR role = $3::text) "
+            "AND ($4::text = '' OR ($4::text = 'active' AND is_active) "
+            "OR ($4::text = 'disabled' AND NOT is_active) "
+            "OR ($4::text = 'unverified' AND NOT email_verified)) ";
+        const std::vector<std::string> filters{query, "%" + escaped + "%", role, status};
+        PGresult* result = nullptr;
+        if (!execute("SELECT count(*) FROM users " + where, filters, &result)) return users;
+        total = std::atoll(value_(result, 0, 0).c_str());
+        PQclear(result);
+
+        std::vector<std::string> args = filters;
+        args.push_back(std::to_string(limit));
+        args.push_back(std::to_string(offset));
+        if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
+                     "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role "
+                     "FROM users " + where + "ORDER BY id DESC LIMIT $5 OFFSET $6",
+                     args, &result)) {
+            return users;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) users.push_back(readUser(result, row));
+        PQclear(result);
+        return users;
+    }
+
+    Json adminStats() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        Json stats = Json::object();
+        PGresult* result = nullptr;
+        if (!execute("SELECT count(*), "
+                     "count(*) FILTER (WHERE email_verified), "
+                     "count(*) FILTER (WHERE NOT is_active), "
+                     "(SELECT count(*) FROM two_factor_settings WHERE enabled), "
+                     "count(*) FILTER (WHERE created_at > now() - interval '7 days'), "
+                     "count(*) FILTER (WHERE role = 'moderator'), "
+                     "count(*) FILTER (WHERE role = 'admin'), "
+                     "(SELECT count(*) FROM sessions WHERE revoked_at IS NULL AND expires_at > now()) "
+                     "FROM users",
+                     {}, &result)) {
+            return stats;
+        }
+        const char* keys[] = {"users_total", "users_verified", "users_disabled", "users_2fa",
+                              "users_new_7d", "moderators", "admins", "sessions_active"};
+        for (int column = 0; column < 8; ++column) {
+            stats.set(keys[column], Json(std::atoll(value_(result, 0, column).c_str())));
+        }
+        PQclear(result);
+        return stats;
+    }
+
+    std::vector<AuditRecord> listAuditPage(long long userId, long long beforeId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<AuditRecord> logs;
+        PGresult* result = nullptr;
+        if (!execute("SELECT id, COALESCE(user_id, 0), kind, detail::text, remote_addr, "
+                     "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') "
+                     "FROM audit_logs WHERE ($1::bigint = 0 OR user_id = $1::bigint) "
+                     "AND ($2::bigint = 0 OR id < $2::bigint) ORDER BY id DESC LIMIT $3",
+                     {std::to_string(userId), std::to_string(beforeId), std::to_string(limit)}, &result)) {
+            return logs;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) {
+            AuditRecord record;
+            record.id = std::atoll(value_(result, row, 0).c_str());
+            record.userId = std::atoll(value_(result, row, 1).c_str());
+            record.kind = value_(result, row, 2);
+            const Json detail = Json::parse(value_(result, row, 3));
+            record.detail = detail.isNull() ? Json::object() : detail;
+            record.remoteAddr = value_(result, row, 4);
+            record.createdAt = value_(result, row, 5);
+            logs.push_back(record);
+        }
+        PQclear(result);
+        return logs;
+    }
+
 private:
     static std::string notificationSelect() {
         return "SELECT id, user_id, kind, title, body, payload::text, "
@@ -1739,6 +1845,8 @@ private:
         record.lastSeenAt = value_(result, row, 8);
         record.emailVerified = value_(result, row, 9) == "t";
         record.bio = value_(result, row, 10);
+        if (PQnfields(result) > 11) record.role = value_(result, row, 11);
+        if (record.role.empty()) record.role = "user";
         return record;
     }
 

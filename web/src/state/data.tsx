@@ -10,6 +10,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Chat, Confirmation, NegotiationResult, Notice, Permission, Prefs, Privacy, Task } from '../net/api';
 import { isNetworkError } from '../net/socket';
+import { dialogKey as dialogKeyOf, negotiationsKey as negotiationsKeyOf } from '../net/userCache';
 import { errorText, useSession } from './session';
 
 export interface DialogAction {
@@ -74,7 +75,8 @@ interface Data {
   chatPulse: number;
 
   reload(): Promise<void>;
-  savePrefs(fields: Partial<Prefs>): Promise<boolean>;
+  /** Поля или функция от актуальных настроек (для переключателей: без устаревших замыканий). */
+  savePrefs(fields: Partial<Prefs> | ((current: Prefs) => Partial<Prefs>)): Promise<boolean>;
   savePrivacy(fields: Partial<Privacy>): Promise<boolean>;
   setPermission(tool: string, mode: Permission['mode']): Promise<void>;
   addTask(title: string, due?: Date): Promise<boolean>;
@@ -114,12 +116,12 @@ function writeLocal(key: string, value: unknown) {
 
 export function DataProvider({ children }: { children: ReactNode }) {
   const { api, socket, conn, status, user } = useSession();
-  const [prefs, setPrefsState] = useState<Prefs | null>(null);
+  const [prefs, setPrefsView] = useState<Prefs | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [notices, setNotices] = useState<Notice[]>([]);
   const [unread, setUnread] = useState(0);
   const [confirmations, setConfirmations] = useState<Confirmation[]>([]);
-  const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [permissions, setPermissionsView] = useState<Permission[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
   const [dialog, setDialog] = useState<DialogEntry[]>([]);
   const [negotiations, setNegotiations] = useState<NegotiationRecord[]>([]);
@@ -129,9 +131,24 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [chatPulse, setChatPulse] = useState(0);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
+  // Настройки и разрешения меняются оптимистично и из нескольких мест подряд:
+  // актуальное значение держим в ref, чтобы откат и следующий клик видели
+  // свежие данные, а не снимок из замыкания прошлого рендера.
+  const prefsRef = useRef<Prefs | null>(null);
+  const prefsInflight = useRef(0);
+  const setPrefsState = useCallback((next: Prefs | null) => {
+    prefsRef.current = next;
+    setPrefsView(next);
+  }, []);
+  const permissionsRef = useRef<Permission[]>([]);
+  const setPermissions = useCallback((next: Permission[]) => {
+    permissionsRef.current = next;
+    setPermissionsView(next);
+  }, []);
+
   const userId = user?.id ?? 0;
-  const dialogKey = `aura.dialog.${userId}`;
-  const negotiationsKey = `aura.negotiations.${userId}`;
+  const dialogKey = dialogKeyOf(userId);
+  const negotiationsKey = negotiationsKeyOf(userId);
 
   const notify = useCallback((text: string, kind: Toast['kind'] = 'info') => {
     clearTimeout(toastTimer.current);
@@ -188,7 +205,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     const firstError = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
     if (firstError) fail(firstError.reason);
     setLoaded(true);
-  }, [api, loadTasks, loadNotices, loadConfirmations, loadChats, fail]);
+  }, [api, loadTasks, loadNotices, loadConfirmations, loadChats, fail, setPrefsState, setPermissions]);
 
   // Вход и каждое переподключение — свежие данные.
   useEffect(() => {
@@ -199,9 +216,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       setTasks([]);
       setNotices([]);
       setConfirmations([]);
+      setPermissions([]);
       setChats([]);
     }
-  }, [status, conn, reload]);
+  }, [status, conn, reload, setPrefsState, setPermissions]);
 
   // Живые события сервера.
   useEffect(
@@ -246,48 +264,76 @@ export function DataProvider({ children }: { children: ReactNode }) {
     return out;
   }, [chats, userId]);
 
-  const savePrefs = useCallback(
-    async (fields: Partial<Prefs>) => {
+  /**
+   * Оптимистичная правка настроек: экран меняется сразу. Ответ сервера применяется,
+   * только когда других правок в пути нет (иначе он «откатил» бы более свежий клик);
+   * при ошибке возвращаются лишь затронутые поля.
+   */
+  const commitPrefs = useCallback(
+    async (apply: (p: Prefs) => Prefs, body: Partial<Prefs> | { privacy: Partial<Privacy> }, revert: (now: Prefs) => Prefs) => {
+      const current = prefsRef.current;
+      if (current) setPrefsState(apply(current));
+      prefsInflight.current += 1;
       try {
-        setPrefsState(await api.setPrefs(fields));
+        const saved = await api.setPrefs(body);
+        if (prefsInflight.current === 1) setPrefsState(saved);
         return true;
       } catch (error) {
+        const now = prefsRef.current;
+        if (now) setPrefsState(revert(now));
         fail(error);
         return false;
+      } finally {
+        prefsInflight.current -= 1;
       }
     },
-    [api, fail],
+    [api, fail, setPrefsState],
+  );
+
+  const savePrefs = useCallback(
+    async (input: Partial<Prefs> | ((current: Prefs) => Partial<Prefs>)) => {
+      const current = prefsRef.current;
+      if (typeof input === 'function' && !current) return false;
+      const fields = typeof input === 'function' ? input(current as Prefs) : input;
+      const keys = Object.keys(fields) as (keyof Prefs)[];
+      const previous: Partial<Prefs> = {};
+      if (current) for (const key of keys) (previous as Record<string, unknown>)[key] = current[key];
+      return commitPrefs(
+        (p) => ({ ...p, ...fields }),
+        fields,
+        (now) => ({ ...now, ...previous }),
+      );
+    },
+    [commitPrefs],
   );
 
   const savePrivacy = useCallback(
     async (fields: Partial<Privacy>) => {
-      // Переключатель отзывается сразу; при ошибке возвращаем как было.
-      const before = prefs;
-      if (prefs) setPrefsState({ ...prefs, privacy: { ...prefs.privacy, ...fields } });
-      try {
-        setPrefsState(await api.setPrefs({ privacy: fields }));
-        return true;
-      } catch (error) {
-        setPrefsState(before);
-        fail(error);
-        return false;
-      }
+      const current = prefsRef.current;
+      const previous: Partial<Privacy> = {};
+      if (current) for (const key of Object.keys(fields) as (keyof Privacy)[]) previous[key] = current.privacy?.[key];
+      return commitPrefs(
+        (p) => ({ ...p, privacy: { ...p.privacy, ...fields } }),
+        { privacy: fields },
+        (now) => ({ ...now, privacy: { ...now.privacy, ...previous } }),
+      );
     },
-    [api, prefs, fail],
+    [commitPrefs],
   );
 
   const setPermission = useCallback(
     async (tool: string, mode: Permission['mode']) => {
-      const before = permissions;
-      setPermissions((list) => list.map((p) => (p.tool === tool ? { ...p, mode } : p)));
+      const before = permissionsRef.current.find((p) => p.tool === tool)?.mode;
+      setPermissions(permissionsRef.current.map((p) => (p.tool === tool ? { ...p, mode } : p)));
       try {
         await api.setPermission(tool, mode);
       } catch (error) {
-        setPermissions(before);
+        // Откатываем только этот инструмент и только если после нас его не меняли.
+        if (before) setPermissions(permissionsRef.current.map((p) => (p.tool === tool && p.mode === mode ? { ...p, mode: before } : p)));
         fail(error);
       }
     },
-    [api, permissions, fail],
+    [api, fail, setPermissions],
   );
 
   const addTask = useCallback(
@@ -417,7 +463,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const record = negotiations.find((n) => n.id === id);
       const slot = record?.result.slot;
       if (!record || !slot) return;
-      if (permissions.find((p) => p.tool === 'book_table')?.mode === 'deny') {
+      if (permissionsRef.current.find((p) => p.tool === 'book_table')?.mode === 'deny') {
         notify('Бронирование запрещено в разрешениях Ауры', 'error');
         return;
       }
@@ -433,7 +479,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         fail(error);
       }
     },
-    [api, negotiations, permissions, notify, fail, loadTasks],
+    [api, negotiations, notify, fail, loadTasks],
   );
 
   const openChat = useCallback(

@@ -7,10 +7,14 @@
      для продакшна это wss://… за TLS-прокси;
   3. VITE_AURA_FALLBACK_URL — запасной адрес: если основной не отвечает,
      клиент сам переключается на него;
-  4. платформенный дефолт для разработки: на Android-эмуляторе компьютер
-     разработчика — это 10.0.2.2 (localhost там — сам телефон), в браузере,
-     открытом с настоящего хоста по https, — тот же хост по wss, иначе
-     ws://127.0.0.1:9000.
+  4. платформенный дефолт — только если адрес при сборке не задан (или это
+     dev-сборка Vite): на Android-эмуляторе компьютер разработчика — это
+     10.0.2.2 (localhost там — сам телефон), в браузере, открытом с настоящего
+     хоста по https, — тот же хост по wss, иначе ws://127.0.0.1:9000.
+
+  В продакшн-сборке с VITE_AURA_SERVER_URL клиент никогда не уходит на
+  платформенный дефолт: иначе токены могли бы уехать на ws:// без TLS или на
+  чужой локальный порт.
 
   Реальному телефону localhost/10.0.2.2 не подходят: нужен IP компьютера в
   той же Wi-Fi сети (ws://192.168.x.x:9000) или публичный wss-адрес.
@@ -24,6 +28,8 @@ export interface ServerEnv {
   primary?: string;
   fallback?: string;
   platform: string;
+  /** Dev-сборка Vite: к заданным адресам добавляется платформенный дефолт. */
+  dev?: boolean;
   location?: { protocol: string; hostname: string; host: string };
 }
 
@@ -62,6 +68,11 @@ export function platformDefault(env: ServerEnv): string {
   return `ws://127.0.0.1:${DEV_PORT}`;
 }
 
+/** Один и тот же набор адресов (смена адреса без смены сервера не требует нового входа). */
+export function sameServers(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
 /** Кандидаты по порядку; без повторов и без пустых значений. */
 export function serverCandidates(override: string | null, env: ServerEnv): string[] {
   // Если пользователь задал адрес сам — подключаемся только к нему: молча уходить
@@ -71,7 +82,10 @@ export function serverCandidates(override: string | null, env: ServerEnv): strin
   const list = [env.primary, env.fallback]
     .map((v) => (v ? normalizeServerUrl(v) : null))
     .filter((v): v is string => Boolean(v));
-  list.push(platformDefault(env));
+  // Платформенный дефолт — только для разработки: когда адрес при сборке не задан
+  // или это dev-сборка. В продакшне с заданным адресом запасной путь на
+  // ws://127.0.0.1 / ws://10.0.2.2 означал бы токены без TLS на чужом порту.
+  if (!list.length || env.dev) list.push(platformDefault(env));
   return [...new Set(list)];
 }
 
@@ -79,6 +93,7 @@ export function currentEnv(): ServerEnv {
   return {
     primary: import.meta.env.VITE_AURA_SERVER_URL,
     fallback: import.meta.env.VITE_AURA_FALLBACK_URL,
+    dev: Boolean(import.meta.env.DEV),
     platform: Capacitor.getPlatform(),
     location: typeof location === 'undefined' ? undefined : { protocol: location.protocol, hostname: location.hostname, host: location.host },
   };

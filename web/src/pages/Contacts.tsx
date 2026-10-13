@@ -23,14 +23,27 @@ export function Contacts() {
       return;
     }
     setSearching(true);
+    // Ответ на устаревший запрос (пользователь печатает дальше) игнорируется:
+    // иначе медленный ответ на «ал» перетёр бы результаты для «алекс».
+    let current = true;
     const t = setTimeout(() => {
       api
         .searchUsers(q)
-        .then((r) => setFound((r.users ?? []).filter((u) => u.id !== user?.id && !contacts.some((c) => c.userId === u.id))))
-        .catch(() => setFound([]))
-        .finally(() => setSearching(false));
+        .then((r) => {
+          if (current) setFound((r.users ?? []).filter((u) => u.id !== user?.id && !contacts.some((c) => c.userId === u.id)));
+        })
+        .catch(() => {
+          if (current) setFound([]);
+        })
+        .finally(() => {
+          if (current) setSearching(false);
+        });
     }, 300);
-    return () => clearTimeout(t);
+    return () => {
+      current = false;
+      clearTimeout(t);
+      setSearching(false);
+    };
   }, [query, api, user?.id, contacts]);
 
   const visible = contacts.filter((c) => {
@@ -105,14 +118,26 @@ export function ContactChat() {
   const { contacts, chatPulse, notify } = useData();
   const navigate = useNavigate();
   const contact = contacts.find((c) => c.chatId === id);
-  const [messages, setMessages] = useState<Message[] | null>(null);
+  // История помечена id чата: при переходе между чатами старая не показывается
+  // ни секунды, а запоздалый ответ по прошлому чату отбрасывается.
+  const [history, setHistory] = useState<{ chatId: number; messages: Message[] } | null>(null);
+  const messages = history && history.chatId === id ? history.messages : null;
+  const currentId = useRef(id);
+  currentId.current = id;
+  const seq = useRef(0);
   const end = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => {
+    const ticket = ++seq.current;
+    const fresh = () => currentId.current === id && seq.current === ticket;
     api
       .history(id)
-      .then((r) => setMessages([...(r.messages ?? [])].sort((a, b) => a.id - b.id)))
-      .catch(() => setMessages((m) => m ?? []));
+      .then((r) => {
+        if (fresh()) setHistory({ chatId: id, messages: [...(r.messages ?? [])].sort((a, b) => a.id - b.id) });
+      })
+      .catch(() => {
+        if (fresh()) setHistory((h) => (h && h.chatId === id ? h : { chatId: id, messages: [] }));
+      });
   }, [api, id]);
 
   useEffect(load, [load, chatPulse]);

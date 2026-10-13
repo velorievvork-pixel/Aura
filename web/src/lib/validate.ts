@@ -1,6 +1,6 @@
 /*
   Проверка полей форм — те же правила, что на сервере (docs/PROTOCOL.md):
-  пароль от 8 символов, буквы и цифры; код подтверждения — 6 цифр;
+  пароль от 8 символов (до 256 байт UTF-8), буквы (любого алфавита) и цифры; код подтверждения — 6 цифр;
   резервный код 2FA — XXXXX-XXXXX. Возвращают текст ошибки или null.
 */
 
@@ -11,9 +11,13 @@ export function emailError(email: string): string | null {
   return null;
 }
 
+/** Сервер принимает пароль до 256 байт в UTF-8 (кириллица — 2 байта на букву). */
+export const PASSWORD_MAX_BYTES = 256;
+
 export function passwordError(password: string): string | null {
-  if (password.length < 8) return 'Пароль — не короче 8 символов';
+  if ([...password].length < 8) return 'Пароль — не короче 8 символов';
   if (!/\p{L}/u.test(password) || !/\d/.test(password)) return 'В пароле нужны и буквы, и цифры';
+  if (new TextEncoder().encode(password).length > PASSWORD_MAX_BYTES) return 'Пароль слишком длинный — до 256 байт (около 128 букв кириллицы)';
   return null;
 }
 

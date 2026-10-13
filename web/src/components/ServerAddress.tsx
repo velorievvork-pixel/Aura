@@ -4,7 +4,7 @@ import { getPlatform } from '../platform';
 
 /** Адрес сервера: показать текущий и поменять. Используется на экране ожидания, входе и в настройках. */
 export function ServerAddress({ compact }: { compact?: boolean }) {
-  const { serverUrl, setServer } = useSession();
+  const { serverUrl, setServer, status } = useSession();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(serverUrl);
   const [error, setError] = useState('');
@@ -65,6 +65,7 @@ export function ServerAddress({ compact }: { compact?: boolean }) {
           </span>
         )}
       </label>
+      {status === 'signedIn' && <div className="notice warn small">На другом сервере — другой аккаунт: после смены адреса нужно будет войти заново.</div>}
       <div className="row">
         <button className="btn btn-primary" type="submit">
           Подключиться

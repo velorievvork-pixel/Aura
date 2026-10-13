@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeServerUrl, platformDefault, serverCandidates, type ServerEnv } from './config';
+import { normalizeServerUrl, platformDefault, sameServers, serverCandidates, type ServerEnv } from './config';
 
 const web: ServerEnv = { platform: 'web', location: { protocol: 'http:', hostname: 'localhost', host: 'localhost:5173' } };
 
@@ -36,21 +36,43 @@ describe('platformDefault', () => {
 });
 
 describe('serverCandidates', () => {
-  it('основной → запасной → дефолт, без повторов', () => {
-    expect(serverCandidates(null, { ...web, primary: 'wss://a.example', fallback: 'wss://b.example' })).toEqual([
+  it('продакшн: основной → запасной, без платформенного дефолта', () => {
+    expect(serverCandidates(null, { ...web, primary: 'wss://a.example', fallback: 'wss://b.example' })).toEqual(['wss://a.example', 'wss://b.example']);
+    expect(serverCandidates(null, { ...web, primary: 'wss://a.example' })).toEqual(['wss://a.example']);
+    // Android-сборка с адресом сервера не уходит на 10.0.2.2 без TLS.
+    expect(serverCandidates(null, { platform: 'android', primary: 'wss://a.example' })).toEqual(['wss://a.example']);
+  });
+  it('dev-сборка: к заданным адресам добавляется дефолт, без повторов', () => {
+    expect(serverCandidates(null, { ...web, dev: true, primary: 'wss://a.example', fallback: 'wss://b.example' })).toEqual([
       'wss://a.example',
       'wss://b.example',
       'ws://127.0.0.1:9000',
     ]);
-    expect(serverCandidates(null, { ...web, primary: '127.0.0.1' })).toEqual(['ws://127.0.0.1:9000']);
+    expect(serverCandidates(null, { ...web, dev: true, primary: '127.0.0.1' })).toEqual(['ws://127.0.0.1:9000']);
   });
   it('адрес, заданный пользователем, — единственный', () => {
     expect(serverCandidates('192.168.0.10', { ...web, primary: 'wss://a.example' })).toEqual(['ws://192.168.0.10:9000']);
+    expect(serverCandidates('192.168.0.10', { ...web, dev: true, primary: 'wss://a.example' })).toEqual(['ws://192.168.0.10:9000']);
   });
   it('неразборчивый адрес пользователя не ломает список', () => {
-    expect(serverCandidates('ftp://x', { ...web, primary: 'wss://a.example' })).toEqual(['wss://a.example', 'ws://127.0.0.1:9000']);
+    expect(serverCandidates('ftp://x', { ...web, primary: 'wss://a.example' })).toEqual(['wss://a.example']);
   });
-  it('без переменных сборки остаётся платформенный дефолт', () => {
+  it('без переменных сборки остаётся платформенный дефолт (разработка)', () => {
     expect(serverCandidates(null, { platform: 'android' })).toEqual(['ws://10.0.2.2:9000']);
+    expect(serverCandidates(null, { platform: 'android', dev: true })).toEqual(['ws://10.0.2.2:9000']);
+    expect(serverCandidates(null, web)).toEqual(['ws://127.0.0.1:9000']);
+  });
+  it('неразборчивые переменные сборки — как будто их нет', () => {
+    expect(serverCandidates(null, { ...web, primary: 'ftp://x' })).toEqual(['ws://127.0.0.1:9000']);
+  });
+});
+
+describe('sameServers', () => {
+  it('сравнивает наборы адресов по порядку', () => {
+    expect(sameServers(['ws://a'], ['ws://a'])).toBe(true);
+    expect(sameServers(['ws://a'], ['ws://b'])).toBe(false);
+    expect(sameServers(['ws://a', 'ws://b'], ['ws://a'])).toBe(false);
+    // Пользователь ввёл тот же адрес, что задан при сборке, — сервер тот же.
+    expect(sameServers(serverCandidates('wss://a.example', web), serverCandidates(null, { ...web, primary: 'wss://a.example' }))).toBe(true);
   });
 });

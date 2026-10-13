@@ -14,6 +14,15 @@ describe('validate', () => {
     expect(passwordError('пароль2026')).toBeNull();
     expect(passwordError('Secret123')).toBeNull();
   });
+  it('пароль: не длиннее 256 байт UTF-8', () => {
+    expect(passwordError('a1'.repeat(128))).toBeNull(); // ровно 256 байт
+    expect(passwordError('a1'.repeat(128) + 'b')).toMatch(/256/);
+    // Кириллица — 2 байта на букву: 127 букв + 2 цифры = 256 байт, 128 + 1 — уже 257.
+    expect(passwordError('ж'.repeat(127) + '12')).toBeNull();
+    expect(passwordError('ж'.repeat(128) + '1')).toMatch(/256/);
+    // Длина считается в символах, а не в UTF-16: эмодзи — один символ.
+    expect(passwordError('a1😀😀😀')).toMatch(/8/);
+  });
   it('имя', () => {
     expect(nameError('  ')).not.toBeNull();
     expect(nameError('я'.repeat(81))).not.toBeNull();

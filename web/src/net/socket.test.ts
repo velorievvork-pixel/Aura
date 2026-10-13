@@ -163,6 +163,35 @@ describe('AuraSocket', () => {
     expect(FakeWs.all).toHaveLength(2);
   });
 
+  it('сеть отказала во время onOpen — переподключение, а не «открыто без входа»', async () => {
+    let calls = 0;
+    const socket = make(['ws://a'], async (s) => {
+      calls += 1;
+      if (calls === 1) await s.requestNow('auth.token', { token: 't' }, 100);
+    });
+    socket.start();
+    latest().open();
+    await vi.advanceTimersByTimeAsync(150);
+    expect(socket.state).toBe('offline');
+    expect(socket.lastError).toContain('авторизацию');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeWs.all).toHaveLength(2);
+    latest().open();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.state).toBe('open');
+    expect(calls).toBe(2);
+  });
+
+  it('прочая ошибка onOpen не мешает соединению', async () => {
+    const socket = make(['ws://a'], async () => {
+      throw new AuraError('unauthorized', 'нет');
+    });
+    socket.start();
+    latest().open();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(socket.state).toBe('open');
+  });
+
   it('события доставляются подписчикам', async () => {
     const socket = make(['ws://a']);
     const seen: string[] = [];

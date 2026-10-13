@@ -191,8 +191,10 @@ export function makeApi(socket: AuraSocket) {
     resetPassword: (email: string, code: string, new_password: string) =>
       call<{ reset: boolean }>('auth.resetPassword', { email, code, new_password }),
     me: () => call<User & { preferences?: Prefs }>('auth.me'),
-    logout: () => call<{ revoked: boolean }>('auth.logout'),
-    changePassword: (old_password: string, new_password: string) => call<{ changed: boolean }>('auth.changePassword', { old_password, new_password }),
+    logout: (timeout?: number) => call<{ revoked: boolean }>('auth.logout', {}, timeout),
+    /** token/refresh_token — новая пара для этого устройства (прежние отозваны сервером). */
+    changePassword: (old_password: string, new_password: string) =>
+      call<{ changed: boolean; token?: string; refresh_token?: string }>('auth.changePassword', { old_password, new_password }),
     updateProfile: (fields: Partial<Pick<User, 'display_name' | 'bio' | 'avatar_url'>>) => call<{ user: User }>('profile.update', fields),
 
     // -------- сессии и 2FA

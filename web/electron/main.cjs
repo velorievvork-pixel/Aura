@@ -1,12 +1,64 @@
 // Desktop shell for Aura (macOS, Windows, Linux). Loads the built web app from dist/ in a
-// sandboxed window; in development set AURA_DEV_URL to load the Vite dev server instead.
-const { app, BrowserWindow, Menu, shell, nativeTheme, ipcMain, safeStorage } = require('electron');
+// sandboxed window; in development (unpackaged app only) set AURA_DEV_URL to load the Vite
+// dev server instead.
+//
+// Security model: the page gets window.auraSecure (the login tokens), so only the app's own
+// page may ever be loaded in the window. Navigation is allowed to the exact dist/index.html
+// (any hash — the app uses a hash router) or, in development, to the dev server's origin;
+// anything else (a dropped file, a link, a redirect) is blocked. IPC handlers check that the
+// call comes from that page, and web permissions are denied except the microphone.
+const { app, BrowserWindow, Menu, shell, nativeTheme, ipcMain, safeStorage, session } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 
-const DEV_URL = process.env.AURA_DEV_URL;
 const isMac = process.platform === 'darwin';
 const BG = '#0b0c10';
+const APP_FILE = path.join(__dirname, '..', 'dist', 'index.html');
+const APP_URL = pathToFileURL(APP_FILE).href;
+
+/** Dev server origin (http(s) only), honoured only in an unpackaged app. */
+function devOrigin() {
+  if (app.isPackaged || !process.env.AURA_DEV_URL) return null;
+  try {
+    const url = new URL(process.env.AURA_DEV_URL);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
+const DEV_ORIGIN = devOrigin();
+
+/** True only for the app's own page: the exact dist/index.html (hash ignored) or the dev origin. */
+function isAppUrl(raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    return false;
+  }
+  if (DEV_ORIGIN) return url.origin === DEV_ORIGIN;
+  if (url.protocol !== 'file:') return false;
+  url.hash = '';
+  return url.href === APP_URL;
+}
+
+function openExternal(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.protocol === 'http:' || url.protocol === 'https:') shell.openExternal(url.href);
+  } catch {
+    /* not a URL — ignore */
+  }
+}
+
+/** IPC calls are served only to the app's own top-level page in one of our windows. */
+function fromApp(event) {
+  const frame = event.senderFrame;
+  if (!frame || frame.parent) return false;
+  if (!BrowserWindow.fromWebContents(event.sender)) return false;
+  return isAppUrl(frame.url);
+}
 
 nativeTheme.themeSource = 'dark';
 
@@ -36,23 +88,57 @@ function createWindow() {
 
   // Links to other sites open in the system browser, never inside the app window.
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/.test(url)) shell.openExternal(url);
+    openExternal(url);
     return { action: 'deny' };
   });
-  win.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith('file:') && !(DEV_URL && url.startsWith(DEV_URL))) {
-      e.preventDefault();
-      if (/^https?:/.test(url)) shell.openExternal(url);
-    }
+  // Only the app's own page may load here: a dropped .html file or any other file:// page
+  // would otherwise get window.auraSecure and read the tokens.
+  const guard = (e, legacyUrl) => {
+    const url = e.url || legacyUrl;
+    if (isAppUrl(url)) return;
+    e.preventDefault();
+    openExternal(url);
+  };
+  win.webContents.on('will-navigate', guard);
+  win.webContents.on('will-redirect', guard);
+  win.webContents.on('will-frame-navigate', (e) => {
+    if (!e.isMainFrame && !isAppUrl(e.url)) e.preventDefault();
   });
 
-  if (DEV_URL) win.loadURL(DEV_URL);
-  else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  if (DEV_ORIGIN) win.loadURL(process.env.AURA_DEV_URL);
+  else win.loadFile(APP_FILE);
 }
 
+// Web permissions: the microphone (voice input) for the app's own page; everything else denied.
+function registerPermissions() {
+  const ses = session.defaultSession;
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+    const url = (details && details.requestingUrl) || wc.getURL();
+    const media = permission === 'media' && !((details && details.mediaTypes) || []).includes('video');
+    callback(Boolean(media && isAppUrl(url)));
+  });
+  ses.setPermissionCheckHandler((wc, permission, requestingOrigin, details) => {
+    if (permission !== 'media') return false;
+    if (details && details.mediaType && details.mediaType !== 'audio') return false;
+    const url = (details && details.requestingUrl) || (wc && wc.getURL()) || '';
+    return isAppUrl(url);
+  });
+}
+
+// No <webview> tags, no extra windows from any web contents.
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-attach-webview', (e) => e.preventDefault());
+  contents.setWindowOpenHandler(({ url }) => {
+    openExternal(url);
+    return { action: 'deny' };
+  });
+});
+
 // Token storage for the renderer (window.auraSecure): values are encrypted by the OS
-// (Keychain / DPAPI / libsecret) and kept in userData. Without an OS keyring
-// (bare Linux) safeStorage is unavailable and values are stored as-is — the UI is told so.
+// (Keychain / DPAPI / libsecret / KWallet) and kept in userData. Without an OS keyring
+// (bare Linux) safeStorage either is unavailable (values stored as-is) or falls back to
+// "basic_text" — a hard-coded key, i.e. obfuscation, not encryption. Either way the UI is
+// told the tokens are NOT encrypted.
 const secureFile = () => path.join(app.getPath('userData'), 'secure.json');
 
 function readSecure() {
@@ -68,30 +154,50 @@ function writeSecure(data) {
   fs.writeFileSync(secureFile(), JSON.stringify(data), { mode: 0o600 });
 }
 
+/** Real OS-backed encryption (not Linux "basic_text" with a built-in key). */
+function osEncryption() {
+  if (!safeStorage.isEncryptionAvailable()) return false;
+  if (process.platform === 'linux' && typeof safeStorage.getSelectedStorageBackend === 'function') {
+    const backend = safeStorage.getSelectedStorageBackend();
+    return backend !== 'basic_text' && backend !== 'unknown';
+  }
+  return true;
+}
+
+const KEY_RE = /^[a-z][a-z0-9._-]{0,63}$/i;
+
 function registerSecureStore() {
   const canEncrypt = () => safeStorage.isEncryptionAvailable();
-  ipcMain.handle('secure:get', (_e, key) => {
-    const entry = readSecure()[key];
+  const checked = (handler) => (event, ...args) => {
+    if (!fromApp(event)) throw new Error('forbidden');
+    const [key] = args;
+    if (args.length && (typeof key !== 'string' || !KEY_RE.test(key))) throw new Error('bad key');
+    return handler(...args);
+  };
+  ipcMain.handle('secure:get', checked((key) => {
+    const data = readSecure();
+    const entry = Object.prototype.hasOwnProperty.call(data, key) ? data[key] : null;
     if (!entry) return null;
     try {
       return entry.enc ? safeStorage.decryptString(Buffer.from(entry.value, 'base64')) : entry.value;
     } catch {
       return null;
     }
-  });
-  ipcMain.handle('secure:set', (_e, key, value) => {
+  }));
+  ipcMain.handle('secure:set', checked((key, value) => {
+    if (typeof value !== 'string' || value.length > 64 * 1024) throw new Error('bad value');
     const data = readSecure();
     data[key] = canEncrypt()
       ? { enc: true, value: safeStorage.encryptString(value).toString('base64') }
       : { enc: false, value };
     writeSecure(data);
-  });
-  ipcMain.handle('secure:remove', (_e, key) => {
+  }));
+  ipcMain.handle('secure:remove', checked((key) => {
     const data = readSecure();
     delete data[key];
     writeSecure(data);
-  });
-  ipcMain.handle('secure:encrypted', () => canEncrypt());
+  }));
+  ipcMain.handle('secure:encrypted', checked(() => osEncryption()));
 }
 
 function buildMenu() {
@@ -119,6 +225,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     registerSecureStore();
+    registerPermissions();
     buildMenu();
     createWindow();
     app.on('activate', () => {

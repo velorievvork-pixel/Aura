@@ -2,7 +2,7 @@
   Настройки: профиль, предпочтения Ауры, приватность ИИ и разрешения,
   безопасность (пароль, 2FA, доверенные устройства, сессии), сервер и выход.
 */
-import { Copy, Download, KeyRound, LogOut, Monitor, ShieldCheck, Smartphone, Trash2, Upload } from 'lucide-react';
+import { Copy, Download, KeyRound, LogOut, Monitor, Share2, ShieldCheck, Smartphone, Trash2, Upload } from 'lucide-react';
 import QRCode from 'qrcode';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ServerAddress } from '../components/ServerAddress';
@@ -10,6 +10,7 @@ import { Avatar, Field, PasswordInput, Segmented, Spinner, Switch } from '../com
 import { DIETS, toolDescription, toolTitle, when } from '../lib/format';
 import { cleanCode, nameError, otpError, passwordError } from '../lib/validate';
 import { secureStore } from '../net/secureStore';
+import { isNative } from '../platform';
 import type { Permission, Privacy, SessionRow, TrustedDevice, TwoFaSetup } from '../net/api';
 import { useData } from '../state/data';
 import { errorText, useSession } from '../state/session';
@@ -195,12 +196,14 @@ function PrefsSection() {
   if (!prefs) return <Spinner />;
   const diet = new Set(prefs.diet ?? []);
 
-  const toggleDiet = (value: string) => {
-    const next = new Set(diet);
-    if (next.has(value)) next.delete(value);
-    else next.add(value);
-    savePrefs({ diet: [...next] });
-  };
+  // От актуальных настроек, а не от снимка рендера: два быстрых клика не теряют первый.
+  const toggleDiet = (value: string) =>
+    savePrefs((current) => {
+      const next = new Set(current.diet ?? []);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return { diet: [...next] };
+    });
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
@@ -299,7 +302,7 @@ function PrivacySection() {
 // ------------------------------------------------------------- Безопасность
 
 function PasswordSection() {
-  const { api } = useSession();
+  const { changePassword } = useSession();
   const { notify } = useData();
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -313,7 +316,7 @@ function PasswordSection() {
     if (found.current || found.next) return;
     setBusy(true);
     try {
-      await api.changePassword(current, next);
+      await changePassword(current, next);
       setCurrent('');
       setNext('');
       notify('Пароль изменён. Другие устройства вышли из аккаунта.');
@@ -349,13 +352,36 @@ function PasswordSection() {
 /** Секрет группами по 4 — так его проще перепечатать в приложение вручную. */
 const grouped = (secret: string) => secret.replace(/(.{4})/g, '$1 ').trim();
 
-function download(name: string, text: string) {
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+/**
+ * Сохранить текст файлом. В браузере и Electron — обычная загрузка (ссылку
+ * освобождаем не сразу: загрузка начинается асинхронно). WebView телефона
+ * загрузки по ссылке не поддерживает — там системное «Поделиться», если есть,
+ * иначе кнопка не показывается (остаётся «Скопировать»).
+ */
+const canShareText = () => isNative && typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+const canDownload = () => !isNative || canShareText();
+
+async function download(name: string, text: string): Promise<void> {
+  if (isNative) {
+    if (!canShareText()) throw new Error('Сохранение файла здесь недоступно — скопируйте коды');
+    try {
+      await navigator.share({ title: name, text });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return; // пользователь закрыл окно
+      throw err;
+    }
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
   const a = document.createElement('a');
   a.href = url;
   a.download = name;
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 function TwoFactorSection() {
@@ -370,6 +396,14 @@ function TwoFactorSection() {
   const [devices, setDevices] = useState<TrustedDevice[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const copy = (text: string, done: string) => {
+    if (!navigator.clipboard) return notify('Буфер обмена недоступен', 'error');
+    navigator.clipboard.writeText(text).then(
+      () => notify(done),
+      () => notify('Не удалось скопировать', 'error'),
+    );
+  };
 
   const load = () => {
     api.twoFaStatus().then(setStatus).catch(() => undefined);
@@ -447,12 +481,17 @@ function TwoFactorSection() {
             ))}
           </div>
           <div className="row wrap">
-            <button className="btn btn-secondary btn-sm" onClick={() => navigator.clipboard?.writeText(codes.join('\n')).then(() => notify('Коды скопированы'))}>
+            <button className="btn btn-secondary btn-sm" onClick={() => copy(codes.join('\n'), 'Коды скопированы')}>
               <Copy size={14} /> Скопировать
             </button>
-            <button className="btn btn-secondary btn-sm" onClick={() => download('aura-recovery-codes.txt', codes.join('\n'))}>
-              <Download size={14} /> Скачать
-            </button>
+            {canDownload() && (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => download('aura-recovery-codes.txt', codes.join('\n')).catch((err) => notify(err instanceof Error && err.message ? err.message : 'Не удалось сохранить файл', 'error'))}
+              >
+                {isNative ? <Share2 size={14} /> : <Download size={14} />} {isNative ? 'Поделиться' : 'Скачать'}
+              </button>
+            )}
             <button className="btn btn-primary btn-sm" onClick={() => setCodes(null)}>
               Я сохранил коды
             </button>
@@ -486,7 +525,7 @@ function TwoFactorSection() {
                   <code className="secret mono" style={{ flex: 1 }}>
                     {grouped(setup.secret)}
                   </code>
-                  <button type="button" className="icon-btn" aria-label="Скопировать ключ" onClick={() => navigator.clipboard?.writeText(setup.secret).then(() => notify('Ключ скопирован'))}>
+                  <button type="button" className="icon-btn" aria-label="Скопировать ключ" onClick={() => copy(setup.secret, 'Ключ скопирован')}>
                     <Copy size={15} />
                   </button>
                 </div>
@@ -557,7 +596,12 @@ function TwoFactorSection() {
                     <button
                       className="btn btn-ghost btn-sm"
                       onClick={async () => {
-                        await api.revokeTrustedDevice(d.id).catch(() => undefined);
+                        try {
+                          await api.revokeTrustedDevice(d.id);
+                          notify('Устройство больше не доверенное');
+                        } catch (err) {
+                          notify(errorText(err), 'error');
+                        }
                         load();
                       }}
                     >
@@ -609,7 +653,12 @@ function SessionsSection() {
                   className="icon-btn"
                   aria-label="Завершить сессию"
                   onClick={async () => {
-                    await api.revokeSession(s.id).catch(() => undefined);
+                    try {
+                      await api.revokeSession(s.id);
+                      notify('Сессия завершена');
+                    } catch (err) {
+                      notify(errorText(err), 'error');
+                    }
                     load();
                   }}
                 >
@@ -625,8 +674,12 @@ function SessionsSection() {
           <button
             className="btn btn-danger btn-sm"
             onClick={async () => {
-              await api.revokeOtherSessions().catch(() => undefined);
-              notify('Другие сессии завершены');
+              try {
+                await api.revokeOtherSessions();
+                notify('Другие сессии завершены');
+              } catch (err) {
+                notify(errorText(err), 'error');
+              }
               load();
             }}
           >

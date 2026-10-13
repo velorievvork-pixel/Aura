@@ -8,6 +8,7 @@ import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { ServerAddress } from '../components/ServerAddress';
 import { Field, Logo, PasswordInput, Spinner } from '../components/ui';
 import { cleanCode, emailError, nameError, otpError, passwordError, twoFaCodeError } from '../lib/validate';
+import { deviceInfo } from '../net/secureStore';
 import { errorText, useSession, type LoginStep } from '../state/session';
 
 function AuthLayout({ title, lead, children, foot }: { title: string; lead?: ReactNode; children: ReactNode; foot?: ReactNode }) {
@@ -235,9 +236,22 @@ export function TwoFactor() {
   const navigate = useNavigate();
   const [code, setCode] = useState('');
   const [trust, setTrust] = useState(true);
+  // «Доверять устройству» — только если id устройства переживёт перезапуск.
+  const [trustable, setTrustable] = useState(false);
   const [recovery, setRecovery] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    deviceInfo().then(
+      (d) => alive && setTrustable(d.persistent),
+      () => alive && setTrustable(false),
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   if (status === 'signedIn') return <Navigate to="/" replace />;
 
@@ -247,7 +261,7 @@ export function TwoFactor() {
     if (problem) return setError(problem);
     setBusy(true);
     try {
-      await login2fa(code, trust);
+      await login2fa(code, trust && trustable);
       navigate('/', { replace: true });
     } catch (err) {
       const text = errorText(err);
@@ -277,10 +291,12 @@ export function TwoFactor() {
             <input className={`input code-input mono ${error ? 'invalid' : ''}`} inputMode="numeric" autoComplete="one-time-code" value={code} onChange={(e) => setCode(cleanCode(e.target.value))} placeholder="000000" autoFocus />
           )}
         </Field>
-        <label className="row small muted" style={{ cursor: 'pointer' }}>
-          <input type="checkbox" checked={trust} onChange={(e) => setTrust(e.target.checked)} />
-          Доверять этому устройству 90 дней
-        </label>
+        {trustable && (
+          <label className="row small muted" style={{ cursor: 'pointer' }}>
+            <input type="checkbox" checked={trust} onChange={(e) => setTrust(e.target.checked)} />
+            Доверять этому устройству 90 дней
+          </label>
+        )}
         <Submit busy={busy}>
           <ShieldCheck size={16} /> Войти
         </Submit>

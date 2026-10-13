@@ -5,21 +5,27 @@
   1. старт — читаем токены; если есть, сразу показываем приложение с
      последним известным профилем (офлайн тоже работает), иначе — вход;
   2. при каждом открытии сокета (onOpen) повторно авторизуемся: auth.token,
-     при отказе — auth.refresh (ротация refresh-токена), при отказе и его —
-     выходим на экран входа;
+     при отказе — auth.refresh под межвкладочной блокировкой (state/reauth.ts),
+     при отказе и его — выходим на экран входа; сетевая ошибка — переподключение;
   3. вход: auth.login → при включённой 2FA сервер отвечает requires_2fa —
      спрашиваем код и шлём auth.login2fa; при неподтверждённом email —
      экран кода из письма (auth.verifyEmail).
+
+  Выход и смена адреса сервера сначала удаляют токены и кэш пользователя с
+  устройства (не ждут сервер), а уже потом — best-effort auth.logout. Токены
+  одного сервера никогда не уходят на другой.
 
   Пароль держится только в памяти на время многошагового входа (2FA, код из
   письма) и нигде не сохраняется.
 */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { currentEnv, loadOverride, normalizeServerUrl, saveOverride, serverCandidates } from '../net/config';
-import { AuraError, AuraSocket, isNetworkError, type ConnState } from '../net/socket';
+import { currentEnv, loadOverride, normalizeServerUrl, sameServers, saveOverride, serverCandidates } from '../net/config';
+import { AuraError, AuraSocket, type ConnState } from '../net/socket';
 import { makeApi, type Api, type AuthPayload, type User } from '../net/api';
-import { clearTokens, deviceId, loadTokens, saveTokens } from '../net/secureStore';
+import { clearTokens, deviceInfo, loadTokens, saveTokens } from '../net/secureStore';
+import { cachedUser, cacheUser, clearUserCaches } from '../net/userCache';
 import { getPlatform } from '../platform';
+import { reauthenticate, withRefreshLock } from './reauth';
 
 export type AuthStatus = 'booting' | 'signedOut' | 'signedIn';
 
@@ -46,6 +52,8 @@ interface Session {
   resendCode(): Promise<{ devCode?: string }>;
   forgotPassword(email: string): Promise<{ devCode?: string }>;
   resetPassword(email: string, code: string, newPassword: string): Promise<LoginStep>;
+  /** Смена пароля; сервер выдаёт этому устройству новую пару токенов (старые отозваны). */
+  changePassword(oldPassword: string, newPassword: string): Promise<void>;
   logout(): Promise<void>;
   setUser(user: User): void;
   setServer(input: string | null): string | null;
@@ -53,7 +61,8 @@ interface Session {
 }
 
 const Ctx = createContext<Session | null>(null);
-const USER_KEY = 'aura.user';
+/** Сколько ждать ответа на auth.logout: токены к этому моменту уже удалены с устройства. */
+const LOGOUT_TIMEOUT_MS = 5000;
 
 function deviceName(): string {
   const platform = getPlatform();
@@ -61,24 +70,6 @@ function deviceName(): string {
   if (platform === 'ios') return 'Aura для iPhone';
   if (platform === 'desktop') return 'Aura Desktop';
   return 'Aura в браузере';
-}
-
-function cachedUser(): User | null {
-  try {
-    const raw = localStorage.getItem(USER_KEY);
-    return raw ? (JSON.parse(raw) as User) : null;
-  } catch {
-    return null;
-  }
-}
-
-function cacheUser(user: User | null) {
-  try {
-    if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
-    else localStorage.removeItem(USER_KEY);
-  } catch {
-    /* без кэша профиль просто подгрузится после подключения */
-  }
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -89,12 +80,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [pendingEmail, setPendingEmail] = useState('');
   const [serverUrl, setServerUrl] = useState('');
   const [connError, setConnError] = useState('');
-  const [override, setOverride] = useState<string | null>(() => loadOverride());
-
-  const overrideRef = useRef(override);
-  overrideRef.current = override;
+  // Адрес, заданный пользователем; читается сокетом при каждой попытке подключения.
+  const overrideRef = useRef<string | null>(loadOverride());
   // Учётные данные многошагового входа — только в памяти.
   const pending = useRef<{ email: string; password: string } | null>(null);
+  // «Эпоха» входа: растёт при входе, выходе и смене сервера. Авторизация на
+  // соединении, начатая в прошлой эпохе, свой результат не применяет (иначе
+  // токены, обновлённые для старого сервера, вернулись бы после выхода).
+  const epoch = useRef(0);
 
   const applyUser = useCallback((next: User | null) => {
     setUserState(next);
@@ -103,6 +96,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const signedIn = useCallback(
     async (payload: AuthPayload) => {
+      if (!payload.token || !payload.refresh_token) throw new AuraError('bad_response', 'Сервер не выдал токены входа');
+      epoch.current += 1;
       await saveTokens({ access: payload.token, refresh: payload.refresh_token });
       applyUser(payload.user);
       pending.current = null;
@@ -112,11 +107,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [applyUser],
   );
 
-  const signedOut = useCallback(async () => {
-    await clearTokens();
-    applyUser(null);
+  /** Выход на этом устройстве: экран входа сразу, токены и (по желанию) кэш пользователя — долой. */
+  const signOutLocal = useCallback(async (dropCaches: boolean) => {
+    epoch.current += 1;
+    pending.current = null;
+    setPendingEmail('');
+    setUserState(null);
     setStatus('signedOut');
-  }, [applyUser]);
+    if (dropCaches) clearUserCaches();
+    else cacheUser(null);
+    await clearTokens().catch(() => undefined);
+  }, []);
 
   // Один сокет на всё время жизни приложения.
   const socket = useMemo(
@@ -124,33 +125,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       new AuraSocket({
         candidates: () => serverCandidates(overrideRef.current, currentEnv()),
         onOpen: async (sock) => {
-          const tokens = await loadTokens();
-          if (!tokens) {
-            setStatus((s) => (s === 'signedIn' ? s : 'signedOut'));
-            return;
-          }
-          try {
-            const reply = await sock.requestNow<{ user?: User }>('auth.token', { token: tokens.access });
-            // Старые серверы на свежем соединении отдают пустой ответ — профиль берём из auth.me.
-            applyUser(reply.user ?? (await sock.requestNow<User>('auth.me')));
+          const started = epoch.current;
+          const result = await reauthenticate({
+            request: (type, payload) => sock.requestNow(type, payload),
+            load: loadTokens,
+            save: saveTokens,
+            clear: clearTokens,
+            lock: withRefreshLock,
+            device: deviceName(),
+            stale: () => epoch.current !== started,
+          });
+          // Сетевая ошибка пробрасывается из reauthenticate: сокет переподключится.
+          if (result.kind === 'stale') return;
+          if (result.kind === 'signedIn') {
+            applyUser(result.user);
             setStatus('signedIn');
             return;
-          } catch (error) {
-            if (isNetworkError(error)) throw error;
           }
-          if (tokens.refresh) {
-            try {
-              const renewed = await sock.requestNow<AuthPayload>('auth.refresh', { refresh_token: tokens.refresh, device: deviceName() });
-              await saveTokens({ access: renewed.token, refresh: renewed.refresh_token });
-              applyUser(renewed.user);
-              setStatus('signedIn');
-              return;
-            } catch (error) {
-              if (isNetworkError(error)) throw error;
-            }
-          }
-          // Токены отозваны или истекли — вход заново.
-          await clearTokens();
+          // Токенов нет (или их отозвали) — экран входа, а не «вошёл без токенов».
+          // Незавершённый вход (2FA, код из письма) при этом не сбрасываем.
           applyUser(null);
           setStatus('signedOut');
         },
@@ -162,13 +155,14 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     // Старт: с токенами сразу открываем приложение (последний профиль из кэша),
     // сеть подтянет актуальное; без токенов — экран входа.
+    // Если сокет успел авторизоваться раньше, его результат не перетираем.
     loadTokens().then((tokens) => {
       const cached = cachedUser();
       if (tokens && cached) {
-        setUserState(cached);
-        setStatus('signedIn');
+        setUserState((u) => u ?? cached);
+        setStatus((s) => (s === 'booting' ? 'signedIn' : s));
       } else if (!tokens) {
-        setStatus('signedOut');
+        setStatus((s) => (s === 'booting' ? 'signedOut' : s));
       }
     });
     const offState = socket.onState((state) => {
@@ -188,7 +182,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     async (email: string, password: string): Promise<LoginStep> => {
       const address = email.trim().toLowerCase();
       try {
-        const payload = await api.login(address, password, deviceName(), deviceId());
+        const device = await deviceInfo();
+        const payload = await api.login(address, password, deviceName(), device.id);
         await signedIn(payload);
         return { kind: 'done' };
       } catch (error) {
@@ -212,7 +207,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     async (code: string, trustDevice: boolean) => {
       const creds = pending.current;
       if (!creds) throw new AuraError('bad_request', 'Начните вход заново');
-      const payload = await api.login2fa(creds.email, creds.password, code.trim().toUpperCase(), trustDevice, deviceName(), deviceId());
+      const device = await deviceInfo();
+      // Без постоянного id «доверять устройству» нельзя: id сменится при перезапуске.
+      const trust = trustDevice && device.persistent;
+      const payload = await api.login2fa(creds.email, creds.password, code.trim().toUpperCase(), trust, deviceName(), device.id);
       await signedIn(payload);
     },
     [api, signedIn],
@@ -264,26 +262,51 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     [api, login],
   );
 
+  const changePassword = useCallback(
+    async (oldPassword: string, newPassword: string) => {
+      const result = await api.changePassword(oldPassword, newPassword);
+      // Сервер отзывает все refresh-токены, включая наш, и выдаёт этому устройству новую
+      // пару. Старые серверы её не присылают — тогда вход доживёт до истечения токена.
+      if (result.token && result.refresh_token) {
+        await withRefreshLock(() => saveTokens({ access: result.token!, refresh: result.refresh_token! }));
+      }
+    },
+    [api],
+  );
+
   const logout = useCallback(async () => {
-    try {
-      await api.logout();
-    } catch {
-      /* офлайн — токен всё равно удаляем с устройства */
-    }
-    await signedOut();
-  }, [api, signedOut]);
+    // Запрос уходит по текущему (авторизованному) соединению сразу, но его не ждём:
+    // офлайн выход не должен висеть 25 секунд, токены удаляются немедленно.
+    const farewell = api.logout(LOGOUT_TIMEOUT_MS);
+    await signOutLocal(true);
+    farewell.catch(() => {
+      // Сервер не подтвердил выход — рвём соединение, чтобы оно не осталось авторизованным.
+      socket.reconnect();
+    });
+  }, [api, socket, signOutLocal]);
 
   const setServer = useCallback(
     (input: string | null) => {
       const url = input ? normalizeServerUrl(input) : null;
       if (input && !url) return null;
+      const env = currentEnv();
+      const before = serverCandidates(overrideRef.current, env);
+      const after = serverCandidates(url, env);
       saveOverride(url);
-      setOverride(url);
+      if (sameServers(before, after)) {
+        overrideRef.current = url;
+        socket.reconnect();
+        return after[0];
+      }
+      // Другой сервер: токены и кэш прежнего удаляем ДО подключения к новому —
+      // токены сервера A не должны уйти на сервер B, лента пользователя A — достаться B.
+      socket.stop();
       overrideRef.current = url;
-      socket.reconnect();
-      return url ?? serverCandidates(null, currentEnv())[0];
+      setEverConnected(false);
+      void signOutLocal(true).finally(() => socket.reconnect());
+      return after[0];
     },
-    [socket],
+    [socket, signOutLocal],
   );
 
   const value: Session = {
@@ -303,6 +326,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     resendCode,
     forgotPassword,
     resetPassword,
+    changePassword,
     logout,
     setUser: applyUser,
     setServer,

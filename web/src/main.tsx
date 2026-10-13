@@ -22,9 +22,12 @@ import './styles/global.css';
 initPlatform();
 
 function Root() {
-  const { status, conn, everConnected } = useSession();
+  const { status, conn, everConnected, connError } = useSession();
 
   if (status === 'booting') {
+    // Токены есть, профиля в кэше нет — ждём сервер. Если он не отвечает, вместо
+    // вечной заставки — экран ожидания с «Повторить» и сменой адреса.
+    if (conn !== 'open' && connError) return <ConnectionScreen />;
     return (
       <div className="gate">
         <Spinner />

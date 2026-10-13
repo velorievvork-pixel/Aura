@@ -21,12 +21,15 @@ export function CommandBar({
   const [text, setText] = useState('');
   const textRef = useRef(text);
   textRef.current = text;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   const speech = useSpeech(setText);
   const wasListening = useRef(false);
 
   useEffect(() => {
-    // Распознавание закончилось — отправляем то, что услышали.
-    if (wasListening.current && !speech.listening && textRef.current.trim()) {
+    // Распознавание закончилось — отправляем то, что услышали. Если предыдущий
+    // запрос ещё выполняется, текст остаётся в поле: отправить можно вручную.
+    if (wasListening.current && !speech.listening && textRef.current.trim() && !busyRef.current) {
       onSubmit(textRef.current.trim());
       setText('');
     }

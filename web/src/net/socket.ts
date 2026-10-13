@@ -181,8 +181,18 @@ export class AuraSocket {
       clearTimeout(this.connectTimer);
       try {
         await this.opts.onOpen?.(this);
-      } catch {
-        // Авторизация не удалась — соединение всё равно рабочее (вход заново).
+      } catch (error) {
+        if (this.ws !== ws) return;
+        if (isNetworkError(error)) {
+          // Сервер не ответил на авторизацию — соединение негодное: без этого
+          // приложение осталось бы «открытым», но без входа (вечная заставка).
+          this.ws = null;
+          ws.close();
+          this.dropPending('Сервер не ответил на авторизацию');
+          this.fail(`Сервер ${this.url} не ответил на авторизацию`);
+          return;
+        }
+        // Прочие ошибки авторизации — соединение рабочее (вход заново).
       }
       if (this.ws !== ws) return;
       this.round = 0;

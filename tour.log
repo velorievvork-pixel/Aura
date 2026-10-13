@@ -1,0 +1,26 @@
+снимок shots/android/01-login.png
+снимок shots/android/02-login-keyboard.png
+! главная не распознана, проход продолжается по снимкам
+снимок shots/android/03-home.png
+снимок shots/android/04-home-scrolled.png
+снимок shots/android/05-aura.png
+снимок shots/android/06-aura-reply.png
+снимок shots/android/07-aura-keyboard.png
+снимок shots/android/08-negotiation.png
+снимок shots/android/09-negotiation-steps.png
+снимок shots/android/10-negotiation-result.png
+снимок shots/android/11-tasks.png
+снимок shots/android/12-task-dialog.png
+снимок shots/android/13-contacts.png
+снимок shots/android/14-contact-card.png
+снимок shots/android/15-chat.png
+снимок shots/android/16-settings.png
+снимок shots/android/17-settings-scrolled.png
+  uiautomator: 
+  uiautomator: 
+  uiautomator: 
+  uiautomator: 
+  uiautomator: 
+снимок shots/android/18-back-to-home.png
+! не найдено: «Подтверждения»
+! не найдено: «Входящая»

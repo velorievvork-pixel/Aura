@@ -47,7 +47,8 @@ public:
 
     // Планировщик: находит просроченные напоминания, помечает отправленными и
     // рассылает task.due. Возвращает обработанные задачи (для тестов/логов).
-    std::vector<TaskRecord> dueTick(int limit);
+    // userId = 0 — все пользователи (фоновый планировщик), иначе только его задачи.
+    std::vector<TaskRecord> dueTick(int limit, long long userId = 0);
 
 private:
     DatabaseManager& database_;

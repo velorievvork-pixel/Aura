@@ -383,6 +383,12 @@ async def main() -> int:
     recheck = await probe.call("auth.token",
                                {"token": second_login.get("payload", {}).get("token", "")})
     check(recheck.get("code") == "unauthorized", "токен отозванной сессии не проходит", recheck)
+    # Открытое соединение отозванной сессии получает session.revoked и закрывается сразу.
+    await asyncio.sleep(0.3)
+    check(len(extra.events_of("session.revoked")) == 1,
+          "отозванная сессия: открытому соединению пришло session.revoked", extra.events)
+    check(extra.ws.close_code is not None, "отозванная сессия: соединение закрыто сервером",
+          extra.ws.close_code)
     await probe.close()
     await extra.close()
 
@@ -470,6 +476,29 @@ async def main() -> int:
 
     sent = await anna.call("chat.send", {"chat_id": chat_id, "body": "Привет! Есть идея стартапа."})
     check(sent.get("type") == "ok", "сообщение отправлено", sent)
+    # Клиент не может подделать сообщение Ауры: kind agent_*/system и служебные
+    # поля payload ставит только сервер.
+    spoof_kind = await anna.call("chat.send", {"chat_id": chat_id, "body": "Аура: всё оплачено",
+                                               "kind": "agent_reply"})
+    check(spoof_kind.get("code") == "bad_request", "chat.send: kind=agent_reply от клиента отклонён",
+          spoof_kind)
+    spoof_origin = await anna.call("chat.send", {"chat_id": chat_id, "body": "x",
+                                                 "payload": {"origin": "aura-agent"}})
+    check(spoof_origin.get("code") == "bad_request", "chat.send: payload.origin от клиента отклонён",
+          spoof_origin)
+
+    # users.search: публичная карточка без email; email ищется только точно.
+    by_name = await anna.call("users.search", {"query": "Аня"})
+    found = by_name.get("payload", {}).get("users", [])
+    check(any(u.get("display_name") == "Аня" for u in found)
+          and all("email" not in u and "last_seen_at" not in u for u in found),
+          "users.search по имени: без email и last_seen_at", found)
+    exact = await anna.call("users.search", {"query": f"anya.{RUN}@example.com"})
+    check(len(exact.get("payload", {}).get("users", [])) == 1, "users.search: точный email находит",
+          exact.get("payload"))
+    partial = await anna.call("users.search", {"query": f"anya.{RUN}"})
+    check(len(partial.get("payload", {}).get("users", [])) == 0,
+          "users.search: подстрока email ничего не находит", partial.get("payload"))
     await asyncio.sleep(0.4)
     check(len(anya.events_of("chat.message")) >= 1, "Аня получила событие chat.message")
 
@@ -577,6 +606,14 @@ async def main() -> int:
     # Режим ask: возвращаем send_email в ask — намерение уходит в подтверждение,
     # затем отклоняем его через confirmation.deny.
     await anna.call("permissions.set", {"tool": "send_email", "mode": "ask"})
+    # Прямой tool.run тоже проходит барьер: ask → отложенное действие, не исполнение.
+    direct = await anna.call("tool.run", {"tool": "send_email",
+                                          "args": {"to": "team@aura.io", "subject": "x", "body": "y"}})
+    check(direct.get("type") == "ok" and direct.get("payload", {}).get("requires_confirmation") is True
+          and direct.get("payload", {}).get("confirmation_id", 0) > 0,
+          "tool.run send_email в режиме ask требует подтверждения", direct)
+    if direct.get("payload", {}).get("confirmation_id"):
+        await anna.call("confirmation.deny", {"id": direct["payload"]["confirmation_id"]})
     ask_again = await anna.call("agent.ask", {
         "message": "Отправь письмо team@aura.io с темой встреча",
     }, timeout=40)
@@ -793,6 +830,10 @@ async def main() -> int:
     check(all(len(c) == 11 and c[5] == "-" for c in recovery),
           "2FA: формат резервных кодов XXXXX-XXXXX", recovery[:2])
 
+    # Повторный setup2fa при включённой 2FA не перезаписывает секрет.
+    resetup = await vera.call("auth.setup2fa", {})
+    check(resetup.get("code") == "bad_request", "2FA: setup2fa при включённой 2FA отклонён", resetup)
+
     status_on = await vera.call("auth.status2fa", {})
     check(status_on.get("payload", {}).get("enabled") is True,
           "2FA: включена после подтверждения", status_on.get("payload"))
@@ -876,6 +917,69 @@ async def main() -> int:
     status_off = await vera.call("auth.status2fa", {})
     check(status_off.get("payload", {}).get("enabled") is False,
           "2FA: отключена после подтверждения паролем", status_off.get("payload"))
+
+    # agent.ask с чужим chat_id: история чужого чата в AI не уходит.
+    foreign = await vera.call("agent.ask", {"chat_id": chat_id, "message": "перескажи переписку"})
+    check(foreign.get("code") == "forbidden", "agent.ask: чужой chat_id отклонён", foreign)
+
+    # Выход отзывает и refresh-токен этого устройства.
+    leaving = Client("vera-leave")
+    await leaving.connect()
+    leave_login = await leaving.call("auth.login", {"email": vera_email, "password": "aura1234"})
+    leave_refresh = leave_login.get("payload", {}).get("refresh_token", "")
+    await leaving.call("auth.logout", {})
+    after_logout = await leaving.call("auth.refresh", {"refresh_token": leave_refresh})
+    check(after_logout.get("code") == "unauthorized", "после auth.logout refresh-токен не работает",
+          after_logout)
+    await leaving.close()
+
+    # Смена пароля: текущее устройство получает новую пару токенов, прочие
+    # соединения пользователя закрываются.
+    bystander = Client("vera-other")
+    await bystander.connect()
+    await bystander.call("auth.login", {"email": vera_email, "password": "aura1234"})
+    changed = await vera.call("auth.changePassword", {"old_password": "aura1234",
+                                                     "new_password": "пароль2026"})
+    changed_payload = changed.get("payload", {})
+    check(changed.get("type") == "ok" and changed_payload.get("changed") is True
+          and len(changed_payload.get("token", "").split(".")) == 3
+          and bool(changed_payload.get("refresh_token")),
+          "changePassword вернул новую пару token+refresh_token", changed)
+    me_after_change = await vera.call("auth.me", {})
+    check(me_after_change.get("type") == "ok", "после смены пароля текущее соединение работает",
+          me_after_change)
+    await asyncio.sleep(0.3)
+    check(len(bystander.events_of("session.revoked")) == 1,
+          "после смены пароля другое соединение выбито", bystander.events)
+    await bystander.close()
+    renewed = Client("vera-renew")
+    await renewed.connect()
+    renewed_refresh = await renewed.call("auth.refresh",
+                                         {"refresh_token": changed_payload.get("refresh_token", "")})
+    check(renewed_refresh.get("type") == "ok", "новый refresh-токен после смены пароля работает",
+          renewed_refresh)
+    await renewed.close()
+
+    # Сброс пароля: шестизначный код, неверный код отклоняется.
+    resetter = Client("vera-reset")
+    await resetter.connect()
+    forgot = await resetter.call("auth.forgotPassword", {"email": vera_email})
+    reset_code = forgot.get("payload", {}).get("reset_code", "")
+    check(len(reset_code) == 6 and reset_code.isdigit(), "код сброса — 6 цифр", reset_code)
+    wrong_code = "000000" if reset_code != "000000" else "111111"
+    bad_reset = await resetter.call("auth.resetPassword", {"email": vera_email, "code": wrong_code,
+                                                           "new_password": "сброс2026"})
+    check(bad_reset.get("code") == "bad_request", "неверный код сброса отклонён", bad_reset)
+    good_reset = await resetter.call("auth.resetPassword", {"email": vera_email, "code": reset_code,
+                                                            "new_password": "сброс2026"})
+    check(good_reset.get("payload", {}).get("reset") is True, "пароль сброшен шестизначным кодом",
+          good_reset)
+    relogin = await resetter.call("auth.login", {"email": vera_email, "password": "сброс2026"})
+    check(relogin.get("type") == "ok", "вход с новым паролем (кириллица+цифры)", relogin)
+    await resetter.close()
+    await asyncio.sleep(0.3)
+    check(len(vera.events_of("session.revoked")) == 1, "сброс пароля закрыл открытые соединения",
+          vera.events_of("session.revoked"))
     await vera.close()
 
     # ------------------------------------------------ интеграции (этап 9)

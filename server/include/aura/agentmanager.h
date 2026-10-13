@@ -76,6 +76,19 @@ public:
 
     bool available(std::string& error) const;
 
+    // Одно действие через барьер разрешений (tool_permissions): deny — отказ,
+    // ask — отложенное действие (pending_actions), allow — исполнение.
+    // Используется и для действий модели, и для прямого tool.run клиента.
+    // Возвращает элемент results[]: ok/denied/requires_confirmation/data/error.
+    Json executeOne(long long userId, long long chatId, const std::string& tool, const Json& args);
+
+    // Контекст собеседника для AI с учётом его prefs.privacy (то же
+    // вычёркивание, что и в A2A-переговорах).
+    Json peerContext(long long responderId, const std::string& topic);
+
+    // Есть ли у двух пользователей общий чат (peers[] в agent.ask — только они).
+    bool shareChat(long long first, long long second);
+
 private:
     // Выполняет действия, предложенные моделью, через ToolManager.
     Json executeActions(long long userId, long long chatId, const Json& actions, bool execute);

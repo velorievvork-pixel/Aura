@@ -30,6 +30,20 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
    считает сессию авторизованной и шлёт событие `session.ready`;
 2. сообщение `auth.login` / `auth.token` уже после подключения.
 
+Ограничения соединения: до входа кадр не больше 64 КБ (`AURA_MAX_PREAUTH_FRAME`,
+больше — закрытие 1009/1002); соединение без входа закрывается через 30 с
+(`AURA_AUTH_TIMEOUT`, код закрытия 4408); с одного IP — не больше 20 соединений
+(`AURA_MAX_CONNECTIONS_PER_IP`, лишнее получает HTTP 429 на рукопожатии). В JSON-объекте
+не больше 1000 ключей.
+
+Открытое соединение не переживает свою сессию: при отзыве сессии
+(`sessions.revoke`/`revokeAll`, `auth.logout` с тем же токеном на другом сокете),
+смене/сбросе пароля, повторном использовании refresh-токена или блокировке
+аккаунта сервер шлёт событие `session.revoked` (`{reason}`) и закрывает сокет с
+кодом 4401. Кроме того, сессия соединения сверяется с БД не реже чем раз в 15 с
+(`AURA_AUTH_RECHECK`): отозванная/истёкшая → `unauthorized` «сессия истекла или
+отозвана — войдите снова», соединение разлогинивается.
+
 Все типы, кроме `auth.register`, `auth.login`, `auth.login2fa`, `auth.verifyEmail`,
 `auth.resendCode`, `auth.forgotPassword`, `auth.resetPassword`,
 `auth.refresh`, `ping`, `server.info`, требуют авторизации.
@@ -42,11 +56,11 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 | `unauthorized` | нет токена, токен недействителен, неверный пароль, refresh-токен отозван/истёк |
 | `email_not_verified` | пароль верный, но email не подтверждён — нужен `auth.verifyEmail` |
 | `requires_2fa` | пароль верный, но включена 2FA — нужен `auth.login2fa` с кодом |
-| `forbidden` | нет доступа к чату, аккаунт отключён, слишком много попыток |
+| `forbidden` | нет доступа к чату (в т.ч. `agent.ask` с чужим `chat_id`), аккаунт отключён, слишком много попыток, инструмент запрещён (`deny`) |
 | `not_found` | пользователь/чат не найдены |
 | `conflict` | email уже занят |
 | `upstream_error` | AI-сервис недоступен или вернул мусор |
-| `internal_error` | необработанное исключение |
+| `internal_error` | необработанное исключение; текст всегда обобщённый («внутренняя ошибка сервера»), подробности (SQL и т.п.) — только в логе сервера |
 
 ## Методы
 
@@ -57,18 +71,18 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `auth.register` | `display_name`, `email`, `password` | `requires_verification`, `user`, `email_code` (только `AURA_MAIL_DRIVER=dev`) |
-| `auth.verifyEmail` | `email`, `code` | `verified`, `user` |
-| `auth.resendCode` | `email` | `message` (+`email_code` в dev); ответ не раскрывает существование email |
-| `auth.login` | `email`, `password`, `device?`, `device_id?` | `token`, `token_type`, `expires_in`, `refresh_token`, `refresh_expires_in`, `session_id`, `user`; до подтверждения email — `email_not_verified`; при включённой 2FA и недоверенном `device_id` — `requires_2fa` |
-| `auth.login2fa` | `email`, `password`, `code`, `trust_device?`, `device_id?`, `device?` | как `auth.login`; `code` — 6-значный TOTP или резервный `XXXXX-XXXXX`; `trust_device` помечает устройство доверенным на 90 дней |
+| `auth.register` | `display_name`, `email`, `password` | `requires_verification`, `user`, `email_code` (только `AURA_MAIL_DRIVER=dev` + `AURA_DEV_MODE=1`); занятый email → `conflict`; больше 10 регистраций с IP в час → `forbidden` |
+| `auth.verifyEmail` | `email`, `code` (6 цифр) | `verified`, `user`; после 5 неверных кодов код сгорает (нужен `auth.resendCode`) |
+| `auth.resendCode` | `email` | `message` (+`email_code` в dev); ответ не раскрывает существование email; не больше 3 писем на адрес в час (сверх лимита ответ тот же, письмо не уходит) |
+| `auth.login` | `email`, `password`, `device?`, `device_id?` | `token`, `token_type`, `expires_in`, `refresh_token`, `refresh_expires_in`, `session_id`, `user`; до подтверждения email — `email_not_verified`; при включённой 2FA и недоверенном `device_id` — `requires_2fa`; отключённый аккаунт — `forbidden` «аккаунт отключён» (только при верном пароле) |
+| `auth.login2fa` | `email`, `password`, `code`, `trust_device?`, `device_id?`, `device?` | как `auth.login`; `code` — 6-значный TOTP или резервный `XXXXX-XXXXX`; `trust_device` помечает устройство доверенным на 90 дней; 5 неверных кодов за 15 мин → `forbidden` до конца окна (счётчик на аккаунт, верный пароль его не сбрасывает) |
 | `auth.refresh` | `refresh_token`, `device?` | новая пара `token`+`refresh_token` (ротация); текущее соединение авторизуется новой сессией, как после `auth.login` |
 | `auth.token` | `token` | `user` |
 | `auth.me` | — | `user` + `preferences` |
-| `auth.changePassword` | `old_password`, `new_password` | `changed`; прочие сессии и refresh-токены отзываются |
-| `auth.forgotPassword` | `email` | `message` (+`reset_code` в dev); ответ всегда «ок» |
-| `auth.resetPassword` | `email`, `code`, `new_password` | `reset`; все сессии и refresh-токены отзываются |
-| `auth.logout` | — | `revoked` |
+| `auth.changePassword` | `old_password`, `new_password` | `changed` + новая пара для текущего устройства, как у `auth.login`: `token`, `token_type`, `expires_in`, `refresh_token`, `refresh_expires_in`, `session_id`, `user`. Все прежние сессии и refresh-токены (включая текущие) отозваны — клиент сохраняет новую пару; соединение продолжает работать под новой сессией, остальные соединения пользователя закрываются (`session.revoked`) |
+| `auth.forgotPassword` | `email` | `message` (+`reset_code` в dev — **6 цифр**); ответ всегда «ок»; не больше 3 писем на адрес в час |
+| `auth.resetPassword` | `email`, `code` (6 цифр, живёт 1 ч), `new_password` | `reset`; после 5 неверных кодов код сгорает; все сессии и refresh-токены отзываются, открытые соединения закрываются |
+| `auth.logout` | — | `revoked`; отзывает сессию и refresh-токены этого устройства |
 | `profile.update` | `display_name?` (1–80 симв.), `bio?` (≤300 симв.), `avatar_url?` (пусто, `https://…` или `data:image/{png,jpeg,webp};base64,…` до ~100 КБ) | `user`; меняются только переданные поля; пустой payload или неверное значение → `bad_request` |
 
 ### Сессии
@@ -76,8 +90,8 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 | тип | payload | ответ |
 | --- | --- | --- |
 | `sessions.list` | — | `sessions[]`: `id`, `device`, `remote_addr`, `created_at`, `expires_at`, `current` |
-| `sessions.revoke` | `session_id` | `revoked`; при отзыве своей сессии соединение разлогинивается |
-| `sessions.revokeAll` | — | `revoked`; текущая сессия остаётся живой |
+| `sessions.revoke` | `session_id` | `revoked`; отзывает и refresh-токены этой сессии, её открытые соединения закрываются; при отзыве своей сессии соединение разлогинивается |
+| `sessions.revokeAll` | — | `revoked`; текущая сессия и её refresh-токен остаются живыми, все прочие сессии и refresh-токены отозваны, их соединения закрыты |
 
 ### Двухфакторная аутентификация (TOTP)
 
@@ -90,7 +104,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `auth.setup2fa` | — | `secret` (base32), `otpauth_uri`, `issuer`, `algorithm`, `digits`, `period`; 2FA остаётся выключенной до подтверждения |
+| `auth.setup2fa` | — | `secret` (base32), `otpauth_uri`, `issuer`, `algorithm`, `digits`, `period`; 2FA остаётся выключенной до подтверждения; если 2FA уже включена → `bad_request` (сначала `auth.disable2fa`) |
 | `auth.confirm2fa` | `code` | `recovery_codes[]` (10 шт., формат `XXXXX-XXXXX`, одноразовые); включает 2FA |
 | `auth.status2fa` | — | `enabled`, `pending`, `recovery_codes_left` |
 | `auth.disable2fa` | `password` | `ok`; отключение только после повторной проверки пароля; удаляет секрет, резервные коды и доверенные устройства |
@@ -103,17 +117,24 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 пропускает ввод кода. События 2FA (`2fa_enabled`, `2fa_disabled`, `2fa_failed`,
 `login_2fa_required` и др.) пишутся в `audit_logs`.
 
-Пароль: минимум 8 символов, буквы и цифры. Хранится как
+Пароль: минимум 8 символов (кодовых точек UTF-8), хотя бы одна буква (латиница,
+в т.ч. Latin-1/расширенная, греческий, кириллица — «пароль12» допустим) и цифра,
+не больше 256 байт. Хранится как
 `argon2id$v=19$m=65536,t=3,p=4$<соль>$<хэш>` (Argon2id, RFC 9106). Старые
 хэши `pbkdf2$…` проверяются и при первом успешном входе прозрачно
 пересчитываются в Argon2id.
 Access-токен: JWT HS256 с claims `sub`, `email`, `jti`, `iat`, `exp`; `jti`
 сверяется с таблицей `sessions`, поэтому выход действительно отзывает токен.
+`sub` должен совпадать с владельцем сессии `jti`, аккаунт должен быть активен.
 Refresh-токен: случайные 32 байта, в БД хранится SHA-256; ротация по
-«семействам» — повторное использование отозванного токена отзывает всё
-семейство и все сессии пользователя (защита от кражи).
-Одноразовые коды (подтверждение email, сброс пароля) хранятся как SHA-256
-в `auth_tokens` со сроком действия; события безопасности пишутся в `audit_logs`.
+«семействам» — повторное использование токена, уже заменённого при ротации
+(в т.ч. два одновременных `auth.refresh` одним токеном), отзывает всё
+семейство и все сессии пользователя (защита от кражи). Токен, отозванный
+выходом/отзывом сессии, просто `unauthorized`.
+Одноразовые коды (подтверждение email, сброс пароля) — 6 цифр, хранятся как
+SHA-256 (с привязкой к пользователю) в `auth_tokens` со сроком действия
+(подтверждение — 24 ч, сброс — 1 ч); 5 неверных попыток — код сгорает.
+События безопасности пишутся в `audit_logs`.
 
 ### Чаты
 
@@ -124,8 +145,8 @@ Refresh-токен: случайные 32 байта, в БД хранится S
 | `chat.history` | `chat_id`, `before_id?`, `limit?` | `messages[]`, `chat` |
 | `chat.members` | `chat_id` | `members[]` с флагом `online` |
 | `chat.read` | `chat_id` | `read` |
-| `chat.send` | `chat_id`, `body`, `kind?`, `payload?` | сообщение |
-| `users.search` | `query`, `limit?` | `users[]` |
+| `chat.send` | `chat_id`, `body` (≤ 8000 симв.), `kind?`, `payload?` | сообщение; от клиента допустим только `kind: "text"` (`agent_action`/`agent_reply`/`system` ставит сервер) — иначе `bad_request`; `payload` — объект ≤ 4 КБ без служебных полей `origin`, `proposal`, `confirmed`, `tool` |
+| `users.search` | `query` (≥ 2 симв.), `limit?` | `users[]`: только `id`, `display_name`, `avatar_url`, `online` (без email и `last_seen_at`); поиск по подстроке имени, по email — только точное совпадение (запрос с `@`) |
 
 События: `chat.message` (всем участникам, включая другие устройства отправителя),
 `chat.created` (приглашённому).
@@ -134,7 +155,7 @@ Refresh-токен: случайные 32 байта, в БД хранится S
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `agent.ask` | `message`, `chat_id?`, `peers[]?`, `execute?` | `reply`, `intent`, `confidence`, `plan`, `actions[]`, `results[]`, `memory_saved`, `a2a` |
+| `agent.ask` | `message`, `chat_id?`, `peers[]?`, `execute?` | `reply`, `intent`, `confidence`, `plan`, `actions[]`, `results[]`, `memory_saved`, `a2a`; `chat_id` чужого чата → `forbidden`; `peers[]` учитываются только люди, с которыми есть общий чат, и их контекст урезается по их `prefs.privacy` (как в A2A) |
 | `agent.negotiate` | `target` (email/имя), `topic?`, `duration_minutes?`, `window_hours?` | `accepted`, `slot`, `place`, `counter_slots[]`, `message` |
 | `agent.status` | — | `available`, `ai_service` |
 
@@ -203,7 +224,7 @@ A2A из `agent.ask`); все флаги по умолчанию `true`, `prefs.
 | тип | payload | ответ |
 | --- | --- | --- |
 | `tool.list` | — | `tools[]`, `mode` |
-| `tool.run` | `tool`, `args{}` | результат инструмента |
+| `tool.run` | `tool`, `args{}`, `chat_id?` | результат инструмента; проходит тот же барьер `tool_permissions`, что и действия Ауры: `deny` → `forbidden`, `ask` (по умолчанию для опасных) → `{requires_confirmation: true, confirmation_id, summary, tool, status: "pending"}` без исполнения (дальше `confirmation.approve`/`deny`) |
 
 Инструменты: `send_message`, `create_note`, `create_reminder`, `send_email`,
 `find_cafe`, `book_table`, `check_calendar`, `suggest_time`. В режиме
@@ -235,7 +256,7 @@ A2A из `agent.ask`); все флаги по умолчанию `true`, `prefs.
 | `permissions.list` | — | `tools[]`: `tool`, `description`, `dangerous`, `default_mode`, `mode` (эффективный) |
 | `permissions.set` | `tool`, `mode` (`allow`/`ask`/`deny`) | `tool`, `mode`; неизвестный инструмент или режим → `bad_request` |
 | `confirmation.list` | `status?` (по умолч. `pending`), `limit?` | `actions[]`: `id`, `tool`, `args{}`, `summary`, `status`, `result{}`, `created_at` |
-| `confirmation.approve` | `id` | `id`, `status` (`executed`/`failed`), `result{}`; чужое/несуществующее → `not_found`, уже обработанное → `bad_request` |
+| `confirmation.approve` | `id` | `id`, `status` (`executed`/`failed`), `result{}`; чужое/несуществующее → `not_found`, уже обработанное (в т.ч. параллельный второй approve) → `bad_request` |
 | `confirmation.deny` | `id` | `id`, `status` (`denied`) |
 
 Разрешения хранятся в `tool_permissions(user_id, tool, mode)`; отложенные
@@ -264,7 +285,7 @@ due_at, remind_at, reminded_at, …)`; статусы `pending`/`done`/`cancelle
 | `tasks.cancel` | `id` | задача со статусом `cancelled` |
 | `tasks.reopen` | `id` | задача со статусом `pending` |
 | `tasks.delete` | `id` | `deleted`; чужая/несуществующая → `not_found` |
-| `tasks.due` | — | `sent` — сколько напоминаний отправлено (ручной проход планировщика) |
+| `tasks.due` | — | `sent` — сколько напоминаний **вызывающего пользователя** отправлено (ручной проход планировщика только по своим задачам) |
 
 Событие: `task.due` (владельцу задачи, когда наступил срок напоминания).
 

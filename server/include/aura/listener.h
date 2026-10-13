@@ -3,6 +3,8 @@
 
 #include <atomic>
 #include <functional>
+#include <map>
+#include <mutex>
 #include <memory>
 #include <string>
 #include <thread>
@@ -35,6 +37,9 @@ public:
 private:
     void acceptLoop();
     void handle(std::shared_ptr<Session> session);
+    // Лимит соединений с одного IP: true — слот занят, false — лимит исчерпан.
+    bool acquireIpSlot(const std::string& ip);
+    void releaseIpSlot(const std::string& ip);
 
     const Config& config_;
     ConnectionHandler handler_;
@@ -44,6 +49,8 @@ private:
     std::atomic<unsigned long long> accepted_{0};
     std::thread acceptThread_;
     std::atomic<unsigned long long> activeWorkers_{0};
+    std::mutex perIpMutex_;
+    std::map<std::string, std::size_t> perIp_;
 };
 
 }  // namespace aura

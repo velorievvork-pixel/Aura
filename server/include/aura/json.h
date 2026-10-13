@@ -39,6 +39,17 @@ public:
         json.type_ = Type::Object;
         return json;
     }
+    // Объект из готового списка членов. Ключи должны быть уникальны —
+    // проверка не выполняется (используется парсером, который уже убрал дубли).
+    static Json objectFromMembers(Object members) {
+        Json json;
+        json.type_ = Type::Object;
+        json.object_ = std::move(members);
+        return json;
+    }
+    // Лимит ключей в одном объекте при разборе: защита от кадров с сотнями
+    // тысяч ключей (раньше поиск дубля был линейным — O(n^2) CPU до входа).
+    static constexpr std::size_t kMaxObjectKeys = 1000;
     static Json parse(const std::string& text, std::string* error = nullptr);
 
     Type type() const { return type_; }

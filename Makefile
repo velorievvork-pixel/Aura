@@ -23,9 +23,10 @@ server-build:
 server-test: server-build
 	cd build/server && ctest --output-on-failure
 
-# C++ сервер: запуск (dev)
+# C++ сервер: запуск (dev). AURA_DEV_MODE=1 разрешает dev-почту и запуск без
+# секретов; в продакшене не задавать (см. docs/SETUP.md).
 server-run:
-	./build/server/aura-server
+	AURA_DEV_MODE=$${AURA_DEV_MODE:-1} ./build/server/aura-server
 
 # Проверка протокола (iOS + Android vs сервер)
 protocol-check:

@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <unordered_map>
 
 namespace aura {
 
@@ -257,13 +258,18 @@ private:
 
     bool parseObject(Json& out) {
         const DepthGuard guard(depth_);
-        out = Json::object();
         ++pos_;  // '{'
         skipWs();
         if (pos_ < text_.size() && text_[pos_] == '}') {
             ++pos_;
+            out = Json::object();
             return true;
         }
+        // Дубли ключей ищем по хэш-таблице (последнее значение побеждает, порядок —
+        // по первому вхождению), а число ключей ограничено: линейный поиск
+        // давал O(n^2) и 20 с CPU на одном кадре до авторизации.
+        Json::Object members;
+        std::unordered_map<std::string, std::size_t> index;
         while (true) {
             skipWs();
             std::string key;
@@ -274,7 +280,14 @@ private:
             skipWs();
             Json value;
             if (!parseValue(value)) return false;
-            out.set(key, std::move(value));
+            const auto found = index.find(key);
+            if (found != index.end()) {
+                members[found->second].second = std::move(value);
+            } else {
+                if (members.size() >= Json::kMaxObjectKeys) return fail("слишком много ключей в объекте JSON");
+                index.emplace(key, members.size());
+                members.emplace_back(std::move(key), std::move(value));
+            }
             skipWs();
             if (pos_ >= text_.size()) return fail("незакрытый объект");
             if (text_[pos_] == ',') {
@@ -283,6 +296,7 @@ private:
             }
             if (text_[pos_] == '}') {
                 ++pos_;
+                out = Json::objectFromMembers(std::move(members));
                 return true;
             }
             return fail("ожидалась ',' или '}'");

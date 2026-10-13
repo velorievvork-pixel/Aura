@@ -165,18 +165,35 @@ ChatManager::Result ChatManager::markRead(long long userId, long long chatId) {
 
 ChatManager::Result ChatManager::searchUsers(const std::string& query, int limit) {
     Result result;
-    // Пустой или односимвольный запрос позволял выгрузить всю таблицу users
-    // вместе с адресами; короткая строка не даёт осмысленного поиска anyway.
+    // Пустой или односимвольный запрос позволял выгрузить всю таблицу users;
+    // короткая строка не даёт осмысленного поиска anyway.
     if (query.size() < 2) {
         return Result::failure(protocol::code::kBadRequest, "поисковый запрос короче 2 символов");
     }
     const int capped = limit > 0 ? std::min(limit, 50) : 20;
+    // Публичная карточка: без email, last_seen и служебных флагов. Поиск по
+    // email — только точное совпадение (адрес нужно знать), по имени — подстрока.
+    auto card = [this](const UserRecord& user) {
+        Json item = Json::object();
+        item.set("id", Json(user.id));
+        item.set("display_name", Json(user.displayName));
+        item.set("avatar_url", Json(user.avatarUrl));
+        item.set("online", Json(connections_.isOnline(user.id)));
+        return item;
+    };
     result.ok = true;
     Json users = Json::array();
-    for (const auto& user : database_.db().searchUsers(query, capped)) {
-        Json item = user.toJson();
-        item.set("online", Json(connections_.isOnline(user.id)));
-        users.push(item);
+    if (query.find('@') != std::string::npos) {
+        std::string email = query;
+        email.erase(0, email.find_first_not_of(" \t"));
+        email.erase(email.find_last_not_of(" \t") + 1);
+        if (const auto user = database_.db().findUserByEmail(lower(email)); user && user->active) {
+            users.push(card(*user));
+        }
+    } else {
+        for (const auto& user : database_.db().searchUsers(query, capped)) {
+            if (user.active) users.push(card(user));
+        }
     }
     result.payload.set("users", users);
     return result;

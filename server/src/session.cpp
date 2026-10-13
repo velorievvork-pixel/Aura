@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -21,8 +22,24 @@ Session::Session(int socket, std::string sessionId, std::string remoteAddr, cons
     : socket_(socket),
       sessionId_(std::move(sessionId)),
       remoteAddr_(std::move(remoteAddr)),
+      remoteIp_(ipOf(remoteAddr_)),
       config_(config),
+      lastAuthCheck_(std::chrono::steady_clock::now()),
+      unauthSince_(std::chrono::steady_clock::now()),
       lastActivity_(std::chrono::steady_clock::now()) {}
+
+std::string Session::ipOf(const std::string& remoteAddr) {
+    // Listener формирует «ip:port» (IPv6 — без скобок). Отрезаем порт, если
+    // после последнего ':' только цифры и слева остался адрес.
+    const std::size_t colon = remoteAddr.rfind(':');
+    if (colon == std::string::npos || colon == 0 || colon + 1 >= remoteAddr.size()) return remoteAddr;
+    for (std::size_t i = colon + 1; i < remoteAddr.size(); ++i) {
+        if (remoteAddr[i] < '0' || remoteAddr[i] > '9') return remoteAddr;
+    }
+    std::string ip = remoteAddr.substr(0, colon);
+    if (ip.size() > 2 && ip.front() == '[' && ip.back() == ']') ip = ip.substr(1, ip.size() - 2);
+    return ip;
+}
 
 Session::~Session() {
     alive_.store(false);
@@ -106,10 +123,17 @@ void Session::readLoop(const MessageHandler& handler) {
 
     // Склеенное сообщение не может быть больше лимита одного кадра: иначе
     // клиент шлёт бесконечные фрагменты без FIN и исчерпывает память сервера.
-    auto fragmentsTooBig = [this, &fragments]() {
-        if (fragments.size() <= config_.maxFrameBytes) return false;
+    // До входа лимит кадра намного меньше (AURA_MAX_PREAUTH_FRAME): анонимный
+    // клиент не должен заставлять сервер разбирать мегабайтные сообщения.
+    auto frameLimit = [this]() {
+        return authenticated() ? config_.maxFrameBytes
+                               : std::min(config_.maxFrameBytes, config_.maxPreAuthFrameBytes);
+    };
+    auto fragmentsTooBig = [this, &fragments, &frameLimit]() {
+        const std::size_t limit = frameLimit();
+        if (fragments.size() <= limit) return false;
         AURA_LOG(log::Level::Warn, "session")
-            << sessionId_ << " фрагментированное сообщение больше " << config_.maxFrameBytes << " байт";
+            << sessionId_ << " фрагментированное сообщение больше " << limit << " байт";
         close(1009, "message too big");
         return true;
     };
@@ -124,6 +148,20 @@ void Session::readLoop(const MessageHandler& handler) {
         }
 
         const auto now = std::chrono::steady_clock::now();
+        // Неавторизованное соединение живёт не дольше AURA_AUTH_TIMEOUT: иначе
+        // анонимные сокеты, отвечающие на ping, занимают потоки бесконечно.
+        if (config_.authTimeoutSec > 0 && !authenticated()) {
+            std::chrono::steady_clock::time_point since;
+            {
+                std::lock_guard<std::mutex> lock(authMutex_);
+                since = unauthSince_;
+            }
+            if (std::chrono::duration_cast<std::chrono::seconds>(now - since).count() >= config_.authTimeoutSec) {
+                AURA_LOG(log::Level::Info, "session") << sessionId_ << " не авторизовался вовремя, закрываю";
+                close(4408, "authentication timeout");
+                break;
+            }
+        }
         if (config_.pingIntervalSec > 0 &&
             std::chrono::duration_cast<std::chrono::seconds>(now - lastPing).count() >=
                 config_.pingIntervalSec) {
@@ -142,7 +180,7 @@ void Session::readLoop(const MessageHandler& handler) {
             ws::Frame frame;
             std::string error;
             const ws::DecodeResult result =
-                ws::decodeFrame(buffer, config_.maxFrameBytes, consumed, frame, error);
+                ws::decodeFrame(buffer, frameLimit(), consumed, frame, error);
             if (result == ws::DecodeResult::Incomplete) break;
             if (result == ws::DecodeResult::ProtocolError) {
                 AURA_LOG(log::Level::Warn, "session") << sessionId_ << " " << error;
@@ -230,25 +268,54 @@ void Session::close(std::uint16_t code, const std::string& reason) {
 }
 
 void Session::authenticate(long long userId, std::string displayName, std::string email, std::string jwtId) {
-    userId_ = userId;
+    std::lock_guard<std::mutex> lock(authMutex_);
     displayName_ = std::move(displayName);
     email_ = std::move(email);
     jwtId_ = std::move(jwtId);
+    lastAuthCheck_ = std::chrono::steady_clock::now();
+    userId_.store(userId);
 }
 
 void Session::resetAuth() {
-    userId_ = 0;
+    std::lock_guard<std::mutex> lock(authMutex_);
+    userId_.store(0);
     displayName_.clear();
     email_.clear();
     jwtId_.clear();
+    unauthSince_ = std::chrono::steady_clock::now();
+}
+
+std::string Session::displayName() const {
+    std::lock_guard<std::mutex> lock(authMutex_);
+    return displayName_;
+}
+
+std::string Session::email() const {
+    std::lock_guard<std::mutex> lock(authMutex_);
+    return email_;
+}
+
+std::string Session::jwtId() const {
+    std::lock_guard<std::mutex> lock(authMutex_);
+    return jwtId_;
+}
+
+std::chrono::steady_clock::time_point Session::lastAuthCheck() const {
+    std::lock_guard<std::mutex> lock(authMutex_);
+    return lastAuthCheck_;
+}
+
+void Session::markAuthChecked() {
+    std::lock_guard<std::mutex> lock(authMutex_);
+    lastAuthCheck_ = std::chrono::steady_clock::now();
 }
 
 Json Session::describe() const {
     Json json = Json::object();
     json.set("session_id", Json(sessionId_));
-    json.set("user_id", Json(userId_));
-    json.set("display_name", Json(displayName_));
-    json.set("email", Json(email_));
+    json.set("user_id", Json(userId()));
+    json.set("display_name", Json(displayName()));
+    json.set("email", Json(email()));
     json.set("remote_addr", Json(remoteAddr_));
     json.set("alive", Json(alive_.load()));
     return json;

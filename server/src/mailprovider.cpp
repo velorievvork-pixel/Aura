@@ -11,7 +11,9 @@ namespace aura {
 
 namespace {
 
-// Логирует письмо целиком: локальная разработка без SMTP.
+// dev (AURA_DEV_MODE=1): код пишется в лог и возвращается в ответе API.
+// log: в лог попадает только факт выдачи кода — сам код не раскрывается
+// (стенд без почты: код получить нельзя, нужен SMTP).
 class LogMailProvider : public MailProvider {
 public:
     explicit LogMailProvider(bool expose) : expose_(expose) {}
@@ -19,14 +21,22 @@ public:
     bool exposesCodes() const override { return expose_; }
 
     bool sendVerificationCode(const std::string& to, const std::string& code) override {
-        AURA_LOG(log::Level::Info, "mail")
-            << "КОД ПОДТВЕРЖДЕНИЯ для " << to << ": " << code
-            << (expose_ ? "" : " (код также вернётся в ответе API — режим dev выключен)");
+        if (expose_) {
+            AURA_LOG(log::Level::Info, "mail") << "[dev] КОД ПОДТВЕРЖДЕНИЯ для " << to << ": " << code;
+        } else {
+            AURA_LOG(log::Level::Info, "mail") << "выдан код подтверждения email для " << to
+                                               << " (драйвер log: письмо не отправляется)";
+        }
         return true;
     }
 
     bool sendPasswordReset(const std::string& to, const std::string& code) override {
-        AURA_LOG(log::Level::Info, "mail") << "КОД СБРОСА ПАРОЛЯ для " << to << ": " << code;
+        if (expose_) {
+            AURA_LOG(log::Level::Info, "mail") << "[dev] КОД СБРОСА ПАРОЛЯ для " << to << ": " << code;
+        } else {
+            AURA_LOG(log::Level::Info, "mail") << "выдан код сброса пароля для " << to
+                                               << " (драйвер log: письмо не отправляется)";
+        }
         return true;
     }
 
@@ -129,7 +139,9 @@ private:
 
 std::unique_ptr<MailProvider> makeMailProvider(const Config& config) {
     if (config.mailDriver == "smtp") return std::make_unique<SmtpMailProvider>(config);
-    if (config.mailDriver == "dev") return std::make_unique<LogMailProvider>(true);
+    // dev раскрывает коды — только в режиме разработки (Config::validate не
+    // даст запустить сервер с dev без AURA_DEV_MODE; здесь — вторая линия).
+    if (config.mailDriver == "dev" && config.devMode) return std::make_unique<LogMailProvider>(true);
     // "log" и неизвестные значения — безопасный режим без раскрытия кодов.
     return std::make_unique<LogMailProvider>(false);
 }

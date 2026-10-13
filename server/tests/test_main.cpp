@@ -5,6 +5,9 @@
 // Проверяются: JSON, криптография (эталонные векторы), JWT, кодек WebSocket,
 // протокол и сквозные сценарии через Server::handleMessage на встроенной БД.
 #include <argon2.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <chrono>
 #include <csignal>
 #include <netinet/in.h>
 #include <sys/socket.h>
@@ -26,6 +29,7 @@
 #include "aura/idatabase.h"
 #include "aura/json.h"
 #include "aura/jwt.h"
+#include "aura/mailprovider.h"
 #include "aura/net.h"
 #include "aura/protocol.h"
 #include "aura/server.h"
@@ -33,6 +37,10 @@
 #include "aura/toolmanager.h"
 #include "aura/totp.h"
 #include "aura/ws.h"
+
+#ifdef AURA_WITH_LIBPQ
+#include <libpq-fe.h>
+#endif
 
 namespace {
 
@@ -650,6 +658,8 @@ struct Fixture {
         config.embeddedDbPath = dbPath;
         config.port = 0;             // свободный порт
         config.jwtSecret = "test-secret";
+        config.devMode = true;        // слабый секрет и mail=dev допустимы только в dev-режиме
+        config.mailDriver = "dev";    // коды подтверждения возвращаются в ответе API
         config.logLevel = "warn";
         config.aiServiceUrl = "http://127.0.0.1:1";  // гарантированно недоступен
         config.aiTimeoutMs = 500;
@@ -1078,13 +1088,28 @@ TEST(server_chat_flow_and_delivery) {
     intruder.set("body", Json("я тут"));
     CHECK_EQ(fixture.call(bob, "chat.send", intruder).getString("code"), std::string("forbidden"));
 
-    // Поиск пользователей и участники
+    // Поиск пользователей (M11): по подстроке email больше не находит,
+    // по имени — да, по точному email — да; наружу только публичная карточка.
     Json search = Json::object();
     search.set("query", Json("anya"));
     CHECK_EQ(integration::payloadOf(fixture.call(anna, "users.search", search))
                  .get("users")
                  .size(),
+             static_cast<std::size_t>(0));
+    search.set("query", Json("Аня"));
+    const Json byName = integration::payloadOf(fixture.call(anna, "users.search", search)).get("users");
+    CHECK_EQ(byName.size(), static_cast<std::size_t>(1));
+    CHECK(!byName.at(0).contains("email"));
+    CHECK(!byName.at(0).contains("last_seen_at"));
+    CHECK(!byName.at(0).contains("email_verified"));
+    CHECK(byName.at(0).getInt("id") > 0);
+    CHECK_EQ(byName.at(0).getString("display_name"), std::string("Аня"));
+    search.set("query", Json("anya@example.com"));
+    CHECK_EQ(integration::payloadOf(fixture.call(anna, "users.search", search)).get("users").size(),
              static_cast<std::size_t>(1));
+    search.set("query", Json("anya@example.co"));
+    CHECK_EQ(integration::payloadOf(fixture.call(anna, "users.search", search)).get("users").size(),
+             static_cast<std::size_t>(0));
     Json members = Json::object();
     members.set("chat_id", Json(chatId));
     CHECK_EQ(integration::payloadOf(fixture.call(anna, "chat.members", members))
@@ -1225,8 +1250,25 @@ TEST(server_tools_execution) {
     bookArgs.set("at", Json("2026-09-19T12:00:00Z"));
     bookArgs.set("people", Json(2));
     book.set("args", bookArgs);
+    // L20: book_table опасный (default ask) — прямой tool.run не исполняет его,
+    // а создаёт отложенное действие; после allow — исполняет сразу.
+    const Json pendingBook = fixture.call(session, "tool.run", book);
+    CHECK_EQ(pendingBook.getString("type"), std::string("ok"));
+    CHECK(integration::payloadOf(pendingBook).getBool("requires_confirmation"));
+    CHECK(integration::payloadOf(pendingBook).getInt("confirmation_id") > 0);
+    CHECK(integration::payloadOf(pendingBook).getString("confirmation").empty());
+    Json allow = Json::object();
+    allow.set("tool", Json("book_table"));
+    allow.set("mode", Json("allow"));
+    CHECK_EQ(fixture.call(session, "permissions.set", allow).getString("type"), std::string("ok"));
     const Json booked = fixture.call(session, "tool.run", book);
     CHECK(integration::payloadOf(booked).getString("confirmation").rfind("AURA-", 0) == 0);
+    // deny блокирует и прямой вызов.
+    allow.set("tool", Json("create_note"));
+    allow.set("mode", Json("deny"));
+    fixture.call(session, "permissions.set", allow);
+    const Json deniedNote = fixture.call(session, "tool.run", note);
+    CHECK_EQ(deniedNote.getString("code"), std::string("forbidden"));
 
     // Неизвестный инструмент
     Json unknown = Json::object();
@@ -2068,6 +2110,7 @@ TEST(server_push_devices_fcm) {
 TEST(security_brute_force_throttle) {
     // Порог снижаем до 3, окно — 60 с (Fixture читает Config::fromEnv()).
     ::setenv("AURA_MAX_LOGIN_ATTEMPTS", "3", 1);
+    ::setenv("AURA_MAX_IP_ATTEMPTS", "3", 1);
     ::setenv("AURA_LOGIN_WINDOW", "60", 1);
     {
         Fixture fixture;
@@ -2096,6 +2139,7 @@ TEST(security_brute_force_throttle) {
                  std::string("forbidden"));
     }
     ::unsetenv("AURA_MAX_LOGIN_ATTEMPTS");
+    ::unsetenv("AURA_MAX_IP_ATTEMPTS");
     ::unsetenv("AURA_LOGIN_WINDOW");
 }
 
@@ -2237,6 +2281,807 @@ TEST(security_sessions_list_hides_secrets) {
         CHECK(item.contains("refresh_token") == false);
         CHECK(!item.getString("id").empty());
     }
+}
+
+// ===================================================== аудит безопасности (C1–L24)
+namespace audit {
+
+// Кадр клиента с маской (RFC 6455 §5.3) — как шлёт браузер.
+std::string maskedFrame(const std::string& payload, unsigned char opcode = 0x1) {
+    std::string frame;
+    frame.push_back(static_cast<char>(0x80 | opcode));
+    const std::size_t size = payload.size();
+    if (size < 126) {
+        frame.push_back(static_cast<char>(0x80 | size));
+    } else if (size < 65536) {
+        frame.push_back(static_cast<char>(0x80 | 126));
+        frame.push_back(static_cast<char>((size >> 8) & 0xFF));
+        frame.push_back(static_cast<char>(size & 0xFF));
+    } else {
+        frame.push_back(static_cast<char>(0x80 | 127));
+        for (int i = 7; i >= 0; --i) frame.push_back(static_cast<char>((static_cast<unsigned long long>(size) >> (i * 8)) & 0xFF));
+    }
+    const char mask[4] = {0x11, 0x22, 0x33, 0x44};
+    frame.append(mask, 4);
+    for (std::size_t i = 0; i < size; ++i) frame.push_back(static_cast<char>(payload[i] ^ mask[i % 4]));
+    return frame;
+}
+
+Json loginPayload(const std::string& email, const std::string& password) {
+    Json login = Json::object();
+    login.set("email", Json(email));
+    login.set("password", Json(password));
+    return login;
+}
+
+}  // namespace audit
+
+TEST(audit_c1_c2_config_validation) {
+    std::vector<std::string> warnings;
+    std::string error;
+
+    // C1: драйвер почты по умолчанию — log; dev без AURA_DEV_MODE не стартует.
+    aura::Config defaults;
+    CHECK_EQ(defaults.mailDriver, std::string("log"));
+    CHECK(defaults.jwtSecret.empty());
+    CHECK(!defaults.devMode);
+
+    aura::Config prod;
+    prod.jwtSecret = std::string(48, 'k') + "random";
+    prod.twoFactorKey = "0123456789abcdef0123456789abcdef";
+    CHECK(prod.validate(error, warnings));
+    prod.mailDriver = "dev";
+    error.clear();
+    CHECK(!prod.validate(error, warnings));
+    CHECK(error.find("AURA_DEV_MODE") != std::string::npos);
+
+    // Сервер с такой конфигурацией не стартует.
+    aura::Server refused(prod);
+    error.clear();
+    CHECK(!refused.start(error));
+    CHECK(error.find("AURA_DEV_MODE") != std::string::npos);
+
+    // C2: слабые/пустые/шаблонные секреты и отсутствие ключа 2FA вне dev — отказ.
+    for (const std::string secret : {std::string(""), std::string("aura-dev-secret"), std::string("short-secret"),
+                                     std::string("CHANGE-IN-PRODUCTION-0123456789abcdefghijklmnop")}) {
+        aura::Config weak;
+        weak.jwtSecret = secret;
+        weak.twoFactorKey = "0123456789abcdef0123456789abcdef";
+        error.clear();
+        CHECK(!weak.validate(error, warnings));
+        CHECK(error.find("AURA_JWT_SECRET") != std::string::npos);
+    }
+    aura::Config noTwoFactor;
+    noTwoFactor.jwtSecret = std::string(64, 'x');
+    error.clear();
+    CHECK(!noTwoFactor.validate(error, warnings));
+    CHECK(error.find("AURA_2FA_KEY") != std::string::npos);
+
+    // В dev-режиме без секрета — случайный секрет на процесс (с предупреждением).
+    aura::Config dev;
+    dev.devMode = true;
+    dev.mailDriver = "dev";
+    warnings.clear();
+    error.clear();
+    CHECK(dev.validate(error, warnings));
+    CHECK_EQ(dev.jwtSecret.size(), static_cast<std::size_t>(64));
+    CHECK(!warnings.empty());
+    aura::Config dev2;
+    dev2.devMode = true;
+    CHECK(dev2.validate(error, warnings));
+    CHECK(dev.jwtSecret != dev2.jwtSecret);
+
+    // Код сброса живёт не дольше часа.
+    aura::Config longReset = prod;
+    longReset.mailDriver = "log";
+    longReset.resetTtlSeconds = 86400;
+    CHECK(longReset.validate(error, warnings));
+    CHECK_EQ(longReset.resetTtlSeconds, 3600LL);
+}
+
+TEST(audit_c1_log_driver_hides_codes) {
+    aura::Config config;
+    config.mailDriver = "log";
+    CHECK(!aura::makeMailProvider(config)->exposesCodes());
+    // dev без devMode тоже не раскрывает коды (вторая линия защиты).
+    config.mailDriver = "dev";
+    CHECK(!aura::makeMailProvider(config)->exposesCodes());
+    config.devMode = true;
+    CHECK(aura::makeMailProvider(config)->exposesCodes());
+}
+
+TEST(audit_c2_forged_sub_rejected) {
+    Fixture fixture;
+    auto victim = fixture.makeSession("victim");
+    fixture.registerUser(victim, "victim@example.com", "Жертва");
+    auto mallory = fixture.makeSession("mallory");
+    const Json logged = fixture.registerUser(mallory, "mallory@example.com", "Мэллори");
+    const std::string token = integration::payloadOf(logged).getString("token");
+
+    // Токен с собственным живым jti, но sub жертвы (подписан тем же секретом).
+    const std::string payloadPart = token.substr(token.find('.') + 1, token.rfind('.') - token.find('.') - 1);
+    std::string claimsRaw;
+    std::string padded = payloadPart;
+    for (auto& ch : padded) {
+        if (ch == '-') ch = '+';
+        if (ch == '_') ch = '/';
+    }
+    while (padded.size() % 4) padded.push_back('=');
+    CHECK(aura::crypto::base64Decode(padded, claimsRaw));
+    Json claims = Json::parse(claimsRaw);
+    claims.set("sub", Json(victim->userId()));
+    claims.set("email", Json("victim@example.com"));
+    claims.erase("exp");
+    claims.erase("iat");
+    const std::string forged = aura::jwt::sign(claims, fixture.config.jwtSecret, 3600);
+
+    auto attacker = fixture.makeSession("attacker");
+    Json auth = Json::object();
+    auth.set("token", Json(forged));
+    CHECK_EQ(fixture.call(attacker, "auth.token", auth).getString("code"), std::string("unauthorized"));
+    CHECK(!attacker->authenticated());
+    // Неподделанный токен по-прежнему работает.
+    auth.set("token", Json(token));
+    CHECK_EQ(fixture.call(attacker, "auth.token", auth).getString("type"), std::string("ok"));
+    CHECK_EQ(attacker->userId(), mallory->userId());
+}
+
+TEST(audit_h3_json_many_keys_and_preauth_frame) {
+    // 90 000 ключей в одном объекте: разбор отклоняется быстро (лимит ключей).
+    std::string text = "{";
+    for (int i = 0; i < 90000; ++i) {
+        if (i) text += ",";
+        text += "\"" + std::to_string(100000 + i) + "\":0";
+    }
+    text += "}";
+    const auto started = std::chrono::steady_clock::now();
+    std::string error;
+    CHECK(Json::parse(text, &error).isNull());
+    CHECK(error.find("ключей") != std::string::npos);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    CHECK(elapsed < 1000);
+
+    // Дубли ключей: последнее значение побеждает, порядок — по первому вхождению.
+    const Json dup = Json::parse(R"({"a":1,"b":2,"a":3})");
+    CHECK_EQ(dup.getInt("a"), 3);
+    CHECK_EQ(dup.keys().size(), static_cast<std::size_t>(2));
+    CHECK_EQ(dup.keys().front(), std::string("a"));
+
+    // Ровно на лимите — разбирается.
+    std::string ok = "{";
+    for (std::size_t i = 0; i < Json::kMaxObjectKeys; ++i) {
+        if (i) ok += ",";
+        ok += "\"k" + std::to_string(i) + "\":" + std::to_string(i);
+    }
+    ok += "}";
+    CHECK_EQ(Json::parse(ok).keys().size(), Json::kMaxObjectKeys);
+
+    // До входа кадр больше AURA_MAX_PREAUTH_FRAME закрывает соединение.
+    aura::Config config;
+    config.maxPreAuthFrameBytes = 1024;
+    config.authTimeoutSec = 0;
+    int fds[2] = {-1, -1};
+    CHECK_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+    auto session = std::make_shared<aura::Session>(fds[1], "big", "127.0.0.1:1", config);
+    bool handled = false;
+    std::thread reader([&] { session->readLoop([&](std::shared_ptr<aura::Session>, const Json&) { handled = true; }); });
+    const std::string frame = audit::maskedFrame(R"({"type":"ping","payload":{"x":")" + std::string(4000, 'a') + "\"}}");
+    CHECK(::send(fds[0], frame.data(), frame.size(), 0) > 0);
+    reader.join();
+    CHECK(!handled);
+    CHECK(!session->alive());
+    ::close(fds[0]);
+}
+
+TEST(audit_h4_argon2_gate_and_register_limits) {
+    // Параллельные Argon2id ограничены числом ядер.
+    aura::crypto::resetArgon2Peak();
+    const int limit = aura::crypto::argon2Stats().limit;
+    CHECK(limit >= 1);
+    std::vector<std::thread> workers;
+    for (int i = 0; i < limit + 3; ++i) {
+        workers.emplace_back([] { aura::crypto::hashPassword("pass1234"); });
+    }
+    for (auto& worker : workers) worker.join();
+    CHECK(aura::crypto::argon2Stats().peak <= limit);
+    CHECK_EQ(aura::crypto::argon2Stats().inFlight, 0);
+
+    ::setenv("AURA_REGISTER_PER_IP_HOUR", "2", 1);
+    {
+        Fixture fixture;
+        auto session = fixture.makeSession("reg");
+        Json reg = Json::object();
+        reg.set("password", Json("aura1234"));
+        reg.set("email", Json("r1@example.com"));
+        CHECK_EQ(fixture.call(session, "auth.register", reg).getString("type"), std::string("ok"));
+        // Дубликат отсекается до хэширования и не расходует лимит регистраций.
+        CHECK_EQ(fixture.call(session, "auth.register", reg).getString("code"), std::string("conflict"));
+        reg.set("email", Json("r2@example.com"));
+        CHECK_EQ(fixture.call(session, "auth.register", reg).getString("type"), std::string("ok"));
+        // Третья регистрация с того же IP (другой порт) за час — отказ.
+        auto other = std::make_shared<aura::Session>(-1, "reg2", "127.0.0.1:5555", fixture.config);
+        reg.set("email", Json("r3@example.com"));
+        const Json third = fixture.call(other, "auth.register", reg);
+        CHECK_EQ(third.getString("code"), std::string("forbidden"));
+    }
+    ::unsetenv("AURA_REGISTER_PER_IP_HOUR");
+}
+
+TEST(audit_h5_verify_code_attempts) {
+    Fixture fixture;
+    auto session = fixture.makeSession("verify");
+    Json reg = Json::object();
+    reg.set("email", Json("squat@example.com"));
+    reg.set("password", Json("aura1234"));
+    const std::string code = integration::payloadOf(fixture.call(session, "auth.register", reg)).getString("email_code");
+    CHECK_EQ(code.size(), static_cast<std::size_t>(6));
+
+    Json verify = Json::object();
+    verify.set("email", Json("squat@example.com"));
+    for (int i = 0; i < 5; ++i) {
+        verify.set("code", Json(code == "111111" ? std::string("222222") : std::string("111111")));
+        CHECK_EQ(fixture.call(session, "auth.verifyEmail", verify).getString("code"), std::string("bad_request"));
+    }
+    // После 5 неверных попыток настоящий код сгорел.
+    verify.set("code", Json(code));
+    CHECK_EQ(fixture.call(session, "auth.verifyEmail", verify).getString("code"), std::string("bad_request"));
+    // Новый код (resendCode) работает.
+    Json resend = Json::object();
+    resend.set("email", Json("squat@example.com"));
+    const std::string fresh = integration::payloadOf(fixture.call(session, "auth.resendCode", resend)).getString("email_code");
+    CHECK_EQ(fresh.size(), static_cast<std::size_t>(6));
+    verify.set("code", Json(fresh));
+    CHECK(fixture.call(session, "auth.verifyEmail", verify).get("payload").getBool("verified"));
+}
+
+TEST(audit_h6_totp_bruteforce_and_ip_key) {
+    CHECK_EQ(aura::Session::ipOf("127.0.0.1:54321"), std::string("127.0.0.1"));
+    CHECK_EQ(aura::Session::ipOf("2001:db8::1:443"), std::string("2001:db8::1"));
+    CHECK_EQ(aura::Session::ipOf("10.0.0.1"), std::string("10.0.0.1"));
+
+    Fixture fixture;
+    auto owner = fixture.makeSession("erin");
+    fixture.registerUser(owner, "erin@example.com", "Эрин");
+    const std::string secret = integration::payloadOf(fixture.call(owner, "auth.setup2fa")).getString("secret");
+    std::string raw;
+    CHECK(aura::totp::decodeSecretBase32(secret, raw));
+    Json confirm = Json::object();
+    confirm.set("code", Json(aura::totp::codeNow(raw)));
+    CHECK_EQ(fixture.call(owner, "auth.confirm2fa", confirm).getString("type"), std::string("ok"));
+
+    // H7: повторный setup2fa при включённой 2FA — отказ, 2FA остаётся включённой.
+    CHECK_EQ(fixture.call(owner, "auth.setup2fa").getString("code"), std::string("bad_request"));
+    CHECK(fixture.call(owner, "auth.status2fa").get("payload").getBool("enabled"));
+
+    // Перебор TOTP с переподключениями и «верным паролем» между попытками.
+    const std::string valid = aura::totp::codeNow(raw);
+    Json attempt = audit::loginPayload("erin@example.com", "aura1234");
+    int wrong = 0;
+    for (int i = 0; i < 5; ++i) {
+        auto attacker = std::make_shared<aura::Session>(-1, "atk", "127.0.0.1:" + std::to_string(40000 + i), fixture.config);
+        CHECK_EQ(fixture.call(attacker, "auth.login", attempt).getString("code"), std::string("requires_2fa"));
+        Json guess = attempt;
+        guess.set("code", Json(valid == "000000" ? std::string("000001") : std::string("000000")));
+        if (fixture.call(attacker, "auth.login2fa", guess).getString("code") == "unauthorized") ++wrong;
+    }
+    CHECK_EQ(wrong, 5);
+    // Лимит исчерпан: даже верный код отклоняется до конца окна.
+    auto late = std::make_shared<aura::Session>(-1, "late", "127.0.0.1:49999", fixture.config);
+    const std::int64_t next = (std::time(nullptr) / aura::totp::kPeriod + 1) * aura::totp::kPeriod;
+    Json good = attempt;
+    good.set("code", Json(aura::totp::codeAt(raw, next)));
+    CHECK_EQ(fixture.call(late, "auth.login2fa", good).getString("code"), std::string("forbidden"));
+}
+
+TEST(audit_h8_open_connections_follow_revocation) {
+    Fixture fixture;
+    auto first = fixture.makeSession("first");
+    fixture.registerUser(first, "bob@example.com", "Боб");
+    // Второе соединение не через makeSession (иначе закроется сокет первого).
+    auto second = std::make_shared<aura::Session>(-1, "second", "127.0.0.1:2", fixture.config);
+    CHECK_EQ(fixture.call(second, "auth.login", audit::loginPayload("bob@example.com", "aura1234")).getString("type"),
+             std::string("ok"));
+    CHECK_EQ(fixture.call(first, "auth.me").getString("type"), std::string("ok"));
+
+    // sessions.revokeAll со второго: первое соединение выбито сразу.
+    CHECK_EQ(fixture.call(second, "sessions.revokeAll").getString("type"), std::string("ok"));
+    CHECK(!first->authenticated());
+    CHECK_EQ(fixture.call(first, "auth.me").getString("code"), std::string("unauthorized"));
+    Json task = Json::object();
+    task.set("title", Json("still here"));
+    CHECK_EQ(fixture.call(first, "tasks.create", task).getString("code"), std::string("unauthorized"));
+    CHECK(second->authenticated());
+
+    // Отзыв в обход сервера (другой экземпляр/администратор): соединение
+    // перепроверяется по БД не реже AURA_AUTH_RECHECK.
+    fixture.server->database().db().revokeSession(second->jwtId());
+    CHECK_EQ(fixture.call(second, "auth.me").getString("type"), std::string("ok"));  // в пределах окна кэша
+    CHECK_EQ(fixture.server->kickUser(0, "noop"), static_cast<std::size_t>(0));  // userId=0 — ничего
+    // (проверка с перепроверкой на каждом запросе — audit_h8_recheck_every_request)
+}
+
+TEST(audit_h8_recheck_every_request) {
+    ::setenv("AURA_AUTH_RECHECK", "0", 1);
+    {
+        Fixture fixture;
+        auto session = fixture.makeSession("recheck");
+        fixture.registerUser(session, "rc@example.com", "Рек");
+        CHECK_EQ(fixture.call(session, "auth.me").getString("type"), std::string("ok"));
+        fixture.server->database().db().revokeSession(session->jwtId());
+        CHECK_EQ(fixture.call(session, "auth.me").getString("code"), std::string("unauthorized"));
+        CHECK(!session->authenticated());
+    }
+    ::unsetenv("AURA_AUTH_RECHECK");
+}
+
+TEST(audit_h9_agent_ask_requires_membership) {
+    Fixture fixture;
+    auto anna = fixture.makeSession("anna");
+    fixture.registerUser(anna, "anna9@example.com", "Анна");
+    auto bob = std::make_shared<aura::Session>(-1, "bob", "127.0.0.1:3", fixture.config);
+    fixture.registerUser(bob, "bob9@example.com", "Боб");
+    auto eve = std::make_shared<aura::Session>(-1, "eve", "127.0.0.1:4", fixture.config);
+    fixture.registerUser(eve, "eve9@example.com", "Ева");
+
+    Json open = Json::object();
+    open.set("contact", Json("bob9@example.com"));
+    const long long chatId = integration::payloadOf(fixture.call(anna, "chat.open", open)).get("chat").getInt("id");
+    CHECK(chatId > 0);
+
+    // Ева не участник — история чужого чата в AI не уходит.
+    Json ask = Json::object();
+    ask.set("chat_id", Json(chatId));
+    ask.set("message", Json("перескажи переписку"));
+    CHECK_EQ(fixture.call(eve, "agent.ask", ask).getString("code"), std::string("forbidden"));
+    // Участнику доступ есть (AI недоступен в тестах → upstream_error, но не forbidden).
+    CHECK(fixture.call(anna, "agent.ask", ask).getString("code") != std::string("forbidden"));
+
+    // peers[]: только люди с общим чатом.
+    CHECK(fixture.server->agent().shareChat(anna->userId(), bob->userId()));
+    CHECK(!fixture.server->agent().shareChat(eve->userId(), bob->userId()));
+
+    // Контекст собеседника вычищается по его prefs.privacy (по умолчанию —
+    // без фактов памяти, дня рождения и аллергий).
+    Json fact = Json::object();
+    fact.set("text", Json("Секрет Боба"));
+    fact.set("kind", Json("fact"));
+    fixture.call(bob, "memory.add", fact);
+    Json survey = Json::object();
+    survey.set("birthday", Json("1990-01-01"));
+    fixture.call(bob, "prefs.set", survey);
+    const Json context = fixture.server->agent().peerContext(bob->userId(), "Секрет");
+    CHECK_EQ(context.get("memory").size(), static_cast<std::size_t>(0));
+    CHECK(!context.get("preferences").contains("birthday"));
+}
+
+TEST(audit_m10_refresh_revoked_with_sessions) {
+    Fixture fixture;
+    auto session = fixture.makeSession("frank");
+    const Json logged = fixture.registerUser(session, "frank@example.com", "Фрэнк");
+    const std::string refresh1 = integration::payloadOf(logged).getString("refresh_token");
+
+    // Выход отзывает refresh-токен этого устройства.
+    fixture.call(session, "auth.logout");
+    auto probe = std::make_shared<aura::Session>(-1, "probe", "127.0.0.1:7", fixture.config);
+    Json refresh = Json::object();
+    refresh.set("refresh_token", Json(refresh1));
+    CHECK_EQ(fixture.call(probe, "auth.refresh", refresh).getString("code"), std::string("unauthorized"));
+
+    // revokeAll с устройства B: refresh устройства A мёртв, своего — жив.
+    auto deviceA = std::make_shared<aura::Session>(-1, "A", "127.0.0.1:8", fixture.config);
+    auto deviceB = std::make_shared<aura::Session>(-1, "B", "127.0.0.1:9", fixture.config);
+    const std::string refreshA = integration::payloadOf(
+        fixture.call(deviceA, "auth.login", audit::loginPayload("frank@example.com", "aura1234"))).getString("refresh_token");
+    const std::string refreshB = integration::payloadOf(
+        fixture.call(deviceB, "auth.login", audit::loginPayload("frank@example.com", "aura1234"))).getString("refresh_token");
+    CHECK_EQ(fixture.call(deviceB, "sessions.revokeAll").getString("type"), std::string("ok"));
+    auto probe2 = std::make_shared<aura::Session>(-1, "probe2", "127.0.0.1:10", fixture.config);
+    refresh.set("refresh_token", Json(refreshA));
+    CHECK_EQ(fixture.call(probe2, "auth.refresh", refresh).getString("code"), std::string("unauthorized"));
+    refresh.set("refresh_token", Json(refreshB));
+    const Json rotated = fixture.call(deviceB, "auth.refresh", refresh);
+    CHECK_EQ(rotated.getString("type"), std::string("ok"));
+
+    // sessions.revoke отзывает и refresh-семейство этой сессии.
+    auto deviceC = std::make_shared<aura::Session>(-1, "C", "127.0.0.1:11", fixture.config);
+    const Json loginC = fixture.call(deviceC, "auth.login", audit::loginPayload("frank@example.com", "aura1234"));
+    const std::string refreshC = integration::payloadOf(loginC).getString("refresh_token");
+    Json revoke = Json::object();
+    revoke.set("session_id", Json(integration::payloadOf(loginC).getString("session_id")));
+    CHECK(fixture.call(deviceB, "sessions.revoke", revoke).get("payload").getBool("revoked"));
+    CHECK(!deviceC->authenticated());  // открытое соединение отозванной сессии закрыто
+    refresh.set("refresh_token", Json(refreshC));
+    CHECK_EQ(fixture.call(probe2, "auth.refresh", refresh).getString("code"), std::string("unauthorized"));
+}
+
+TEST(audit_m12_send_email_header_injection) {
+    Fixture fixture;
+    auto& tools = fixture.server->tools();
+    Json args = Json::object();
+    args.set("to", Json("friend@example.com\r\nBcc: evil@example.com"));
+    args.set("body", Json("hi"));
+    CHECK(!tools.sendEmail(1, args).ok);
+    args.set("to", Json("friend@example.com, evil@example.com"));
+    CHECK(!tools.sendEmail(1, args).ok);
+    args.set("to", Json("friend@example.com"));
+    args.set("subject", Json("тема\r\nBcc: evil@example.com"));
+    CHECK(!tools.sendEmail(1, args).ok);
+    args.set("subject", Json("Обычная тема"));
+    CHECK(tools.sendEmail(1, args).ok);
+}
+
+TEST(audit_m13_mail_per_target_limit) {
+    Fixture fixture;
+    auto session = fixture.makeSession("mail");
+    fixture.registerUser(session, "target@example.com", "Цель");
+    Json forgot = Json::object();
+    forgot.set("email", Json("target@example.com"));
+    int issued = 0;
+    for (int i = 0; i < 5; ++i) {
+        // Каждый раз новое соединение (другой порт): лимит на адрес получателя.
+        auto client = std::make_shared<aura::Session>(-1, "m", "127.0.0.1:" + std::to_string(30000 + i), fixture.config);
+        const Json reply = fixture.call(client, "auth.forgotPassword", forgot);
+        CHECK_EQ(reply.getString("type"), std::string("ok"));  // ответ одинаковый
+        if (!integration::payloadOf(reply).getString("reset_code").empty()) ++issued;
+    }
+    CHECK_EQ(issued, 3);
+}
+
+TEST(audit_m14_connection_limits) {
+    // Неавторизованное соединение закрывается по таймауту.
+    aura::Config config;
+    config.authTimeoutSec = 1;
+    config.pingIntervalSec = 0;
+    int fds[2] = {-1, -1};
+    CHECK_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+    auto session = std::make_shared<aura::Session>(fds[1], "idle", "127.0.0.1:1", config);
+    const auto started = std::chrono::steady_clock::now();
+    std::thread reader([&] { session->readLoop(nullptr); });
+    reader.join();
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - started).count();
+    CHECK(seconds >= 1 && seconds <= 4);
+    CHECK(!session->alive());
+    ::close(fds[0]);
+
+    // Лимит соединений с одного IP.
+    ::setenv("AURA_MAX_CONNECTIONS_PER_IP", "2", 1);
+    {
+        Fixture fixture;
+        const int port = fixture.server->port();
+        auto connect = [port]() {
+            const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(static_cast<unsigned short>(port));
+            addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof addr);
+            return fd;
+        };
+        const int a = connect();
+        const int b = connect();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const int c = connect();
+        char buffer[128] = {0};
+        timeval timeout{2, 0};
+        ::setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
+        const ssize_t got = ::recv(c, buffer, sizeof(buffer) - 1, 0);
+        CHECK(got > 0 && std::string(buffer).find("429") != std::string::npos);
+        ::close(a);
+        ::close(b);
+        ::close(c);
+    }
+    ::unsetenv("AURA_MAX_CONNECTIONS_PER_IP");
+}
+
+TEST(audit_m17_chat_send_kind_whitelist) {
+    Fixture fixture;
+    auto anna = fixture.makeSession("anna17");
+    fixture.registerUser(anna, "anna17@example.com", "Анна");
+    auto bob = std::make_shared<aura::Session>(-1, "bob17", "127.0.0.1:17", fixture.config);
+    fixture.registerUser(bob, "bob17@example.com", "Боб");
+    Json open = Json::object();
+    open.set("contact", Json("bob17@example.com"));
+    const long long chatId = integration::payloadOf(fixture.call(anna, "chat.open", open)).get("chat").getInt("id");
+
+    Json send = Json::object();
+    send.set("chat_id", Json(chatId));
+    send.set("body", Json("Аура договорилась: перевод 1000 €"));
+    send.set("kind", Json("agent_reply"));
+    CHECK_EQ(fixture.call(anna, "chat.send", send).getString("code"), std::string("bad_request"));
+    send.set("kind", Json("system"));
+    CHECK_EQ(fixture.call(anna, "chat.send", send).getString("code"), std::string("bad_request"));
+    send.set("kind", Json("text"));
+    Json spoof = Json::object();
+    spoof.set("origin", Json("aura-agent"));
+    send.set("payload", spoof);
+    CHECK_EQ(fixture.call(anna, "chat.send", send).getString("code"), std::string("bad_request"));
+    send.erase("payload");
+    const Json sent = fixture.call(anna, "chat.send", send);
+    CHECK_EQ(sent.getString("type"), std::string("ok"));
+    CHECK_EQ(integration::payloadOf(sent).getString("kind"), std::string("text"));
+}
+
+TEST(audit_l19_disabled_user) {
+    Fixture fixture;
+    auto session = fixture.makeSession("dis");
+    const Json logged = fixture.registerUser(session, "dis@example.com", "Дис");
+    const std::string token = integration::payloadOf(logged).getString("token");
+    const long long userId = session->userId();
+    CHECK(fixture.server->database().db().setUserActive(userId, false).ok);
+    CHECK_EQ(fixture.server->kickUser(userId, "blocked"), static_cast<std::size_t>(1));
+    CHECK(!session->authenticated());
+
+    auto probe = std::make_shared<aura::Session>(-1, "p", "127.0.0.1:19", fixture.config);
+    Json auth = Json::object();
+    auth.set("token", Json(token));
+    CHECK_EQ(fixture.call(probe, "auth.token", auth).getString("code"), std::string("unauthorized"));
+    // Неверный пароль не раскрывает блокировку, верный — «аккаунт отключён».
+    const Json wrong = fixture.call(probe, "auth.login", audit::loginPayload("dis@example.com", "wrongpass1"));
+    CHECK_EQ(wrong.getString("code"), std::string("unauthorized"));
+    CHECK(wrong.getString("message").find("отключ") == std::string::npos);
+    const Json right = fixture.call(probe, "auth.login", audit::loginPayload("dis@example.com", "aura1234"));
+    CHECK_EQ(right.getString("code"), std::string("forbidden"));
+}
+
+TEST(audit_l21_races_are_atomic) {
+    Fixture fixture;
+    auto session = fixture.makeSession("race");
+    const Json logged = fixture.registerUser(session, "race@example.com", "Гонка");
+    auto& db = fixture.server->database().db();
+    const long long userId = session->userId();
+
+    // Двойное подтверждение: исполняет только первый claim.
+    aura::PendingActionRecord pending;
+    pending.userId = userId;
+    pending.tool = "create_note";
+    pending.args.set("text", Json("заметка"));
+    const long long id = db.createPendingAction(pending);
+    CHECK(db.claimPendingAction(id, userId, "approved"));
+    CHECK(!db.claimPendingAction(id, userId, "approved"));
+    const long long other = db.createPendingAction(pending);
+    CHECK(!db.claimPendingAction(other, userId + 1000, "approved"));  // чужое
+
+    // Одновременный refresh: второй отзыв того же токена не проходит.
+    const std::string refresh = integration::payloadOf(logged).getString("refresh_token");
+    const auto record = db.findRefreshToken(aura::crypto::toHex(aura::crypto::sha256(refresh)));
+    CHECK(record.has_value());
+    CHECK(db.revokeRefreshToken(record->id, "").ok);
+    CHECK(!db.revokeRefreshToken(record->id, "").ok);
+
+    // tasks.due обрабатывает только свои напоминания.
+    auto other_user = std::make_shared<aura::Session>(-1, "o", "127.0.0.1:21", fixture.config);
+    fixture.registerUser(other_user, "race2@example.com", "Гонка2");
+    Json task = Json::object();
+    task.set("title", Json("чужое"));
+    task.set("remind_at", Json("2020-01-01T00:00:00.000Z"));
+    fixture.call(other_user, "tasks.create", task);
+    CHECK_EQ(fixture.call(session, "tasks.due").get("payload").getInt("sent"), 0);
+    CHECK_EQ(fixture.call(other_user, "tasks.due").get("payload").getInt("sent"), 1);
+    CHECK_EQ(fixture.call(other_user, "tasks.due").get("payload").getInt("sent"), 0);
+}
+
+TEST(audit_l22_internal_errors_are_generic) {
+    Fixture fixture;
+    fixture.server->registerHandler("test.throw", [](std::shared_ptr<aura::Session>, const aura::protocol::Request&) -> Json {
+        throw std::runtime_error("ERROR: relation \"users\" violates constraint users_email_key");
+    });
+    auto session = fixture.makeSession("throw");
+    fixture.registerUser(session, "throw@example.com", "Бросок");
+    const Json reply = fixture.call(session, "test.throw");
+    CHECK_EQ(reply.getString("code"), std::string("internal_error"));
+    CHECK(reply.getString("message").find("relation") == std::string::npos);
+}
+
+TEST(audit_l23_embedded_file_safety) {
+    const std::string path = "/tmp/aura-audit-db-" + std::to_string(::getpid()) + ".json";
+    {
+        FILE* file = std::fopen(path.c_str(), "w");
+        std::fputs("{\"users\": [ {\"id\": 1, ", file);  // обрезанный JSON
+        std::fclose(file);
+    }
+    auto broken = aura::makeEmbeddedDatabase(path);
+    std::string error;
+    CHECK(!broken->connect(error));
+    CHECK(error.find("повреждён") != std::string::npos);
+    // Файл не перезаписан пустой базой.
+    {
+        FILE* file = std::fopen(path.c_str(), "r");
+        char buffer[64] = {0};
+        std::fgets(buffer, sizeof buffer, file);
+        std::fclose(file);
+        CHECK(std::string(buffer).find("users") != std::string::npos);
+    }
+    std::remove(path.c_str());
+
+    auto fresh = aura::makeEmbeddedDatabase(path);
+    error.clear();
+    CHECK(fresh->connect(error));
+    long long id = 0;
+    CHECK(fresh->createUser("perm@example.com", "x", "Perm", id).ok);
+    struct stat info {};
+    CHECK_EQ(::stat(path.c_str(), &info), 0);
+    CHECK_EQ(info.st_mode & 0777, static_cast<unsigned>(0600));
+    std::remove(path.c_str());
+}
+
+TEST(audit_l24_attempts_table_bounded) {
+    ::setenv("AURA_LOGIN_WINDOW", "1", 1);
+    ::setenv("AURA_MAX_IP_ATTEMPTS", "0", 1);
+    {
+        Fixture fixture;
+        auto& auth = fixture.server->auth();
+        for (int i = 0; i < 5000; ++i) {
+            auth.login("ghost" + std::to_string(i) + "@example.com", "wrongpass1", "t", "", "127.0.0.1:1");
+        }
+        CHECK(auth.attemptsSize() >= 1000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2100));
+        for (int i = 0; i < 10; ++i) auth.login("late" + std::to_string(i) + "@example.com", "wrongpass1", "t", "", "127.0.0.1:1");
+        CHECK(auth.attemptsSize() < 100);
+    }
+    ::unsetenv("AURA_LOGIN_WINDOW");
+    ::unsetenv("AURA_MAX_IP_ATTEMPTS");
+}
+
+TEST(audit_password_unicode_rule) {
+    CHECK(aura::AuthManager::passwordError("пароль12").empty());
+    CHECK(aura::AuthManager::passwordError("Ελληνικά1").empty());
+    CHECK(aura::AuthManager::passwordError("Größe123").empty());
+    CHECK(!aura::AuthManager::passwordError("парол1").empty());     // 6 символов, хотя 11 байт
+    CHECK(!aura::AuthManager::passwordError("пароль-пароль").empty());  // нет цифр
+    CHECK(!aura::AuthManager::passwordError("12345678±").empty());  // нет букв
+    CHECK(!aura::AuthManager::passwordError(std::string("abc\xff" "12345")).empty());  // не UTF-8
+    CHECK(!aura::AuthManager::passwordError("a1" + std::string(255, 'b')).empty());   // > 256 байт
+    CHECK(aura::AuthManager::passwordError("a1" + std::string(254, 'b')).empty());    // ровно 256
+}
+
+TEST(audit_change_password_returns_token_pair) {
+    Fixture fixture;
+    auto session = fixture.makeSession("kai2");
+    const Json logged = fixture.registerUser(session, "kai2@example.com", "Кай");
+    const std::string oldRefresh = integration::payloadOf(logged).getString("refresh_token");
+    auto other = std::make_shared<aura::Session>(-1, "other", "127.0.0.1:31", fixture.config);
+    fixture.call(other, "auth.login", audit::loginPayload("kai2@example.com", "aura1234"));
+
+    Json change = Json::object();
+    change.set("old_password", Json("aura1234"));
+    change.set("new_password", Json("новыйпароль1"));
+    const Json changed = fixture.call(session, "auth.changePassword", change);
+    CHECK_EQ(changed.getString("type"), std::string("ok"));
+    const Json payload = integration::payloadOf(changed);
+    CHECK(payload.getBool("changed"));
+    CHECK_EQ(payload.getString("token").size() > 20, true);
+    CHECK(!payload.getString("refresh_token").empty());
+    // Текущее соединение живо (под новой сессией), другое — выбито.
+    CHECK(session->authenticated());
+    CHECK_EQ(fixture.call(session, "auth.me").getString("type"), std::string("ok"));
+    CHECK(!other->authenticated());
+    // Старый refresh мёртв, новый — работает.
+    auto probe = std::make_shared<aura::Session>(-1, "probe", "127.0.0.1:32", fixture.config);
+    Json refresh = Json::object();
+    refresh.set("refresh_token", Json(oldRefresh));
+    CHECK_EQ(fixture.call(probe, "auth.refresh", refresh).getString("code"), std::string("unauthorized"));
+    refresh.set("refresh_token", Json(payload.getString("refresh_token")));
+    CHECK_EQ(fixture.call(probe, "auth.refresh", refresh).getString("type"), std::string("ok"));
+}
+
+TEST(audit_reset_code_six_digits_with_limit) {
+    Fixture fixture;
+    auto session = fixture.makeSession("reset6");
+    fixture.registerUser(session, "reset6@example.com", "Ресет");
+    Json forgot = Json::object();
+    forgot.set("email", Json("reset6@example.com"));
+    const std::string code = integration::payloadOf(fixture.call(session, "auth.forgotPassword", forgot)).getString("reset_code");
+    CHECK_EQ(code.size(), static_cast<std::size_t>(6));
+    CHECK(std::all_of(code.begin(), code.end(), [](char ch) { return ch >= '0' && ch <= '9'; }));
+
+    Json reset = Json::object();
+    reset.set("email", Json("reset6@example.com"));
+    reset.set("new_password", Json("newpass123"));
+    // Слабый пароль отклоняется, не расходуя попытку и не подсказывая про код.
+    reset.set("code", Json(code));
+    reset.set("new_password", Json("weak"));
+    CHECK_EQ(fixture.call(session, "auth.resetPassword", reset).getString("code"), std::string("bad_request"));
+    reset.set("new_password", Json("newpass123"));
+    for (int i = 0; i < 5; ++i) {
+        reset.set("code", Json(code == "123456" ? std::string("654321") : std::string("123456")));
+        CHECK_EQ(fixture.call(session, "auth.resetPassword", reset).getString("code"), std::string("bad_request"));
+    }
+    reset.set("code", Json(code));
+    CHECK_EQ(fixture.call(session, "auth.resetPassword", reset).getString("code"), std::string("bad_request"));
+    // Новый код работает.
+    const std::string fresh = integration::payloadOf(fixture.call(session, "auth.forgotPassword", forgot)).getString("reset_code");
+    reset.set("code", Json(fresh));
+    CHECK(fixture.call(session, "auth.resetPassword", reset).get("payload").getBool("reset"));
+}
+
+// M15: после рестарта/обрыва PostgreSQL сервер переподключается сам.
+// Запускается, только если сервер собран с libpq и задан AURA_TEST_PG_URL.
+TEST(audit_m15_postgres_reconnect) {
+#ifdef AURA_WITH_LIBPQ
+    const char* url = std::getenv("AURA_TEST_PG_URL");
+    if (url == nullptr || *url == '\0') {
+        std::cout << "  (пропущен: AURA_TEST_PG_URL не задан)\n";
+        return;
+    }
+    const std::string base = url;
+    const std::string appUrl = base + (base.find('?') == std::string::npos ? "?" : "&") +
+                               "application_name=aura-reconnect-test";
+    auto database = aura::makePostgresDatabase(appUrl);
+    std::string error;
+    CHECK(database && database->connect(error));
+    if (!database) return;
+    CHECK(database->findUserById(1).has_value() || true);
+    // Обрываем соединение сервера со стороны PostgreSQL.
+    PGconn* admin = PQconnectdb(base.c_str());
+    CHECK(PQstatus(admin) == CONNECTION_OK);
+    PGresult* killed = PQexec(admin,
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE application_name = 'aura-reconnect-test' AND pid <> pg_backend_pid()");
+    CHECK(PQresultStatus(killed) == PGRES_TUPLES_OK && PQntuples(killed) >= 1);
+    PQclear(killed);
+    PQfinish(admin);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // Первый же запрос после обрыва проходит (переподключение + повтор).
+    const auto users = database->searchUsers("zz-no-such-user-zz", 1);
+    CHECK(users.empty());
+    CHECK(database->healthy());
+    long long id = 0;
+    const std::string email = "reconnect-" + std::to_string(::getpid()) + "@example.com";
+    CHECK(database->createUser(email, "x", "Reconnect", id).ok);
+    CHECK(database->findUserByEmail(email).has_value());
+    // Ошибка БД наружу — обобщённая, без текста PostgreSQL.
+    long long dup = 0;
+    const auto duplicate = database->createUser(email, "x", "Reconnect", dup);
+    CHECK(!duplicate.ok);
+    CHECK(duplicate.message.find("duplicate") == std::string::npos);
+    CHECK(duplicate.message.find("users") == std::string::npos);
+#else
+    std::cout << "  (пропущен: сборка без libpq)\n";
+#endif
+}
+
+TEST(audit_a11_external_tools_get_no_ai_token) {
+    const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    CHECK_EQ(::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof addr), 0);
+    CHECK_EQ(::listen(listener, 1), 0);
+    socklen_t len = sizeof addr;
+    ::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &len);
+    const int port = ntohs(addr.sin_port);
+
+    std::string request;
+    std::thread fake([&] {
+        const int fd = ::accept(listener, nullptr, nullptr);
+        char chunk[4096];
+        while (request.find("\r\n\r\n") == std::string::npos) {
+            const ssize_t n = ::recv(fd, chunk, sizeof chunk, 0);
+            if (n <= 0) break;
+            request.append(chunk, static_cast<std::size_t>(n));
+        }
+        const std::string body = "{\"results\":[]}";
+        const std::string reply = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+                                  std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+        ::send(fd, reply.data(), reply.size(), 0);
+        ::close(fd);
+    });
+
+    Fixture fixture;
+    aura::Config config = fixture.config;
+    config.toolsMode = "http";
+    config.mapsApiUrl = "http://127.0.0.1:" + std::to_string(port) + "/places";
+    config.aiServiceToken = "super-secret-ai-token";
+    aura::ToolManager tools(config, fixture.server->database(), fixture.server->chats());
+    Json args = Json::object();
+    args.set("city", Json("Херлен"));
+    CHECK(tools.findCafe(1, args).ok);
+    fake.join();
+    ::close(listener);
+    CHECK(request.find("POST /places") != std::string::npos);
+    CHECK(request.find("super-secret-ai-token") == std::string::npos);
+    CHECK(request.find("X-Aura-Token") == std::string::npos);
 }
 
 int main(int argc, char** argv) {

@@ -75,11 +75,14 @@ TaskManager::Result TaskManager::remove(long long userId, long long taskId) {
     return result;
 }
 
-std::vector<TaskRecord> TaskManager::dueTick(int limit) {
-    std::vector<TaskRecord> due = database_.db().listDueTasks(limit);
-    for (const auto& task : due) {
-        database_.db().markTaskReminded(task.id);
+std::vector<TaskRecord> TaskManager::dueTick(int limit, long long userId) {
+    std::vector<TaskRecord> due;
+    for (const auto& task : database_.db().listDueTasks(limit, userId)) {
+        // Отметка атомарна: если задачу уже забрал другой проход (фоновый
+        // планировщик и tasks.due одновременно), второй её пропускает.
+        if (!database_.db().markTaskReminded(task.id).ok) continue;
         connections_.deliverToUser(task.userId, protocol::event("task.due", task.toJson()));
+        due.push_back(task);
     }
     if (!due.empty()) {
         AURA_LOG(log::Level::Info, "scheduler") << "напоминаний отправлено: " << due.size();

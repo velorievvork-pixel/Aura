@@ -98,11 +98,7 @@ public:
             connection_ = nullptr;
             return false;
         }
-        const char* parameters = "SET TIME ZONE 'UTC'";
-        PGresult* result = PQexec(connection_, parameters);
-        const bool ok = PQresultStatus(result) == PGRES_COMMAND_OK;
-        PQclear(result);
-        return ok;
+        return prepareSession();
     }
 
     bool healthy() const override {
@@ -194,8 +190,7 @@ public:
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
                      "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio "
-                     "FROM users WHERE lower(email) LIKE LOWER($1) ESCAPE '\\' "
-                     "OR lower(display_name) LIKE LOWER($1) ESCAPE '\\' "
+                     "FROM users WHERE lower(display_name) LIKE LOWER($1) ESCAPE '\\' "
                      "ORDER BY id LIMIT $2",
                      {pattern, std::to_string(limit)}, &result)) {
             return users;
@@ -264,6 +259,18 @@ public:
         PGresult* result = nullptr;
         if (!execute("UPDATE users SET password_hash = $2 WHERE id = $1",
                      {std::to_string(userId), hash}, &result)) {
+            return DatabaseError::failure(lastError_);
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched ? DatabaseError::success() : DatabaseError::failure("пользователь не найден");
+    }
+
+    DatabaseError setUserActive(long long userId, bool active) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE users SET is_active = $2 WHERE id = $1",
+                     {std::to_string(userId), active ? "TRUE" : "FALSE"}, &result)) {
             return DatabaseError::failure(lastError_);
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
@@ -444,17 +451,18 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         PGresult* result = nullptr;
         if (!execute("UPDATE refresh_tokens SET revoked_at = now(), replaced_by = NULLIF($2, '')::uuid "
-                     "WHERE id = $1::uuid",
+                     "WHERE id = $1::uuid AND revoked_at IS NULL",
                      {id, replacedBy}, &result)) {
             return DatabaseError::failure(lastError_);
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
-        return touched ? DatabaseError::success() : DatabaseError::failure("refresh-токен не найден");
+        return touched ? DatabaseError::success() : DatabaseError::failure("refresh-токен не найден или уже отозван");
     }
 
     DatabaseError revokeRefreshFamily(const std::string& familyId) override {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (familyId.empty()) return DatabaseError::success();
         PGresult* result = nullptr;
         if (!execute("UPDATE refresh_tokens SET revoked_at = now() "
                      "WHERE family_id = $1::uuid AND revoked_at IS NULL",
@@ -471,6 +479,20 @@ public:
         if (!execute("UPDATE refresh_tokens SET revoked_at = now() "
                      "WHERE user_id = $1 AND revoked_at IS NULL",
                      {std::to_string(userId)}, &result)) {
+            return DatabaseError::failure(lastError_);
+        }
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    DatabaseError revokeUserRefreshTokensExcept(long long userId, const std::string& keepFamilyId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        // Сравнение в тексте без дефисов: пустой keep не приводится к uuid.
+        if (!execute("UPDATE refresh_tokens SET revoked_at = now() "
+                     "WHERE user_id = $1 AND revoked_at IS NULL "
+                     "AND replace(family_id::text, '-', '') <> lower(replace($2, '-', ''))",
+                     {std::to_string(userId), keepFamilyId}, &result)) {
             return DatabaseError::failure(lastError_);
         }
         PQclear(result);
@@ -1139,6 +1161,19 @@ public:
         return id;
     }
 
+    bool claimPendingAction(long long id, long long userId, const std::string& status) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE pending_actions SET status = $3, resolved_at = now() "
+                     "WHERE id = $1 AND user_id = $2 AND status = 'pending'",
+                     {std::to_string(id), std::to_string(userId), status}, &result)) {
+            return false;
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched;
+    }
+
     std::optional<PendingActionRecord> findPendingAction(long long id) override {
         std::lock_guard<std::mutex> lock(mutex_);
         PGresult* result = nullptr;
@@ -1264,14 +1299,15 @@ public:
         return DatabaseError::success();
     }
 
-    std::vector<TaskRecord> listDueTasks(int limit) override {
+    std::vector<TaskRecord> listDueTasks(int limit, long long userId) override {
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<TaskRecord> entries;
         PGresult* result = nullptr;
         if (!execute(taskSelect() +
                          " WHERE status = 'pending' AND reminded_at IS NULL "
-                         "AND remind_at IS NOT NULL AND remind_at <= now() ORDER BY remind_at LIMIT $1",
-                     {std::to_string(limit)}, &result)) {
+                         "AND remind_at IS NOT NULL AND remind_at <= now() "
+                         "AND ($2::bigint = 0 OR user_id = $2::bigint) ORDER BY remind_at LIMIT $1",
+                     {std::to_string(limit), std::to_string(userId)}, &result)) {
             return entries;
         }
         for (int row = 0; row < PQntuples(result); ++row) entries.push_back(readTask(result, row));
@@ -1282,12 +1318,13 @@ public:
     DatabaseError markTaskReminded(long long id) override {
         std::lock_guard<std::mutex> lock(mutex_);
         PGresult* res = nullptr;
-        if (!execute("UPDATE tasks SET reminded_at = now() WHERE id = $1", {std::to_string(id)}, &res)) {
+        if (!execute("UPDATE tasks SET reminded_at = now() WHERE id = $1 AND reminded_at IS NULL",
+                     {std::to_string(id)}, &res)) {
             return DatabaseError::failure(lastError_);
         }
         const bool updated = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
-        if (!updated) return DatabaseError::failure("задача не найдена");
+        if (!updated) return DatabaseError::failure("задача не найдена или напоминание уже отправлено");
         return DatabaseError::success();
     }
 
@@ -1733,31 +1770,74 @@ private:
     }
 
     // Выполняет параметризованный запрос. Память результата освобождает вызывающий.
-    bool execute(const std::string& sql, const std::vector<std::string>& args, PGresult** out) {
-        lastError_.clear();
+    // Параметры сессии после (пере)подключения.
+    bool prepareSession() {
+        PGresult* result = PQexec(connection_, "SET TIME ZONE 'UTC'");
+        const bool ok = PQresultStatus(result) == PGRES_COMMAND_OK;
+        PQclear(result);
+        return ok;
+    }
+
+    // Соединение потеряно (рестарт PostgreSQL, обрыв сети) — переподключаемся.
+    // Без этого сервер после перезапуска БД отвечал ошибками до своего рестарта.
+    bool ensureConnected() {
         if (connection_ == nullptr) {
-            lastError_ = "нет соединения с PostgreSQL";
+            connection_ = PQconnectdb(url_.c_str());
+        } else if (PQstatus(connection_) == CONNECTION_OK) {
+            return true;
+        } else {
+            AURA_LOG(log::Level::Warn, "db") << "соединение с PostgreSQL потеряно, переподключаюсь";
+            PQreset(connection_);
+        }
+        if (PQstatus(connection_) != CONNECTION_OK) {
+            AURA_LOG(log::Level::Error, "db") << "PostgreSQL недоступен: " << PQerrorMessage(connection_);
             return false;
         }
+        AURA_LOG(log::Level::Info, "db") << "соединение с PostgreSQL восстановлено";
+        return prepareSession();
+    }
+
+    // Наружу (клиенту) уходит только обобщённое описание по SQLSTATE; текст
+    // ошибки PostgreSQL (имена таблиц, ограничений, значения) — только в лог.
+    static std::string publicError(const char* sqlState) {
+        const std::string state = sqlState ? sqlState : "";
+        if (state == "23505") return "запись уже существует";
+        if (state == "23503") return "связанная запись не найдена";
+        if (state == "23514" || state == "23502") return "недопустимое значение";
+        if (state.rfind("22", 0) == 0) return "некорректный формат значения";
+        return "ошибка базы данных";
+    }
+
+    bool execute(const std::string& sql, const std::vector<std::string>& args, PGresult** out) {
+        lastError_.clear();
         std::vector<const char*> values;
         values.reserve(args.size());
         for (const auto& arg : args) values.push_back(arg.c_str());
 
-        PGresult* result = PQexecParams(connection_, sql.c_str(), static_cast<int>(values.size()), nullptr,
-                                        values.empty() ? nullptr : values.data(), nullptr, nullptr, 0);
-        const ExecStatusType status = PQresultStatus(result);
-        if (status != PGRES_TUPLES_OK && status != PGRES_COMMAND_OK) {
-            lastError_ = PQresultErrorMessage(result);
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            if (!ensureConnected()) {
+                lastError_ = "база данных недоступна";
+                return false;
+            }
+            PGresult* result = PQexecParams(connection_, sql.c_str(), static_cast<int>(values.size()), nullptr,
+                                            values.empty() ? nullptr : values.data(), nullptr, nullptr, 0);
+            const ExecStatusType status = PQresultStatus(result);
+            if (status == PGRES_TUPLES_OK || status == PGRES_COMMAND_OK) {
+                if (out != nullptr) {
+                    *out = result;
+                } else {
+                    PQclear(result);
+                }
+                return true;
+            }
+            const char* sqlState = result ? PQresultErrorField(result, PG_DIAG_SQLSTATE) : nullptr;
+            AURA_LOG(log::Level::Error, "db") << "SQL ошибка: " << PQresultErrorMessage(result);
+            lastError_ = publicError(sqlState);
             PQclear(result);
-            AURA_LOG(log::Level::Error, "db") << "SQL ошибка: " << lastError_;
-            return false;
+            // Обрыв соединения посреди запроса: один повтор после переподключения.
+            if (PQstatus(connection_) == CONNECTION_OK) return false;
         }
-        if (out != nullptr) {
-            *out = result;
-        } else {
-            PQclear(result);
-        }
-        return true;
+        return false;
     }
 
     const std::string url_;

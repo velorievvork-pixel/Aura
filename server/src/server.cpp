@@ -75,9 +75,25 @@ Server::Server(Config config) : config_(std::move(config)) {
 Server::~Server() { stop(); }
 
 bool Server::start(std::string& error) {
-    if (config_.mailDriver != "dev" && config_.mailDriver != "log" && config_.mailDriver != "smtp") {
-        error = "AURA_MAIL_DRIVER: dev, log или smtp";
-        return false;
+    // Небезопасная конфигурация (dev-почта, слабый JWT-секрет, нет ключа 2FA)
+    // вне AURA_DEV_MODE=1 — отказ стартовать с понятным сообщением.
+    std::vector<std::string> warnings;
+    if (!config_.validate(error, warnings)) return false;
+    for (const auto& warning : warnings) AURA_LOG(log::Level::Warn, "server") << warning;
+    // net.h не умеет TLS: https-адреса Google работают только через TLS-прокси
+    // (egress), которому сервер шлёт обычный http. Предупреждаем заранее.
+    if (!config_.googleClientId.empty()) {
+        for (const std::string* url : {&config_.googleAuthUrl, &config_.googleTokenUrl, &config_.googleRevokeUrl,
+                                       &config_.googleCalendarUrl, &config_.googleGmailUrl}) {
+            if (url->rfind("https://", 0) == 0 && url != &config_.googleAuthUrl) {
+                AURA_LOG(log::Level::Warn, "server")
+                    << "интеграции Google: " << *url
+                    << " — https, а сервер ходит во внешние API только по http (без TLS). "
+                       "Задайте AURA_GOOGLE_TOKEN_URL/REVOKE_URL/CALENDAR_URL/GMAIL_URL на http-адрес "
+                       "TLS-прокси (egress), иначе обмен кода и синхронизация не заработают";
+                break;
+            }
+        }
     }
     if (config_.mailDriver == "smtp") {
         if (config_.smtpHost.empty() || smtp::addressOf(config_.smtpFrom).find('@') == std::string::npos) {
@@ -135,9 +151,9 @@ void Server::schedulerLoop() {
     }
 }
 
-std::size_t Server::runSchedulerTick(int limit) {
+std::size_t Server::runSchedulerTick(int limit, long long userId) {
     if (!taskManager_) return 0;
-    const auto due = taskManager_->dueTick(limit);
+    const auto due = taskManager_->dueTick(limit, userId);
     // Этап 13: каждое сработавшее напоминание — ещё и уведомление (in-app + push).
     if (notifications_) {
         for (const auto& task : due) {
@@ -201,6 +217,33 @@ bool Server::authorize(std::shared_ptr<Session> session, const std::string& toke
     return true;
 }
 
+std::size_t Server::kickUser(long long userId, const std::string& reason, const std::string& keepJwtId,
+                             const std::string& onlyJwtId, const std::string& exceptSessionId) {
+    return connections_.kickUser(userId, reason, [&](const Session& candidate) {
+        if (!exceptSessionId.empty() && candidate.id() == exceptSessionId) return false;
+        const std::string jwt = candidate.jwtId();
+        if (!keepJwtId.empty() && jwt == keepJwtId) return false;
+        if (!onlyJwtId.empty() && jwt != onlyJwtId) return false;
+        return true;
+    });
+}
+
+bool Server::revalidate(const std::shared_ptr<Session>& session) {
+    if (!session->authenticated()) return true;
+    const auto age = std::chrono::steady_clock::now() - session->lastAuthCheck();
+    if (config_.authRecheckSec > 0 && age < std::chrono::seconds(config_.authRecheckSec)) return true;
+    const AuthManager::Result check = auth_->checkSession(session->userId(), session->jwtId());
+    if (check.ok) {
+        session->markAuthChecked();
+        return true;
+    }
+    AURA_LOG(log::Level::Info, "server") << "сессия " << session->id() << " больше не действительна: "
+                                         << check.message;
+    session->resetAuth();
+    connections_.remove(session->id());
+    return false;
+}
+
 void Server::handleConnection(std::shared_ptr<Session> session) {
     std::string error;
     if (!session->performHandshake(error)) {
@@ -252,20 +295,31 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
                                "неизвестный тип сообщения: " + request.type);
     }
 
-    if (!protocol::isPublicType(request.type) && !session->authenticated()) {
-        Json payload;
-        const std::string token = request.payload.getString("token", tokenFromSession(session));
-        if (!authorize(session, token, payload)) {
-            return protocol::error(request.id, protocol::code::kUnauthorized, "требуется вход");
+    if (!protocol::isPublicType(request.type)) {
+        // Открытое соединение не живёт дольше своей сессии: отзыв, истечение
+        // срока или блокировка аккаунта видны не позже чем через AURA_AUTH_RECHECK.
+        const bool expired = session->authenticated() && !revalidate(session);
+        if (!session->authenticated()) {
+            // Новый токен в payload (например, auth.token после refresh) — пробуем им.
+            Json payload;
+            const std::string token = request.payload.getString("token", tokenFromSession(session));
+            if (!authorize(session, token, payload)) {
+                return protocol::error(request.id, protocol::code::kUnauthorized,
+                                       expired ? "сессия истекла или отозвана — войдите снова" : "требуется вход");
+            }
         }
     }
 
     try {
         return handler(session, request);
     } catch (const std::exception& exception) {
+        // Текст исключения (SQL, пути, внутренности) — только в лог.
         AURA_LOG(log::Level::Error, "server")
             << "исключение в обработчике " << request.type << ": " << exception.what();
-        return protocol::error(request.id, protocol::code::kInternal, exception.what());
+        return protocol::error(request.id, protocol::code::kInternal, "внутренняя ошибка сервера");
+    } catch (...) {
+        AURA_LOG(log::Level::Error, "server") << "неизвестное исключение в обработчике " << request.type;
+        return protocol::error(request.id, protocol::code::kInternal, "внутренняя ошибка сервера");
     }
 }
 
@@ -329,9 +383,9 @@ void Server::registerHandlers() {
 
     registerHandler("auth.verifyEmail",
                     [this](std::shared_ptr<Session> session, const protocol::Request& request) {
-                        (void)session;
                         const auto result = auth_->verifyEmail(request.payload.getString("email"),
-                                                               request.payload.getString("code"));
+                                                               request.payload.getString("code"),
+                                                               session->remoteAddr());
                         if (!result.ok) return protocol::error(request.id, result.code, result.message);
                         return protocol::ok(request.id, result.payload);
                     });
@@ -359,6 +413,13 @@ void Server::registerHandlers() {
                                                                  request.payload.getString("new_password"),
                                                                  session->remoteAddr());
                         if (!result.ok) return protocol::error(request.id, result.code, result.message);
+                        // Все сессии отозваны: открытые соединения этого пользователя
+                        // закрываются (запросившее — просто разлогинивается).
+                        if (session->userId() == result.userId) {
+                            session->resetAuth();
+                            connections_.remove(session->id());
+                        }
+                        kickUser(result.userId, "password_reset", "", "", session->id());
                         return protocol::ok(request.id, result.payload);
                     });
 
@@ -367,7 +428,18 @@ void Server::registerHandlers() {
                         const auto result = auth_->refresh(request.payload.getString("refresh_token"),
                                                            request.payload.getString("device", "qt-client"),
                                                            session->remoteAddr());
-                        if (!result.ok) return protocol::error(request.id, result.code, result.message);
+                        if (!result.ok) {
+                            // Повторное использование refresh-токена: все сессии отозваны —
+                            // закрываем и открытые соединения пользователя.
+                            if (result.sessionsRevoked) {
+                                if (session->userId() == result.userId) {
+                                    session->resetAuth();
+                                    connections_.remove(session->id());
+                                }
+                                kickUser(result.userId, "refresh_reuse", "", "", session->id());
+                            }
+                            return protocol::error(request.id, result.code, result.message);
+                        }
                         // Как после auth.login: соединение работает под новой сессией.
                         // Иначе клиент, продливший истёкший токен, оставался неавторизованным
                         // до переподключения, и повторные prefs.get/chat.list получали отказ.
@@ -381,8 +453,14 @@ void Server::registerHandlers() {
                         const auto result = auth_->changePassword(session->userId(),
                                                                   session->jwtId(),
                                                                   request.payload.getString("old_password"),
-                                                                  request.payload.getString("new_password"));
+                                                                  request.payload.getString("new_password"),
+                                                                  session->remoteAddr());
                         if (!result.ok) return protocol::error(request.id, result.code, result.message);
+                        // Текущее соединение продолжает работать под новой сессией (новая
+                        // пара токенов в ответе), все прочие соединения закрываются.
+                        session->authenticate(result.userId, result.displayName, result.email, result.jwtId);
+                        connections_.add(session);
+                        kickUser(result.userId, "password_changed", result.jwtId, "", session->id());
                         return protocol::ok(request.id, result.payload);
                     });
 
@@ -398,19 +476,23 @@ void Server::registerHandlers() {
         // Запоминаем id текущей БД-сессии до отзыва: findSessionByJwt
         // возвращает только живые сессии.
         const auto current = database_->db().findSessionByJwt(session->jwtId());
-        const auto result = auth_->revokeSession(session->userId(), targetId);
+        const long long userId = session->userId();
+        const auto result = auth_->revokeSession(userId, targetId);
         if (!result.ok) return protocol::error(request.id, result.code, result.message);
         // Если отозвали собственную сессию — разлогиниваем соединение.
         if (current && current->id == targetId) {
             session->resetAuth();
             connections_.remove(session->id());
         }
+        // Открытые соединения отозванной сессии закрываются сразу.
+        if (!result.jwtId.empty()) kickUser(userId, "session_revoked", "", result.jwtId, session->id());
         return protocol::ok(request.id, result.payload);
     });
 
     registerHandler("sessions.revokeAll", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
         const auto result = auth_->revokeAllSessions(session->userId(), session->jwtId());
         if (!result.ok) return protocol::error(request.id, result.code, result.message);
+        kickUser(session->userId(), "sessions_revoked", session->jwtId(), "", session->id());
         return protocol::ok(request.id, result.payload);
     });
 
@@ -582,9 +664,13 @@ void Server::registerHandlers() {
     });
 
     registerHandler("auth.logout", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
-        const auto result = auth_->logout(session->jwtId());
+        const long long userId = session->userId();
+        const std::string jwtId = session->jwtId();
+        const auto result = auth_->logout(jwtId);
         session->resetAuth();
         connections_.remove(session->id());
+        // Тот же токен мог быть предъявлен на других сокетах — закрываем и их.
+        kickUser(userId, "logout", "", jwtId, session->id());
         return protocol::ok(request.id, result.payload);
     });
 
@@ -623,9 +709,34 @@ void Server::registerHandlers() {
     });
 
     registerHandler("chat.send", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
-        const auto result = chats_->send(session->userId(), payloadChatId(request.payload),
-                                         request.payload.getString("body"), request.payload.getString("kind", "text"),
-                                         request.payload.get("payload"));
+        // Клиент шлёт только обычный текст: kind agent_*/system ставит сервер
+        // (Аура, подтверждённые действия), иначе их можно подделать.
+        const std::string kind = request.payload.getString("kind", "text");
+        if (kind != "text") {
+            return protocol::error(request.id, protocol::code::kBadRequest,
+                                   "клиент может отправлять только сообщения kind=text");
+        }
+        const std::string body = request.payload.getString("body");
+        if (utf8Length(body) > 8000) {
+            return protocol::error(request.id, protocol::code::kBadRequest, "сообщение длиннее 8000 символов");
+        }
+        Json extra = request.payload.get("payload");
+        if (!extra.isNull() && !extra.isObject()) {
+            return protocol::error(request.id, protocol::code::kBadRequest, "payload должен быть объектом");
+        }
+        if (extra.isObject()) {
+            // Служебные поля Ауры (origin, proposal, confirmed, tool) — только от сервера.
+            for (const char* reserved : {"origin", "proposal", "confirmed", "tool"}) {
+                if (extra.contains(reserved)) {
+                    return protocol::error(request.id, protocol::code::kBadRequest,
+                                           std::string("поле payload.") + reserved + " зарезервировано сервером");
+                }
+            }
+            if (extra.dump().size() > 4096) {
+                return protocol::error(request.id, protocol::code::kBadRequest, "payload больше 4 КБ");
+            }
+        }
+        const auto result = chats_->send(session->userId(), payloadChatId(request.payload), body, "text", extra);
         return result.ok ? protocol::ok(request.id, result.payload)
                          : protocol::error(request.id, result.code, result.message);
     });
@@ -775,10 +886,35 @@ void Server::registerHandlers() {
     });
 
     registerHandler("tool.run", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
-        const ToolManager::Result result =
-            tools_->run(session->userId(), request.payload.getString("tool"), request.payload.get("args"));
-        if (!result.ok) return protocol::error(request.id, protocol::code::kBadRequest, result.error);
-        return protocol::ok(request.id, result.data);
+        // Прямой вызов инструмента проходит тот же барьер tool_permissions, что и
+        // действия Ауры: deny — отказ, ask — отложенное действие с подтверждением.
+        const std::string tool = request.payload.getString("tool");
+        if (!ToolManager::isKnownTool(tool)) {
+            return protocol::error(request.id, protocol::code::kBadRequest, "неизвестный инструмент: " + tool);
+        }
+        const Json item = agent_->executeOne(session->userId(), payloadChatId(request.payload), tool,
+                                             request.payload.get("args"));
+        if (item.getBool("denied")) {
+            return protocol::error(request.id, protocol::code::kForbidden, item.getString("error"));
+        }
+        if (item.getBool("requires_confirmation")) {
+            Json payload = Json::object();
+            payload.set("requires_confirmation", Json(true));
+            payload.set("confirmation_id", item.get("confirmation_id"));
+            payload.set("summary", item.get("summary"));
+            payload.set("tool", Json(tool));
+            payload.set("status", Json("pending"));
+            if (notifications_) {
+                Json notifyPayload = Json::object();
+                notifyPayload.set("confirmation_id", item.get("confirmation_id"));
+                notifyPayload.set("tool", Json(tool));
+                notifications_->create(session->userId(), "confirmation.requested", "Нужно подтверждение",
+                                       item.getString("summary", "Опасная операция ожидает решения"), notifyPayload);
+            }
+            return protocol::ok(request.id, payload);
+        }
+        if (!item.getBool("ok")) return protocol::error(request.id, protocol::code::kBadRequest, item.getString("error"));
+        return protocol::ok(request.id, item.get("data"));
     });
 
     // -------------------------------------- разрешения и подтверждения (этап 8)
@@ -857,10 +993,11 @@ void Server::registerHandlers() {
                          : protocol::error(request.id, result.code, result.message);
     });
 
-    // Ручной проход планировщика: отправить наступившие напоминания сейчас.
-    registerHandler("tasks.due", [this](std::shared_ptr<Session>, const protocol::Request& request) {
+    // Ручной проход планировщика: отправить наступившие напоминания сейчас —
+    // только напоминания вызывающего пользователя (не глобальный проход).
+    registerHandler("tasks.due", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
         Json payload = Json::object();
-        payload.set("sent", Json(static_cast<long long>(runSchedulerTick(100))));
+        payload.set("sent", Json(static_cast<long long>(runSchedulerTick(100, session->userId()))));
         return protocol::ok(request.id, payload);
     });
 

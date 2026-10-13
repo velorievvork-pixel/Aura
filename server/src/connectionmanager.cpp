@@ -4,6 +4,7 @@
 #include <algorithm>
 
 #include "aura/log.h"
+#include "aura/protocol.h"
 
 namespace aura {
 
@@ -87,6 +88,37 @@ void ConnectionManager::closeAll(std::uint16_t code, const std::string& reason) 
     }
     for (const auto& session : alive) session->close(code, reason);
     AURA_LOG(log::Level::Info, "connections") << "закрыто соединений: " << alive.size();
+}
+
+std::size_t ConnectionManager::kickUser(long long userId,
+                                        const std::string& reason,
+                                        const std::function<bool(const Session&)>& match) {
+    if (userId == 0) return 0;
+    std::vector<std::shared_ptr<Session>> targets;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto it = sessions_.begin(); it != sessions_.end();) {
+            const auto& session = it->second;
+            if (session->userId() == userId && (!match || match(*session))) {
+                targets.push_back(session);
+                it = sessions_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (const auto& session : targets) {
+        Json payload = Json::object();
+        payload.set("reason", Json(reason));
+        session->send(protocol::event("session.revoked", payload));
+        session->resetAuth();
+        session->close(4401, "session revoked");
+    }
+    if (!targets.empty()) {
+        AURA_LOG(log::Level::Info, "connections")
+            << "user=" << userId << ": закрыто соединений " << targets.size() << " (" << reason << ")";
+    }
+    return targets.size();
 }
 
 }  // namespace aura

@@ -65,18 +65,25 @@ def server_kinds() -> set[str]:
 # выбор из двух литералов (до запятой или скобки).
 SYSTEM_IMAGE_RE = re.compile(r'(?:systemImage(?:Name)?|systemName|symbol):\s*[^,)]*')
 
+# Идентификаторы для UI-тестов (accessibilityIdentifier("nav.back")) — не типы сообщений.
+ACCESSIBILITY_ID_RE = re.compile(r'accessibilityIdentifier\([^)]*\)')
+
 
 def swift_candidates() -> dict[str, list[str]]:
     """Кандидаты-типы из Swift-исходников: тип → файлы, где встретился."""
     found: dict[str, list[str]] = {}
     for path in sorted((ROOT / "ios").rglob("*.swift")):
         relative = str(path.relative_to(ROOT))
+        # UI-тесты (XCUITest) не говорят с сервером: в них только подписи и id элементов.
+        if "AuraUITests" in path.parts:
+            continue
         for line in path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if stripped.startswith("//"):
                 continue
             # Иконки SF Symbols ("lock.shield" и т.п.) — не типы сообщений.
             line = SYSTEM_IMAGE_RE.sub("", line)
+            line = ACCESSIBILITY_ID_RE.sub("", line)
             for match in TYPE_RE.findall(line):
                 found.setdefault(match, []).append(relative)
     return found

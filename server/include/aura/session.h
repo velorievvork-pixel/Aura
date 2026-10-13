@@ -35,16 +35,25 @@ public:
     void close(std::uint16_t code, const std::string& reason);
 
     // --- состояние авторизации ---
+    // Потокобезопасно: соединение может «выбить» другой поток (отзыв сессии,
+    // смена пароля, блокировка пользователя), пока этот читает кадры.
     void authenticate(long long userId, std::string displayName, std::string email, std::string jwtId);
     void resetAuth();
-    bool authenticated() const { return userId_ != 0; }
-    long long userId() const { return userId_; }
-    const std::string& displayName() const { return displayName_; }
-    const std::string& email() const { return email_; }
-    const std::string& jwtId() const { return jwtId_; }
+    bool authenticated() const { return userId_.load() != 0; }
+    long long userId() const { return userId_.load(); }
+    std::string displayName() const;
+    std::string email() const;
+    std::string jwtId() const;
+
+    // Когда сессию в последний раз сверяли с БД (отзыв, срок, блокировка).
+    std::chrono::steady_clock::time_point lastAuthCheck() const;
+    void markAuthChecked();
 
     const std::string& id() const { return sessionId_; }
     const std::string& remoteAddr() const { return remoteAddr_; }
+    // IP без порта: ключ для лимитов (переподключение не обнуляет счётчики).
+    const std::string& remoteIp() const { return remoteIp_; }
+    static std::string ipOf(const std::string& remoteAddr);
     const std::string& userAgent() const { return userAgent_; }
     bool alive() const { return alive_.load(); }
     std::string authorizationHeader() const { return authorization_; }
@@ -58,15 +67,19 @@ private:
     const int socket_;
     const std::string sessionId_;
     const std::string remoteAddr_;
+    const std::string remoteIp_;
     const Config& config_;
 
     mutable std::mutex sendMutex_;
     std::atomic<bool> alive_{true};
 
-    long long userId_ = 0;
+    mutable std::mutex authMutex_;
+    std::atomic<long long> userId_{0};
     std::string displayName_;
     std::string email_;
     std::string jwtId_;
+    std::chrono::steady_clock::time_point lastAuthCheck_;
+    std::chrono::steady_clock::time_point unauthSince_;  // с какого момента соединение без входа
     std::string userAgent_;
     std::string authorization_;
     std::chrono::steady_clock::time_point lastActivity_;

@@ -13,6 +13,10 @@
 #include <mutex>
 #include <sstream>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include "aura/idatabase.h"
 #include "aura/json.h"
 #include "aura/log.h"
@@ -31,6 +35,16 @@ bool contains(const std::string& haystack, const std::string& needle) {
     return lower(haystack).find(lower(needle)) != std::string::npos;
 }
 
+// UUID в каноническом виде (с дефисами) и 32 hex — один и тот же идентификатор.
+std::string plainUuid(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    for (const char ch : value) {
+        if (ch != '-') out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    return out;
+}
+
 class EmbeddedDatabase : public IDatabase {
 public:
     explicit EmbeddedDatabase(std::string path) : path_(std::move(path)) {}
@@ -41,19 +55,28 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         std::ifstream file(path_);
         if (!file) {
+            if (::access(path_.c_str(), F_OK) == 0) {
+                error = "файл встроенной БД " + path_ + " существует, но не читается (права доступа?)";
+                return false;
+            }
             state_ = Json::object();
             return true;
         }
         std::ostringstream buffer;
         buffer << file.rdbuf();
-        const Json parsed = Json::parse(buffer.str(), &error);
-        if (parsed.isNull()) {
-            AURA_LOG(log::Level::Warn, "db") << "файл " << path_ << " повреждён, начинаем с чистой базы";
-            state_ = Json::object();
-            error.clear();
-            return true;
+        std::string parseError;
+        const Json parsed = Json::parse(buffer.str(), &parseError);
+        if (!parsed.isObject()) {
+            // Раньше повреждённый файл молча заменялся пустой базой — при
+            // следующей записи все аккаунты и данные терялись безвозвратно.
+            error = "файл встроенной БД " + path_ + " повреждён (" +
+                    (parseError.empty() ? std::string("ожидался JSON-объект") : parseError) +
+                    "): восстановите его из резервной копии или удалите вручную";
+            return false;
         }
         state_ = parsed;
+        // Файл содержит хэши паролей и токенов — только владельцу процесса.
+        ::chmod(path_.c_str(), 0600);
         return true;
     }
 
@@ -139,8 +162,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<UserRecord> result;
         for (const auto& item : table("users").items()) {
-            if (query.empty() || contains(item.getString("email"), query) ||
-                contains(item.getString("display_name"), query)) {
+            if (query.empty() || contains(item.getString("display_name"), query)) {
                 result.push_back(toUser(item));
                 if (static_cast<int>(result.size()) >= limit) break;
             }
@@ -233,6 +255,18 @@ public:
         for (auto& item : mutableTable("users")) {
             if (item.getInt("id") == userId) {
                 item.set("email_verified", Json(verified));
+                flush();
+                return DatabaseError::success();
+            }
+        }
+        return DatabaseError::failure("пользователь не найден");
+    }
+
+    DatabaseError setUserActive(long long userId, bool active) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("id") == userId) {
+                item.set("is_active", Json(active));
                 flush();
                 return DatabaseError::success();
             }
@@ -358,6 +392,9 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto& item : mutableTable("refresh_tokens")) {
             if (item.getString("id") == id) {
+                if (!item.getString("revoked_at").empty()) {
+                    return DatabaseError::failure("refresh-токен уже отозван");
+                }
                 item.set("revoked_at", Json(isoNow()));
                 item.set("replaced_by", Json(replacedBy));
                 flush();
@@ -369,8 +406,9 @@ public:
 
     DatabaseError revokeRefreshFamily(const std::string& familyId) override {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (familyId.empty()) return DatabaseError::success();
         for (auto& item : mutableTable("refresh_tokens")) {
-            if (item.getString("family_id") != familyId) continue;
+            if (plainUuid(item.getString("family_id")) != plainUuid(familyId)) continue;
             if (!item.getString("revoked_at").empty()) continue;
             item.set("revoked_at", Json(isoNow()));
         }
@@ -383,6 +421,19 @@ public:
         for (auto& item : mutableTable("refresh_tokens")) {
             if (item.getInt("user_id") != userId) continue;
             if (!item.getString("revoked_at").empty()) continue;
+            item.set("revoked_at", Json(isoNow()));
+        }
+        flush();
+        return DatabaseError::success();
+    }
+
+    DatabaseError revokeUserRefreshTokensExcept(long long userId, const std::string& keepFamilyId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const std::string keep = plainUuid(keepFamilyId);
+        for (auto& item : mutableTable("refresh_tokens")) {
+            if (item.getInt("user_id") != userId) continue;
+            if (!item.getString("revoked_at").empty()) continue;
+            if (!keep.empty() && plainUuid(item.getString("family_id")) == keep) continue;
             item.set("revoked_at", Json(isoNow()));
         }
         flush();
@@ -965,6 +1016,19 @@ public:
         return std::nullopt;
     }
 
+    bool claimPendingAction(long long id, long long userId, const std::string& status) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : mutableTable("pending_actions")) {
+            if (entry.getInt("id") != id) continue;
+            if (entry.getInt("user_id") != userId || entry.getString("status") != "pending") return false;
+            entry.set("status", Json(status));
+            entry.set("resolved_at", Json(isoNow()));
+            flush();
+            return true;
+        }
+        return false;
+    }
+
     std::vector<PendingActionRecord> listPendingActions(long long userId,
                                                         const std::string& status,
                                                         int limit) override {
@@ -1071,11 +1135,12 @@ public:
         return DatabaseError::failure("задача не найдена");
     }
 
-    std::vector<TaskRecord> listDueTasks(int limit) override {
+    std::vector<TaskRecord> listDueTasks(int limit, long long userId) override {
         std::lock_guard<std::mutex> lock(mutex_);
         const std::string now = isoNow();
         std::vector<TaskRecord> result;
         for (const auto& entry : table("tasks").items()) {
+            if (userId != 0 && entry.getInt("user_id") != userId) continue;
             if (entry.getString("status") != "pending") continue;
             if (!entry.getString("reminded_at").empty()) continue;  // уже напомнили
             const std::string remindAt = entry.getString("remind_at");
@@ -1094,6 +1159,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto& entry : mutableTable("tasks")) {
             if (entry.getInt("id") != id) continue;
+            if (!entry.getString("reminded_at").empty()) return DatabaseError::failure("напоминание уже отправлено");
             entry.set("reminded_at", Json(isoNow()));
             flush();
             return DatabaseError::success();
@@ -1491,20 +1557,27 @@ private:
         if (path_.empty()) return;
         // Пишем во временный файл и переименовываем: иначе обрыв процесса
         // посреди записи оставляет усечённый JSON, и база не загружается вовсе.
+        // Права 0600 с момента создания: в файле хэши паролей и токенов.
         const std::string temporary = path_ + ".tmp";
-        {
-            std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-            if (!file) {
-                AURA_LOG(log::Level::Warn, "db") << "не удалось сохранить " << temporary;
-                return;
-            }
-            file << state_.dump(2);
-            file.flush();
-            if (!file.good()) {
-                AURA_LOG(log::Level::Warn, "db") << "ошибка записи " << temporary;
-                return;
-            }
+        const std::string data = state_.dump(2);
+        const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (fd < 0) {
+            AURA_LOG(log::Level::Warn, "db") << "не удалось сохранить " << temporary << ": " << std::strerror(errno);
+            return;
         }
+        ::fchmod(fd, 0600);  // файл мог остаться от старой версии с другими правами
+        std::size_t written = 0;
+        while (written < data.size()) {
+            const ssize_t chunk = ::write(fd, data.data() + written, data.size() - written);
+            if (chunk < 0) {
+                if (errno == EINTR) continue;
+                AURA_LOG(log::Level::Warn, "db") << "ошибка записи " << temporary << ": " << std::strerror(errno);
+                ::close(fd);
+                return;
+            }
+            written += static_cast<std::size_t>(chunk);
+        }
+        ::close(fd);
         if (std::rename(temporary.c_str(), path_.c_str()) != 0) {
             AURA_LOG(log::Level::Warn, "db")
                 << "не удалось заменить " << path_ << ": " << std::strerror(errno);

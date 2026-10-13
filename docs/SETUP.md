@@ -77,15 +77,30 @@ AURA_2FA_KEY="$(openssl rand -hex 32)" \
 
 | группа | переменные |
 | --- | --- |
-| сеть | `AURA_HOST` (0.0.0.0), `AURA_PORT` (9000), `AURA_MAX_CONNECTIONS`, `AURA_MAX_FRAME`, `AURA_PING_INTERVAL`, `AURA_SOCKET_TIMEOUT` |
+| сеть | `AURA_HOST` (0.0.0.0), `AURA_PORT` (9000), `AURA_MAX_CONNECTIONS`, `AURA_MAX_CONNECTIONS_PER_IP` (20; 0 — без лимита), `AURA_MAX_FRAME`, `AURA_MAX_PREAUTH_FRAME` (64 КБ — кадр до входа), `AURA_AUTH_TIMEOUT` (30 с — соединение без входа закрывается), `AURA_AUTH_RECHECK` (15 с — перепроверка сессии открытого соединения), `AURA_PING_INTERVAL`, `AURA_SOCKET_TIMEOUT` |
 | БД | `AURA_DATABASE_URL`, `AURA_EMBEDDED_DB` |
 | AI | `AURA_AI_URL`, `AURA_AI_TOKEN`, `AURA_AI_TIMEOUT_MS` |
-| секреты | `AURA_JWT_SECRET` (обязателен в проде), `AURA_2FA_KEY` (шифр TOTP-секретов и токенов интеграций) |
-| токены/лимиты | `AURA_TOKEN_TTL` (7 дней), `AURA_REFRESH_TTL` (30 дней), `AURA_VERIFY_TTL`, `AURA_RESET_TTL`, `AURA_MAX_LOGIN_ATTEMPTS` (8), `AURA_LOGIN_WINDOW` (300 с) |
-| почта | `AURA_MAIL_DRIVER`: `smtp` — письма с кодами (`AURA_SMTP_HOST/PORT/USER/PASSWORD/FROM/TLS`, `AURA_SMTP_CA_FILE`), `log` — без отправки, `dev` — код в ответе API (только разработка) |
+| секреты | `AURA_JWT_SECRET` — случайная строка ≥ 32 байт (`openssl rand -hex 32`), `AURA_2FA_KEY` (шифр TOTP-секретов и токенов интеграций). Без них, со слабым/шаблонным секретом (`aura-dev-secret`, `CHANGE-IN-PRODUCTION…`, < 32 байт) сервер **не стартует** |
+| режим разработки | `AURA_DEV_MODE=1` — только локально: разрешает `AURA_MAIL_DRIVER=dev` и запуск без секретов (JWT-секрет генерируется случайно на время жизни процесса — токены не переживают перезапуск) |
+| токены/лимиты | `AURA_TOKEN_TTL` (7 дней), `AURA_REFRESH_TTL` (30 дней), `AURA_VERIFY_TTL`, `AURA_RESET_TTL` (≤ 1 ч), `AURA_MAX_LOGIN_ATTEMPTS` (8 на email), `AURA_MAX_IP_ATTEMPTS` (30 неудач с IP), `AURA_LOGIN_WINDOW` (300 с), `AURA_MAX_2FA_ATTEMPTS` (5 неверных TOTP на аккаунт) / `AURA_2FA_WINDOW` (900 с), `AURA_MAX_CODE_ATTEMPTS` (5 — затем код подтверждения/сброса сгорает), `AURA_MAIL_PER_EMAIL_HOUR` (3 письма на адрес), `AURA_MAIL_PER_IP_HOUR` (20), `AURA_REGISTER_PER_IP_HOUR` (10; 0 — без лимита) |
+| почта | `AURA_MAIL_DRIVER` (по умолчанию `log`): `smtp` — письма с кодами (`AURA_SMTP_HOST/PORT/USER/PASSWORD/FROM/TLS`, `AURA_SMTP_CA_FILE`), `log` — без отправки, в лог пишется только факт выдачи кода, `dev` — код в ответе API (только вместе с `AURA_DEV_MODE=1`, иначе сервер не стартует) |
 | Google OAuth | `AURA_GOOGLE_CLIENT_ID/_SECRET`, `AURA_GOOGLE_AUTH_URL/_TOKEN_URL/_REVOKE_URL/_CALENDAR_URL/_GMAIL_URL`, `AURA_OAUTH_STATE_TTL` |
 | push | `AURA_PUSH_DRIVER` (`dev`/`webhook`), `AURA_PUSH_WEBHOOK_URL`, `AURA_APNS_TOPIC` (ai.aura.app), `AURA_APNS_URL`, `AURA_FCM_URL` (FCM HTTP v1, этап 11: замените `aura` на id проекта Firebase) |
 | прочее | `AURA_SCHEDULER_INTERVAL_MS` (0 — только ручной tick), `AURA_TOOLS_MODE`, `AURA_MAPS_API_URL`, `AURA_LOG_LEVEL` |
+
+Лимиты по IP считаются по адресу без порта. Если сервер стоит за обратным
+прокси (все клиенты приходят с одного IP), поднимите или отключите (0)
+`AURA_MAX_CONNECTIONS_PER_IP`, `AURA_MAX_IP_ATTEMPTS`, `AURA_REGISTER_PER_IP_HOUR`.
+
+Локальный запуск без секретов и SMTP (код подтверждения — прямо в ответе API):
+
+```bash
+AURA_DEV_MODE=1 AURA_MAIL_DRIVER=dev ./build/server/aura-server
+```
+
+Сервер ходит во внешние HTTP API без TLS: при `AURA_GOOGLE_CLIENT_ID` и
+https-адресах `AURA_GOOGLE_TOKEN_URL/REVOKE_URL/CALENDAR_URL/GMAIL_URL` в лог при
+старте пишется предупреждение — направьте их на http-адрес TLS-прокси (egress).
 
 ### Почта (коды подтверждения и сброса пароля)
 

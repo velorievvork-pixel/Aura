@@ -2,6 +2,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace aura {
 
@@ -15,13 +16,21 @@ struct Config {
     std::string aiServiceToken;                          // AURA_AI_TOKEN
     int aiTimeoutMs = 15000;                             // AURA_AI_TIMEOUT_MS
 
-    std::string jwtSecret = "aura-dev-secret";           // AURA_JWT_SECRET
-    std::string twoFactorKey;                            // AURA_2FA_KEY (ключ AES-256-GCM для TOTP-секретов)
+    // Режим разработки (AURA_DEV_MODE=1): разрешает драйвер почты dev (коды в
+    // ответах API) и слабый/пустой AURA_JWT_SECRET (тогда генерируется случайный
+    // секрет на время жизни процесса). Вне dev-режима сервер с такими настройками
+    // не стартует — см. Config::validate().
+    bool devMode = false;                                // AURA_DEV_MODE
+
+    std::string jwtSecret;                               // AURA_JWT_SECRET (>= 32 байт; обязателен вне dev)
+    std::string twoFactorKey;                            // AURA_2FA_KEY (ключ AES-256-GCM для TOTP-секретов; обязателен вне dev)
     long long tokenTtlSeconds = 60 * 60 * 24 * 7;        // AURA_TOKEN_TTL
     long long refreshTtlSeconds = 60 * 60 * 24 * 30;     // AURA_REFRESH_TTL
     long long verifyTtlSeconds = 60 * 60 * 24;           // AURA_VERIFY_TTL (код подтверждения email)
-    long long resetTtlSeconds = 60 * 60;                 // AURA_RESET_TTL (код сброса пароля)
-    std::string mailDriver = "dev";                      // AURA_MAIL_DRIVER: dev|log|smtp
+    long long resetTtlSeconds = 60 * 60;                 // AURA_RESET_TTL (код сброса пароля, не больше 1 ч)
+    // dev — код в ответе API (только при AURA_DEV_MODE=1); log — в лог пишется
+    // лишь факт выдачи кода (без самого кода); smtp — настоящие письма.
+    std::string mailDriver = "log";                      // AURA_MAIL_DRIVER: dev|log|smtp
     // SMTP (AURA_MAIL_DRIVER=smtp): коды подтверждения и сброса уходят письмом.
     std::string smtpHost;                                // AURA_SMTP_HOST
     int smtpPort = 587;                                  // AURA_SMTP_PORT
@@ -36,11 +45,22 @@ struct Config {
     std::string mapsApiUrl;                              // AURA_MAPS_API_URL
 
     std::size_t maxFrameBytes = 1024 * 1024;             // AURA_MAX_FRAME
+    std::size_t maxPreAuthFrameBytes = 64 * 1024;        // AURA_MAX_PREAUTH_FRAME (кадр до входа)
     std::size_t maxConnections = 1024;                   // AURA_MAX_CONNECTIONS
-    int maxLoginAttempts = 8;                            // AURA_MAX_LOGIN_ATTEMPTS
+    std::size_t maxConnectionsPerIp = 20;                // AURA_MAX_CONNECTIONS_PER_IP (0 = без лимита)
+    int maxLoginAttempts = 8;                            // AURA_MAX_LOGIN_ATTEMPTS (на email)
+    int maxIpAttempts = 30;                              // AURA_MAX_IP_ATTEMPTS (неудачи с одного IP, 0 = без лимита)
     int loginWindowSec = 300;                            // AURA_LOGIN_WINDOW
+    int maxTwoFactorAttempts = 5;                        // AURA_MAX_2FA_ATTEMPTS (неверные TOTP на аккаунт)
+    int twoFactorWindowSec = 900;                        // AURA_2FA_WINDOW
+    int maxCodeAttempts = 5;                             // AURA_MAX_CODE_ATTEMPTS (неверные коды email/сброса → код сгорает)
+    int mailPerEmailPerHour = 3;                         // AURA_MAIL_PER_EMAIL_HOUR (resendCode/forgotPassword на адрес)
+    int mailPerIpPerHour = 20;                           // AURA_MAIL_PER_IP_HOUR
+    int registerPerIpPerHour = 10;                       // AURA_REGISTER_PER_IP_HOUR (0 = без лимита)
     int pingIntervalSec = 25;                            // AURA_PING_INTERVAL
     int socketTimeoutSec = 120;                          // AURA_SOCKET_TIMEOUT
+    int authTimeoutSec = 30;                             // AURA_AUTH_TIMEOUT (неавторизованное соединение закрывается)
+    int authRecheckSec = 15;                             // AURA_AUTH_RECHECK (перепроверка сессии открытого соединения)
     int schedulerIntervalMs = 30000;                     // AURA_SCHEDULER_INTERVAL_MS (0 = выключен)
 
     // Интеграции (этап 9): Google OAuth 2.0 + PKCE. URL по умолчанию —
@@ -73,6 +93,15 @@ struct Config {
 
     static Config fromEnv();
     std::string describe() const;  // для стартового лога (без секретов)
+
+    // Проверка безопасности перед стартом. false + error (по-русски) — сервер
+    // не должен запускаться. В dev-режиме может сгенерировать случайный
+    // jwtSecret (warnings получает предупреждения для лога).
+    bool validate(std::string& error, std::vector<std::string>& warnings);
+
+    // true — секрет JWT слабый: пустой, короче 32 байт, известный dev-секрет
+    // или заглушка из шаблона (CHANGE-IN-PRODUCTION).
+    static bool weakSecret(const std::string& secret);
 };
 
 std::string envOr(const char* name, const std::string& fallback);

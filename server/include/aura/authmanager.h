@@ -31,6 +31,9 @@ public:
         std::string displayName;
         std::string email;
         std::string jwtId;
+        // true — операция отозвала сессии пользователя (кроме jwtId, если он
+        // задан): серверу нужно «выбить» открытые соединения (H8).
+        bool sessionsRevoked = false;
 
         static Result failure(std::string code, std::string message) {
             Result result;
@@ -50,8 +53,9 @@ public:
                         const std::string& device,
                         const std::string& remoteAddr);
 
-    // Подтверждение email одноразовым кодом.
-    Result verifyEmail(const std::string& email, const std::string& code);
+    // Подтверждение email одноразовым кодом (5 неверных попыток — код сгорает).
+    Result verifyEmail(const std::string& email, const std::string& code,
+                       const std::string& remoteAddr = "");
     // Повторная отправка кода (ответ не раскрывает существование email).
     Result resendVerification(const std::string& email, const std::string& remoteAddr);
 
@@ -67,16 +71,25 @@ public:
                    const std::string& device,
                    const std::string& remoteAddr);
 
-    // Проверяет JWT и наличие живой сессии в таблице Sessions.
+    // Проверяет JWT, живую сессию в таблице Sessions (её владелец должен
+    // совпадать с sub токена) и что аккаунт не отключён.
     Result verifyToken(const std::string& token);
 
+    // Перепроверка уже авторизованного соединения: сессия не отозвана и не
+    // истекла, пользователь активен (вызывается сервером периодически).
+    Result checkSession(long long userId, const std::string& jwtId);
+
+    // Выход: отзывает сессию и refresh-токены её семейства.
     Result logout(const std::string& jwtId);
 
-    // Смена пароля: проверяет старый, отзывает все прочие сессии.
+    // Смена пароля: проверяет старый, отзывает ВСЕ сессии и refresh-токены и
+    // выдаёт текущему устройству новую пару token+refresh_token (result.jwtId —
+    // новая сессия, ей серверу нужно переавторизовать соединение).
     Result changePassword(long long userId,
                           const std::string& jwtId,
                           const std::string& oldPassword,
-                          const std::string& newPassword);
+                          const std::string& newPassword,
+                          const std::string& remoteAddr = "");
 
     // Запрос кода сброса пароля (ответ всегда «ок» — без раскрытия email).
     Result forgotPassword(const std::string& email, const std::string& remoteAddr);
@@ -86,7 +99,9 @@ public:
                          const std::string& newPassword,
                          const std::string& remoteAddr);
 
-    // Управление сессиями.
+    // Управление сессиями. Отзыв сессии отзывает и refresh-токены её
+    // семейства (result.jwtId — jti отозванной сессии); revokeAll оставляет
+    // живыми только текущую сессию и её refresh-семейство.
     Result listSessions(long long userId, const std::string& currentJwtId);
     Result revokeSession(long long userId, const std::string& sessionId);
     Result revokeAllSessions(long long userId, const std::string& currentJwtId);
@@ -115,14 +130,25 @@ public:
 
     // Вспомогательные проверки (открыты для тестов).
     static std::string normalizeEmail(const std::string& email);
+    // Пароль: 8+ символов (кодовых точек UTF-8), хотя бы одна буква (латиница,
+    // Latin-1/расширенная латиница, греческий, кириллица) и цифра, до 256 байт.
     static std::string passwordError(const std::string& password);
-    std::string issueToken(long long userId, const std::string& email, std::string& jwtId) const;
+    // jti = <family_id refresh-семейства>.<случайное>: по jti выхода/отзыва
+    // находится семейство refresh-токенов этого устройства.
+    std::string issueToken(long long userId, const std::string& email, std::string& jwtId,
+                           const std::string& familyId = "") const;
+    static std::string familyOfJwt(const std::string& jwtId);
+    // Размер таблицы счётчиков попыток (для тестов: не растёт бесконечно).
+    std::size_t attemptsSize();
 
 private:
     // Выдаёт access-токен + сессию + refresh-токен нового семейства.
     Result issue(const UserRecord& user, const std::string& device, const std::string& remoteAddr);
     // Выдаёт access-токен + сессию; refresh-токен создаёт вызывающий (ротация).
-    Result issueAccess(const UserRecord& user, const std::string& device, const std::string& remoteAddr);
+    Result issueAccess(const UserRecord& user, const std::string& device, const std::string& remoteAddr,
+                       const std::string& familyId);
+    // Неверный одноразовый код: считает попытку; после maxCodeAttempts код сгорает.
+    void codeFailure(long long userId, const std::string& purpose, const std::string& ipKey);
 
     void audit(long long userId, const std::string& kind, const Json& detail,
                const std::string& remoteAddr);
@@ -139,21 +165,31 @@ private:
     bool decryptTwoFactorSecret(const TwoFactorRecord& record, std::string& outRaw) const;
 
     // --- ограничение частоты попыток (защита от перебора и флуда) ----------
+    // Ключи: "ip:<ip без порта>", "login:<email>", "2fa:<user>", "pw:<user>",
+    // "code:<purpose>:<user>", "mail:<email>", "mailip:<ip>", "reg:<ip>".
     struct Attempts {
         int count = 0;
+        int windowSec = 0;
         std::chrono::steady_clock::time_point windowStart;
     };
 
-    // true — запрос нужно отклонить как слишком частый
-    bool throttled(const std::string& key);
-    void registerFailure(const std::string& remoteAddr, const std::string& email);
-    void clearFailures(const std::string& remoteAddr, const std::string& email);
+    // true — по ключу уже limit событий в текущем окне (limit <= 0 — без лимита).
+    bool overLimit(const std::string& key, int limit);
+    // Засчитать событие; возвращает число событий в текущем окне.
+    int hit(const std::string& key, int windowSec);
+    void clearKey(const std::string& key);
+    void pruneLocked(std::chrono::steady_clock::time_point now);
+    static std::string ipKey(const std::string& remoteAddr);
 
     DatabaseManager& database_;
     const Config& config_;
     std::unique_ptr<MailProvider> mail_;
+    static constexpr std::size_t kPruneThreshold = 4096;
+    static constexpr std::size_t kMaxAttemptEntries = 100000;
     std::mutex attemptsMutex_;
     std::unordered_map<std::string, Attempts> attempts_;
+    std::size_t nextPruneAt_ = kPruneThreshold;
+    std::chrono::steady_clock::time_point lastPrune_{};
 };
 
 }  // namespace aura

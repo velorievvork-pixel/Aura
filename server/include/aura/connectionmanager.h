@@ -1,6 +1,7 @@
 // aura/connectionmanager.h — реестр активных сессий и доставка событий.
 #pragma once
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -29,6 +30,14 @@ public:
     Json stats() const;
     std::vector<Json> describe() const;
     void closeAll(std::uint16_t code, const std::string& reason);
+
+    // «Выбить» соединения пользователя: событие session.revoked, сброс
+    // авторизации и закрытие сокета. match решает, какие соединения трогать
+    // (например, все, кроме текущего jwt). Возвращает число закрытых.
+    // Используется при отзыве сессий, смене/сбросе пароля, блокировке аккаунта.
+    std::size_t kickUser(long long userId,
+                         const std::string& reason,
+                         const std::function<bool(const Session&)>& match = nullptr);
 
 private:
     mutable std::mutex mutex_;

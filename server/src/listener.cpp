@@ -150,10 +150,22 @@ void Listener::acceptLoop() {
             continue;
         }
 
+        // Один адрес не может занять все слоты: лимит соединений на IP.
+        const std::string ip = addressText;
+        if (!acquireIpSlot(ip)) {
+            AURA_LOG(log::Level::Warn, "listener")
+                << "превышен лимит соединений с " << ip << " (" << config_.maxConnectionsPerIp << "), отказываю";
+            const std::string busy =
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+            net::sendAll(client, busy, 1000);
+            ::close(client);
+            continue;
+        }
+
         const int noDelay = 1;
         ::setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &noDelay, sizeof(noDelay));
 
-            const std::string remote = std::string(addressText) + ":" + std::to_string(ntohs(peer.sin6_port));
+        const std::string remote = ip + ":" + std::to_string(ntohs(peer.sin6_port));
         auto session = std::make_shared<Session>(client, crypto::randomHex(8), remote, config_);
         accepted_.fetch_add(1);
         AURA_LOG(log::Level::Info, "listener") << "новое подключение от " << remote;
@@ -161,11 +173,30 @@ void Listener::acceptLoop() {
         // Поток на соединение: их количество ограничено числом клиентов,
         // а завершившиеся освобождаются сразу (detach).
         activeWorkers_.fetch_add(1);
-        std::thread([this, session] {
+        std::thread([this, session, ip] {
             handle(session);
+            releaseIpSlot(ip);
             activeWorkers_.fetch_sub(1);
         }).detach();
     }
+}
+
+bool Listener::acquireIpSlot(const std::string& ip) {
+    std::lock_guard<std::mutex> lock(perIpMutex_);
+    std::size_t& count = perIp_[ip];
+    if (config_.maxConnectionsPerIp > 0 && count >= config_.maxConnectionsPerIp) {
+        if (count == 0) perIp_.erase(ip);
+        return false;
+    }
+    ++count;
+    return true;
+}
+
+void Listener::releaseIpSlot(const std::string& ip) {
+    std::lock_guard<std::mutex> lock(perIpMutex_);
+    const auto it = perIp_.find(ip);
+    if (it == perIp_.end()) return;
+    if (--it->second == 0) perIp_.erase(it);
 }
 
 void Listener::handle(std::shared_ptr<Session> session) {

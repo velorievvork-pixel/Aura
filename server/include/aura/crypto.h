@@ -63,6 +63,16 @@ bool passwordNeedsRehash(const std::string& stored);
 // Универсальные обёртки: hashPassword теперь выдаёт Argon2id,
 // verifyPassword понимает и argon2id$, и pbkdf2$ (прозрачная миграция).
 std::string hashPassword(const std::string& password);
+
+// Ограничение параллельных вычислений Argon2id (по 64 МиБ каждое): не больше,
+// чем ядер процессора. Статистика — для тестов и диагностики.
+struct Argon2Stats {
+    int limit = 0;     // максимум одновременных хэшей
+    int inFlight = 0;  // считается сейчас
+    int peak = 0;      // пик с последнего resetArgon2Peak()
+};
+Argon2Stats argon2Stats();
+void resetArgon2Peak();
 bool verifyPassword(const std::string& password, const std::string& stored);
 
 // Сравнение без утечки по времени (для токенов и хэшей).

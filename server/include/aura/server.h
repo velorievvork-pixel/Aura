@@ -60,7 +60,17 @@ public:
     ConnectionManager& connections() { return connections_; }
 
     // Один проход планировщика напоминаний (публично для тестов).
-    std::size_t runSchedulerTick(int limit = 100);
+    // userId = 0 — все пользователи; иначе только напоминания этого пользователя.
+    std::size_t runSchedulerTick(int limit = 100, long long userId = 0);
+
+    // «Выбить» открытые соединения пользователя (событие session.revoked +
+    // закрытие сокета). keepJwtId — не трогать соединения этой сессии;
+    // onlyJwtId — только соединения этой сессии; exceptSessionId — не
+    // трогать данное соединение (тот, кто сделал запрос). Пригодится и для
+    // блокировки пользователя администратором.
+    std::size_t kickUser(long long userId, const std::string& reason,
+                         const std::string& keepJwtId = "", const std::string& onlyJwtId = "",
+                         const std::string& exceptSessionId = "");
 
     // Обработка одного сообщения (публично: тестируется без сокетов).
     Json handleMessage(std::shared_ptr<Session> session, const Json& message);
@@ -73,6 +83,8 @@ private:
     void handleConnection(std::shared_ptr<Session> session);
     void registerHandlers();
     bool authorize(std::shared_ptr<Session> session, const std::string& token, Json& payload);
+    // Периодическая сверка авторизованного соединения с БД (отзыв/срок/блокировка).
+    bool revalidate(const std::shared_ptr<Session>& session);
 
     Config config_;
     std::unique_ptr<DatabaseManager> database_;

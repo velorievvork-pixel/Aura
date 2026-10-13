@@ -70,6 +70,47 @@ double scoreCafe(const Cafe& cafe, const std::vector<std::string>& diet, double 
     return score;
 }
 
+// Адрес получателя письма: одна «@», без пробелов, CR/LF и символов,
+// которыми можно дописать заголовок или второго адресата.
+bool validRecipient(const std::string& to) {
+    if (to.size() < 3 || to.size() > 254) return false;
+    const std::size_t at = to.find('@');
+    if (at == std::string::npos || at == 0 || at + 1 >= to.size() || to.find('@', at + 1) != std::string::npos) {
+        return false;
+    }
+    if (to.find('.', at) == std::string::npos) return false;
+    for (const unsigned char ch : to) {
+        if (ch <= 0x20 || ch >= 0x7F || ch == '<' || ch == '>' || ch == '"' || ch == ',' || ch == ';' ||
+            ch == ':' || ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == '\\') {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool hasLineBreak(const std::string& value) {
+    return value.find('\r') != std::string::npos || value.find('\n') != std::string::npos;
+}
+
+// RFC 2047: не-ASCII тема → =?UTF-8?B?…?= кусками без разрыва символов UTF-8.
+std::string encodeSubject(const std::string& value) {
+    bool ascii = true;
+    for (const unsigned char ch : value) {
+        if (ch < 0x20 || ch > 0x7E) ascii = false;
+    }
+    if (ascii) return value;
+    std::string out;
+    std::size_t pos = 0;
+    while (pos < value.size()) {
+        std::size_t end = std::min(pos + 45, value.size());
+        while (end < value.size() && end > pos && (static_cast<unsigned char>(value[end]) & 0xC0) == 0x80) --end;
+        if (!out.empty()) out += "\r\n ";
+        out += "=?UTF-8?B?" + crypto::base64Encode(value.substr(pos, end - pos)) + "?=";
+        pos = end;
+    }
+    return out;
+}
+
 }  // namespace
 
 ToolManager::ToolManager(const Config& config, DatabaseManager& database, ChatManager& chats,
@@ -231,11 +272,16 @@ ToolManager::Result ToolManager::createReminder(long long userId, const Json& ar
 ToolManager::Result ToolManager::sendEmail(long long userId, const Json& args) {
     Result result;
     const std::string to = args.getString("to");
-    if (to.find('@') == std::string::npos) {
+    if (!validRecipient(to)) {
         result.error = "нужен корректный адрес получателя";
         return result;
     }
     const std::string subject = args.getString("subject", "Без темы");
+    // Перевод строки в теме = подстановка заголовков (Bcc:, второе письмо).
+    if (hasLineBreak(subject) || subject.size() > 998) {
+        result.error = "тема письма не должна содержать перевод строки";
+        return result;
+    }
 
     // Этап 9: если подключён Gmail — настоящая отправка через Gmail API.
     if (integrations_) {
@@ -244,7 +290,7 @@ ToolManager::Result ToolManager::sendEmail(long long userId, const Json& args) {
         if (!token.empty()) {
             // RFC 2822: заголовки, пустая строка, текст; raw — в base64url.
             const std::string message = "To: " + to + "\r\n" +
-                                        "Subject: " + subject + "\r\n" +
+                                        "Subject: " + encodeSubject(subject) + "\r\n" +
                                         "MIME-Version: 1.0\r\n" +
                                         "Content-Type: text/plain; charset=\"UTF-8\"\r\n" +
                                         "\r\n" + args.getString("body");
@@ -477,8 +523,8 @@ ToolManager::Result ToolManager::httpTool(const std::string& endpoint,
         return result;
     }
 
+    // Внешним API (почта, карты) служебный токен AI-сервиса не передаём.
     std::map<std::string, std::string> headers{{"Content-Type", "application/json"}};
-    if (!config_.aiServiceToken.empty()) headers["X-Aura-Token"] = config_.aiServiceToken;
 
     std::string error;
     const net::HttpResponse response =

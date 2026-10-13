@@ -295,6 +295,8 @@ public:
                                      long long& outId) = 0;
     virtual std::optional<UserRecord> findUserByEmail(const std::string& email) = 0;
     virtual std::optional<UserRecord> findUserById(long long id) = 0;
+    // Поиск по подстроке display_name (email в поиске не участвует: подбор
+    // адресов по подстроке раскрывал базу пользователей).
     virtual std::vector<UserRecord> searchUsers(const std::string& query, int limit) = 0;
     virtual DatabaseError touchUser(long long userId) = 0;
     // Профиль (profile.update): меняются только переданные поля
@@ -303,6 +305,9 @@ public:
     // Миграция хэша пароля (PBKDF2 → Argon2id) при успешном входе.
     virtual DatabaseError updatePasswordHash(long long userId, const std::string& hash) = 0;
     virtual DatabaseError setEmailVerified(long long userId, bool verified) = 0;
+    // Блокировка/разблокировка аккаунта (is_active). Отключённый пользователь
+    // не может войти, а его токены отклоняются (AuthManager::verifyToken).
+    virtual DatabaseError setUserActive(long long userId, bool active) = 0;
 
     // Sessions
     virtual DatabaseError createSession(const SessionRecord& record) = 0;
@@ -323,9 +328,14 @@ public:
     // Refresh-токены с ротацией и детектом повторного использования.
     virtual DatabaseError createRefreshToken(const RefreshTokenRecord& record) = 0;
     virtual std::optional<RefreshTokenRecord> findRefreshToken(const std::string& tokenHash) = 0;
+    // Атомарно: отзывает токен, только если он ещё не отозван (иначе failure).
+    // Так из двух одновременных auth.refresh одним токеном проходит один.
     virtual DatabaseError revokeRefreshToken(const std::string& id, const std::string& replacedBy) = 0;
     virtual DatabaseError revokeRefreshFamily(const std::string& familyId) = 0;
     virtual DatabaseError revokeAllUserRefreshTokens(long long userId) = 0;
+    // Все refresh-токены пользователя, кроме семейства keepFamilyId (текущее
+    // устройство при sessions.revokeAll). Пустой keepFamilyId — отозвать все.
+    virtual DatabaseError revokeUserRefreshTokensExcept(long long userId, const std::string& keepFamilyId) = 0;
 
     // Журнал безопасности.
     // --- 2FA: TOTP-настройки, резервные коды, доверенные устройства ---
@@ -406,6 +416,10 @@ public:
     virtual DatabaseError resolvePendingAction(long long id,
                                                const std::string& status,
                                                const Json& result) = 0;
+    // Атомарный переход pending → status для записи владельца userId.
+    // true — переход выполнен этим вызовом; false — запись не найдена, чужая
+    // или уже обработана (двойное confirmation.approve не исполнит дважды).
+    virtual bool claimPendingAction(long long id, long long userId, const std::string& status) = 0;
 
     // Tasks (задачи и напоминания, этап 8).
     virtual DatabaseError createTask(const TaskRecord& record, long long& outId) = 0;
@@ -415,7 +429,10 @@ public:
     virtual DatabaseError setTaskStatus(long long id, const std::string& status) = 0;
     virtual DatabaseError deleteTask(long long id) = 0;
     // Планировщик: задачи с remind_at <= now, статус pending, ещё не напомненные.
-    virtual std::vector<TaskRecord> listDueTasks(int limit) = 0;
+    // userId = 0 — все пользователи (фоновый планировщик), иначе только его задачи.
+    virtual std::vector<TaskRecord> listDueTasks(int limit, long long userId = 0) = 0;
+    // Атомарно: помечает напоминание отправленным, только если оно ещё не
+    // отправлено (иначе failure) — планировщик и tasks.due не дублируют push.
     virtual DatabaseError markTaskReminded(long long id) = 0;
 
     // IntegrationConnections (этап 9): одна запись на (user, provider).

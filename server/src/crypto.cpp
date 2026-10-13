@@ -3,10 +3,14 @@
 
 #include <argon2.h>
 
+#include <algorithm>
+#include <condition_variable>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <random>
 #include <sstream>
+#include <thread>
 
 namespace aura::crypto {
 
@@ -656,7 +660,63 @@ bool verifyPbkdf2(const std::string& password, const std::vector<std::string>& p
     return constantTimeEquals(computed, parts[3]);
 }
 
+// Глобальный семафор вокруг Argon2id: каждый вызов берёт 64 МиБ памяти, и без
+// ограничения десятки параллельных регистраций/входов съедали гигабайты (OOM).
+// Одновременно считается не больше хэшей, чем ядер; остальные ждут очереди.
+class Argon2Gate {
+public:
+    static Argon2Gate& instance() {
+        static Argon2Gate gate;
+        return gate;
+    }
+
+    void acquire() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [this] { return inFlight_ < limit_; });
+        ++inFlight_;
+        peak_ = std::max(peak_, inFlight_);
+    }
+
+    void release() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            --inFlight_;
+        }
+        cv_.notify_one();
+    }
+
+    Argon2Stats stats() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return Argon2Stats{limit_, inFlight_, peak_};
+    }
+
+    void resetPeak() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        peak_ = inFlight_;
+    }
+
+private:
+    Argon2Gate() {
+        const unsigned cores = std::thread::hardware_concurrency();
+        limit_ = cores == 0 ? 2 : static_cast<int>(std::min(cores, 16u));
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    int limit_ = 2;
+    int inFlight_ = 0;
+    int peak_ = 0;
+};
+
+struct Argon2Slot {
+    Argon2Slot() { Argon2Gate::instance().acquire(); }
+    ~Argon2Slot() { Argon2Gate::instance().release(); }
+};
+
 }  // namespace
+
+Argon2Stats argon2Stats() { return Argon2Gate::instance().stats(); }
+void resetArgon2Peak() { Argon2Gate::instance().resetPeak(); }
 
 std::string argon2idHash(const std::string& password,
                          std::uint32_t memoryKiB,
@@ -667,6 +727,7 @@ std::string argon2idHash(const std::string& password,
     if (!hexDecode(salt, saltRaw) || saltRaw.empty()) return "";
 
     std::string hash(32, '\0');  // 32-байтный тег
+    const Argon2Slot slot;
     const int rc = argon2id_hash_raw(iterations, memoryKiB, parallelism,
                                      password.data(), password.size(),
                                      saltRaw.data(), saltRaw.size(),
@@ -718,6 +779,7 @@ bool argon2idVerify(const std::string& password, const std::string& stored) {
     }
 
     std::string computed(expectedHash.size(), '\0');
+    const Argon2Slot slot;
     const int rc = argon2id_hash_raw(iterations, memoryKiB, parallelism,
                                      password.data(), password.size(),
                                      saltRaw.data(), saltRaw.size(),

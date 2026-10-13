@@ -84,6 +84,46 @@ std::string AgentManager::summarizeAction(const std::string& tool, const Json& a
     return "Выполнить " + tool;
 }
 
+Json AgentManager::executeOne(long long userId, long long chatId, const std::string& tool, const Json& args) {
+    Json item = Json::object();
+    item.set("tool", Json(tool));
+    const Json safeArgs = args.isObject() ? args : Json::object();
+
+    // Барьер безопасности (этап 8): сервер, а не LLM и не клиент, решает, исполнять ли.
+    const std::string mode = effectiveMode(userId, tool);
+    item.set("mode", Json(mode));
+    if (mode == "deny") {
+        item.set("ok", Json(false));
+        item.set("denied", Json(true));
+        item.set("error", Json("действие запрещено вашими настройками разрешений"));
+        return item;
+    }
+    if (mode == "ask") {
+        PendingActionRecord pending;
+        pending.userId = userId;
+        pending.chatId = chatId;
+        pending.tool = tool;
+        pending.args = safeArgs;
+        pending.summary = summarizeAction(tool, safeArgs);
+        const long long pendingId = database_.db().createPendingAction(pending);
+        item.set("ok", Json(false));
+        item.set("requires_confirmation", Json(true));
+        item.set("confirmation_id", Json(pendingId));
+        item.set("summary", Json(pending.summary));
+        return item;
+    }
+
+    // mode == "allow": исполняем сразу.
+    const ToolManager::Result outcome = tools_.run(userId, tool, safeArgs);
+    item.set("ok", Json(outcome.ok));
+    if (outcome.ok) {
+        item.set("data", outcome.data);
+    } else {
+        item.set("error", Json(outcome.error));
+    }
+    return item;
+}
+
 Json AgentManager::executeActions(long long userId, long long chatId, const Json& actions, bool execute) {
     Json results = Json::array();
     if (!actions.isArray()) return results;
@@ -91,54 +131,58 @@ Json AgentManager::executeActions(long long userId, long long chatId, const Json
     for (const auto& action : actions.items()) {
         const std::string tool = action.getString("tool");
         const Json args = action.get("args").isObject() ? action.get("args") : Json::object();
-        Json item = Json::object();
-        item.set("id", Json(action.getString("id")));
-        item.set("tool", Json(tool));
-
         if (!execute) {
+            Json item = Json::object();
+            item.set("id", Json(action.getString("id")));
+            item.set("tool", Json(tool));
             item.set("ok", Json(false));
             item.set("skipped", Json(true));
             results.push(item);
             continue;
         }
-
-        // Барьер безопасности (этап 8): сервер, а не LLM, решает, исполнять ли.
-        const std::string mode = effectiveMode(userId, tool);
-        item.set("mode", Json(mode));
-        if (mode == "deny") {
-            item.set("ok", Json(false));
-            item.set("denied", Json(true));
-            item.set("error", Json("действие запрещено вашими настройками разрешений"));
-            results.push(item);
-            continue;
-        }
-        if (mode == "ask") {
-            PendingActionRecord pending;
-            pending.userId = userId;
-            pending.chatId = chatId;
-            pending.tool = tool;
-            pending.args = args;
-            pending.summary = summarizeAction(tool, args);
-            const long long pendingId = database_.db().createPendingAction(pending);
-            item.set("ok", Json(false));
-            item.set("requires_confirmation", Json(true));
-            item.set("confirmation_id", Json(pendingId));
-            item.set("summary", Json(pending.summary));
-            results.push(item);
-            continue;
-        }
-
-        // mode == "allow": исполняем сразу.
-        const ToolManager::Result outcome = tools_.run(userId, tool, args);
-        item.set("ok", Json(outcome.ok));
-        if (outcome.ok) {
-            item.set("data", outcome.data);
-        } else {
-            item.set("error", Json(outcome.error));
-        }
+        Json item = executeOne(userId, chatId, tool, args);
+        item.set("id", Json(action.getString("id")));
         results.push(item);
     }
     return results;
+}
+
+bool AgentManager::shareChat(long long first, long long second) {
+    if (first == 0 || second == 0 || first == second) return false;
+    if (database_.db().findDirectChat(first, second)) return true;
+    for (const auto& chat : database_.db().listChats(first, 500)) {
+        if (database_.db().isMember(chat.id, second)) return true;
+    }
+    return false;
+}
+
+Json AgentManager::peerContext(long long responderId, const std::string& topic) {
+    // Приватность респондента (prefs.privacy): AI-сервис получает только то,
+    // что человек разрешил раскрывать чужой Ауре.
+    Json responder = memory_.context(responderId, topic);
+    const Json responderPrivacy = memory_.privacy(responderId);
+    if (responderPrivacy.getBool("hide_event_titles", true)) {
+        Json calendar = Json::array();
+        for (const auto& event : responder.get("calendar").items()) {
+            Json redacted = event;
+            redacted.set("title", Json("занято"));
+            redacted.erase("tags");
+            calendar.push(redacted);
+        }
+        responder.set("calendar", calendar);
+    }
+    if (responderPrivacy.getBool("share_free_slots_only", true)) {
+        // Только занятость и то, что нужно для времени и места; прочие факты памяти,
+        // день рождения и аллергии чужой Ауре не уходят.
+        responder.set("memory", Json::array());
+        Json preferences = responder.get("preferences");
+        if (preferences.isObject()) {
+            preferences.erase("birthday");
+            preferences.erase("allergies");
+            responder.set("preferences", preferences);
+        }
+    }
+    return responder;
 }
 
 AgentManager::Result AgentManager::ask(long long userId,
@@ -147,6 +191,10 @@ AgentManager::Result AgentManager::ask(long long userId,
                                        const Json& peers,
                                        bool execute) {
     if (message.empty()) return Result::failure(protocol::code::kBadRequest, "пустой запрос к Ауре");
+    // История чата уходит в AI только участнику этого чата.
+    if (chatId > 0 && !database_.db().isMember(chatId, userId)) {
+        return Result::failure(protocol::code::kForbidden, "вы не участник этого чата");
+    }
 
     Json history = Json::array();
     if (chatId > 0) {
@@ -170,8 +218,10 @@ AgentManager::Result AgentManager::ask(long long userId,
         for (const auto& peer : peers.items()) {
             const std::string email = peer.getString("email");
             const auto resolved = resolvePeer(userId, email.empty() ? peer.getString("name") : email);
-            if (!resolved) continue;
-            peerContexts.push(memory_.context(resolved->id, message));
+            // Контекст другого человека — только если у вас есть общий чат, и
+            // только в объёме, который он разрешил (prefs.privacy).
+            if (!resolved || !shareChat(userId, resolved->id)) continue;
+            peerContexts.push(peerContext(resolved->id, message));
         }
     }
     request.set("peers", peerContexts);
@@ -184,13 +234,13 @@ AgentManager::Result AgentManager::ask(long long userId,
         "POST", joinUrl(config_.aiServiceUrl, "/v1/agent/run"), headers, request.dump(), config_.aiTimeoutMs, error);
     if (!response.ok()) {
         AURA_LOG(log::Level::Error, "agent") << "AI-сервис ответил " << response.status << ": " << error;
-        return Result::failure(protocol::code::kUpstream,
-                               "AI-сервис недоступен: " + (error.empty() ? std::to_string(response.status) : error));
+        return Result::failure(protocol::code::kUpstream, "AI-сервис недоступен, попробуйте позже");
     }
 
     const Json answer = Json::parse(response.body, &error);
-    if (answer.isNull()) {
-        return Result::failure(protocol::code::kUpstream, "AI-сервис вернул не-JSON: " + error);
+    if (!answer.isObject()) {
+        AURA_LOG(log::Level::Error, "agent") << "AI-сервис вернул не-JSON: " << error;
+        return Result::failure(protocol::code::kUpstream, "AI-сервис вернул некорректный ответ");
     }
 
     // 1. Выполняем действия (с барьером подтверждений для опасных операций)
@@ -250,31 +300,8 @@ AgentManager::Result AgentManager::negotiate(long long initiatorId,
     Json request = Json::object();
     request.set("initiator", memory_.context(initiatorId, topic));
 
-    // Приватность респондента (prefs.privacy): AI-сервис получает только то,
-    // что человек разрешил раскрывать чужой Ауре.
-    Json responder = memory_.context(responderId, topic);
+    Json responder = peerContext(responderId, topic);
     const Json responderPrivacy = memory_.privacy(responderId);
-    if (responderPrivacy.getBool("hide_event_titles", true)) {
-        Json calendar = Json::array();
-        for (const auto& event : responder.get("calendar").items()) {
-            Json redacted = event;
-            redacted.set("title", Json("занято"));
-            redacted.erase("tags");
-            calendar.push(redacted);
-        }
-        responder.set("calendar", calendar);
-    }
-    if (responderPrivacy.getBool("share_free_slots_only", true)) {
-        // Только занятость и то, что нужно для времени и места; прочие факты памяти,
-        // день рождения и аллергии чужой Ауре не уходят.
-        responder.set("memory", Json::array());
-        Json preferences = responder.get("preferences");
-        if (preferences.isObject()) {
-            preferences.erase("birthday");
-            preferences.erase("allergies");
-            responder.set("preferences", preferences);
-        }
-    }
     request.set("responder", responder);
     // Место предлагается, только если обе стороны это разрешили.
     const bool choosePlace = memory_.privacy(initiatorId).getBool("allow_place_choice", true) &&
@@ -410,6 +437,12 @@ AgentManager::Result AgentManager::resolveConfirmation(long long userId, long lo
     Result result;
     result.ok = true;
     result.payload.set("id", Json(actionId));
+
+    // Атомарный переход pending → approved/denied: из двух одновременных
+    // confirmation.approve инструмент исполнит только один.
+    if (!database_.db().claimPendingAction(actionId, userId, approve ? "approved" : "denied")) {
+        return Result::failure(protocol::code::kBadRequest, "действие уже обработано");
+    }
 
     if (!approve) {
         database_.db().resolvePendingAction(actionId, "denied", Json::object());

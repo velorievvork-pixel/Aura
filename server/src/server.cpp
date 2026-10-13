@@ -1,5 +1,6 @@
 // aura/server.cpp
 #include "aura/server.h"
+#include "aura/smtp.h"
 
 #include <algorithm>
 #include <chrono>
@@ -74,6 +75,20 @@ Server::Server(Config config) : config_(std::move(config)) {
 Server::~Server() { stop(); }
 
 bool Server::start(std::string& error) {
+    if (config_.mailDriver != "dev" && config_.mailDriver != "log" && config_.mailDriver != "smtp") {
+        error = "AURA_MAIL_DRIVER: dev, log или smtp";
+        return false;
+    }
+    if (config_.mailDriver == "smtp") {
+        if (config_.smtpHost.empty() || smtp::addressOf(config_.smtpFrom).find('@') == std::string::npos) {
+            error = "AURA_MAIL_DRIVER=smtp: задайте AURA_SMTP_HOST и AURA_SMTP_FROM (например «Aura <no-reply@домен>»)";
+            return false;
+        }
+        if (config_.smtpTls != "none" && !smtp::tlsAvailable()) {
+            error = "сервер собран без OpenSSL — для SMTP с TLS пересоберите с libssl-dev";
+            return false;
+        }
+    }
     database_ = DatabaseManager::fromConfig(config_, error);
     if (!database_) return false;
 
@@ -204,8 +219,14 @@ void Server::handleConnection(std::shared_ptr<Session> session) {
     }
 
     session->readLoop([this](std::shared_ptr<Session> active, const Json& message) {
-        const Json response = handleMessage(active, message);
-        if (!response.isNull()) active->send(response);
+        Json response = handleMessage(active, message);
+        if (response.isNull()) return;
+        // id возвращается в том же виде, в каком пришёл: число остаётся числом
+        // (docs/PROTOCOL.md: «id»: int), строка — строкой.
+        if (message.isObject() && message.get("id").isNumber() && response.isObject()) {
+            response.set("id", message.get("id"));
+        }
+        active->send(response);
     });
 
     connections_.remove(session->id());

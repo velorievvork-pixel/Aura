@@ -22,6 +22,8 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 { "type": "event", "event": "chat.message", "payload": { ... } }
 ```
 
+`id` — строка или число; сервер возвращает его в том же виде (число — числом).
+
 Авторизация двумя способами:
 
 1. заголовок `Authorization: Bearer <jwt>` в HTTP-рукопожатии — сервер сразу

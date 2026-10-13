@@ -33,7 +33,8 @@ bool parse(const Json& message, Request& out, std::string& error) {
         error = "ожидался JSON-объект";
         return false;
     }
-    out.id = message.getString("id");
+    const Json id = message.get("id");
+    out.id = id.isNumber() ? std::to_string(id.asInt()) : message.getString("id");
     out.type = message.getString("type");
     if (out.type.empty()) {
         error = "не указан тип сообщения";

@@ -21,7 +21,16 @@ struct Config {
     long long refreshTtlSeconds = 60 * 60 * 24 * 30;     // AURA_REFRESH_TTL
     long long verifyTtlSeconds = 60 * 60 * 24;           // AURA_VERIFY_TTL (код подтверждения email)
     long long resetTtlSeconds = 60 * 60;                 // AURA_RESET_TTL (код сброса пароля)
-    std::string mailDriver = "dev";                      // AURA_MAIL_DRIVER: dev|log
+    std::string mailDriver = "dev";                      // AURA_MAIL_DRIVER: dev|log|smtp
+    // SMTP (AURA_MAIL_DRIVER=smtp): коды подтверждения и сброса уходят письмом.
+    std::string smtpHost;                                // AURA_SMTP_HOST
+    int smtpPort = 587;                                  // AURA_SMTP_PORT
+    std::string smtpUser;                                // AURA_SMTP_USER
+    std::string smtpPassword;                            // AURA_SMTP_PASSWORD
+    std::string smtpFrom;                                // AURA_SMTP_FROM («Aura <no-reply@домен>»)
+    std::string smtpTls = "starttls";                    // AURA_SMTP_TLS: starttls|tls|none
+    std::string smtpCaFile;                              // AURA_SMTP_CA_FILE (свой корневой сертификат)
+    int smtpTimeoutMs = 15000;                           // AURA_SMTP_TIMEOUT_MS
     std::string toolsMode = "sandbox";                   // AURA_TOOLS_MODE: sandbox|http
     std::string emailApiUrl;                             // AURA_EMAIL_API_URL
     std::string mapsApiUrl;                              // AURA_MAPS_API_URL

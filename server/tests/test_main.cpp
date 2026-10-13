@@ -6,6 +6,7 @@
 // протокол и сквозные сценарии через Server::handleMessage на встроенной БД.
 #include <argon2.h>
 #include <csignal>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -17,6 +18,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "aura/authmanager.h"
@@ -27,6 +29,7 @@
 #include "aura/net.h"
 #include "aura/protocol.h"
 #include "aura/server.h"
+#include "aura/smtp.h"
 #include "aura/toolmanager.h"
 #include "aura/totp.h"
 #include "aura/ws.h"
@@ -166,6 +169,122 @@ TEST(crypto_base64) {
     CHECK(aura::crypto::base64Decode("0L/RgNC40LLQtdGC", decoded));
     CHECK_EQ(decoded, std::string("привет"));
     CHECK_EQ(aura::crypto::base64UrlEncode(std::string("\xfb\xff", 2)).find('='), std::string::npos);
+}
+
+TEST(smtp_message_format) {
+    aura::smtp::Settings settings;
+    settings.from = "Аура <no-reply@aura.example>";
+    aura::smtp::Message message;
+    message.to = "anna@example.com";
+    message.subject = "Код подтверждения Aura: 123456";
+    message.text = "Код: 123456";
+    message.html = "<b>123456</b>";
+    const std::string mail =
+        aura::smtp::buildMessage(settings, message, "Tue, 13 Oct 2026 12:00:00 +0000", "<id@aura.example>");
+    CHECK(mail.find("To: <anna@example.com>\r\n") != std::string::npos);
+    CHECK(mail.find("Subject: =?UTF-8?B?") != std::string::npos);
+    CHECK(mail.find("From: =?UTF-8?B?") != std::string::npos);
+    CHECK(mail.find("<no-reply@aura.example>") != std::string::npos);
+    CHECK(mail.find("multipart/alternative") != std::string::npos);
+    CHECK(mail.find("Message-ID: <id@aura.example>") != std::string::npos);
+    // Только CRLF, без одиночных LF, и тело в base64 (не-ASCII не уходит «как есть»).
+    for (std::size_t i = 0; i < mail.size(); ++i) {
+        if (mail[i] == '\n') CHECK(i > 0 && mail[i - 1] == '\r');
+    }
+    std::string decoded;
+    CHECK(aura::crypto::base64Decode(aura::crypto::base64Encode("Код: 123456"), decoded));
+    CHECK(mail.find(aura::crypto::base64Encode("Код: 123456")) != std::string::npos);
+
+    CHECK(!aura::smtp::safeHeaderValue("x\r\nBcc: evil@example.com"));
+    CHECK_EQ(aura::smtp::addressOf("Aura <no-reply@aura.example>"), std::string("no-reply@aura.example"));
+    CHECK_EQ(aura::smtp::addressOf(" a@b.c "), std::string("a@b.c"));
+}
+
+TEST(smtp_dialogue_with_fake_server) {
+    // Поддельный SMTP-сервер на 127.0.0.1: проверяем порядок команд, AUTH и DATA.
+    const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    CHECK_EQ(::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof addr), 0);
+    CHECK_EQ(::listen(listener, 1), 0);
+    socklen_t len = sizeof addr;
+    ::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &len);
+    const int port = ntohs(addr.sin_port);
+
+    std::vector<std::string> commands;
+    std::string data;
+    std::thread fake([&] {
+        const int fd = ::accept(listener, nullptr, nullptr);
+        std::string buffer;
+        auto line = [&]() {
+            for (;;) {
+                const auto eol = buffer.find("\r\n");
+                if (eol != std::string::npos) {
+                    std::string out = buffer.substr(0, eol);
+                    buffer.erase(0, eol + 2);
+                    return out;
+                }
+                char chunk[1024];
+                const ssize_t n = ::recv(fd, chunk, sizeof chunk, 0);
+                if (n <= 0) return std::string("<eof>");
+                buffer.append(chunk, static_cast<std::size_t>(n));
+            }
+        };
+        auto say = [&](const std::string& text) { ::send(fd, text.data(), text.size(), MSG_NOSIGNAL); };
+        say("220 fake ESMTP\r\n");
+        for (;;) {
+            const std::string cmd = line();
+            commands.push_back(cmd);
+            if (cmd.rfind("EHLO", 0) == 0) say("250-fake\r\n250 AUTH LOGIN PLAIN\r\n");
+            else if (cmd.rfind("AUTH PLAIN", 0) == 0) say("235 ok\r\n");
+            else if (cmd.rfind("MAIL FROM", 0) == 0 || cmd.rfind("RCPT TO", 0) == 0) say("250 ok\r\n");
+            else if (cmd == "DATA") {
+                say("354 go\r\n");
+                for (std::string l = line(); l != "." && l != "<eof>"; l = line()) data += l + "\n";
+                say("250 queued\r\n");
+            } else if (cmd == "QUIT") {
+                say("221 bye\r\n");
+                break;
+            } else {
+                say("500 ?\r\n");
+                if (cmd == "<eof>") break;
+            }
+        }
+        ::close(fd);
+    });
+
+    aura::smtp::Settings settings;
+    settings.host = "127.0.0.1";
+    settings.port = port;
+    settings.tls = "none";  // localhost: AUTH без TLS разрешён только для ретранслятора на этой машине
+    settings.user = "mailer";
+    settings.password = "secret-pass";
+    settings.from = "Aura <no-reply@aura.example>";
+    settings.timeoutMs = 5000;
+    aura::smtp::Message message;
+    message.to = "anna@example.com";
+    message.subject = "Код подтверждения Aura: 654321";
+    message.text = "Ваш код: 654321";
+    std::string error;
+    const bool sent = aura::smtp::send(settings, message, error);
+    fake.join();
+    ::close(listener);
+
+    CHECK(sent);
+    CHECK_EQ(error, std::string());
+    CHECK(commands.size() >= 6);
+    CHECK_EQ(commands[0], std::string("EHLO aura.example"));
+    CHECK_EQ(commands[1], std::string("AUTH PLAIN ") +
+                              aura::crypto::base64Encode(std::string("\0mailer\0secret-pass", 19)));
+    CHECK_EQ(commands[2], std::string("MAIL FROM:<no-reply@aura.example>"));
+    CHECK_EQ(commands[3], std::string("RCPT TO:<anna@example.com>"));
+    CHECK(data.find(aura::crypto::base64Encode("Ваш код: 654321")) != std::string::npos);
+
+    // Подстановка заголовка в адресе отклоняется до соединения.
+    message.to = "anna@example.com\r\nBcc: evil@example.com";
+    CHECK(!aura::smtp::send(settings, message, error));
+    CHECK(error.find("недопустимый") != std::string::npos);
 }
 
 TEST(crypto_password_hash) {

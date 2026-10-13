@@ -40,6 +40,14 @@ Config Config::fromEnv() {
     config.verifyTtlSeconds = intOr("AURA_VERIFY_TTL", static_cast<int>(config.verifyTtlSeconds));
     config.resetTtlSeconds = intOr("AURA_RESET_TTL", static_cast<int>(config.resetTtlSeconds));
     config.mailDriver = envOr("AURA_MAIL_DRIVER", config.mailDriver);
+    config.smtpHost = envOr("AURA_SMTP_HOST", "");
+    config.smtpPort = intOr("AURA_SMTP_PORT", config.smtpPort);
+    config.smtpUser = envOr("AURA_SMTP_USER", "");
+    config.smtpPassword = envOr("AURA_SMTP_PASSWORD", "");
+    config.smtpFrom = envOr("AURA_SMTP_FROM", "");
+    config.smtpTls = envOr("AURA_SMTP_TLS", config.smtpTls);
+    config.smtpCaFile = envOr("AURA_SMTP_CA_FILE", "");
+    config.smtpTimeoutMs = intOr("AURA_SMTP_TIMEOUT_MS", config.smtpTimeoutMs);
     config.toolsMode = envOr("AURA_TOOLS_MODE", config.toolsMode);
     config.emailApiUrl = envOr("AURA_EMAIL_API_URL", "");
     config.mapsApiUrl = envOr("AURA_MAPS_API_URL", "");

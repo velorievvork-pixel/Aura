@@ -1,8 +1,8 @@
-# C++-сервер Aura (CMake + libpq)
+# C++-сервер Aura (CMake + libpq + OpenSSL для SMTP)
 FROM debian:bookworm-slim AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      build-essential cmake ninja-go libpq-dev ca-certificates \
+      build-essential cmake ninja-build libpq-dev libssl-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -19,7 +19,7 @@ RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      libpq5 ca-certificates \
+      libpq5 libssl3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/build/aura-server /usr/local/bin/aura-server

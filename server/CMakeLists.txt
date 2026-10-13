@@ -44,6 +44,7 @@ set(AURA_SOURCES
     src/listener.cpp
     src/log.cpp
     src/mailprovider.cpp
+    src/smtp.cpp
     src/memorymanager.cpp
     src/net.cpp
     src/notificationsmanager.cpp
@@ -95,6 +96,17 @@ if(AURA_WITH_LIBPQ)
     else()
         message(WARNING "aura-server: libpq не найден — собираюсь без PostgreSQL")
     endif()
+endif()
+
+# OpenSSL: TLS для SMTP (AURA_MAIL_DRIVER=smtp). Без него сервер собирается,
+# но письма можно слать только через локальный ретранслятор (AURA_SMTP_TLS=none).
+find_package(OpenSSL)
+if(OpenSSL_FOUND)
+    target_compile_definitions(aura-core PUBLIC AURA_HAVE_OPENSSL)
+    target_link_libraries(aura-core PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    message(STATUS "aura-server: TLS для SMTP — OpenSSL ${OPENSSL_VERSION}")
+else()
+    message(WARNING "aura-server: OpenSSL не найден — SMTP только без TLS")
 endif()
 
 add_executable(aura-server src/main.cpp)

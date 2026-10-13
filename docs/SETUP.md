@@ -69,10 +69,35 @@ AURA_2FA_KEY="$(openssl rand -hex 32)" \
 | AI | `AURA_AI_URL`, `AURA_AI_TOKEN`, `AURA_AI_TIMEOUT_MS` |
 | секреты | `AURA_JWT_SECRET` (обязателен в проде), `AURA_2FA_KEY` (шифр TOTP-секретов и токенов интеграций) |
 | токены/лимиты | `AURA_TOKEN_TTL` (7 дней), `AURA_REFRESH_TTL` (30 дней), `AURA_VERIFY_TTL`, `AURA_RESET_TTL`, `AURA_MAX_LOGIN_ATTEMPTS` (8), `AURA_LOGIN_WINDOW` (300 с) |
-| почта | `AURA_MAIL_DRIVER` (`dev` — коды в ответе и логе; `http` + `AURA_EMAIL_API_URL`) |
+| почта | `AURA_MAIL_DRIVER`: `smtp` — письма с кодами (`AURA_SMTP_HOST/PORT/USER/PASSWORD/FROM/TLS`, `AURA_SMTP_CA_FILE`), `log` — без отправки, `dev` — код в ответе API (только разработка) |
 | Google OAuth | `AURA_GOOGLE_CLIENT_ID/_SECRET`, `AURA_GOOGLE_AUTH_URL/_TOKEN_URL/_REVOKE_URL/_CALENDAR_URL/_GMAIL_URL`, `AURA_OAUTH_STATE_TTL` |
 | push | `AURA_PUSH_DRIVER` (`dev`/`webhook`), `AURA_PUSH_WEBHOOK_URL`, `AURA_APNS_TOPIC` (ai.aura.app), `AURA_APNS_URL`, `AURA_FCM_URL` (FCM HTTP v1, этап 11: замените `aura` на id проекта Firebase) |
 | прочее | `AURA_SCHEDULER_INTERVAL_MS` (0 — только ручной tick), `AURA_TOOLS_MODE`, `AURA_MAPS_API_URL`, `AURA_LOG_LEVEL` |
+
+### Почта (коды подтверждения и сброса пароля)
+
+Сервер сам отправляет письма по SMTP (OpenSSL, TLS 1.2+, проверка сертификата
+и имени хоста). Подойдёт любой почтовый сервис с SMTP: Яндекс 360, Mail.ru для
+бизнеса, Google Workspace, Amazon SES, Mailgun, Postmark, SendGrid.
+
+```env
+AURA_MAIL_DRIVER=smtp
+AURA_SMTP_HOST=smtp.yandex.ru      # адрес SMTP провайдера
+AURA_SMTP_PORT=587                 # 587 + starttls или 465 + tls
+AURA_SMTP_TLS=starttls
+AURA_SMTP_USER=no-reply@example.com
+AURA_SMTP_PASSWORD=<пароль приложения>
+AURA_SMTP_FROM=Aura <no-reply@example.com>
+```
+
+- Письма: «Код подтверждения Aura: 123456» (код в теме, тексте и HTML) и
+  «Сброс пароля Aura». Код в ответе API не возвращается.
+- Без TLS (`AURA_SMTP_TLS=none`) авторизация разрешена только к ретранслятору
+  на этой же машине (`localhost`).
+- Ошибки доставки пишутся в лог (`[mail] … не отправлено …: причина`); пользователь
+  может запросить код ещё раз.
+- Для доставляемости настройте у домена SPF, DKIM и DMARC (у провайдера).
+- Проверка локально: `aiosmtpd` со STARTTLS и своим CA (`AURA_SMTP_CA_FILE`).
 
 ### Google OAuth (интеграции Calendar/Gmail)
 
@@ -170,7 +195,7 @@ make docker-down    # остановить
 `POSTGRES_PASSWORD` (без них compose честно поднимется с dev-значениями),
 поставьте TLS-терминирующий прокси перед портом 9000 (`wss://`), для
 реального push — шлюз APNs (`AURA_PUSH_DRIVER=webhook`), для почты —
-`AURA_MAIL_DRIVER=http` + `AURA_EMAIL_API_URL`. Бэкап — `pg_dump` тома
+`AURA_MAIL_DRIVER=smtp` + `AURA_SMTP_*` (см. «Почта» ниже). Бэкап — `pg_dump` тома
 `pgdata`.
 
 ## 9. Проверка установки

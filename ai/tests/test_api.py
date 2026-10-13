@@ -103,6 +103,30 @@ def test_negotiate_endpoint(client):
     assert body["slot"]["score"] > 0
 
 
+def test_negotiate_skips_calendar_entries_without_time(client):
+    """Запись календаря без start/end (напоминание без времени) не роняет переговоры в 422."""
+    busy = {
+        "title": "созвон",
+        "start": (NOW + timedelta(hours=1)).isoformat(),
+        "end": (NOW + timedelta(hours=2)).isoformat(),
+    }
+    response = client.post(
+        "/v1/agent/negotiate",
+        json={
+            "initiator": {
+                "message": "встреча",
+                "now": NOW.isoformat(),
+                "calendar": [{"title": "Напоминание: позвонить юристу", "source": "user_memory", "tags": ["reminder"]}, busy],
+            },
+            "responder": {"message": "", "now": NOW.isoformat()},
+            "duration_minutes": 45,
+            "window_hours": 48,
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["accepted"] is True
+
+
 def test_memory_extract_and_read_back(client):
     extracted = client.post(
         "/v1/memory/extract",

@@ -441,6 +441,16 @@ async def main() -> int:
           "A2A: собеседник запретил выбор места — место не предложено", placeless.get("payload"))
     await anya.call("prefs.set", {"privacy": {"allow_place_choice": True}})
 
+    # Напоминание попадает в контекст AI занятым слотом (start/end) и не ломает
+    # переговоры: раньше запись без времени давала 422 от AI-сервиса.
+    reminder = await anna.call("agent.ask", {"message": "Напомни завтра в 10 позвонить юристу"}, timeout=60)
+    reminder_tasks = (await anna.call("tasks.list", {})).get("payload", {}).get("tasks", [])
+    check(any(t.get("title") == "Позвонить юристу" and t.get("remind_at") for t in reminder_tasks),
+          "напоминание без LLM: задача «Позвонить юристу» со временем", [reminder.get("payload", {}).get("reply"), reminder_tasks])
+    after_reminder = await anna.call("agent.negotiate", {"target": f"anya.{RUN}@example.com", "topic": "кофе",
+                                                         "duration_minutes": 60, "window_hours": 96}, timeout=60)
+    check(after_reminder.get("type") == "ok", "A2A после напоминания работает", after_reminder)
+
     # Память
     await anna.call("memory.add", {"text": "Люблю тихие кофейни", "kind": "preference"})
     memory = await anna.call("memory.list", {"query": "кофейни"})

@@ -38,7 +38,7 @@ from .models import (
     AgentContext,
     AgentRequest,
     AgentResponse,
-    CalendarEvent,
+    Calendar,
     MemoryEntry,
     NegotiateRequest,
     NegotiateResponse,
@@ -272,7 +272,7 @@ def memory_load(user_key: str, query: str = "") -> Dict[str, Any]:
 # ---------------------------------------------------------------- планировщик
 class SlotsRequest(BaseModel):
     window: Optional[Dict[str, Any]] = None
-    calendar: List[CalendarEvent] = Field(default_factory=list)
+    calendar: Calendar = Field(default_factory=list)
     preferences: Preferences = Field(default_factory=Preferences)
     duration_minutes: int = 60
     max_slots: int = 5

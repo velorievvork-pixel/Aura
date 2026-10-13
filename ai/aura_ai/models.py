@@ -6,10 +6,13 @@ C++-сервер (AgentManager / MemoryManager) общается с сервис
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field, ValidationError
+
+log = logging.getLogger("aura.models")
 
 
 def utcnow() -> datetime:
@@ -22,6 +25,27 @@ class CalendarEvent(BaseModel):
     title: str = "event"
     start: datetime
     end: datetime
+
+
+def _drop_invalid_events(value: Any) -> Any:
+    """Календарь: запись без start/end пропускается, а не роняет весь запрос (422).
+
+    Одна неполная запись (например, напоминание без времени) иначе ломала бы
+    переговоры и диалог целиком. Сервер такие записи не шлёт; это страховка.
+    """
+    if not isinstance(value, list):
+        return value
+    kept: List[Any] = []
+    for item in value:
+        try:
+            kept.append(CalendarEvent.model_validate(item))
+        except ValidationError:
+            log.warning("пропущена запись календаря без корректных start/end: %r", item)
+    return kept
+
+
+#: Список занятых слотов с пропуском неполных записей.
+Calendar = Annotated[List[CalendarEvent], BeforeValidator(_drop_invalid_events)]
 
 
 class Preferences(BaseModel):
@@ -58,7 +82,7 @@ class AgentContext(BaseModel):
     history: List[Dict[str, Any]] = Field(default_factory=list)
     memory: List[MemoryEntry] = Field(default_factory=list)
     preferences: Preferences = Field(default_factory=Preferences)
-    calendar: List[CalendarEvent] = Field(default_factory=list)
+    calendar: Calendar = Field(default_factory=list)
     contacts: List[Dict[str, Any]] = Field(default_factory=list)
 
 

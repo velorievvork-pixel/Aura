@@ -113,3 +113,20 @@ def test_score_slot_prefers_preferred_hours():
     preferred = planner.score_slot(NOW.replace(hour=18, minute=0), prefs, [])
     other = planner.score_slot(NOW.replace(hour=3, minute=0), prefs, [])
     assert preferred > other
+
+
+def test_hour_without_minutes():
+    assert planner.parse_time_window("завтра в 10", NOW).start.hour == 10
+    assert planner.parse_time_window("завтра в 7 вечера", NOW).start.hour == 19
+    assert planner.parse_time_window("в пятницу в 3 дня", NOW).start.hour == 15
+    assert planner.parse_time_window("завтра в 19 часов", NOW).start.hour == 19
+    # «в 2 раза» — не время
+    assert planner.parse_time_window("сделай в 2 раза быстрее", NOW).start == NOW
+
+
+def test_reminder_text_strips_command_and_time():
+    assert planner.reminder_text("Напомни завтра в 10 позвонить юристу") == "Позвонить юристу"
+    assert planner.reminder_text("напомни мне в пятницу в 18:30 забрать посылку") == "Забрать посылку"
+    assert planner.reminder_text("Не забудь через 2 часа выключить духовку") == "Выключить духовку"
+    assert planner.reminder_text("напомни, что завтра вечером встреча с Димой") == "Встреча с Димой"
+    assert planner.reminder_text("напомни") == "напомни"

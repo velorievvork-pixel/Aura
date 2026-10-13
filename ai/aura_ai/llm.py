@@ -11,6 +11,7 @@ C++-сервер не знает, кто именно отвечает: он п�
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from . import planner
@@ -51,6 +52,22 @@ class BaseLLM:
         history: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:  # pragma: no cover - интерфейс
         raise NotImplementedError
+
+
+_WEEKDAY_ACCUSATIVE = {
+    "понедельник": "понедельник", "вторник": "вторник", "среда": "среду", "четверг": "четверг",
+    "пятница": "пятницу", "суббота": "субботу", "воскресенье": "воскресенье",
+}
+
+
+def _when_phrase(label: str, fire: datetime) -> str:
+    """«завтра в 10:00», «в пятницу в 9:00», «14.10 в 18:30»."""
+    clock = f"{fire.hour}:{fire.minute:02d}"
+    if label in ("сегодня", "завтра", "послезавтра"):
+        return f"{label} в {clock}"
+    if label in _WEEKDAY_ACCUSATIVE:
+        return f"в {_WEEKDAY_ACCUSATIVE[label]} в {clock}"
+    return f"{fire:%d.%m} в {clock}"
 
 
 class MockLLM(BaseLLM):
@@ -99,14 +116,19 @@ class MockLLM(BaseLLM):
             reply = f"Ищу окно в графиках на {when} и подбираю место под ваши предпочтения."
             confidence = 0.86
         elif intent == "reminder":
-            actions = [
-                {
-                    "id": "a1",
-                    "tool": "create_reminder",
-                    "args": {"text": context.message, "at": window.start.isoformat() if window else None},
-                }
-            ]
-            reply = f"Напомню {when}."
+            text = planner.reminder_text(context.message)
+            at = None
+            if window:
+                fire = window.start
+                # «завтра» без часа — утром, а не в полночь.
+                if window.source == "phrase" and (fire.hour, fire.minute) == (0, 0):
+                    fire = fire.replace(hour=9)
+                # Время задачи — в UTC: сервер сравнивает метки строками.
+                at = fire.astimezone(timezone.utc).isoformat()
+                if window.source == "phrase":
+                    when = _when_phrase(window.label, fire)
+            actions = [{"id": "a1", "tool": "create_reminder", "args": {"text": text, "at": at}}]
+            reply = f"Напомню {when}: {text[0].lower() + text[1:] if text else text}."
             confidence = 0.9
         elif intent == "note":
             actions = [{"id": "a1", "tool": "create_note", "args": {"text": context.message}}]

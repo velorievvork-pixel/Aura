@@ -1548,6 +1548,41 @@ TEST(ai_create_reminder_makes_task) {
     // Напоминание видно как задача; срок в будущем → планировщик не трогает.
     CHECK(fixture.call(session, "tasks.list", Json::object()).get("payload").get("tasks").size() >= 1);
     CHECK_EQ(fixture.server->runSchedulerTick(10), static_cast<std::size_t>(0));
+
+    // В контекст AI напоминание уходит занятым слотом с start/end (иначе AI отвечает 422
+    // и у пользователя ломаются переговоры); запись расписания без времени — только в memory.
+    fixture.server->memory().remember(session->userId(), [] {
+        Json updates = Json::array();
+        Json entry = Json::object();
+        entry.set("kind", Json("schedule"));
+        entry.set("text", Json("По средам бассейн"));
+        updates.push(entry);
+        return updates;
+    }());
+    Json offsetRun = run;
+    Json offsetArgs = args;
+    offsetArgs.set("text", Json("позвонить юристу"));
+    offsetArgs.set("at", Json("2030-01-02T10:00:00+03:00"));
+    offsetRun.set("args", offsetArgs);
+    CHECK_EQ(fixture.call(session, "tool.run", offsetRun).getString("type"), std::string("ok"));
+    const Json calendar = fixture.server->memory().context(session->userId(), "").get("calendar");
+    CHECK_EQ(calendar.size(), static_cast<std::size_t>(2));
+    bool water = false, lawyer = false;
+    for (const auto& event : calendar.items()) {
+        CHECK(!event.getString("start").empty());
+        CHECK(!event.getString("end").empty());
+        if (event.getString("title") == "Напоминание: выпить воды") {
+            water = true;
+            CHECK_EQ(event.getString("start"), std::string("2030-01-01T10:00:00Z"));
+            CHECK_EQ(event.getString("end"), std::string("2030-01-01T10:30:00Z"));
+        }
+        if (event.getString("title") == "Напоминание: позвонить юристу") {
+            lawyer = true;
+            CHECK_EQ(event.getString("start"), std::string("2030-01-02T07:00:00Z"));
+        }
+    }
+    CHECK(water);
+    CHECK(lawyer);
 }
 
 // --------------------------------------------------- интеграции (этап 9)

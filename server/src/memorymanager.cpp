@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <ctime>
 #include <map>
 #include <regex>
 #include <set>
@@ -18,6 +20,67 @@ std::string lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return value;
+}
+
+// «YYYY-MM-DDTHH:MM[:SS][.fff](Z|±HH:MM)» → секунды UTC; false, если это не ISO-метка.
+bool parseIsoUtc(const std::string& value, std::time_t& out) {
+    int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
+    int consumed = 0;
+    if (std::sscanf(value.c_str(), "%4d-%2d-%2dT%2d:%2d%n", &y, &mo, &d, &h, &mi, &consumed) != 5) return false;
+    std::size_t pos = static_cast<std::size_t>(consumed);
+    if (pos < value.size() && value[pos] == ':') {
+        int n = 0;
+        if (std::sscanf(value.c_str() + pos, ":%2d%n", &sec, &n) != 1) return false;
+        pos += static_cast<std::size_t>(n);
+    }
+    if (pos < value.size() && value[pos] == '.') {
+        ++pos;
+        while (pos < value.size() && std::isdigit(static_cast<unsigned char>(value[pos])) != 0) ++pos;
+    }
+    long offset = 0;
+    if (pos < value.size() && (value[pos] == '+' || value[pos] == '-')) {
+        int oh = 0, om = 0;
+        if (std::sscanf(value.c_str() + pos + 1, "%2d:%2d", &oh, &om) != 2) return false;
+        offset = (value[pos] == '-' ? -1 : 1) * (oh * 3600L + om * 60L);
+    }
+    if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 60) return false;
+    std::tm tm{};
+    tm.tm_year = y - 1900;
+    tm.tm_mon = mo - 1;
+    tm.tm_mday = d;
+    tm.tm_hour = h;
+    tm.tm_min = mi;
+    tm.tm_sec = sec;
+    out = timegm(&tm) - offset;
+    return true;
+}
+
+std::string isoUtc(std::time_t t) {
+    std::tm tm{};
+    gmtime_r(&t, &tm);
+    char buf[32];
+    std::strftime(buf, sizeof buf, "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buf;
+}
+
+// Запись расписания из памяти → занятый слот для AI ({title,start,end}) или null.
+// Напоминание хранится как «Напоминание: <текст> (<ISO-время>)» (ToolManager::createReminder):
+// время берём из скобок, слот — 30 минут. Записи без точного времени («по средам
+// бассейн») остаются только в memory: CalendarEvent в AI требует start и end, и
+// одна такая запись иначе ломала бы весь запрос (422).
+Json scheduleEvent(const MemoryRecord& record) {
+    const auto open = record.text.rfind('(');
+    const auto close = record.text.rfind(')');
+    if (open == std::string::npos || close == std::string::npos || close < open) return Json();
+    std::time_t start = 0;
+    if (!parseIsoUtc(record.text.substr(open + 1, close - open - 1), start)) return Json();
+    std::string title = record.text.substr(0, open);
+    while (!title.empty() && std::isspace(static_cast<unsigned char>(title.back())) != 0) title.pop_back();
+    Json event = Json::object();
+    event.set("title", Json(title.empty() ? record.text : title));
+    event.set("start", Json(isoUtc(start)));
+    event.set("end", Json(isoUtc(start + 30 * 60)));
+    return event;
 }
 
 // Простая релевантность: совпадение подстрок запроса в тексте записи + вес.
@@ -92,8 +155,8 @@ Json MemoryManager::context(long long userId, const std::string& focusMessage) {
 
     Json calendar = Json::array();
     for (const auto& record : schedule(userId)) {
-        Json event = Json::object();
-        event.set("title", Json(record.text));
+        Json event = scheduleEvent(record);
+        if (event.isNull()) continue;
         event.set("source", Json("user_memory"));
         event.set("tags", [&record] {
             Json tags = Json::array();

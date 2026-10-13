@@ -58,6 +58,8 @@ DAY_PARTS: Dict[str, Tuple[int, int]] = {
 }
 
 TIME_RE = re.compile(r"\b(\d{1,2})[:.](\d{2})\b")
+# «в 10», «в 7 вечера», «в 19 часов» — час без минут.
+HOUR_RE = re.compile(r"(?:^|\s)в\s+(\d{1,2})(?:\s*(?:час\w*|ч\b))?(?:\s+(утра|дня|вечера|ночи))?(?=$|[\s,.!?])")
 IN_N_RE = re.compile(r"через\s+(\d+)\s*(минут\w*|час\w*|день|дня|дней|недел\w*)")
 DURATION_RE = re.compile(r"\bна\s+(\d+)\s*(минут\w*|час\w*|ч\b)")
 
@@ -163,6 +165,55 @@ def next_weekday(now: datetime, weekday: int) -> datetime:
     return day.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def _clock_time(low: str, has_day: bool = True) -> Optional[Tuple[int, int]]:
+    """Время суток из фразы: «9:30» / «9.30» или «в 10», «в 7 вечера».
+
+    Голое «в 10» — время, только если рядом назван день («завтра в 10»):
+    иначе «в 2 раза» превратилось бы в 2 часа ночи.
+    """
+    match = TIME_RE.search(low)
+    if match:
+        return min(int(match.group(1)), 23), min(int(match.group(2)), 59)
+    match = HOUR_RE.search(low)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    part = match.group(2)
+    explicit = part is not None or re.search(r"^\s*в\s+\d{1,2}\s*(?:час|ч\b)", match.group(0)) is not None
+    if hour > 23 or not (explicit or has_day):
+        return None
+    if part in ("дня", "вечера") and hour < 12:
+        hour += 12
+    elif part == "ночи" and hour == 12:
+        hour = 0
+    return hour, 0
+
+
+# Служебные слова напоминания: «Напомни завтра в 10 позвонить юристу» → «Позвонить юристу».
+_REMINDER_NOISE = (
+    r"^\s*(?:напомни(?:те)?|не\s+забудь(?:те)?)(?:\s+мне)?\b",
+    r"\b(?:послезавтра|завтра|сегодня)\b",
+    r"\bв\s+\d{1,2}[:.]\d{2}(?:\s+(?:утра|дня|вечера|ночи))?",
+    r"\bв\s+\d{1,2}(?:\s*(?:час\w*|ч\b))?(?:\s+(?:утра|дня|вечера|ночи))?(?=$|[\s,.!?])",
+    r"\b\d{1,2}[:.]\d{2}\b",
+    r"\bчерез\s+\d+\s*(?:минут\w*|час\w*|день|дня|дней|недел\w*)",
+    r"\b(?:утром|днём|днем|вечером|ночью)\b",
+    r"\b(?:в|во)\s+(?:понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье)\b",
+)
+
+
+def reminder_text(text: str) -> str:
+    """Суть напоминания без «напомни» и указаний времени; если ничего не осталось — исходная фраза."""
+    value = text or ""
+    for pattern in _REMINDER_NOISE:
+        value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
+    value = re.sub(r"^[\s,.:;\-—]*(?:(?:о\s+том,?\s+)?чтобы?|что)\b", " ", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s+", " ", value).strip(" ,.:;-—")
+    if not value:
+        return (text or "").strip()
+    return value[0].upper() + value[1:]
+
+
 def parse_time_window(text: str, now: Optional[datetime] = None) -> Optional[TimeWindow]:
     """Разбирает русские временные выражения в окно [start, end)."""
     now = _as_aware(now or utcnow())
@@ -204,14 +255,14 @@ def parse_time_window(text: str, now: Optional[datetime] = None) -> Optional[Tim
 
     # Ограничение по времени суток / конкретному часу
     start, end = day_start, day_end
-    time_match = TIME_RE.search(low)
-    if time_match and label:
-        hour, minute = int(time_match.group(1)), int(time_match.group(2))
-        start = day_start.replace(hour=min(hour, 23), minute=min(minute, 59))
+    clock = _clock_time(low, has_day=bool(label))
+    if clock and label:
+        hour, minute = clock
+        start = day_start.replace(hour=hour, minute=minute)
         end = start + timedelta(hours=3)
-    elif time_match and not label:
-        hour, minute = int(time_match.group(1)), int(time_match.group(2))
-        candidate = now.replace(hour=min(hour, 23), minute=min(minute, 59), second=0, microsecond=0)
+    elif clock and not label:
+        hour, minute = clock
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if candidate <= now:
             candidate += timedelta(days=1)
         start, end = candidate, candidate + timedelta(hours=3)

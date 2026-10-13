@@ -16,7 +16,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Any, Dict, List, Optional
 
 from . import memory as memory_module
@@ -87,7 +88,8 @@ class AuraAgent:
     def run(self, request: AgentRequest) -> AgentResponse:
         context = request.context
         now = context.now or utcnow()
-        understanding = planner.understand(context.message, now)
+        # «завтра в 10» — по часам пользователя, а не по UTC.
+        understanding = planner.understand(context.message, _local(now, context.timezone))
 
         payload = self._complete(context, understanding)
         intent = str(payload.get("intent") or understanding.intent)
@@ -319,6 +321,15 @@ class AuraAgent:
             ),
             counter_slots=shared[1:4],
         )
+
+
+def _local(now: datetime, tz_name: str) -> datetime:
+    """Момент now в часовом поясе пользователя; неизвестный пояс — без изменений."""
+    try:
+        zone = ZoneInfo(tz_name or "UTC")
+    except (ZoneInfoNotFoundError, ValueError):
+        return now
+    return planner._as_aware(now).astimezone(zone)
 
 
 def _normalize_name(name: Any) -> str:

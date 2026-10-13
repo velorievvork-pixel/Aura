@@ -112,7 +112,23 @@ def test_reminder_intent_creates_reminder():
     assert response.intent == "reminder"
     reminder = next(r for r in response.results if r.tool == "create_reminder")
     assert reminder.ok
-    assert reminder.data["fire_at"].startswith("2026-09-18T09:00")
+    # 9:00 по Москве (timezone пользователя) = 06:00 UTC; в задаче — суть без «напомни завтра в 9:00».
+    assert reminder.data["fire_at"].startswith("2026-09-18T06:00")
+    assert reminder.data["text"] == "Позвонить врачу"
+    assert response.reply == "Напомню завтра в 9:00: позвонить врачу."
+
+
+def test_reminder_hour_without_minutes_and_day_default():
+    lawyer = make_agent().run(AgentRequest(context=user_context(message="Напомни завтра в 10 позвонить юристу")))
+    reminder = next(r for r in lawyer.results if r.tool == "create_reminder")
+    assert reminder.data["fire_at"].startswith("2026-09-18T07:00")
+    assert reminder.data["text"] == "Позвонить юристу"
+
+    coffee = make_agent().run(AgentRequest(context=user_context(message="напомни завтра купить кофе")))
+    reminder = next(r for r in coffee.results if r.tool == "create_reminder")
+    # День без часа — 9 утра по местному времени, не полночь.
+    assert reminder.data["fire_at"].startswith("2026-09-18T06:00")
+    assert reminder.data["text"] == "Купить кофе"
 
 
 def test_memory_updates_are_saved():

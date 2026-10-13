@@ -1,5 +1,5 @@
 import { Eye, EyeOff } from 'lucide-react';
-import { useState, type InputHTMLAttributes, type ReactNode } from 'react';
+import { useState, type InputHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 
 /** Знак Aura: тонкое кольцо без свечения. */
 export function Logo({ size = 22 }: { size?: number }) {
@@ -61,11 +61,40 @@ export function Switch({ on, onChange, label, disabled }: { on: boolean; onChang
   return <button type="button" role="switch" aria-checked={on} aria-label={label} disabled={disabled} className={`switch ${on ? 'on' : ''}`} onClick={() => onChange(!on)} />;
 }
 
-export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
+/**
+  Переключатель-радиогруппа. Клавиатура как у role="radiogroup": Tab попадает на
+  выбранный вариант, стрелки и Home/End переводят фокус и выбор.
+*/
+export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: readonly { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
+  const selected = options.findIndex((o) => o.value === value);
+  const tabStop = selected >= 0 ? selected : 0;
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const buttons = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('button[role="radio"]')];
+    const focused = buttons.indexOf(e.target as HTMLButtonElement);
+    const from = focused >= 0 ? focused : tabStop;
+    const last = options.length - 1;
+    let next: number;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = from >= last ? 0 : from + 1;
+    else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = from <= 0 ? last : from - 1;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = last;
+    else return;
+    e.preventDefault();
+    buttons[next]?.focus();
+    if (options[next] && options[next].value !== value) onChange(options[next].value);
+  };
   return (
-    <div className="segmented" role="radiogroup" aria-label={label}>
-      {options.map((o) => (
-        <button key={o.value} type="button" role="radio" aria-checked={value === o.value} className={`${value === o.value ? 'on' : ''} ${o.value}`} onClick={() => value !== o.value && onChange(o.value)}>
+    <div className="segmented" role="radiogroup" aria-label={label} onKeyDown={onKeyDown}>
+      {options.map((o, i) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={value === o.value}
+          tabIndex={i === tabStop ? 0 : -1}
+          className={`${value === o.value ? 'on' : ''} ${o.value}`}
+          onClick={() => value !== o.value && onChange(o.value)}
+        >
           {o.label}
         </button>
       ))}

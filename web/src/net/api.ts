@@ -12,6 +12,8 @@ export interface User {
   bio: string;
   timezone?: string;
   email_verified?: boolean;
+  /** Роль в системе (auth.* / auth.me); нет поля — обычный пользователь. */
+  role?: 'user' | 'moderator' | 'admin';
 }
 
 export interface Privacy {

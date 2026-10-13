@@ -2,13 +2,15 @@
   Настройки: профиль, предпочтения Ауры, приватность ИИ и разрешения,
   безопасность (пароль, 2FA, доверенные устройства, сессии), сервер и выход.
 */
-import { Copy, Download, KeyRound, LogOut, Monitor, Share2, ShieldCheck, Smartphone, Trash2, Upload } from 'lucide-react';
+import { ChevronRight, Copy, Download, KeyRound, LogOut, Monitor, Share2, Shield, ShieldCheck, Smartphone, Trash2, Upload } from 'lucide-react';
 import QRCode from 'qrcode';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { ServerAddress } from '../components/ServerAddress';
 import { Avatar, Field, PasswordInput, Segmented, Spinner, Switch } from '../components/ui';
 import { DIETS, toolDescription, toolTitle, when } from '../lib/format';
 import { cleanCode, nameError, otpError, passwordError } from '../lib/validate';
+import { isStaff } from '../net/adminApi';
 import { secureStore } from '../net/secureStore';
 import { isNative } from '../platform';
 import type { Permission, Privacy, SessionRow, TrustedDevice, TwoFaSetup } from '../net/api';
@@ -694,7 +696,7 @@ function SessionsSection() {
 // -------------------------------------------------------------- Приложение
 
 function AppSection() {
-  const { logout } = useSession();
+  const { logout, user } = useSession();
   const [encrypted, setEncrypted] = useState<boolean | null>(null);
   useEffect(() => {
     secureStore.encrypted().then(setEncrypted, () => setEncrypted(false));
@@ -710,6 +712,19 @@ function AppSection() {
           : 'Токены входа хранятся в песочнице приложения на этом устройстве. Пароль не сохраняется.';
   return (
     <>
+      {isStaff(user?.role) && (
+        // На телефоне в панели вкладок нет места: вход в админ-панель — здесь (на десктопе он в боковой панели).
+        <Link to="/admin" className="card list-row admin-entry hide-desktop">
+          <Shield size={18} strokeWidth={1.8} aria-hidden="true" />
+          <span className="body">
+            <span style={{ display: 'block', fontWeight: 500 }}>Администрирование</span>
+            <span className="small muted" style={{ display: 'block' }}>
+              Пользователи, блокировки{user?.role === 'admin' ? ', роли и журнал аудита' : ' и сессии'}
+            </span>
+          </span>
+          <ChevronRight size={16} className="faint" aria-hidden="true" />
+        </Link>
+      )}
       <Card title="Сервер" desc="Адрес сервера Aura, к которому подключено приложение.">
         <ServerAddress />
       </Card>

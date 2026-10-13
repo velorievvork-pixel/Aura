@@ -1,5 +1,6 @@
-import { Bell, CheckSquare, Handshake, Home, MessageCircle, Settings, Users } from 'lucide-react';
+import { Bell, CheckSquare, Handshake, Home, MessageCircle, Settings, Shield, Users } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
+import { isStaff } from '../net/adminApi';
 import { useData } from '../state/data';
 import { useSession } from '../state/session';
 import { OfflineBanner } from './ConnectionScreen';
@@ -34,6 +35,11 @@ export function AppShell() {
           {inbox > 0 && <span className="count">{inbox}</span>}
         </NavLink>
         <div className="sidebar-foot">
+          {isStaff(user?.role) && (
+            <NavLink to="/admin" className="nav-item">
+              <Shield size={16} strokeWidth={1.8} /> Администрирование
+            </NavLink>
+          )}
           <NavLink to="/settings" className="nav-item">
             <Settings size={16} strokeWidth={1.8} /> Настройки
           </NavLink>

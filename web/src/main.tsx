@@ -6,6 +6,7 @@ import { ConnectionScreen } from './components/ConnectionScreen';
 import { Spinner } from './components/ui';
 import { NativeBridge } from './platform/NativeBridge';
 import { initPlatform } from './platform/native';
+import { Admin } from './pages/Admin';
 import { ForgotPassword, Login, Signup, TwoFactor, VerifyEmail } from './pages/Auth';
 import { Chat } from './pages/Chat';
 import { ContactChat, Contacts } from './pages/Contacts';
@@ -63,6 +64,7 @@ function Root() {
           <Route path="contacts/:chatId" element={<ContactChat />} />
           <Route path="inbox" element={<Inbox />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="admin" element={<Admin />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

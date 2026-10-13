@@ -1487,3 +1487,215 @@ button.chip:hover {
     display: none !important;
   }
 }
+
+/* ---------------------------------------------------------------- Админ-панель */
+.admin-tiles {
+  display: grid;
+  /* min(100%, …) — на 360 px две плитки в ряд и без горизонтальной прокрутки. */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr));
+  gap: 12px;
+}
+
+.admin-tiles > * {
+  min-width: 0;
+}
+
+.admin-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 18px;
+}
+
+.admin-tile-value {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* Перезагрузка поверх уже показанных данных: приглушаем, а не прячем. */
+.admin [aria-busy='true'] {
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.admin .segmented {
+  justify-self: start;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.admin .segmented::-webkit-scrollbar {
+  display: none;
+}
+
+.admin .segmented button {
+  flex: none;
+  white-space: nowrap;
+}
+
+.admin-filters {
+  gap: 8px;
+  min-width: 0;
+}
+
+.admin-filters .segmented {
+  min-width: 0;
+}
+
+.admin-loading {
+  display: grid;
+  place-items: center;
+  padding: 32px 0;
+}
+
+.admin-error {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.admin-confirm {
+  flex-direction: column;
+  gap: 10px;
+}
+
+.admin-alert {
+  color: var(--danger);
+  flex: none;
+}
+
+.input-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.input-icon > svg {
+  position: absolute;
+  left: 12px;
+  pointer-events: none;
+}
+
+.input-icon > .input {
+  padding-left: 36px;
+  width: 100%;
+}
+
+.admin-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+.admin-user-head {
+  gap: 12px;
+}
+
+.admin-user-head .body {
+  flex: 1;
+  min-width: 0;
+}
+
+.admin-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 120px), 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.admin-facts dt {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.admin-facts dd {
+  margin: 2px 0 0;
+  font-size: 14px;
+}
+
+.admin-actions {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.admin-role {
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.admin-role > .field {
+  flex: 1 1 180px;
+  max-width: 280px;
+  min-width: 0;
+}
+
+/* Колонка списка не шире карточки: иначе nowrap-строки распирают её и дата обрезается. */
+.admin .list {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.admin-audit {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.admin-audit .list-row > svg {
+  flex: none;
+}
+
+.admin-back {
+  margin: -8px 0 8px -10px;
+}
+
+/* Вход в админ-панель на телефоне (Настройки → Приложение). */
+.admin-entry.list-row {
+  border: 1px solid var(--border);
+  padding: 14px 16px;
+  color: var(--text);
+}
+
+.admin-entry.list-row:hover {
+  background: var(--surface-2);
+}
+
+@media (max-width: 900px) {
+  /* Бейджи — отдельной строкой под именем, чтобы не сжимать email до нуля. */
+  .admin-user-row,
+  .admin-user-head {
+    flex-wrap: wrap;
+  }
+
+  .admin-user-row .admin-badges {
+    flex-basis: 100%;
+    justify-content: flex-start;
+    padding-left: 44px;
+  }
+
+  .admin-user-head .admin-badges {
+    flex-basis: 100%;
+    justify-content: flex-start;
+    padding-left: 60px;
+  }
+
+  /* Причину и «кем» на телефоне не обрезаем: подсказки по наведению там нет. */
+  .admin-audit .body .tiny {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .admin-tile {
+    padding: 14px;
+  }
+
+  .admin-tile-value {
+    font-size: 22px;
+  }
+}

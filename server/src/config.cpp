@@ -73,6 +73,7 @@ Config Config::fromEnv() {
     config.apnsUrl = envOr("AURA_APNS_URL", config.apnsUrl);
     config.fcmUrl = envOr("AURA_FCM_URL", config.fcmUrl);
     config.logLevel = envOr("AURA_LOG_LEVEL", config.logLevel);
+    config.adminEmails = envOr("AURA_ADMIN_EMAILS", "");
     return config;
 }
 

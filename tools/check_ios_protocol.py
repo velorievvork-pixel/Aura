@@ -33,6 +33,11 @@ ALLOWED: set[str] = {
     # иконки задач на «Главной» (массив systemName по индексу)
     "doc.text",
     "play.rectangle",
+    # accessibilityIdentifier кнопок для UI-тура (ScreenTourTests), не типы запросов
+    "home.confirmations",
+    "home.notifications",
+    "home.settings",
+    "nav.back",
 }
 
 # Серверные события: их клиент не отправляет, только принимает.

@@ -66,6 +66,45 @@ bool validAvatar(const std::string& value, std::string& error) {
     return false;
 }
 
+// Админ-панель: роль admin для адреса из AURA_ADMIN_EMAILS выдаётся при
+// успешном входе / подтверждении email. Если роль изменилась, в ответе
+// (payload.user) отдаётся уже обновлённая запись.
+Json withBootstrappedRole(AdminManager& admin, IDatabase& db, long long userId, Json payload,
+                          const std::string& remoteAddr) {
+    if (userId <= 0) return payload;
+    const auto user = db.findUserById(userId);
+    if (!user) return payload;
+    admin.bootstrap(*user, remoteAddr);
+    if (const auto updated = db.findUserById(userId)) {
+        if (updated->role != user->role && payload.isObject() && payload.contains("user")) {
+            payload.set("user", updated->toJson());
+        }
+    }
+    return payload;
+}
+
+// Закрыть все открытые соединения пользователей (блокировка, отзыв сессий
+// администратором). Код 4001, причина — машинный ключ для клиента.
+void kickUsers(ConnectionManager& connections, const std::vector<long long>& userIds, const std::string& reason) {
+    for (const long long userId : userIds) {
+        for (const auto& session : connections.forUser(userId)) {
+            session->close(4001, reason);
+            connections.remove(session->id());
+        }
+    }
+}
+
+// Сколько разных пользователей сейчас онлайн (авторизованные живые соединения).
+std::size_t onlineUsers(const ConnectionManager& connections) {
+    std::vector<long long> ids;
+    for (const auto& item : connections.describe()) {
+        const long long userId = item.getInt("user_id");
+        if (userId > 0 && item.getBool("alive")) ids.push_back(userId);
+    }
+    std::sort(ids.begin(), ids.end());
+    return static_cast<std::size_t>(std::unique(ids.begin(), ids.end()) - ids.begin());
+}
+
 }  // namespace
 
 Server::Server(Config config) : config_(std::move(config)) {
@@ -100,6 +139,8 @@ bool Server::start(std::string& error) {
     tools_ = std::make_unique<ToolManager>(config_, *database_, *chats_, integrations_.get());
     agent_ = std::make_unique<AgentManager>(config_, *database_, *memory_, *tools_, *chats_);
     taskManager_ = std::make_unique<TaskManager>(*database_, connections_);
+    admin_ = std::make_unique<AdminManager>(*database_, config_);
+    admin_->bootstrapAll();
 
     registerHandlers();
 
@@ -195,6 +236,8 @@ bool Server::authorize(std::shared_ptr<Session> session, const std::string& toke
 
     const AuthManager::Result result = auth_->verifyToken(token);
     if (!result.ok) return false;
+    // Заблокированный пользователь (admin.setActive) не входит и старым токеном.
+    if (!result.payload.get("user").getBool("is_active", true)) return false;
     session->authenticate(result.userId, result.displayName, result.email, result.jwtId);
     connections_.add(session);
     payload = result.payload;
@@ -329,11 +372,13 @@ void Server::registerHandlers() {
 
     registerHandler("auth.verifyEmail",
                     [this](std::shared_ptr<Session> session, const protocol::Request& request) {
-                        (void)session;
                         const auto result = auth_->verifyEmail(request.payload.getString("email"),
                                                                request.payload.getString("code"));
                         if (!result.ok) return protocol::error(request.id, result.code, result.message);
-                        return protocol::ok(request.id, result.payload);
+                        return protocol::ok(request.id,
+                                            withBootstrappedRole(*admin_, database_->db(),
+                                                                 result.payload.get("user").getInt("id"),
+                                                                 result.payload, session->remoteAddr()));
                     });
 
     registerHandler("auth.resendCode",
@@ -431,7 +476,9 @@ void Server::registerHandlers() {
                             notifications_->create(result.userId, "login.new", "Новый вход в Aura",
                                                    session->remoteAddr(), payload);
                         }
-                        return protocol::ok(request.id, result.payload);
+                        return protocol::ok(request.id,
+                                            withBootstrappedRole(*admin_, database_->db(), result.userId,
+                                                                 result.payload, session->remoteAddr()));
                     });
 
     // Завершение входа с 2FA: пароль + TOTP-код (или резервный код).
@@ -456,7 +503,9 @@ void Server::registerHandlers() {
                             notifications_->create(result.userId, "login.new", "Новый вход в Aura (2FA)",
                                                    session->remoteAddr(), payload);
                         }
-                        return protocol::ok(request.id, result.payload);
+                        return protocol::ok(request.id,
+                                            withBootstrappedRole(*admin_, database_->db(), result.userId,
+                                                                 result.payload, session->remoteAddr()));
                     });
 
     // Настройка 2FA: создать секрет → подтвердить кодом → (опц.) отключить.
@@ -948,6 +997,54 @@ void Server::registerHandlers() {
                                                          request.payload.getInt("id"));
         return result.ok ? protocol::ok(request.id, result.payload)
                          : protocol::error(request.id, result.code, result.message);
+    });
+
+    // ---------------------------------------------------- админ-панель
+    // Права (moderator / admin) проверяет AdminManager по роли из БД на каждый
+    // запрос: понижение роли действует сразу, без перевхода.
+    const auto adminReply = [this](const protocol::Request& request, const AdminManager::Result& result,
+                                   const char* kickReason) {
+        if (!result.ok) return protocol::error(request.id, result.code, result.message);
+        kickUsers(connections_, result.kick, kickReason);
+        return protocol::ok(request.id, result.payload);
+    };
+
+    registerHandler("admin.stats", [this, adminReply](std::shared_ptr<Session> session,
+                                                      const protocol::Request& request) {
+        return adminReply(request, admin_->stats(session->userId(), onlineUsers(connections_)), "");
+    });
+
+    registerHandler("admin.users", [this, adminReply](std::shared_ptr<Session> session,
+                                                      const protocol::Request& request) {
+        return adminReply(request, admin_->users(session->userId(), request.payload), "");
+    });
+
+    registerHandler("admin.user", [this, adminReply](std::shared_ptr<Session> session,
+                                                     const protocol::Request& request) {
+        return adminReply(request, admin_->user(session->userId(), request.payload), "");
+    });
+
+    registerHandler("admin.setActive", [this, adminReply](std::shared_ptr<Session> session,
+                                                          const protocol::Request& request) {
+        return adminReply(request, admin_->setActive(session->userId(), request.payload, session->remoteAddr()),
+                          "account_disabled");
+    });
+
+    registerHandler("admin.setRole", [this, adminReply](std::shared_ptr<Session> session,
+                                                        const protocol::Request& request) {
+        return adminReply(request, admin_->setRole(session->userId(), request.payload, session->remoteAddr()), "");
+    });
+
+    registerHandler("admin.revokeSessions", [this, adminReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return adminReply(request,
+                          admin_->revokeSessions(session->userId(), request.payload, session->remoteAddr()),
+                          "sessions_revoked");
+    });
+
+    registerHandler("admin.audit", [this, adminReply](std::shared_ptr<Session> session,
+                                                      const protocol::Request& request) {
+        return adminReply(request, admin_->audit(session->userId(), request.payload), "");
     });
 }
 

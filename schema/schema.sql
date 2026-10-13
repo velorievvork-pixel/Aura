@@ -22,11 +22,15 @@ CREATE TABLE IF NOT EXISTS users (
     is_active      BOOLEAN       NOT NULL DEFAULT TRUE,
     email_verified BOOLEAN       NOT NULL DEFAULT TRUE,  -- подтверждён ли email
     created_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
-    last_seen_at   TIMESTAMPTZ
+    last_seen_at   TIMESTAMPTZ,
+    -- админ-панель (admin.*); первые админы — AURA_ADMIN_EMAILS
+    role           TEXT          NOT NULL DEFAULT 'user'
+                   CONSTRAINT users_role_check CHECK (role IN ('user', 'moderator', 'admin'))
 );
 
 -- Email уникален без учёта регистра (citext не требуется)
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_key ON users (lower(email));
+CREATE INDEX IF NOT EXISTS users_role_idx ON users (role) WHERE role <> 'user';
 
 -- ------------------------------------------------------------- Sessions ----
 -- Один активный WebSocket/JWT-сеанс на устройство.

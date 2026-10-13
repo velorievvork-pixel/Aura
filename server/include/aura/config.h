@@ -70,6 +70,9 @@ struct Config {
     // форвардит тело fcm.message в FCM HTTP v1 API.
     std::string fcmUrl = "https://fcm.googleapis.com/v1/projects/aura/messages:send";  // AURA_FCM_URL
     std::string logLevel = "info";                       // AURA_LOG_LEVEL
+    // Админ-панель: email будущих администраторов через запятую/пробел.
+    // Роль admin выдаётся только подтверждённому адресу (при старте и при входе).
+    std::string adminEmails;                             // AURA_ADMIN_EMAILS
 
     static Config fromEnv();
     std::string describe() const;  // для стартового лога (без секретов)

@@ -43,6 +43,7 @@ Json UserRecord::toJson(bool includeSecret) const {
     json.set("timezone", Json(timezone));
     json.set("is_active", Json(active));
     json.set("email_verified", Json(emailVerified));
+    json.set("role", Json(role.empty() ? std::string("user") : role));
     json.set("created_at", Json(createdAt));
     if (!lastSeenAt.empty()) json.set("last_seen_at", Json(lastSeenAt));
     if (includeSecret) json.set("password_hash", Json(passwordHash));

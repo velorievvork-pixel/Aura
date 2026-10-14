@@ -30,11 +30,19 @@ class AuraClient(private val transport: WebSocketTransport = WebSocketTransport(
 
     // ------------------------------------------------------------ авторизация
 
-    suspend fun register(email: String, password: String, displayName: String): JsonObject? =
+    /**
+     * [ref] — реферальный код из приглашения: уходит (с ref_source "link") только
+     * если это валидный код из 8 символов A–Z/0–9; неверный молча отбрасывается.
+     */
+    suspend fun register(email: String, password: String, displayName: String, ref: String? = null): JsonObject? =
         request("auth.register", buildJsonObject {
             put("email", email)
             put("password", password)
             put("display_name", displayName)
+            ReferralCode.normalize(ref)?.let { code ->
+                put("ref", code)
+                put("ref_source", "link")
+            }
         })
 
     suspend fun verifyEmail(email: String, code: String): JsonObject? =

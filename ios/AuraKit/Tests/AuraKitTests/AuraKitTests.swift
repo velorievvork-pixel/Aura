@@ -87,6 +87,12 @@ final class DeepLinkTests: XCTestCase {
         XCTAssertEqual(link, .oauth(provider: "google_gmail", code: "abc", state: "st1"))
     }
 
+    func testSignupKeepsOnlyValidReferralCode() {
+        XCTAssertEqual(DeepLink(url: URL(string: "aura://signup?ref=abcd2345")!), .signup(ref: "ABCD2345"))
+        XCTAssertEqual(DeepLink(url: URL(string: "aura://signup?ref=bad")!), .signup(ref: ""))
+        XCTAssertEqual(DeepLink(url: URL(string: "aura://signup")!), .signup(ref: ""))
+    }
+
     func testRejectsForeignSchemeAndUnknownHost() {
         XCTAssertNil(DeepLink(url: URL(string: "https://aura.ai/chats/1")!))
         XCTAssertNil(DeepLink(url: URL(string: "aura://unknown")!))
@@ -211,8 +217,55 @@ final class BookingModelTests: XCTestCase {
         {"code": "ABCD2345", "url": "", "joined": 2, "verified": 1,
          "referrals": [{"display_name": "Фёдор", "source": "booking", "joined_at": "2026-10-14T08:00:00Z", "verified": true}]}
         """))
-        XCTAssertEqual(referral.link, "#/signup?ref=ABCD2345")
+        // Без AURA_PUBLIC_URL делимся кодом, а не голым «#/signup?ref=…».
+        XCTAssertFalse(referral.hasLink)
+        XCTAssertEqual(referral.link, "ABCD2345")
+        XCTAssertEqual(referral.shareText, "Код приглашения в Aura: ABCD2345")
         XCTAssertEqual(referral.referrals.first?.displayName, "Фёдор")
         XCTAssertEqual(referral.verified, 1)
+    }
+}
+
+final class ReferralTests: XCTestCase {
+
+    private func decode(_ text: String) throws -> JSONValue {
+        try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
+    }
+
+    func testReferralWithPublicUrlSharesLink() throws {
+        let info = ReferralInfo(json: try decode("""
+        {"code": "ABCD2345", "url": "https://aura.example/#/signup?ref=ABCD2345"}
+        """))
+        XCTAssertTrue(info.hasLink)
+        XCTAssertEqual(info.link, "https://aura.example/#/signup?ref=ABCD2345")
+        XCTAssertEqual(info.shareText, "Заведи свою Ауру: https://aura.example/#/signup?ref=ABCD2345")
+    }
+
+    func testCodeIsNormalizedAndValidated() {
+        XCTAssertEqual(ReferralCode.normalize(" abcd2345 "), "ABCD2345")
+        XCTAssertNil(ReferralCode.normalize(nil))
+        XCTAssertNil(ReferralCode.normalize(""))
+        XCTAssertNil(ReferralCode.normalize("ABCD234"))
+        XCTAssertNil(ReferralCode.normalize("ABCD-2345"))
+        XCTAssertNil(ReferralCode.normalize("АБВГ2345"))
+    }
+
+    func testRegisterPayloadWithoutRef() {
+        let payload = AuraClient.registerPayload(email: "a@b.c", password: "secret123", displayName: "Аня")
+        XCTAssertEqual(Set(payload.keys), ["email", "password", "display_name"])
+        XCTAssertEqual(Set(AuraClient.registerPayload(email: "a@b.c", password: "secret123", displayName: "Аня",
+                                                      ref: "bad").keys),
+                       ["email", "password", "display_name"])
+        XCTAssertEqual(Set(AuraClient.registerPayload(email: "a@b.c", password: "secret123", displayName: "Аня",
+                                                      ref: "  ").keys),
+                       ["email", "password", "display_name"])
+    }
+
+    func testRegisterPayloadWithRef() {
+        let payload = AuraClient.registerPayload(email: "a@b.c", password: "secret123", displayName: "Аня",
+                                                 ref: " abcd2345")
+        XCTAssertEqual(Set(payload.keys), ["email", "password", "display_name", "ref", "ref_source"])
+        XCTAssertEqual(payload["ref"], .string("ABCD2345"))
+        XCTAssertEqual(payload["ref_source"], .string("link"))
     }
 }

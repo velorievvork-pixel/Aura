@@ -43,6 +43,7 @@ Back Tap — системная функция iOS (Настройки → Ун�
 | `aura://tasks` | вкладка задач |
 | `aura://settings` | настройки |
 | `aura://oauth?provider&code&state` | возврат Google OAuth (redirect URI интеграций) |
+| `aura://signup?ref=CODE` | форма регистрации с кодом приглашения (Android, iOS; без входа, после входа игнорируется) |
 
 Неизвестные пути игнорируются без краша (покрыто чек-листом TESTING.md).
 

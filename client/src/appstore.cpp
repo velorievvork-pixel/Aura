@@ -96,9 +96,14 @@ AppStore::AppStore(QObject* parent)
             loadMemory();
             reconnectDelayMs_ = 2000;
         } else if (state == WebSocketClient::State::Disconnected) {
-            // Ответы на запросы в полёте уже не придут — счётчик privacy сбрасываем,
-            // после переподключения prefs.get вернёт актуальные флаги.
+            // Ответы на запросы в полёте уже не придут — счётчик privacy и флаг
+            // сохранения страницы записи сбрасываем; после переподключения prefs.get
+            // вернёт актуальные флаги.
             privacyPending_ = 0;
+            if (bookingSaving_) {
+                bookingSaving_ = false;
+                emit bookingSavingChanged();
+            }
             setStatus(QStringLiteral("Нет соединения с сервером"));
             scheduleReconnect();
         }
@@ -404,13 +409,30 @@ void AppStore::cancelTwoFactor() {
     setStatus(QStringLiteral("Вход отменён"));
 }
 
-void AppStore::registerUser(const QString& displayName, const QString& email, const QString& password) {
+QString AppStore::normalizeReferralCode(const QString& raw) const {
+    const QString code = raw.trimmed().toUpper();
+    if (code.size() != 8) return QString();
+    for (const QChar ch : code) {
+        const bool ok = (ch >= QLatin1Char('A') && ch <= QLatin1Char('Z')) || (ch >= QLatin1Char('0') && ch <= QLatin1Char('9'));
+        if (!ok) return QString();
+    }
+    return code;
+}
+
+void AppStore::registerUser(const QString& displayName, const QString& email, const QString& password,
+                            const QString& ref) {
     setBusy(true);
     QJsonObject payload;
     payload.insert(QStringLiteral("display_name"), displayName);
     payload.insert(QStringLiteral("email"), email);
     payload.insert(QStringLiteral("password"), password);
     payload.insert(QStringLiteral("device"), QStringLiteral("qt-client"));
+    // Код приглашения: неверный не отправляем (сервер его всё равно молча проигнорирует).
+    const QString code = normalizeReferralCode(ref);
+    if (!code.isEmpty()) {
+        payload.insert(QStringLiteral("ref"), code);
+        payload.insert(QStringLiteral("ref_source"), QStringLiteral("link"));
+    }
 
     client_->sendRequest(QStringLiteral("auth.register"), payload,
                          [this, email](const QJsonObject& response, const QString& error) {
@@ -1543,6 +1565,8 @@ void AppStore::loadBooking() {
 }
 
 void AppStore::saveBookingPage(qint64 pageId, const QVariantMap& fields) {
+    // Запрос уже в полёте — повторный клик не создаёт вторую страницу.
+    if (bookingSaving_) return;
     const QString problem = bookingFieldsProblem(fields);
     if (!problem.isEmpty()) {
         emit bookingPageFailed(problem);
@@ -1556,8 +1580,12 @@ void AppStore::saveBookingPage(qint64 pageId, const QVariantMap& fields) {
     }
     payload.insert(QStringLiteral("weekends"), fields.value(QStringLiteral("weekends")).toBool());
     if (pageId > 0) payload.insert(QStringLiteral("page_id"), static_cast<double>(pageId));
+    bookingSaving_ = true;
+    emit bookingSavingChanged();
     client_->sendRequest(pageId > 0 ? QStringLiteral("booking.pageUpdate") : QStringLiteral("booking.pageCreate"),
                          payload, [this](const QJsonObject&, const QString& error) {
+                             bookingSaving_ = false;
+                             emit bookingSavingChanged();
                              if (!error.isEmpty()) {
                                  emit bookingPageFailed(error);
                                  return;

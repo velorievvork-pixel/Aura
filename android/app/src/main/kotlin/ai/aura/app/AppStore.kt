@@ -164,6 +164,13 @@ object AppStore {
     private val _wantVoice = MutableStateFlow(false)
     val wantVoice: StateFlow<Boolean> = _wantVoice
 
+    /**
+     * Deep link aura://signup?ref=…: null — ссылки не было; иначе код приглашения
+     * ("" — без валидного кода). Экран входа открывает регистрацию и забирает код.
+     */
+    private val _signupRef = MutableStateFlow<String?>(null)
+    val signupRef: StateFlow<String?> = _signupRef
+
     /** Онбординг-опрос: показываем после входа, пока prefs.onboarded != true. */
     private val _needOnboarding = MutableStateFlow(false)
     val needOnboarding: StateFlow<Boolean> = _needOnboarding
@@ -294,12 +301,13 @@ object AppStore {
         }
     }
 
-    fun register(displayName: String, email: String, password: String, focus: String = "") = scope.launch {
+    /** [ref] — код приглашения (необязательно); неверный код клиент не отправляет. */
+    fun register(displayName: String, email: String, password: String, focus: String = "", ref: String = "") = scope.launch {
         pendingFocus = focus.trim()
         guard {
             client.connect(store.serverUrl)
             waitForConnected()
-            client.register(email, password, displayName)
+            client.register(email, password, displayName, ref)
             _auth.value = AuthState.NeedsEmailCode(email)
             _errorText.value = "Мы отправили код подтверждения на $email"
         }
@@ -407,6 +415,8 @@ object AppStore {
         registerPushDevice()
         checkOnboarding()
         refreshMemory()
+        // Deep link aura://settings пришёл до входа: вкладка уже выбрана, догружаем то, чего нет выше.
+        if (_tab.value == Tab.SETTINGS) refreshReferral()
         if (pendingFocus.isNotEmpty()) {
             val focus = pendingFocus
             pendingFocus = ""
@@ -655,6 +665,7 @@ object AppStore {
 
     fun consumePendingAsk() { _pendingAsk.value = null }
     fun consumeWantVoice() { _wantVoice.value = false }
+    fun consumeSignupRef() { _signupRef.value = null }
     fun requestVoice() { _wantVoice.value = true }
     fun selectTab(value: Tab) {
         _tab.value = value
@@ -820,6 +831,8 @@ object AppStore {
         guard {
             val updated = client.bookingOwnerCancel(booking.id)
             _bookings.value = _bookings.value.map { if (it.id == updated.id) updated else it }
+            // Счётчик «Предстоит: N» считает сервер — перечитываем страницы.
+            _bookingPages.value = client.bookingPageList()
             refreshTasks()
         }
     }
@@ -1010,12 +1023,21 @@ object AppStore {
             }
             DeepLink.Voice -> _wantVoice.value = true
             is DeepLink.Ask -> if (link.text.isBlank()) _wantVoice.value = true else ask(link.text)
-            DeepLink.Tasks -> _tab.value = Tab.TASKS
-            DeepLink.Notifications -> _tab.value = Tab.NOTICES
-            DeepLink.Settings -> _tab.value = Tab.SETTINGS
+            DeepLink.Tasks -> openTabFromLink(Tab.TASKS)
+            DeepLink.Notifications -> openTabFromLink(Tab.NOTICES)
+            DeepLink.Settings -> openTabFromLink(Tab.SETTINGS)
+            is DeepLink.Signup -> {
+                // Код пригодится только новому аккаунту: после входа ссылка просто ничего не меняет.
+                if (_auth.value !is AuthState.LoggedIn) _signupRef.value = link.ref
+            }
             is DeepLink.OAuth -> finishIntegration(link.provider, link.code, link.state)
             null -> Unit  // неизвестная ссылка игнорируется без краша
         }
+    }
+
+    /** Раздел из deep link: после входа — как тап по вкладке (с загрузкой данных), до входа — только вкладка. */
+    private fun openTabFromLink(tab: Tab) {
+        if (_auth.value is AuthState.LoggedIn) selectTab(tab) else _tab.value = tab
     }
 
     // ------------------------------------------------------------- служебное

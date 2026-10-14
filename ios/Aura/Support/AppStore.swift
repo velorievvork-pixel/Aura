@@ -209,6 +209,9 @@ final class AppStore: ObservableObject {
     @Published var savingProfile = false
 
     @Published var tab: AppTab = .home
+    /// Deep link aura://signup?ref=…: nil — ссылки не было; иначе код приглашения
+    /// ("" — без валидного кода). Экран входа открывает регистрацию и забирает код.
+    @Published var signupRef: String?
 
     @Published var dialog: [DialogEntry] = []
     @Published var memory: [MemoryEntry] = []
@@ -327,11 +330,13 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func register(displayName: String, email: String, password: String, focus: String) {
+    /// `ref` — код приглашения (необязательно); неверный код клиент не отправляет.
+    func register(displayName: String, email: String, password: String, focus: String, ref: String = "") {
         pendingFocus = focus.trimmingCharacters(in: .whitespacesAndNewlines)
         run {
             try self.connectTransport()
-            _ = try await self.client.register(email: email, password: password, displayName: displayName)
+            _ = try await self.client.register(email: email, password: password, displayName: displayName,
+                                               ref: ref)
             self.authState = .needsEmailCode(email)
             self.setStatus("Мы отправили код подтверждения на \(email)")
         }
@@ -989,6 +994,8 @@ final class AppStore: ObservableObject {
         run {
             let updated = try await self.client.bookingOwnerCancel(id: booking.id)
             self.bookings = self.bookings.map { $0.id == updated.id ? updated : $0 }
+            // Счётчик «Предстоит: N» считает сервер — перечитываем страницы.
+            self.bookingPages = try await self.client.bookingPageList()
             self.loadTasks()
         }
     }
@@ -1185,6 +1192,9 @@ final class AppStore: ObservableObject {
             selectTab(.tasks)
         case .settings:
             selectTab(.settings)
+        case .signup(let ref):
+            // Код пригодится только новому аккаунту: после входа ссылка ничего не меняет.
+            if authState != .loggedIn { signupRef = ref }
         case .oauth(let provider, let code, let state):
             integrationCallback(provider: provider, code: code, state: state)
         }

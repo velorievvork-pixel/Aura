@@ -42,12 +42,27 @@ public final class AuraClient: @unchecked Sendable {
 
     // MARK: - Auth
 
-    public func register(email: String, password: String, displayName: String) async throws -> JSONValue {
-        try await request("auth.register", [
+    /// `ref` — реферальный код из приглашения: уходит (с ref_source "link") только
+    /// если это валидный код из 8 символов A–Z/0–9; неверный молча отбрасывается.
+    public func register(email: String, password: String, displayName: String,
+                         ref: String? = nil) async throws -> JSONValue {
+        try await request("auth.register", AuraClient.registerPayload(email: email, password: password,
+                                                                       displayName: displayName, ref: ref))
+    }
+
+    /// Payload auth.register (отдельно — чтобы проверять без сети).
+    public static func registerPayload(email: String, password: String, displayName: String,
+                                       ref: String? = nil) -> [String: JSONValue] {
+        var payload: [String: JSONValue] = [
             "email": .string(email),
             "password": .string(password),
             "display_name": .string(displayName)
-        ])
+        ]
+        if let code = ReferralCode.normalize(ref) {
+            payload["ref"] = .string(code)
+            payload["ref_source"] = .string("link")
+        }
+        return payload
     }
 
     public func verifyEmail(email: String, code: String) async throws -> JSONValue {

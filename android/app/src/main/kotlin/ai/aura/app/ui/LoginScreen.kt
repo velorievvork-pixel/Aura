@@ -28,6 +28,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -50,6 +52,7 @@ import ai.aura.app.ui.theme.GradientButton
 import ai.aura.app.ui.theme.Muted
 import ai.aura.app.ui.theme.TextPrimary
 import ai.aura.app.ui.theme.TextSecondary
+import ai.aura.kit.ReferralCode
 import java.time.ZoneId
 
 /**
@@ -66,12 +69,22 @@ fun LoginScreen() {
     var password by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
     var focus by remember { mutableStateOf("") }
+    var refCode by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var code by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
     var trustDevice by remember { mutableStateOf(true) }
     var serverUrl by remember { mutableStateOf(AppStore.store.serverUrl) }
     var showServer by remember { mutableStateOf(false) }
+    val signupRef by AppStore.signupRef.collectAsState()
+
+    // aura://signup?ref=CODE — сразу форма регистрации с подставленным кодом.
+    LaunchedEffect(signupRef) {
+        val link = signupRef ?: return@LaunchedEffect
+        register = true
+        if (link.isNotEmpty()) refCode = link
+        AppStore.consumeSignupRef()
+    }
 
     AuraBackground {
         Column(
@@ -151,7 +164,13 @@ fun LoginScreen() {
                                 trailing = Icons.Outlined.Schedule)
                             AuraField(focus, { focus = it }, "например, встречи, продуктивность, код",
                                 label = "С чем должна помогать ваша Аура?", filled = true)
-                            GradientButton("Создать аккаунт", { AppStore.register(displayName.trim(), email.trim(), password, focus) },
+                            AuraField(refCode, { refCode = it.trim().uppercase().take(ReferralCode.LENGTH) }, "Например, ABCD2345",
+                                label = "Код приглашения (необязательно)",
+                                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters))
+                            if (refCode.isNotEmpty() && ReferralCode.normalize(refCode) == null) {
+                                Muted("Код — ${ReferralCode.LENGTH} латинских букв и цифр; с неверным кодом регистрация пройдёт без приглашения")
+                            }
+                            GradientButton("Создать аккаунт", { AppStore.register(displayName.trim(), email.trim(), password, focus, refCode) },
                                 Modifier.fillMaxWidth().padding(top = 6.dp), busy = busy)
                             Muted("Пароль — Argon2id, сессия — JWT", Modifier.fillMaxWidth(), align = TextAlign.Center)
                             Link("Уже есть аккаунт?", Modifier.align(Alignment.End)) { register = false }

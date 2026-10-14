@@ -116,6 +116,13 @@ class DeepLinkTests {
     }
 
     @Test
+    fun `signup route keeps only a valid referral code`() {
+        assertEquals(DeepLink.Signup("ABCD2345"), DeepLink.parse("aura://signup?ref=abcd2345"))
+        assertEquals(DeepLink.Signup(""), DeepLink.parse("aura://signup?ref=bad"))
+        assertEquals(DeepLink.Signup(""), DeepLink.parse("aura://signup"))
+    }
+
+    @Test
     fun `rejects foreign scheme and unknown host`() {
         assertNull(DeepLink.parse("https://aura.app/chats/1"))
         assertNull(DeepLink.parse("aura://unknown"))

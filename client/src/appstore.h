@@ -82,6 +82,8 @@ class AppStore : public QObject {
     Q_PROPERTY(QVariantList bookingPages READ bookingPages NOTIFY bookingChanged)
     Q_PROPERTY(QVariantList guestBookings READ guestBookings NOTIFY bookingChanged)
     Q_PROPERTY(bool bookingLoaded READ bookingLoaded NOTIFY bookingChanged)
+    // Сохранение страницы записи в полёте: кнопка формы неактивна (без дублей при двойном клике).
+    Q_PROPERTY(bool bookingSaving READ bookingSaving NOTIFY bookingSavingChanged)
     Q_PROPERTY(QVariantMap referral READ referral NOTIFY referralChanged)
     Q_PROPERTY(QVariantList confirmations READ confirmations NOTIFY confirmationsChanged)
     Q_PROPERTY(QVariantList tasks READ tasks NOTIFY tasksChanged)
@@ -175,6 +177,7 @@ public:
     QVariantList bookingPages() const { return bookingPages_; }
     QVariantList guestBookings() const { return guestBookings_; }
     bool bookingLoaded() const { return bookingLoaded_; }
+    bool bookingSaving() const { return bookingSaving_; }
     QVariantMap referral() const { return referral_; }
     // Этап 8
     QVariantList toolPermissions() const { return toolPermissions_; }
@@ -198,7 +201,11 @@ public:
 
 public slots:
     void login(const QString& email, const QString& password);
-    void registerUser(const QString& displayName, const QString& email, const QString& password);
+    // ref — код приглашения (необязательно): уходит только валидный, 8 символов A–Z/0–9.
+    void registerUser(const QString& displayName, const QString& email, const QString& password,
+                      const QString& ref = QString());
+    // Нормализованный реферальный код (верхний регистр) или "" — если код неверный.
+    QString normalizeReferralCode(const QString& raw) const;
     void logout();
     // auth v3
     void verifyEmail(const QString& email, const QString& code);
@@ -333,6 +340,7 @@ signals:
     void bookingChanged();
     void bookingPageSaved();                       // форма страницы сохранена — можно закрыть
     void bookingPageFailed(const QString& message);  // ошибка формы (проверка или сервер)
+    void bookingSavingChanged();
     void referralChanged();
     // Этап 8: разрешения, подтверждения, задачи
     void toolPermissionsChanged();
@@ -443,6 +451,7 @@ private:
     QVariantList bookingPages_;
     QVariantList guestBookings_;
     bool bookingLoaded_ = false;
+    bool bookingSaving_ = false;
     QVariantMap referral_;
     // Этап 8: разрешения, подтверждения, задачи
     QVariantList toolPermissions_;    // каталог инструментов с эффективным mode

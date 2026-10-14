@@ -42,6 +42,14 @@ Item {
         return (b.occurrences || []).filter(function (o) { return o.status === "active" && F.parse(o.start) > now })
     }
 
+    // Встречи по времени начала: после переноса сервер оставляет встречу на прежнем месте массива.
+    function byStart(list) {
+        return list.slice().sort(function (a, b) {
+            var x = F.parse(a.start), y = F.parse(b.start)
+            return (x ? x.getTime() : 0) - (y ? y.getTime() : 0)
+        })
+    }
+
     Connections {
         target: App
         function onBookingPageSaved() { page.formOpen = false; page.editing = null }
@@ -232,8 +240,12 @@ Item {
                     RowLayout {
                         spacing: 10
                         GlassButton {
-                            text: page.editing ? "Сохранить" : "Создать страницу"
+                            // Пока запрос в полёте — неактивна: двойной клик не создаёт дубль страницы.
+                            readonly property bool saving: App ? App.bookingSaving : false
+                            text: saving ? "Сохраняем…" : (page.editing ? "Сохранить" : "Создать страницу")
                             variant: "accent"
+                            busy: saving
+                            enabled: !saving
                             onClicked: App.saveBookingPage(page.editing ? page.editing.id : 0, {
                                 title: titleField.text,
                                 description: descriptionField.text,
@@ -346,6 +358,12 @@ Item {
                                 variant: "danger"
                                 onClicked: { card.confirmDelete = false; App.deleteBookingPage(card.modelData.id) }
                             }
+                            GlassButton {
+                                visible: card.confirmDelete
+                                text: "Нет"
+                                variant: "quiet"
+                                onClicked: card.confirmDelete = false
+                            }
                         }
                     }
                 }
@@ -400,7 +418,7 @@ Item {
                             }
                         }
                         Caption {
-                            text: (row.next.length > 0 ? row.next : (row.modelData.occurrences || [])).slice(0, 3)
+                            text: page.byStart(row.next.length > 0 ? row.next : (row.modelData.occurrences || [])).slice(0, 3)
                                   .map(function (o) { return F.dayPhrase(o.start) + ", " + F.time(o.start) }).join(" · ")
                                   + (row.modelData.reschedules > 0 ? " · переносов: " + row.modelData.reschedules : "")
                         }

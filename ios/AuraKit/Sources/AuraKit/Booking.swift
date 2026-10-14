@@ -145,7 +145,15 @@ public struct ReferralInfo: Equatable, Sendable {
     public var verified: Int
     public var referrals: [Referral]
 
-    public var link: String { url.isEmpty ? "#/signup?ref=\(code)" : url }
+    /// Есть ли полная ссылка; без AURA_PUBLIC_URL делимся только кодом.
+    public var hasLink: Bool { !url.isEmpty }
+
+    /// Что показать и скопировать: полная ссылка или (без AURA_PUBLIC_URL) сам код —
+    /// голый путь «#/signup?ref=…» без адреса веб-клиента никуда не ведёт.
+    public var link: String { url.isEmpty ? code : url }
+
+    /// Текст для «Поделиться»: ссылка или код, который друг введёт при регистрации.
+    public var shareText: String { hasLink ? "Заведи свою Ауру: \(url)" : "Код приглашения в Aura: \(code)" }
 
     public init(json: JSONValue) {
         code = json.string("code")
@@ -156,5 +164,21 @@ public struct ReferralInfo: Equatable, Sendable {
             Referral(displayName: $0.string("display_name"), source: $0.string("source"),
                      joinedAt: $0.string("joined_at"), verified: $0.bool("verified"))
         }
+    }
+}
+
+/// Реферальный код: 8 символов A–Z/0–9 (сервер сравнивает в верхнем регистре).
+public enum ReferralCode {
+    public static let length = 8
+    private static let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+    /// Нормализованный код или nil — неверный код не отправляем (сервер его всё равно молча проигнорирует).
+    public static func normalize(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let code = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard code.unicodeScalars.count == length,
+              code.unicodeScalars.allSatisfy({ allowed.contains($0) })
+        else { return nil }
+        return code
     }
 }

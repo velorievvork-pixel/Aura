@@ -208,10 +208,64 @@ class BookingTests {
         assertEquals("2026-10-21T10:00", booking.occurrences.first().local)
         assertFalse(booking.occurrences.last().active)
         val referral = client.referralGet()
-        assertEquals("#/signup?ref=ABCD2345", referral.link)
+        // Без AURA_PUBLIC_URL делимся кодом, а не голым «#/signup?ref=…».
+        assertFalse(referral.hasLink)
+        assertEquals("ABCD2345", referral.link)
+        assertEquals("Код приглашения в Aura: ABCD2345", referral.shareText)
         assertEquals(Referral("Фёдор", "booking", "2026-10-14T08:00:00Z", true), referral.referrals.single())
         client.bookingOwnerCancel(9, "2026-10-21T07:00:00Z")
         assertEquals(mapOf("booking_id" to JsonPrimitive(9L), "occurrence" to JsonPrimitive("2026-10-21T07:00:00Z")),
             transport.sent.last().second.toMap())
+    }
+}
+
+class ReferralTests {
+
+    @Test
+    fun `referral with public url shares the link`() {
+        val info = ReferralInfo.from(json("""{"code":"ABCD2345","url":"https://aura.example/#/signup?ref=ABCD2345"}"""))
+        assertTrue(info.hasLink)
+        assertEquals("https://aura.example/#/signup?ref=ABCD2345", info.link)
+        assertEquals("Заведи свою Ауру: https://aura.example/#/signup?ref=ABCD2345", info.shareText)
+    }
+
+    @Test
+    fun `code is normalized and validated`() {
+        assertEquals("ABCD2345", ReferralCode.normalize(" abcd2345 "))
+        assertEquals(null, ReferralCode.normalize(""))
+        assertEquals(null, ReferralCode.normalize(null))
+        assertEquals(null, ReferralCode.normalize("ABCD234"))
+        assertEquals(null, ReferralCode.normalize("ABCD-2345"))
+        assertEquals(null, ReferralCode.normalize("АБВГ2345"))
+    }
+
+    @Test
+    fun `register without ref sends no ref fields`() = runBlocking {
+        val transport = RecordingTransport { _, _ -> json("{}") }
+        AuraClient(transport).register("a@b.c", "secret123", "Аня")
+        val (type, payload) = transport.sent.single()
+        assertEquals("auth.register", type)
+        assertEquals(setOf("email", "password", "display_name"), payload.keys)
+    }
+
+    @Test
+    fun `register with ref sends normalized code and link source`() = runBlocking {
+        val transport = RecordingTransport { _, _ -> json("{}") }
+        AuraClient(transport).register("a@b.c", "secret123", "Аня", ref = " abcd2345")
+        val payload = transport.sent.single().second
+        assertEquals(setOf("email", "password", "display_name", "ref", "ref_source"), payload.keys)
+        assertEquals("ABCD2345", payload.str("ref"))
+        assertEquals("link", payload.str("ref_source"))
+    }
+
+    @Test
+    fun `register drops invalid or blank ref`() = runBlocking {
+        val transport = RecordingTransport { _, _ -> json("{}") }
+        val client = AuraClient(transport)
+        client.register("a@b.c", "secret123", "Аня", ref = "bad")
+        client.register("a@b.c", "secret123", "Аня", ref = "  ")
+        transport.sent.forEach { (_, payload) ->
+            assertEquals(setOf("email", "password", "display_name"), payload.keys)
+        }
     }
 }

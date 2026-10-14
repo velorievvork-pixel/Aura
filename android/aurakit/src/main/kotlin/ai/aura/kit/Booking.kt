@@ -131,7 +131,17 @@ data class ReferralInfo(
     val verified: Int,
     val referrals: List<Referral>,
 ) {
-    val link: String get() = url.ifEmpty { "#/signup?ref=$code" }
+    /** Есть ли полная ссылка; без AURA_PUBLIC_URL делимся только кодом. */
+    val hasLink: Boolean get() = url.isNotEmpty()
+
+    /**
+     * Что показать и скопировать: полная ссылка или (без AURA_PUBLIC_URL) сам код —
+     * голый путь «#/signup?ref=…» без адреса веб-клиента никуда не ведёт.
+     */
+    val link: String get() = url.ifEmpty { code }
+
+    /** Текст для «Поделиться»: ссылка или код, который друг введёт при регистрации. */
+    val shareText: String get() = if (hasLink) "Заведи свою Ауру: $url" else "Код приглашения в Aura: $code"
 
     companion object {
         fun from(json: JsonObject?): ReferralInfo = ReferralInfo(
@@ -144,5 +154,17 @@ data class ReferralInfo(
                 Referral(item.str("display_name"), item.str("source"), item.str("joined_at"), item.bool("verified"))
             },
         )
+    }
+}
+
+/** Реферальный код: 8 символов A–Z/0–9 (сервер сравнивает в верхнем регистре). */
+object ReferralCode {
+    const val LENGTH = 8
+    private val pattern = Regex("^[A-Z0-9]{$LENGTH}$")
+
+    /** Нормализованный код или null — неверный код не отправляем (сервер его всё равно молча проигнорирует). */
+    fun normalize(raw: String?): String? {
+        val code = raw?.trim()?.uppercase() ?: return null
+        return if (pattern.matches(code)) code else null
     }
 }

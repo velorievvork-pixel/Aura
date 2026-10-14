@@ -47,7 +47,7 @@ iOS (SwiftUI). База — PostgreSQL, 28 таблиц (`schema/schema.sql` + `
   reschedule/cancel/resendLink` — веб-страницы `#/i/<токен>`, `#/b/<slug>`, `#/m/<токен>`; токены
   ссылок в БД только sha256. Рефералы: `referral.get`, `auth.register` + `ref`.
 - Deep link `aura://`: `chats/<id>`, `voice`, `ask?text=`, `tasks`, `notifications`,
-  `settings`, `oauth?provider=&code=&state=`.
+  `settings`, `oauth?provider=&code=&state=`, `signup?ref=` (Android/iOS).
 - Смена протокола = правка сервера + всех клиентов + `docs/PROTOCOL.md` + чекеры
   в `tools/` + `tools/e2e.py` в одном коммите.
 

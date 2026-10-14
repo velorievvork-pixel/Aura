@@ -1010,7 +1010,11 @@ Item {
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
                 readonly property var info: App ? App.referral : ({})
-                readonly property string link: info.url ? info.url : (info.code ? "#/signup?ref=" + info.code : "")
+                // Без AURA_PUBLIC_URL сервер отдаёт пустой url: голый «#/signup?ref=…» никуда
+                // не ведёт, поэтому делимся только кодом — друг введёт его при регистрации.
+                readonly property bool hasLink: !!info.url
+                readonly property string link: hasLink ? info.url : ""
+                readonly property string copyValue: hasLink ? info.url : (info.code ? "Код приглашения в Aura: " + info.code : "")
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -1053,7 +1057,7 @@ Item {
                         }
                     }
                     TextEdit {
-                        visible: !!referralPanel.info.code
+                        visible: !!referralPanel.info.code && referralPanel.hasLink
                         Layout.fillWidth: true
                         readOnly: true
                         selectByMouse: true
@@ -1063,10 +1067,19 @@ Item {
                         font.pixelSize: AuraTheme.fontSmall
                         color: AuraTheme.textPrimary
                     }
+                    Text {
+                        visible: !!referralPanel.info.code && !referralPanel.hasLink
+                        Layout.fillWidth: true
+                        text: "Сервер не знает свой публичный адрес (AURA_PUBLIC_URL) — делимся только кодом: друг введёт его при регистрации."
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontMicro
+                        color: AuraTheme.textMuted
+                        wrapMode: Text.WordWrap
+                    }
                     GlassButton {
                         visible: !!referralPanel.info.code
-                        text: "Скопировать ссылку"
-                        onClicked: App.copyText(referralPanel.link)
+                        text: referralPanel.hasLink ? "Скопировать ссылку" : "Скопировать код"
+                        onClicked: App.copyText(referralPanel.copyValue)
                     }
                     Text {
                         visible: !!referralPanel.info.code

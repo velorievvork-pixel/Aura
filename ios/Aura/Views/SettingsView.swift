@@ -86,13 +86,17 @@ struct SettingsView: View {
                     Spacer()
                     Text(info.code).font(AuraFont.titleSmall).foregroundStyle(AuraColor.textPrimary).textSelection(.enabled)
                 }
-                Text(info.link).font(AuraFont.small).foregroundStyle(AuraColor.textPrimary).textSelection(.enabled)
+                if info.hasLink {
+                    Text(info.link).font(AuraFont.small).foregroundStyle(AuraColor.textPrimary).textSelection(.enabled)
+                } else {
+                    Muted("Сервер не знает свой публичный адрес (AURA_PUBLIC_URL) — делимся только кодом: друг введёт его при регистрации.")
+                }
                 HStack(spacing: 8) {
                     GlassButton(title: "Копировать", systemImage: "doc.on.doc", height: 40) {
                         UIPasteboard.general.string = info.link
-                        store.setStatus("Ссылка скопирована")
+                        store.setStatus(info.hasLink ? "Ссылка скопирована" : "Код скопирован")
                     }
-                    ShareLink(item: info.link, message: Text("Заведи свою Ауру — личного ИИ-агента")) {
+                    ShareLink(item: info.shareText) {
                         Label("Поделиться", systemImage: "square.and.arrow.up")
                             .font(AuraFont.small)
                             .frame(maxWidth: .infinity, minHeight: 40)

@@ -284,10 +284,11 @@ private fun ReferralCard(info: ai.aura.kit.ReferralInfo?) {
                 Muted("Ваш код", Modifier.weight(1f))
                 Text(info.code, style = MaterialTheme.typography.titleLarge, color = TextPrimary)
             }
-            Text(info.link, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+            if (info.hasLink) Text(info.link, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+            else Muted("Сервер не знает свой публичный адрес (AURA_PUBLIC_URL) — делимся только кодом: друг введёт его при регистрации.")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 GlassButton("Копировать", { copyText(context, info.link) }, Modifier.weight(1f), icon = Icons.Outlined.ContentCopy, height = 40.dp)
-                GlassButton("Поделиться", { shareText(context, "Aura", "Заведи свою Ауру: ${info.link}") }, Modifier.weight(1f),
+                GlassButton("Поделиться", { shareText(context, "Aura", info.shareText) }, Modifier.weight(1f),
                     icon = Icons.Outlined.Share, height = 40.dp)
             }
             Muted("Зарегистрировались: ${info.joined} · подтвердили email: ${info.verified}")

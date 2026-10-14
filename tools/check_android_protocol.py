@@ -40,6 +40,7 @@ KINDS = {
     "login.new",
     "twofactor.enabled",
     "twofactor.disabled",
+    "referral.joined",
 }
 
 
@@ -50,8 +51,11 @@ def server_types() -> set[str]:
 
 def server_kinds() -> set[str]:
     """Виды уведомлений, которые сервер реально создаёт (create(userId, "kind", ...))."""
-    text = (ROOT / "server/src/server.cpp").read_text(encoding="utf-8")
-    return set(re.findall(r'create\(\s*[^,]+,\s*"([a-z][a-z0-9.]+)"', text))
+    kinds: set[str] = set()
+    for path in sorted((ROOT / "server/src").glob("*.cpp")):
+        text = path.read_text(encoding="utf-8")
+        kinds |= set(re.findall(r'create\(\s*[^,]+,\s*"([a-z][a-z0-9.]+)"', text))
+    return kinds
 
 
 def kotlin_candidates() -> dict[str, list[str]]:

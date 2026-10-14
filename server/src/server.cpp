@@ -156,7 +156,9 @@ bool Server::start(std::string& error) {
     agent_ = std::make_unique<AgentManager>(config_, *database_, *memory_, *tools_, *chats_);
     taskManager_ = std::make_unique<TaskManager>(*database_, connections_);
     admin_ = std::make_unique<AdminManager>(*database_, config_);
-    invites_ = std::make_unique<InviteManager>(*database_, *memory_, notifications_.get(), config_);
+    referrals_ = std::make_unique<ReferralManager>(*database_, notifications_.get(), config_);
+    invites_ = std::make_unique<InviteManager>(*database_, *memory_, notifications_.get(), config_, referrals_.get());
+    bookings_ = std::make_unique<BookingManager>(*database_, *memory_, notifications_.get(), *referrals_, config_);
     admin_->bootstrapAll();
 
     registerHandlers();
@@ -422,6 +424,12 @@ void Server::registerHandlers() {
                                                                 request.payload.getString("device", "qt-client"),
                                                                 session->remoteAddr());
                         if (!result.ok) return protocol::error(request.id, result.code, result.message);
+                        // Регистрация по реферальной ссылке: неверный код молча игнорируется.
+                        if (!request.payload.getString("ref").empty()) {
+                            referrals_->attach(result.payload.get("user").getInt("id"),
+                                               request.payload.getString("ref"),
+                                               request.payload.getString("ref_source"));
+                        }
                         return protocol::ok(request.id, result.payload);
                     });
 
@@ -431,6 +439,8 @@ void Server::registerHandlers() {
                                                                request.payload.getString("code"),
                                                                session->remoteAddr());
                         if (!result.ok) return protocol::error(request.id, result.code, result.message);
+                        // Приглашённый засчитывается пригласившему после подтверждения email.
+                        referrals_->verified(result.payload.get("user").getInt("id"));
                         return protocol::ok(request.id,
                                             withBootstrappedRole(*admin_, database_->db(),
                                                                  result.payload.get("user").getInt("id"),
@@ -887,6 +897,65 @@ void Server::registerHandlers() {
 
     registerHandler("invite.respond", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
         const auto result = invites_->respond(request.payload, session->remoteAddr());
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    });
+
+    // ------------------------------------------------------------ booking
+    // Страницы записи: владелец (вход нужен) и гость без аккаунта (booking.get /
+    // book / manage / reschedule / cancel — публичные, доступ по slug или токену).
+    const auto bookingReply = [](const protocol::Request& request, const BookingManager::Result& result) {
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    };
+    registerHandler("booking.pageCreate", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->pageCreate(session->userId(), request.payload));
+    });
+    registerHandler("booking.pageList", [this, bookingReply](std::shared_ptr<Session> session,
+                                                             const protocol::Request& request) {
+        return bookingReply(request, bookings_->pageList(session->userId()));
+    });
+    registerHandler("booking.pageUpdate", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->pageUpdate(session->userId(), request.payload));
+    });
+    registerHandler("booking.pageDelete", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->pageDelete(session->userId(), request.payload));
+    });
+    registerHandler("booking.list", [this, bookingReply](std::shared_ptr<Session> session,
+                                                         const protocol::Request& request) {
+        return bookingReply(request, bookings_->list(session->userId(), request.payload));
+    });
+    registerHandler("booking.ownerCancel", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                const protocol::Request& request) {
+        return bookingReply(request, bookings_->ownerCancel(session->userId(), request.payload));
+    });
+    registerHandler("booking.get", [this, bookingReply](std::shared_ptr<Session> session,
+                                                        const protocol::Request& request) {
+        return bookingReply(request, bookings_->get(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.book", [this, bookingReply](std::shared_ptr<Session> session,
+                                                         const protocol::Request& request) {
+        return bookingReply(request, bookings_->book(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.manage", [this, bookingReply](std::shared_ptr<Session> session,
+                                                           const protocol::Request& request) {
+        return bookingReply(request, bookings_->manage(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.reschedule", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->reschedule(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.cancel", [this, bookingReply](std::shared_ptr<Session> session,
+                                                           const protocol::Request& request) {
+        return bookingReply(request, bookings_->cancel(request.payload, session->remoteAddr()));
+    });
+
+    // ----------------------------------------------------------- referral
+    registerHandler("referral.get", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = referrals_->get(session->userId(), request.payload);
         return result.ok ? protocol::ok(request.id, result.payload)
                          : protocol::error(request.id, result.code, result.message);
     });

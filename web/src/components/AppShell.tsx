@@ -1,4 +1,4 @@
-import { Bell, CheckSquare, Handshake, Home, MessageCircle, Settings, Shield, Users } from 'lucide-react';
+import { Bell, CalendarClock, CheckSquare, Handshake, Home, MessageCircle, Settings, Shield, Users } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { isStaff } from '../net/adminApi';
 import { useData } from '../state/data';
@@ -30,6 +30,10 @@ export function AppShell() {
             <Icon size={16} strokeWidth={1.8} /> {label}
           </NavLink>
         ))}
+        {/* «Запись» — только в боковой панели: на телефоне — ссылкой со страницы «Переговоры». */}
+        <NavLink to="/booking" className="nav-item">
+          <CalendarClock size={16} strokeWidth={1.8} /> Запись
+        </NavLink>
         <NavLink to="/inbox" className="nav-item">
           <Bell size={16} strokeWidth={1.8} /> Входящие
           {inbox > 0 && <span className="count">{inbox}</span>}

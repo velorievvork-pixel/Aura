@@ -1,4 +1,4 @@
-import { ArrowLeft, CalendarCheck, Check, Clock, Handshake, MapPin, Plus, Star, X } from 'lucide-react';
+import { ArrowLeft, CalendarCheck, CalendarClock, Check, ChevronRight, Clock, Handshake, MapPin, Plus, Star, X } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Avatar, Empty, Segmented, Spinner } from '../components/ui';
@@ -56,6 +56,14 @@ export function Negotiations() {
           </div>
         </section>
         <InviteSection />
+        <Link to="/booking" className="card row booking-teaser">
+          <CalendarClock size={18} className="faint" />
+          <span style={{ flex: 1, minWidth: 0 }}>
+            <span className="title-sm" style={{ display: 'block' }}>Страница записи</span>
+            <span className="small muted">Постоянная ссылка: клиенты сами выбирают свободное время, можно сразу серией.</span>
+          </span>
+          <ChevronRight size={16} className="faint" />
+        </Link>
       </div>
     </div>
   );

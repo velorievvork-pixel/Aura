@@ -176,6 +176,11 @@ Json MemoryManager::context(long long userId, const std::string& focusMessage) {
         }());
         calendar.push(event);
     }
+    // Записи гостей со страниц записи (booking.*) тоже занимают время.
+    for (const auto& [event, interval] : bookingEvents(userId)) {
+        (void)interval;
+        calendar.push(event);
+    }
     context.set("calendar", calendar);
     return context;
 }
@@ -363,7 +368,38 @@ std::vector<std::pair<std::time_t, std::time_t>> MemoryManager::busy(long long u
             intervals.emplace_back(start, end);
         }
     }
+    for (const auto& [event, interval] : bookingEvents(userId)) {
+        (void)event;
+        intervals.push_back(interval);
+    }
     return intervals;
+}
+
+std::vector<std::pair<Json, std::pair<std::time_t, std::time_t>>> MemoryManager::bookingEvents(long long userId) {
+    std::vector<std::pair<Json, std::pair<std::time_t, std::time_t>>> events;
+    const std::time_t now = std::time(nullptr);
+    for (const auto& booking : database_.db().listBookings(userId, 0, true, 500)) {
+        for (const auto& occurrence : booking.occurrences.items()) {
+            if (occurrence.getString("status") != "active") continue;
+            std::time_t start = 0;
+            std::time_t end = 0;
+            if (!parseIsoUtc(occurrence.getString("start"), start) || !parseIsoUtc(occurrence.getString("end"), end) ||
+                end <= start || end <= now) {
+                continue;
+            }
+            Json event = Json::object();
+            event.set("title", Json("Запись: " + booking.guestName));
+            event.set("start", Json(isoUtc(start)));
+            event.set("end", Json(isoUtc(end)));
+            event.set("source", Json("booking"));
+            Json tags = Json::array();
+            tags.push(Json("meeting"));
+            tags.push(Json("booking"));
+            event.set("tags", tags);
+            events.emplace_back(event, std::make_pair(start, end));
+        }
+    }
+    return events;
 }
 
 std::vector<MemoryRecord> MemoryManager::schedule(long long userId) {

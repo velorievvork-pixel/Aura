@@ -21,6 +21,8 @@ psql aura -v ON_ERROR_STOP=1 -f schema/schema.sql
 # обновления схемы — идемпотентные файлы из schema/migrations/:
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_09_20_notifications.sql
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_13_roles.sql   # роли админ-панели
+psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_invites.sql  # приглашения по ссылке
+psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_booking_referrals.sql  # запись и рефералы
 # демо-данные (необязательно):
 psql aura -f schema/seed.sql
 ```
@@ -89,6 +91,7 @@ AURA_2FA_KEY="$(openssl rand -hex 32)" \
 | push | `AURA_PUSH_DRIVER` (`dev`/`webhook`), `AURA_PUSH_WEBHOOK_URL`, `AURA_APNS_TOPIC` (ai.aura.app), `AURA_APNS_URL`, `AURA_FCM_URL` (FCM HTTP v1, этап 11: замените `aura` на id проекта Firebase) |
 | админ-панель | `AURA_ADMIN_EMAILS` — email первых администраторов через запятую; роль `admin` выдаётся только подтверждённому адресу при старте сервера и при входе (см. PROTOCOL.md → «Администрирование»). Нужна миграция `schema/migrations/2026_10_13_roles.sql` |
 | приглашения по ссылке | `AURA_PUBLIC_URL` — адрес веб-клиента (`https://aura.example.com`): `invite.create` вернёт готовую ссылку `…/#/i/<токен>`; без него ссылку собирает клиент (в браузере на своём домене) или показывает только токен (Electron/Capacitor/localhost). Нужна миграция `schema/migrations/2026_10_14_invites.sql` |
+| страницы записи и рефералы | тот же `AURA_PUBLIC_URL`: `booking.pageCreate` вернёт `…/#/b/<slug>`, `booking.book` — ссылку управления `…/#/m/<токен>`, `referral.get` — `…/#/signup?ref=<код>`. Нужны AI-сервис (подбор свободного времени) и миграция `schema/migrations/2026_10_14_booking_referrals.sql` |
 | прочее | `AURA_SCHEDULER_INTERVAL_MS` (0 — только ручной tick), `AURA_TOOLS_MODE`, `AURA_MAPS_API_URL`, `AURA_LOG_LEVEL` |
 
 Лимиты по IP считаются по адресу без порта. Если сервер стоит за обратным

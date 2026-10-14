@@ -181,8 +181,12 @@ export function makeApi(socket: AuraSocket) {
   const call = <T,>(type: string, payload: Body = {}, timeout?: number) => socket.request<T>(type, payload, timeout);
   return {
     // -------- аккаунт (docs/PROTOCOL.md → «Авторизация»)
-    register: (display_name: string, email: string, password: string) =>
-      call<{ requires_verification: boolean; user: User; email_code?: string }>('auth.register', { display_name, email, password }),
+    /** ref — реферальный код пригласившего (referral.*), ref_source — откуда пришёл человек. */
+    register: (display_name: string, email: string, password: string, ref?: { code: string; source: string }) =>
+      call<{ requires_verification: boolean; user: User; email_code?: string }>(
+        'auth.register',
+        ref ? { display_name, email, password, ref: ref.code, ref_source: ref.source } : { display_name, email, password },
+      ),
     verifyEmail: (email: string, code: string) => call<{ verified: boolean; user: User }>('auth.verifyEmail', { email, code }),
     resendCode: (email: string) => call<{ message: string; email_code?: string }>('auth.resendCode', { email }),
     login: (email: string, password: string, device: string, device_id: string) =>

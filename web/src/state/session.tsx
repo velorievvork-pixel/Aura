@@ -47,7 +47,7 @@ interface Session {
 
   login(email: string, password: string): Promise<LoginStep>;
   login2fa(code: string, trustDevice: boolean): Promise<void>;
-  register(name: string, email: string, password: string): Promise<{ devCode?: string }>;
+  register(name: string, email: string, password: string, ref?: { code: string; source: string } | null): Promise<{ devCode?: string }>;
   verifyEmail(code: string): Promise<LoginStep>;
   resendCode(): Promise<{ devCode?: string }>;
   forgotPassword(email: string): Promise<{ devCode?: string }>;
@@ -217,9 +217,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   );
 
   const register = useCallback(
-    async (name: string, email: string, password: string) => {
+    async (name: string, email: string, password: string, ref?: { code: string; source: string } | null) => {
       const address = email.trim().toLowerCase();
-      const result = await api.register(name.trim(), address, password);
+      const result = await api.register(name.trim(), address, password, ref ?? undefined);
       pending.current = { email: address, password };
       setPendingEmail(address);
       return { devCode: result.email_code };

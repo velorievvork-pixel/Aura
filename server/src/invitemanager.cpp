@@ -12,6 +12,7 @@
 #include "aura/memorymanager.h"
 #include "aura/net.h"
 #include "aura/protocol.h"
+#include "aura/referralmanager.h"
 #include "aura/session.h"
 #include "notificationsmanager.h"
 
@@ -83,8 +84,8 @@ Json slotJson(std::time_t start, std::time_t end) {
 }  // namespace
 
 InviteManager::InviteManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
-                             const Config& config)
-    : database_(database), memory_(memory), notifications_(notifications), config_(config) {}
+                             const Config& config, ReferralManager* referrals)
+    : database_(database), memory_(memory), notifications_(notifications), config_(config), referrals_(referrals) {}
 
 std::string InviteManager::tokenHash(const std::string& token) {
     if (token.size() != kTokenLength) return "";
@@ -151,6 +152,7 @@ Json InviteManager::guestJson(const InviteRecord& record, std::time_t now) {
     json.set("guest_name", Json(record.guestName));
     json.set("chosen", status == "accepted" ? record.chosen : Json::object());
     json.set("expires_at", Json(record.expiresAt));
+    json.set("ref", Json(referrals_ ? referrals_->codeFor(record.ownerId) : std::string()));
     return json;
 }
 

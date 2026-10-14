@@ -346,7 +346,7 @@ class AuraAgent:
 
     # ---------------------------------------------------------------- slots
     def offer_slots(self, request: SlotsRequest) -> SlotsResponse:
-        """Слоты владельца для приглашения по ссылке (гость без Ауры).
+        """Слоты владельца для приглашения по ссылке и страницы записи (гость без Ауры).
 
         «Сейчас» — реальное время, но не раньше context.now: так слоты никогда
         не окажутся в прошлом, даже если сервер прислал устаревший now.
@@ -366,7 +366,10 @@ class AuraAgent:
             context.timezone,
             duration_minutes=request.duration_minutes,
             max_slots=request.max_slots,
+            per_day=request.per_day,
             now=now,
+            lead=timedelta(minutes=request.lead_minutes),
+            weekends=request.weekends,
         )
         return SlotsResponse(slots=slots)
 

@@ -198,6 +198,9 @@ class Slot(BaseModel):
     end: AwareDatetime
     score: float = 0.0
     reason: str = ""
+    #: Местная дата владельца «YYYY-MM-DD» (только у слотов /v1/agent/slots):
+    #: по ней сервер считает лимит записей в день страницы записи.
+    day: Optional[str] = None
 
 
 class A2AProposal(BaseModel):
@@ -234,23 +237,36 @@ class NegotiateRequest(BaseModel):
     choose_place: bool = True
 
 
-#: Пределы для слотов приглашения по ссылке (invite.create на сервере).
+#: Пределы для слотов приглашения по ссылке (invite.create) и страницы записи
+#: (booking.get на сервере).
 OFFER_MIN_DURATION = 15
 OFFER_MAX_DURATION = 240
-OFFER_MAX_SLOTS = 12
+OFFER_MAX_SLOTS = 120
+OFFER_MAX_PER_DAY = 16
+#: Минимальный зазор до начала встречи: от 0 до 7 суток (по умолчанию час).
+OFFER_MAX_LEAD_MINUTES = 7 * 24 * 60
+#: Окно страницы записи — до 60 дней вперёд.
+OFFER_MAX_WINDOW_HOURS = 60 * 24
 
 
 class SlotsRequest(BaseModel):
-    """Слоты владельца для приглашения по ссылке (POST /v1/agent/slots).
+    """Слоты владельца: приглашение по ссылке и страница записи (POST /v1/agent/slots).
 
     Ищутся только в рабочих часах владельца в его поясе (context.timezone),
-    без пересечения с context.calendar, не раньше чем через час.
+    без пересечения с context.calendar, не раньше чем через lead_minutes.
+
+    * ``per_day`` — сколько непересекающихся слотов предлагать в местный день;
+    * ``weekends`` — ``None``: выходные только если в будни пусто (приглашение),
+      ``True``: будни и выходные вместе, ``False``: только будни (страница записи).
     """
 
     context: AgentContext
     duration_minutes: int = Field(default=60, ge=OFFER_MIN_DURATION, le=OFFER_MAX_DURATION)
-    window_hours: int = Field(default=168, ge=1, le=MAX_WINDOW_HOURS)
+    window_hours: int = Field(default=168, ge=1, le=OFFER_MAX_WINDOW_HOURS)
     max_slots: int = Field(default=6, ge=1, le=OFFER_MAX_SLOTS)
+    per_day: int = Field(default=2, ge=1, le=OFFER_MAX_PER_DAY)
+    lead_minutes: int = Field(default=60, ge=0, le=OFFER_MAX_LEAD_MINUTES)
+    weekends: Optional[bool] = None
 
 
 class SlotsResponse(BaseModel):

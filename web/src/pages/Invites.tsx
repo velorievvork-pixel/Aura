@@ -37,7 +37,7 @@ const DURATIONS = [
 ];
 
 /** Копирование в буфер: Clipboard API, иначе — через скрытое поле (старые WebView). */
-async function copyText(text: string): Promise<boolean> {
+export async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
     return true;
@@ -60,7 +60,7 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-const canShare = () => typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+export const canShare = () => typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
 export function InviteSection() {
   const { socket, conn } = useSession();

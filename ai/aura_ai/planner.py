@@ -459,23 +459,27 @@ def offer_slots(
     max_slots: int = 6,
     per_day: int = 2,
     now: Optional[datetime] = None,
+    lead: timedelta = OFFER_LEAD,
+    weekends: Optional[bool] = None,
 ) -> List[Slot]:
     """Слоты владельца для приглашения по ссылке (гость без Ауры выбирает один).
 
     Правила (см. спецификацию invite.*, раздел «AI-сервис»):
-    * кандидаты каждые 30 минут, не раньше now + 1 час (округление вверх до :00/:30
-      по местному времени владельца) и целиком внутри окна;
+    * кандидаты каждые 30 минут, не раньше now + lead (по умолчанию 1 час;
+      округление вверх до :00/:30 по местному времени владельца) и целиком
+      внутри окна;
     * вся встреча [start, end) — в рабочих часах владельца (prefs.work_hours,
       местные часы) в ЕГО поясе tz_name (неизвестный пояс → UTC): часы 9..18
       означают начало не раньше 09:00 и конец не позже 19:00;
-    * выходные (сб/вс по местному времени) пропускаются, если без них есть хоть
-      один слот;
+    * выходные (сб/вс по местному времени): weekends=None — пропускаются, если без
+      них есть хоть один слот; True — наравне с буднями; False — никогда;
     * без пересечения с событиями календаря;
     * не больше per_day слотов в местный день; внутри дня сначала предпочтительные
       часы (prefs.preferred_hours, местные), затем раньше; слоты одного дня не
       перекрываются; по дням — равномерно (по кругу: сначала лучший слот каждого
       дня, потом второй);
-    * итог хронологический, не больше max_slots; start/end — aware UTC.
+    * итог хронологический, не больше max_slots; start/end — aware UTC, day —
+      местная дата владельца (YYYY-MM-DD).
     """
     zone = _zone(tz_name)
     now = _as_aware(now or utcnow())
@@ -492,20 +496,26 @@ def offer_slots(
 
     window_start = _as_aware(window.start)
     window_end = _as_aware(window.end)
-    cursor = _ceil_local_half_hour(max(window_start, now + OFFER_LEAD), zone)
+    lead = max(timedelta(0), lead)
+    cursor = _ceil_local_half_hour(max(window_start, now + lead), zone)
 
     weekdays: List[Tuple[datetime, datetime]] = []
-    weekends: List[Tuple[datetime, datetime]] = []
+    weekend_slots: List[Tuple[datetime, datetime]] = []
     guard = 0
     while cursor + duration <= window_end and guard < 5000:
         guard += 1
         end = cursor + duration
         if _within_work_hours(cursor, end, zone, work) and not _overlaps(cursor, end, busy):
-            target = weekends if cursor.astimezone(zone).weekday() >= 5 else weekdays
+            target = weekend_slots if cursor.astimezone(zone).weekday() >= 5 else weekdays
             target.append((cursor, end))
         cursor += step
 
-    candidates = weekdays or weekends
+    if weekends is None:
+        candidates = weekdays or weekend_slots
+    elif weekends:
+        candidates = sorted(weekdays + weekend_slots)
+    else:
+        candidates = weekdays
     if not candidates:
         return []
 
@@ -547,7 +557,7 @@ def offer_slots(
         hours_ahead = max(0.0, (start - now).total_seconds() / 3600.0)
         score += max(0.0, 0.05 - hours_ahead / 2000.0)
         if local.weekday() >= 5:
-            reason = "выходной день (в будни свободных окон нет)"
+            reason = "выходной день" if weekends else "выходной день (в будни свободных окон нет)"
         elif is_preferred:
             reason = "удобное время"
         else:
@@ -558,6 +568,7 @@ def offer_slots(
                 end=end.astimezone(timezone.utc),
                 score=round(max(0.0, min(1.0, score)), 3),
                 reason=reason,
+                day=local.date().isoformat(),
             )
         )
     return result

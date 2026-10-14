@@ -12,6 +12,8 @@ import { Chat } from './pages/Chat';
 import { ContactChat, Contacts } from './pages/Contacts';
 import { Home } from './pages/Home';
 import { Inbox } from './pages/Inbox';
+import { BookingPage } from './pages/Booking';
+import { BookingGuest, BookingManage } from './pages/BookingGuest';
 import { InviteGuest } from './pages/InviteGuest';
 import { NegotiationView, Negotiations } from './pages/Negotiation';
 import { Settings } from './pages/Settings';
@@ -26,13 +28,17 @@ initPlatform();
 function Root() {
   const { status, conn, everConnected, connError } = useSession();
   const invite = useMatch('/i/:token');
+  const bookingPage = useMatch('/b/:slug');
+  const bookingManage = useMatch('/m/:token');
 
-  // Приглашение по ссылке — публичная страница гостя: и без входа, и со входом,
-  // вне оболочки и без переадресаций на вход; о связи она сообщает сама.
-  if (invite) {
+  // Приглашение по ссылке и страницы записи — публичные страницы гостя: и без входа,
+  // и со входом, вне оболочки и без переадресаций на вход; о связи сообщают сами.
+  if (invite || bookingPage || bookingManage) {
     return (
       <Routes>
         <Route path="/i/:token" element={<InviteGuest />} />
+        <Route path="/b/:slug" element={<BookingGuest />} />
+        <Route path="/m/:token" element={<BookingManage />} />
       </Routes>
     );
   }
@@ -71,6 +77,7 @@ function Root() {
           <Route path="aura" element={<Chat />} />
           <Route path="negotiations" element={<Negotiations />} />
           <Route path="negotiations/:id" element={<NegotiationView />} />
+          <Route path="booking" element={<BookingPage />} />
           <Route path="tasks" element={<Tasks />} />
           <Route path="contacts" element={<Contacts />} />
           <Route path="contacts/:chatId" element={<ContactChat />} />

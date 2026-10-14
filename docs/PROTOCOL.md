@@ -46,7 +46,9 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 
 Все типы, кроме `auth.register`, `auth.login`, `auth.login2fa`, `auth.verifyEmail`,
 `auth.resendCode`, `auth.forgotPassword`, `auth.resetPassword`,
-`auth.refresh`, `ping`, `server.info`, требуют авторизации.
+`auth.refresh`, `ping`, `server.info`, `invite.get`, `invite.respond`,
+`booking.get`, `booking.book`, `booking.manage`, `booking.reschedule`,
+`booking.cancel`, требуют авторизации.
 
 ## Коды ошибок
 
@@ -72,7 +74,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `auth.register` | `display_name`, `email`, `password` | `requires_verification`, `user`, `email_code` (только `AURA_MAIL_DRIVER=dev` + `AURA_DEV_MODE=1`); занятый email → `conflict`; больше 10 регистраций с IP в час → `forbidden` |
+| `auth.register` | `display_name`, `email`, `password`, `ref?` (реферальный код, 8 букв/цифр, регистр не важен), `ref_source?` (`link`/`booking`/`invite`) | `requires_verification`, `user`, `email_code` (только `AURA_MAIL_DRIVER=dev` + `AURA_DEV_MODE=1`); занятый email → `conflict`; больше 10 регистраций с IP в час → `forbidden`. Неверный `ref` молча игнорируется |
 | `auth.verifyEmail` | `email`, `code` (6 цифр) | `verified`, `user` (повтор для уже подтверждённого адреса — только `verified`, без данных пользователя); после 5 неверных кодов код сгорает (нужен `auth.resendCode`) |
 | `auth.resendCode` | `email` | `message` (+`email_code` в dev); ответ не раскрывает существование email; не больше 3 писем на адрес в час (сверх лимита ответ тот же, письмо не уходит) |
 | `auth.login` | `email`, `password`, `device?`, `device_id?` | `token`, `token_type`, `expires_in`, `refresh_token`, `refresh_expires_in`, `session_id`, `user`; до подтверждения email — `email_not_verified`; при включённой 2FA и недоверенном `device_id` — `requires_2fa`; отключённый аккаунт — `forbidden` «аккаунт отключён» (только при верном пароле) |
@@ -331,7 +333,10 @@ Access-токен автоматически обновляется по `refres
 операция ждёт решения), `a2a.proposal` (другой агент начал переговоры),
 `login.new` (новый вход), `twofactor.enabled` / `twofactor.disabled`
 (изменение 2FA), `invite.accepted` / `invite.declined` (гость ответил на
-приглашение по ссылке). Push-доставка — через устройства в `push_devices`
+приглашение по ссылке), `booking.created` / `booking.rescheduled` /
+`booking.cancelled` (гость записался, перенёс или отменил встречу на
+странице записи), `referral.joined` (приглашённый по реферальной ссылке
+подтвердил email). Push-доставка — через устройства в `push_devices`
 (платформы `apns` | `fcm` | `webhook` | `dev`); платформенный конверт
 уходит во внешний шлюз (`AURA_PUSH_DRIVER=webhook`,
 `AURA_PUSH_WEBHOOK_URL`), который подписывает ключи провайдера (JWT для
@@ -407,7 +412,7 @@ expires_at, created_at, responded_at}`. `status`: `open` | `accepted` |
 | `invite.respond` | `{token, action: "accept" \| "decline", start? (для accept — start одного из слотов), guest_name (1–80), guest_email? (≤ 254), comment? (≤ 500)}` | `{invite}` — вид гостя |
 
 Вид гостя: `{topic, note, duration_minutes, owner_name, owner_timezone, status,
-slots, guest_name, chosen, expires_at}` — без email владельца и данных других
+slots, guest_name, chosen, expires_at, ref}` (`ref` — реферальный код владельца) — без email владельца и данных других
 гостей; `slots` у открытого — только будущие и ещё свободные у владельца (может
 быть пустым). Ошибки: `not_found` — неизвестный токен; `conflict` — приглашение
 уже закрыто, срок истёк или время уже занято; `bad_request` — слот не из списка,
@@ -421,6 +426,90 @@ slots, guest_name, chosen, expires_at}` — без email владельца и �
 уведомление `invite.accepted` (`payload: {invite_id, start, end, guest_name,
 task_id}`). `decline` — уведомление `invite.declined` (`payload: {invite_id,
 guest_name, comment}`).
+
+### Страницы записи (постоянная ссылка для людей без Aura)
+
+Владелец заводит постоянную публичную ссылку `<AURA_PUBLIC_URL>/#/b/<slug>`
+(`slug` — 10 символов `[a-z0-9]`). Гость без регистрации видит свободное время
+владельца и записывается сам — на одну встречу или на еженедельную серию.
+Свободное время подбирает AI-сервис (`POST /v1/agent/slots` с `per_day`,
+`lead_minutes`, `weekends`; только рабочие часы в поясе владельца), ответ
+кэшируется на минуту. Сервер не доверяет AI: проверяет длительность, окно,
+пересечения, а при каждом показе и записи — запас до начала, занятость
+владельца (расписание, другие записи, встречи из приглашений) и лимит записей
+в местный день владельца. Встречи записей сами занимают время владельца — в
+переговорах, приглашениях и на других страницах.
+
+Методы владельца (нужен вход):
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `booking.pageCreate` | `{title (1–120, одна строка), description? (≤ 1000), duration_minutes? (15–240, 30), days_ahead? (1–60, 14), max_per_day? (1–16, 4), notice_hours? (0–168, 2), max_series? (1–12, 1), weekends? (bool, false)}` | `{page}`; больше 10 страниц → `forbidden` |
+| `booking.pageList` | — | `{pages: [page]}` — новые сверху, без удалённых |
+| `booking.pageUpdate` | `{page_id, …любые поля pageCreate, status? (active \| paused)}` | `{page}` — меняются только переданные поля |
+| `booking.pageDelete` | `{page_id}` | `{deleted: true}` — ссылка перестаёт работать, сделанные записи остаются |
+| `booking.list` | `{page_id? (0 — все), active_only?, limit? (1–200, 50)}` | `{bookings: [booking]}` — новые сверху |
+| `booking.ownerCancel` | `{booking_id, occurrence? (start одной встречи)}` | `{booking}`; без `occurrence` — все предстоящие встречи |
+
+`page`: `{id, slug, url, title, description, duration_minutes, days_ahead,
+max_per_day, notice_hours, max_series, weekends, status (active | paused),
+upcoming, created_at, updated_at}`; `url` пуст без `AURA_PUBLIC_URL`.
+`booking` (вид владельца): `{id, page_id, page_title, guest_name, guest_email,
+guest_comment, status (active | cancelled), cancelled_by ("" | guest | owner),
+reschedules, occurrences: [{start, end, status (active | cancelled)}],
+created_at, updated_at}`.
+
+Методы гостя (публичные, без входа):
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `booking.get` | `{slug}` | `{page}` — вид гостя |
+| `booking.book` | `{slug, start (start свободного слота), guest_name (1–80), guest_email? (≤ 254), comment? (≤ 500), count? (1–max_series, 1)}` | `{booking, token, url}` — токен ссылки управления (43 символа base64url) показывается **один раз**; `url` — `<AURA_PUBLIC_URL>/#/m/<токен>` или пусто |
+| `booking.manage` | `{token}` | `{booking}` — вид гостя по ссылке управления |
+| `booking.reschedule` | `{token, start, occurrence? (start переносимой встречи; по умолчанию ближайшая)}` | `{booking}`; не больше 3 переносов на запись |
+| `booking.cancel` | `{token, occurrence?, reason? (≤ 500)}` | `{booking}`; без `occurrence` — все предстоящие встречи |
+
+Вид страницы для гостя: `{slug, title, description, duration_minutes,
+max_series, owner_name, owner_timezone, status, slots: [{start, end, day}],
+slots_unavailable, ref}` — без email владельца и чужих записей; `day` —
+местная дата владельца; `slots_unavailable: true` — AI-сервис недоступен
+(страница видна, время не подобрано); `ref` — реферальный код владельца для
+ссылки «Заведите свою Ауру». Вид записи для гостя: `{page_title, page_slug
+("" — запись на странице закрыта), owner_name, owner_timezone,
+duration_minutes, guest_name, status, cancelled_by, occurrences, can_change,
+reschedules_left, slots (свободное время для переноса ближайшей встречи),
+slots_unavailable, ref}`.
+
+Серия — та же встреча каждую неделю (через 7×24 ч): каждая встреча должна быть
+свободна и не превышать лимит своего дня, иначе `conflict` «в неделю … это
+время занято». На каждую встречу владельцу создаётся задача с `due_at = start`
+и `remind_at = start − 15 мин` (при переносе — пересоздаётся, при отмене —
+удаляется) и уведомление `booking.created` (`{booking_id, page_id, start, end,
+count, guest_name}`), `booking.rescheduled` (`{booking_id, page_id, from,
+start, end, guest_name}`), `booking.cancelled` (`{booking_id, page_id,
+cancelled, guest_name, reason}`). Запись без предстоящих встреч получает
+`status: cancelled`.
+
+Ошибки: `not_found` — неизвестный/удалённый slug или токен, чужая запись;
+`conflict` — время заняли, запись на паузе, запись уже отменена, переносы
+исчерпаны; `bad_request` — слот не из свободных, неверные поля; `upstream_error` —
+AI-сервис недоступен при записи/переносе; `forbidden` — лимиты по IP
+(30 `booking.get`/`booking.manage` в минуту, 10 записей в минуту и 30 в час,
+10 переносов/отмен в минуту).
+
+### Рефералы
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `referral.get` | `{limit? (1–100, 50)}` | `{code, url, joined, verified, referrals: [{display_name, source, joined_at, verified}]}` |
+
+У пользователя один код из 8 символов `[A-Z0-9]` (выдаётся при первом
+запросе); `url` — `<AURA_PUBLIC_URL>/#/signup?ref=<код>` или пусто. Код
+передаётся в `auth.register` (`ref`, `ref_source`); приглашённый
+засчитывается (`verified`) после `auth.verifyEmail`, тогда пригласившему
+приходит уведомление `referral.joined` (`{display_name}`). Email и id
+приглашённых пригласившему не раскрываются. Код владельца есть и в виде гостя
+приглашения (`invite.get` → `ref`) и страницы записи.
 
 ### Администрирование
 

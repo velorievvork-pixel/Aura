@@ -2,7 +2,7 @@
 
 Кроссплатформенное приложение: C++17 сервер (WebSocket + HTTP), Python AI-сервис
 (FastAPI, LLM/RAG/память), Qt6/QML desktop-клиент, Android (Kotlin + Compose),
-iOS (SwiftUI). База — PostgreSQL, 23 таблицы (`schema/schema.sql` + `schema/migrations/`).
+iOS (SwiftUI). База — PostgreSQL, 27 таблиц (`schema/schema.sql` + `schema/migrations/`).
 
 ## Команды (всё через Makefile)
 
@@ -31,7 +31,7 @@ iOS (SwiftUI). База — PostgreSQL, 23 таблицы (`schema/schema.sql` +
   и `app` (Compose-клиент, пакет `ai.aura.app`).
 - `ios/` — SwiftUI-клиент.
 - `schema/` — схема БД и миграции; `docs/` — PROTOCOL.md, DATABASE.md, SETUP.md, ANDROID.md.
-- `tools/e2e.py` — эталонный клиент протокола на Python (141 проверка).
+- `tools/e2e.py` — эталонный клиент протокола на Python (268 проверок со всеми моками).
 - `.github/workflows/` — `ci.yml` (тесты), `build-windows.yml` (.exe), `build-android.yml` (.apk).
 
 ## Протокол (главные грабли — читать перед правками)
@@ -43,6 +43,9 @@ iOS (SwiftUI). База — PostgreSQL, 23 таблицы (`schema/schema.sql` +
 - `prefs.set` — поля в **корне** payload (не обёрткой `{"preferences":...}`).
 - `chat.open` → payload `{chat:{id}}`.
 - `memories.kind` — только `fact|preference|schedule|contact`.
+- Публичные (без входа) методы гостя: `invite.get/respond`, `booking.get/book/manage/
+  reschedule/cancel` — веб-страницы `#/i/<токен>`, `#/b/<slug>`, `#/m/<токен>`; токены
+  ссылок в БД только sha256. Рефералы: `referral.get`, `auth.register` + `ref`.
 - Deep link `aura://`: `chats/<id>`, `voice`, `ask?text=`, `tasks`, `notifications`,
   `settings`, `oauth?provider=&code=&state=`.
 - Смена протокола = правка сервера + всех клиентов + `docs/PROTOCOL.md` + чекеры

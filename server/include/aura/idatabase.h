@@ -272,6 +272,56 @@ struct PushDeviceRecord {
     Json toJson() const;  // без token: наружу отдаём только id/platform
 };
 
+// Страница записи (booking.*): постоянная публичная ссылка владельца, по которой
+// гости без Aura сами записываются на свободное время.
+// status: active | paused | archived. slug — публичная часть ссылки (#/b/<slug>).
+struct BookingPageRecord {
+    long long id = 0;
+    long long ownerId = 0;
+    std::string slug;
+    std::string title;
+    std::string description;
+    int durationMinutes = 30;
+    int daysAhead = 14;     // насколько вперёд открыта запись
+    int maxPerDay = 4;      // не больше записей в местный день владельца
+    int noticeHours = 2;    // минимум часов до начала встречи
+    int maxSeries = 1;      // до скольких еженедельных встреч гость берёт сразу
+    bool weekends = false;  // записывать и на выходные
+    std::string status = "active";
+    std::string createdAt;
+    std::string updatedAt;
+};
+
+// Запись гостя на странице. occurrences — встречи (одна или еженедельная серия):
+// [{start, end, day, status: active|cancelled, task_id}] (ISO UTC, day — местная
+// дата владельца). status записи: active | cancelled (все встречи отменены).
+// manageHash — hex sha256 токена ссылки управления (#/m/<токен>), сам токен не хранится.
+struct BookingRecord {
+    long long id = 0;
+    long long pageId = 0;
+    long long ownerId = 0;
+    std::string manageHash;
+    std::string guestName;
+    std::string guestEmail;
+    std::string guestComment;
+    Json occurrences = Json::array();
+    std::string status = "active";
+    std::string cancelledBy;  // guest | owner (у отменённой)
+    int reschedules = 0;
+    std::string createdAt;
+    std::string updatedAt;
+};
+
+// Приглашённый по реферальной ссылке (referral.*).
+struct ReferralRecord {
+    long long referrerId = 0;
+    long long referredId = 0;
+    std::string displayName;  // имя приглашённого
+    std::string source;       // link | booking | invite
+    std::string createdAt;
+    std::string verifiedAt;   // пусто — email ещё не подтверждён
+};
+
 // Приглашение по ссылке (invite.*): встреча с человеком без Aura.
 // status: open | accepted | declined | cancelled (expired вычисляется по expiresAt).
 // tokenHash — hex sha256 токена ссылки; сам токен не хранится.
@@ -509,6 +559,38 @@ public:
     virtual Json adminStats() = 0;
     // Журнал аудита страницами: userId 0 — все записи; beforeId 0 — с самых новых.
     virtual std::vector<AuditRecord> listAuditPage(long long userId, long long beforeId, int limit) = 0;
+
+    // Страницы записи (booking.*).
+    virtual DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) = 0;
+    virtual std::optional<BookingPageRecord> findBookingPage(long long id) = 0;
+    virtual std::optional<BookingPageRecord> findBookingPageBySlug(const std::string& slug) = 0;
+    // Все страницы владельца, кроме archived; новые сверху.
+    virtual std::vector<BookingPageRecord> listBookingPages(long long ownerId) = 0;
+    // Перезаписывает изменяемые поля (title … status) по id; updated_at = now.
+    virtual DatabaseError updateBookingPage(const BookingPageRecord& record) = 0;
+
+    virtual DatabaseError createBooking(const BookingRecord& record, long long& outId) = 0;
+    virtual std::optional<BookingRecord> findBooking(long long id) = 0;
+    virtual std::optional<BookingRecord> findBookingByToken(const std::string& manageHash) = 0;
+    // Записи владельца (pageId = 0 — всех страниц), новые сверху; activeOnly — без отменённых.
+    virtual std::vector<BookingRecord> listBookings(long long ownerId, long long pageId, bool activeOnly,
+                                                    int limit) = 0;
+    // Перезаписывает occurrences, status, cancelled_by, reschedules; updated_at = now.
+    virtual DatabaseError updateBooking(const BookingRecord& record) = 0;
+
+    // Рефералы (referral.*). Код — 8 символов [A-Z0-9], один на пользователя.
+    virtual std::string referralCode(long long userId) = 0;
+    // false — код уже занят (другим пользователем) или у пользователя уже есть код.
+    virtual bool setReferralCode(long long userId, const std::string& code) = 0;
+    // 0 — код не найден.
+    virtual long long findReferrer(const std::string& code) = 0;
+    // Один пригласивший на пользователя: повтор для того же referredId — failure.
+    virtual DatabaseError createReferral(long long referrerId, long long referredId, const std::string& source) = 0;
+    // Атомарно отмечает подтверждение email приглашённого; возвращает id пригласившего,
+    // если отметка поставлена этим вызовом (иначе 0 — не приглашён или уже отмечен).
+    virtual long long markReferralVerified(long long referredId) = 0;
+    // Приглашённые пользователем, новые сверху.
+    virtual std::vector<ReferralRecord> listReferrals(long long referrerId, int limit) = 0;
 
     // Приглашения по ссылке (invite.*).
     virtual DatabaseError createInvite(const InviteRecord& record, long long& outId) = 0;

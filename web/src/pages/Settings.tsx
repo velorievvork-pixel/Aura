@@ -4,13 +4,17 @@
 */
 import { ChevronRight, Copy, Download, KeyRound, LogOut, Monitor, Share2, Shield, ShieldCheck, Smartphone, Trash2, Upload } from 'lucide-react';
 import QRCode from 'qrcode';
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ServerAddress } from '../components/ServerAddress';
 import { Avatar, Field, PasswordInput, Segmented, Spinner, Switch } from '../components/ui';
-import { DIETS, toolDescription, toolTitle, when } from '../lib/format';
+import { bookingOwnerErrorText, publicLink, signupPath } from '../lib/booking';
+import { DIETS, plural, toolDescription, toolTitle, when } from '../lib/format';
 import { cleanCode, nameError, otpError, passwordError } from '../lib/validate';
 import { isStaff } from '../net/adminApi';
+import { makeBookingApi, type ReferralInfo } from '../net/bookingApi';
+import { isNetworkError } from '../net/socket';
+import { canShare, copyText } from './Invites';
 import { secureStore } from '../net/secureStore';
 import { isNative } from '../platform';
 import type { Permission, Privacy, SessionRow, TrustedDevice, TwoFaSetup } from '../net/api';
@@ -22,6 +26,7 @@ const SECTIONS = [
   { id: 'aura', label: 'Предпочтения' },
   { id: 'privacy', label: 'Приватность ИИ' },
   { id: 'security', label: 'Безопасность' },
+  { id: 'referral', label: 'Пригласить друзей' },
   { id: 'app', label: 'Приложение' },
 ] as const;
 type SectionId = (typeof SECTIONS)[number]['id'];
@@ -52,6 +57,7 @@ export function Settings() {
               <SessionsSection />
             </>
           )}
+          {section === 'referral' && <ReferralSection />}
           {section === 'app' && <AppSection />}
         </div>
       </div>
@@ -694,6 +700,101 @@ function SessionsSection() {
 }
 
 // -------------------------------------------------------------- Приложение
+
+// ------------------------------------------------------------ Пригласить друзей
+
+const SOURCE_LABEL: Record<string, string> = { link: 'по ссылке', booking: 'со страницы записи', invite: 'из приглашения' };
+
+function ReferralSection() {
+  const { socket, conn } = useSession();
+  const api = useMemo(() => makeBookingApi(socket), [socket]);
+  const [info, setInfo] = useState<ReferralInfo | null>(null);
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (conn !== 'open') return;
+    let alive = true;
+    api
+      .referral()
+      .then((reply) => {
+        if (!alive) return;
+        setInfo(reply);
+        setError('');
+      })
+      .catch((e) => {
+        if (alive && !isNetworkError(e)) setError(bookingOwnerErrorText(e));
+      });
+    return () => {
+      alive = false;
+    };
+  }, [api, conn]);
+
+  const link = info ? publicLink(signupPath(info.code), info.url, typeof location === 'undefined' ? null : location) : null;
+
+  return (
+    <Card title="Пригласить друзей" desc="Поделитесь ссылкой: друг заведёт свою Ауру, и ваши Ауры смогут договариваться о встречах напрямую. Регистрации со страниц записи и приглашений тоже засчитываются вам.">
+      {error && <div className="notice error">{error}</div>}
+      {!info && !error && <Spinner small />}
+      {info && (
+        <>
+          <div className="row wrap" style={{ gap: 12 }}>
+            <span className="small muted">Ваш код</span>
+            <span className="referral-code mono">{info.code}</span>
+          </div>
+          {link ? (
+            <div className="invite-link">
+              <input className="input mono" readOnly value={link} aria-label="Реферальная ссылка" onFocus={(e) => e.currentTarget.select()} />
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={async () => {
+                  const ok = await copyText(link);
+                  setCopied(ok);
+                  if (ok) setTimeout(() => setCopied(false), 2000);
+                }}
+              >
+                <Copy size={15} /> {copied ? 'Скопировано' : 'Скопировать'}
+              </button>
+              {canShare() && (
+                <button type="button" className="btn btn-secondary" onClick={() => navigator.share({ title: 'Aura', text: 'Заведи свою Ауру — личного ИИ-агента', url: link }).catch(() => undefined)}>
+                  <Share2 size={15} /> Поделиться
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="notice warn">Полную ссылку не собрать: задайте на сервере AURA_PUBLIC_URL. Пока друг может ввести код при регистрации по адресу #/signup?ref={info.code}.</div>
+          )}
+          <div className="small muted">
+            Зарегистрировались: {info.joined} · подтвердили email: {info.verified}
+          </div>
+          {info.referrals.length > 0 && (
+            <div className="list">
+              {info.referrals.map((r, i) => (
+                <div key={`${r.joined_at}-${i}`} className="list-row">
+                  <Avatar name={r.display_name || '?'} size={28} />
+                  <div className="body">
+                    <div className="ellipsis">{r.display_name || 'Без имени'}</div>
+                    <div className="small muted">
+                      {when(r.joined_at)} · {SOURCE_LABEL[r.source] ?? r.source}
+                    </div>
+                  </div>
+                  <span className={`badge ${r.verified ? 'green' : ''}`}>{r.verified ? 'С Aura' : 'Ждёт подтверждения'}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {info.referrals.length === 0 && <div className="small faint">Пока никто не зарегистрировался по вашей ссылке.</div>}
+          {info.joined > info.referrals.length && (
+            <div className="small faint">
+              И ещё {info.joined - info.referrals.length} {plural(info.joined - info.referrals.length, 'человек', 'человека', 'человек')}.
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
 
 function AppSection() {
   const { logout, user } = useSession();

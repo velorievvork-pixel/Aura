@@ -330,7 +330,8 @@ Access-токен автоматически обновляется по `refres
 Виды (`kind`): `task.due` (напоминание), `confirmation.requested` (опасная
 операция ждёт решения), `a2a.proposal` (другой агент начал переговоры),
 `login.new` (новый вход), `twofactor.enabled` / `twofactor.disabled`
-(изменение 2FA). Push-доставка — через устройства в `push_devices`
+(изменение 2FA), `invite.accepted` / `invite.declined` (гость ответил на
+приглашение по ссылке). Push-доставка — через устройства в `push_devices`
 (платформы `apns` | `fcm` | `webhook` | `dev`); платформенный конверт
 уходит во внешний шлюз (`AURA_PUSH_DRIVER=webhook`,
 `AURA_PUSH_WEBHOOK_URL`), который подписывает ключи провайдера (JWT для
@@ -369,6 +370,57 @@ Push-конверт для шлюза: `{platform, token, notification_id, kind,
 (`https://api.push.apple.com`), `AURA_FCM_URL`
 (`https://fcm.googleapis.com/v1/projects/aura/messages:send` — замените
 `aura` на id вашего проекта Firebase).
+
+### Приглашения по ссылке (встреча с человеком без Aura)
+
+Владелец договаривается о встрече с человеком, у которого нет Aura: сервер
+подбирает свободные слоты владельца (AI-сервис, `POST /v1/agent/slots` — только
+рабочие часы в часовом поясе владельца, не раньше чем через час, до 2 слотов в
+день, не больше 6) и выдаёт ссылку. Гость открывает её в веб-клиенте
+(`<AURA_PUBLIC_URL>/#/i/<токен>`) без регистрации, выбирает время или
+отказывается. Сервер не доверяет ответу AI: проверяет длительность, окно,
+будущее время, занятость и пересечения. Токен — 32 случайных байта
+(base64url, 43 символа); в БД только его sha256, поэтому ссылка показывается
+владельцу **один раз** — в `invite.list` её нет.
+
+Методы владельца (нужен вход):
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `invite.create` | `{topic (1–120 символов, одна строка), duration_minutes? (15–240, 60), window_hours? (1–336, 168), note? (≤ 500), guest_name? (≤ 80)}` | `{invite, token, url}` — `url` пуст, если не задан `AURA_PUBLIC_URL` (клиент строит ссылку сам) |
+| `invite.list` | `{limit? (1–100, 50)}` | `{invites: [invite]}` — новые сверху |
+| `invite.cancel` | `{invite_id}` | `{invite}` — только своё и открытое |
+
+`invite` (вид владельца): `{id, topic, note, duration_minutes, status, slots:
+[{start, end}], guest_name, guest_email, guest_comment, chosen: {start, end} | {},
+expires_at, created_at, responded_at}`. `status`: `open` | `accepted` |
+`declined` | `cancelled` | `expired` (открытое, у которого прошло начало
+последнего слота; в БД не хранится). Ошибки `invite.create`: `bad_request`;
+`conflict` «нет свободных окон в выбранный период»; `upstream_error` — AI-сервис
+недоступен; `forbidden` — больше 20 открытых приглашений.
+
+Методы гостя (публичные, без входа; доступ — по токену из ссылки):
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `invite.get` | `{token}` | `{invite}` — вид гостя |
+| `invite.respond` | `{token, action: "accept" \| "decline", start? (для accept — start одного из слотов), guest_name (1–80), guest_email? (≤ 254), comment? (≤ 500)}` | `{invite}` — вид гостя |
+
+Вид гостя: `{topic, note, duration_minutes, owner_name, owner_timezone, status,
+slots, guest_name, chosen, expires_at}` — без email владельца и данных других
+гостей; `slots` у открытого — только будущие и ещё свободные у владельца (может
+быть пустым). Ошибки: `not_found` — неизвестный токен; `conflict` — приглашение
+уже закрыто, срок истёк или время уже занято; `bad_request` — слот не из списка,
+пустое имя, неверный email; `forbidden` — больше 30 `invite.get` или 10
+`invite.respond` в минуту с одного IP.
+
+`accept` атомарно закрывает приглашение (второй ответ — `conflict`) и
+добавляет владельцу: запись расписания «Встреча: <тема> — <гость>
+(<start>/<end>)» (интервал занимает время в переговорах и других
+приглашениях), задачу с `due_at = start` и `remind_at = start − 15 мин`,
+уведомление `invite.accepted` (`payload: {invite_id, start, end, guest_name,
+task_id}`). `decline` — уведомление `invite.declined` (`payload: {invite_id,
+guest_name, comment}`).
 
 ### Администрирование
 
@@ -422,6 +474,7 @@ Push-конверт для шлюза: `{platform, token, notification_id, kind,
 | --- | --- | --- |
 | `POST` | `/v1/agent/run` | главный запрос Ауры |
 | `POST` | `/v1/agent/negotiate` | Agent-to-Agent переговоры |
+| `POST` | `/v1/agent/slots` | слоты владельца для приглашения по ссылке: `{context, duration_minutes (15–240), window_hours, max_slots (1–12)}` → `{slots: [{start, end, score, reason}]}` |
 | `POST` | `/v1/speech/transcribe` | распознавание речи (Whisper-совместимое, ru/en/auto) |
 | `POST` | `/v1/memory/extract` | извлечение фактов в память |
 | `GET` | `/v1/memory/{user_key}` | записи памяти (можно `?query=` — гибридный RAG) |

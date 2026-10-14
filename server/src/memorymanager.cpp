@@ -14,14 +14,6 @@
 
 namespace aura {
 
-namespace {
-
-std::string lower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return value;
-}
-
 // «YYYY-MM-DDTHH:MM[:SS][.fff](Z|±HH:MM)» → секунды UTC; false, если это не ISO-метка.
 bool parseIsoUtc(const std::string& value, std::time_t& out) {
     int y = 0, mo = 0, d = 0, h = 0, mi = 0, sec = 0;
@@ -63,23 +55,42 @@ std::string isoUtc(std::time_t t) {
     return buf;
 }
 
+namespace {
+
+std::string lower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
 // Запись расписания из памяти → занятый слот для AI ({title,start,end}) или null.
 // Напоминание хранится как «Напоминание: <текст> (<ISO-время>)» (ToolManager::createReminder):
 // время берём из скобок, слот — 30 минут. Записи без точного времени («по средам
 // бассейн») остаются только в memory: CalendarEvent в AI требует start и end, и
 // одна такая запись иначе ломала бы весь запрос (422).
+// Встреча из приглашения хранится интервалом «(<start>/<end>)» — занят весь интервал
+// (не больше суток; иначе — те же 30 минут).
 Json scheduleEvent(const MemoryRecord& record) {
     const auto open = record.text.rfind('(');
     const auto close = record.text.rfind(')');
     if (open == std::string::npos || close == std::string::npos || close < open) return Json();
+    const std::string inside = record.text.substr(open + 1, close - open - 1);
+    const auto slash = inside.find('/');
     std::time_t start = 0;
-    if (!parseIsoUtc(record.text.substr(open + 1, close - open - 1), start)) return Json();
+    if (!parseIsoUtc(inside.substr(0, slash), start)) return Json();
+    std::time_t end = start + 30 * 60;
+    if (slash != std::string::npos) {
+        std::time_t until = 0;
+        if (parseIsoUtc(inside.substr(slash + 1), until) && until > start && until - start <= 24 * 3600) {
+            end = until;
+        }
+    }
     std::string title = record.text.substr(0, open);
     while (!title.empty() && std::isspace(static_cast<unsigned char>(title.back())) != 0) title.pop_back();
     Json event = Json::object();
     event.set("title", Json(title.empty() ? record.text : title));
     event.set("start", Json(isoUtc(start)));
-    event.set("end", Json(isoUtc(start + 30 * 60)));
+    event.set("end", Json(isoUtc(end)));
     return event;
 }
 
@@ -339,6 +350,20 @@ bool MemoryManager::setPreferences(long long userId, const Json& preferences, st
         return false;
     }
     return true;
+}
+
+std::vector<std::pair<std::time_t, std::time_t>> MemoryManager::busy(long long userId) {
+    std::vector<std::pair<std::time_t, std::time_t>> intervals;
+    for (const auto& record : schedule(userId)) {
+        const Json event = scheduleEvent(record);
+        if (event.isNull()) continue;
+        std::time_t start = 0;
+        std::time_t end = 0;
+        if (parseIsoUtc(event.getString("start"), start) && parseIsoUtc(event.getString("end"), end)) {
+            intervals.emplace_back(start, end);
+        }
+    }
+    return intervals;
 }
 
 std::vector<MemoryRecord> MemoryManager::schedule(long long userId) {

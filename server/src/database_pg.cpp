@@ -1731,7 +1731,124 @@ public:
         return logs;
     }
 
+    // ------------------------------------------------------- meeting_invites
+    DatabaseError createInvite(const InviteRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO meeting_invites (owner_id, token_hash, topic, note, duration_minutes, "
+                     "slots, guest_name, expires_at) "
+                     "VALUES ($1, $2, $3, $4, $5::int, $6::jsonb, $7, $8::timestamptz) RETURNING id",
+                     {std::to_string(record.ownerId), record.tokenHash, record.topic, record.note,
+                      std::to_string(record.durationMinutes),
+                      record.slots.isArray() ? record.slots.dump() : std::string("[]"), record.guestName,
+                      record.expiresAt},
+                     &result)) {
+            PQclear(result);
+            return DatabaseError::failure(lastError_);
+        }
+        outId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    std::optional<InviteRecord> findInvite(long long id) override {
+        return findInviteWhere("id = $1", std::to_string(id));
+    }
+
+    std::optional<InviteRecord> findInviteByToken(const std::string& tokenHash) override {
+        if (tokenHash.empty()) return std::nullopt;
+        return findInviteWhere("token_hash = $1", tokenHash);
+    }
+
+    std::vector<InviteRecord> listInvites(long long ownerId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<InviteRecord> invites;
+        PGresult* result = nullptr;
+        if (!execute(inviteSelect() + " WHERE owner_id = $1 ORDER BY id DESC LIMIT $2",
+                     {std::to_string(ownerId), std::to_string(limit > 0 ? limit : 50)}, &result)) {
+            return invites;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) invites.push_back(readInvite(result, row));
+        PQclear(result);
+        return invites;
+    }
+
+    int countOpenInvites(long long ownerId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT count(*) FROM meeting_invites WHERE owner_id = $1 AND status = 'open' "
+                     "AND expires_at > now()",
+                     {std::to_string(ownerId)}, &result)) {
+            return 0;
+        }
+        const int count = PQntuples(result) > 0 ? std::atoi(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return count;
+    }
+
+    bool closeInvite(long long id, const std::string& status, const InviteRecord& response) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        const bool keepGuest = status == "cancelled";
+        if (!execute("UPDATE meeting_invites SET status = $2, responded_at = now(), "
+                     "guest_name = CASE WHEN $3::bool THEN guest_name ELSE $4 END, "
+                     "guest_email = CASE WHEN $3::bool THEN guest_email ELSE $5 END, "
+                     "guest_comment = CASE WHEN $3::bool THEN guest_comment ELSE $6 END, "
+                     "chosen = CASE WHEN $3::bool THEN chosen ELSE $7::jsonb END "
+                     "WHERE id = $1 AND status = 'open'",
+                     {std::to_string(id), status, keepGuest ? "true" : "false", response.guestName,
+                      response.guestEmail, response.guestComment,
+                      response.chosen.isObject() ? response.chosen.dump() : std::string("{}")},
+                     &result)) {
+            return false;
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched;
+    }
+
 private:
+    static std::string inviteSelect() {
+        return "SELECT id, owner_id, token_hash, topic, note, duration_minutes, slots::text, status, "
+               "guest_name, guest_email, guest_comment, chosen::text, "
+               "to_char(expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+               "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+               "to_char(responded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+               "FROM meeting_invites";
+    }
+
+    std::optional<InviteRecord> findInviteWhere(const std::string& condition, const std::string& value) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute(inviteSelect() + " WHERE " + condition, {value}, &result)) return std::nullopt;
+        std::optional<InviteRecord> record;
+        if (PQntuples(result) > 0) record = readInvite(result, 0);
+        PQclear(result);
+        return record;
+    }
+
+    InviteRecord readInvite(PGresult* result, int row) const {
+        InviteRecord record;
+        record.id = std::atoll(value_(result, row, 0).c_str());
+        record.ownerId = std::atoll(value_(result, row, 1).c_str());
+        record.tokenHash = value_(result, row, 2);
+        record.topic = value_(result, row, 3);
+        record.note = value_(result, row, 4);
+        record.durationMinutes = std::atoi(value_(result, row, 5).c_str());
+        const Json slots = Json::parse(value_(result, row, 6));
+        record.slots = slots.isArray() ? slots : Json::array();
+        record.status = value_(result, row, 7);
+        record.guestName = value_(result, row, 8);
+        record.guestEmail = value_(result, row, 9);
+        record.guestComment = value_(result, row, 10);
+        const Json chosen = Json::parse(value_(result, row, 11));
+        record.chosen = chosen.isObject() ? chosen : Json::object();
+        record.expiresAt = value_(result, row, 12);
+        record.createdAt = value_(result, row, 13);
+        record.respondedAt = value_(result, row, 14);
+        return record;
+    }
+
     static std::string notificationSelect() {
         return "SELECT id, user_id, kind, title, body, payload::text, "
                "to_char(read_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "

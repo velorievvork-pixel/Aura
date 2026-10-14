@@ -1,6 +1,6 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { HashRouter, Navigate, Route, Routes, useMatch } from 'react-router-dom';
 import { AppShell } from './components/AppShell';
 import { ConnectionScreen } from './components/ConnectionScreen';
 import { Spinner } from './components/ui';
@@ -12,6 +12,7 @@ import { Chat } from './pages/Chat';
 import { ContactChat, Contacts } from './pages/Contacts';
 import { Home } from './pages/Home';
 import { Inbox } from './pages/Inbox';
+import { InviteGuest } from './pages/InviteGuest';
 import { NegotiationView, Negotiations } from './pages/Negotiation';
 import { Settings } from './pages/Settings';
 import { Tasks } from './pages/Tasks';
@@ -24,6 +25,17 @@ initPlatform();
 
 function Root() {
   const { status, conn, everConnected, connError } = useSession();
+  const invite = useMatch('/i/:token');
+
+  // Приглашение по ссылке — публичная страница гостя: и без входа, и со входом,
+  // вне оболочки и без переадресаций на вход; о связи она сообщает сама.
+  if (invite) {
+    return (
+      <Routes>
+        <Route path="/i/:token" element={<InviteGuest />} />
+      </Routes>
+    );
+  }
 
   if (status === 'booting') {
     // Токены есть, профиля в кэше нет — ждём сервер. Если он не отвечает, вместо

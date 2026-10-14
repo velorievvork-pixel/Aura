@@ -1549,7 +1549,122 @@ public:
         return result;
     }
 
+    // ------------------------------------------------------- meeting_invites
+    DatabaseError createInvite(const InviteRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.tokenHash.empty() || record.topic.empty()) {
+            return DatabaseError::failure("приглашение без токена или темы");
+        }
+        for (const auto& entry : table("meeting_invites").items()) {
+            if (entry.getString("token_hash") == record.tokenHash) {
+                return DatabaseError::failure("токен приглашения уже существует");
+            }
+        }
+        const long long id = nextId("meeting_invites");
+        Json entry = Json::object();
+        entry.set("id", Json(id));
+        entry.set("owner_id", Json(record.ownerId));
+        entry.set("token_hash", Json(record.tokenHash));
+        entry.set("topic", Json(record.topic));
+        entry.set("note", Json(record.note));
+        entry.set("duration_minutes", Json(static_cast<long long>(record.durationMinutes)));
+        entry.set("slots", record.slots.isArray() ? record.slots : Json::array());
+        entry.set("status", Json(std::string("open")));
+        entry.set("guest_name", Json(record.guestName));
+        entry.set("guest_email", Json(std::string()));
+        entry.set("guest_comment", Json(std::string()));
+        entry.set("chosen", Json::object());
+        entry.set("expires_at", Json(record.expiresAt));
+        entry.set("created_at", Json(isoNow()));
+        entry.set("responded_at", Json(std::string()));
+        table("meeting_invites").push(entry);
+        flush();
+        outId = id;
+        return DatabaseError::success();
+    }
+
+    std::optional<InviteRecord> findInvite(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("meeting_invites").items()) {
+            if (entry.getInt("id") == id) return toInvite(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::optional<InviteRecord> findInviteByToken(const std::string& tokenHash) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (tokenHash.empty()) return std::nullopt;
+        for (const auto& entry : table("meeting_invites").items()) {
+            if (entry.getString("token_hash") == tokenHash) return toInvite(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::vector<InviteRecord> listInvites(long long ownerId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<InviteRecord> result;
+        const auto& entries = table("meeting_invites").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId) continue;
+            result.push_back(toInvite(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    int countOpenInvites(long long ownerId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const std::string now = isoNow();
+        int count = 0;
+        for (const auto& entry : table("meeting_invites").items()) {
+            if (entry.getInt("owner_id") == ownerId && entry.getString("status") == "open" &&
+                entry.getString("expires_at") > now) {
+                ++count;
+            }
+        }
+        return count;
+    }
+
+    bool closeInvite(long long id, const std::string& status, const InviteRecord& response) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : mutableTable("meeting_invites")) {
+            if (entry.getInt("id") != id) continue;
+            if (entry.getString("status") != "open") return false;
+            entry.set("status", Json(status));
+            if (status != "cancelled") {
+                entry.set("guest_name", Json(response.guestName));
+                entry.set("guest_email", Json(response.guestEmail));
+                entry.set("guest_comment", Json(response.guestComment));
+                entry.set("chosen", response.chosen.isObject() ? response.chosen : Json::object());
+            }
+            entry.set("responded_at", Json(isoNow()));
+            flush();
+            return true;
+        }
+        return false;
+    }
+
 private:
+    InviteRecord toInvite(const Json& entry) const {
+        InviteRecord record;
+        record.id = entry.getInt("id");
+        record.ownerId = entry.getInt("owner_id");
+        record.tokenHash = entry.getString("token_hash");
+        record.topic = entry.getString("topic");
+        record.note = entry.getString("note");
+        record.durationMinutes = static_cast<int>(entry.getInt("duration_minutes", 60));
+        record.slots = entry.get("slots").isArray() ? entry.get("slots") : Json::array();
+        record.status = entry.getString("status", "open");
+        record.guestName = entry.getString("guest_name");
+        record.guestEmail = entry.getString("guest_email");
+        record.guestComment = entry.getString("guest_comment");
+        record.chosen = entry.get("chosen").isObject() ? entry.get("chosen") : Json::object();
+        record.expiresAt = entry.getString("expires_at");
+        record.createdAt = entry.getString("created_at");
+        record.respondedAt = entry.getString("responded_at");
+        return record;
+    }
+
     NotificationRecord toNotification(const Json& entry) const {
         NotificationRecord record;
         record.id = entry.getInt("id");

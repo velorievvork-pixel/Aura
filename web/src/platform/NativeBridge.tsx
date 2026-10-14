@@ -23,7 +23,8 @@ export function NativeBridge() {
     () =>
       onBackButton(
         () => navigate(-1),
-        () => ROOTS.has(path.current),
+        // Страница приглашения открывается по ссылке сама по себе — «Назад» с неё сворачивает приложение.
+        () => ROOTS.has(path.current) || path.current.startsWith('/i/'),
       ),
     [navigate],
   );

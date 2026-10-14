@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .models import CalendarEvent, Preferences, Slot, utcnow
 
@@ -403,3 +404,160 @@ def intersect_slots(
                 )
     merged.sort(key=lambda s: (-s.score, s.start))
     return merged
+
+
+# ------------------------------------------------- слоты для приглашения по ссылке
+#: Минимальный зазор между «сейчас» и началом предлагаемой встречи.
+OFFER_LEAD = timedelta(hours=1)
+#: Шаг кандидатов (по местному времени владельца: :00 и :30).
+OFFER_STEP_MINUTES = 30
+#: Рабочие часы по умолчанию, если у владельца список пуст (или весь был мусором).
+DEFAULT_WORK_HOURS = tuple(range(9, 19))
+
+
+def _zone(tz_name: str) -> ZoneInfo:
+    """IANA-пояс владельца; неизвестное имя → UTC (а не исключение)."""
+    try:
+        return ZoneInfo(tz_name or "UTC")
+    except (ZoneInfoNotFoundError, ValueError, OSError):
+        return ZoneInfo("UTC")
+
+
+def _ceil_local_half_hour(moment: datetime, zone: ZoneInfo) -> datetime:
+    """Округляет момент вверх до :00/:30 по местному времени; результат в UTC."""
+    local = moment.astimezone(zone)
+    rounded = local.replace(second=0, microsecond=0)
+    if rounded < local:
+        rounded += timedelta(minutes=1)
+    extra = rounded.minute % OFFER_STEP_MINUTES
+    if extra:
+        rounded += timedelta(minutes=OFFER_STEP_MINUTES - extra)
+    return rounded.astimezone(timezone.utc)
+
+
+def _within_work_hours(start: datetime, end: datetime, zone: ZoneInfo, hours: frozenset) -> bool:
+    """Вся встреча [start, end) лежит в рабочих часах владельца (местное время).
+
+    Проверяем каждую четверть часа и последний миг встречи: смещения поясов
+    кратны 15 минутам, поэтому начало каждого затронутого часа попадает в сетку.
+    """
+    probe = start
+    quarter = timedelta(minutes=15)
+    while probe < end:
+        if probe.astimezone(zone).hour not in hours:
+            return False
+        probe += quarter
+    return (end - timedelta(microseconds=1)).astimezone(zone).hour in hours
+
+
+def offer_slots(
+    window: TimeWindow,
+    calendar: Sequence[CalendarEvent],
+    prefs: Preferences,
+    tz_name: str,
+    duration_minutes: int = 60,
+    max_slots: int = 6,
+    per_day: int = 2,
+    now: Optional[datetime] = None,
+) -> List[Slot]:
+    """Слоты владельца для приглашения по ссылке (гость без Ауры выбирает один).
+
+    Правила (см. спецификацию invite.*, раздел «AI-сервис»):
+    * кандидаты каждые 30 минут, не раньше now + 1 час (округление вверх до :00/:30
+      по местному времени владельца) и целиком внутри окна;
+    * вся встреча [start, end) — в рабочих часах владельца (prefs.work_hours,
+      местные часы) в ЕГО поясе tz_name (неизвестный пояс → UTC): часы 9..18
+      означают начало не раньше 09:00 и конец не позже 19:00;
+    * выходные (сб/вс по местному времени) пропускаются, если без них есть хоть
+      один слот;
+    * без пересечения с событиями календаря;
+    * не больше per_day слотов в местный день; внутри дня сначала предпочтительные
+      часы (prefs.preferred_hours, местные), затем раньше; слоты одного дня не
+      перекрываются; по дням — равномерно (по кругу: сначала лучший слот каждого
+      дня, потом второй);
+    * итог хронологический, не больше max_slots; start/end — aware UTC.
+    """
+    zone = _zone(tz_name)
+    now = _as_aware(now or utcnow())
+    duration = timedelta(minutes=max(15, int(duration_minutes)))
+    step = timedelta(minutes=OFFER_STEP_MINUTES)
+    max_slots = max(0, int(max_slots))
+    per_day = max(1, int(per_day))
+    if max_slots == 0:
+        return []
+
+    work = frozenset(prefs.work_hours or DEFAULT_WORK_HOURS)
+    preferred = frozenset(prefs.preferred_hours or [])
+    busy = _busy_intervals(calendar)
+
+    window_start = _as_aware(window.start)
+    window_end = _as_aware(window.end)
+    cursor = _ceil_local_half_hour(max(window_start, now + OFFER_LEAD), zone)
+
+    weekdays: List[Tuple[datetime, datetime]] = []
+    weekends: List[Tuple[datetime, datetime]] = []
+    guard = 0
+    while cursor + duration <= window_end and guard < 5000:
+        guard += 1
+        end = cursor + duration
+        if _within_work_hours(cursor, end, zone, work) and not _overlaps(cursor, end, busy):
+            target = weekends if cursor.astimezone(zone).weekday() >= 5 else weekdays
+            target.append((cursor, end))
+        cursor += step
+
+    candidates = weekdays or weekends
+    if not candidates:
+        return []
+
+    # Группировка по местному дню владельца; внутри дня — предпочтительные часы вперёд.
+    by_day: Dict[object, List[Tuple[datetime, datetime]]] = {}
+    for start, end in candidates:
+        by_day.setdefault(start.astimezone(zone).date(), []).append((start, end))
+
+    picks_by_day: List[List[Tuple[datetime, datetime]]] = []
+    for day in sorted(by_day):
+        ranked = sorted(
+            by_day[day],
+            key=lambda item: (item[0].astimezone(zone).hour not in preferred, item[0]),
+        )
+        chosen: List[Tuple[datetime, datetime]] = []
+        for start, end in ranked:
+            if len(chosen) >= per_day:
+                break
+            if _overlaps(start, end, chosen):
+                continue
+            chosen.append((start, end))
+        picks_by_day.append(chosen)
+
+    # По кругу: первый (лучший) слот каждого дня, затем второй и т.д.
+    selected: List[Tuple[datetime, datetime]] = []
+    for rank in range(per_day):
+        for chosen in picks_by_day:
+            if rank < len(chosen) and len(selected) < max_slots:
+                selected.append(chosen[rank])
+    selected.sort()
+
+    result: List[Slot] = []
+    for start, end in selected:
+        local = start.astimezone(zone)
+        is_preferred = local.hour in preferred
+        score = 0.6 + (0.3 if is_preferred else 0.0)
+        if local.weekday() >= 5:
+            score -= 0.05
+        hours_ahead = max(0.0, (start - now).total_seconds() / 3600.0)
+        score += max(0.0, 0.05 - hours_ahead / 2000.0)
+        if local.weekday() >= 5:
+            reason = "выходной день (в будни свободных окон нет)"
+        elif is_preferred:
+            reason = "удобное время"
+        else:
+            reason = "рабочее время"
+        result.append(
+            Slot(
+                start=start.astimezone(timezone.utc),
+                end=end.astimezone(timezone.utc),
+                score=round(max(0.0, min(1.0, score)), 3),
+                reason=reason,
+            )
+        )
+    return result

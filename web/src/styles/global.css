@@ -1150,6 +1150,81 @@ button.chip:hover {
   color: #ecc078;
 }
 
+/* ------------------------------------------------ Приглашение по ссылке */
+.auth-card.invite-card {
+  max-width: 460px;
+}
+
+.invite-day-title {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.invite-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.invite-slot {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-strong);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.invite-slot:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.invite-slot[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.invite-note {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.invite-done {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.invite-link {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.invite-link .input {
+  flex: 1 1 240px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.invite-row {
+  flex-wrap: wrap;
+}
+
+.invite-comment {
+  margin-top: 2px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ------------------------------------------------------- Offline / gate */
 .gate {
   min-height: 100dvh;

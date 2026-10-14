@@ -22,6 +22,7 @@
 #include "aura/protocol.h"
 #include "aura/taskmanager.h"
 #include "aura/toolmanager.h"
+#include "aura/invitemanager.h"
 
 namespace aura {
 
@@ -99,6 +100,7 @@ private:
     std::unique_ptr<IntegrationManager> integrations_;
     std::unique_ptr<NotificationsManager> notifications_;
     std::unique_ptr<AdminManager> admin_;
+    std::unique_ptr<InviteManager> invites_;
     std::unique_ptr<Listener> listener_;
     ConnectionManager connections_;
 

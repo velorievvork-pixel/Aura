@@ -234,6 +234,29 @@ class NegotiateRequest(BaseModel):
     choose_place: bool = True
 
 
+#: Пределы для слотов приглашения по ссылке (invite.create на сервере).
+OFFER_MIN_DURATION = 15
+OFFER_MAX_DURATION = 240
+OFFER_MAX_SLOTS = 12
+
+
+class SlotsRequest(BaseModel):
+    """Слоты владельца для приглашения по ссылке (POST /v1/agent/slots).
+
+    Ищутся только в рабочих часах владельца в его поясе (context.timezone),
+    без пересечения с context.calendar, не раньше чем через час.
+    """
+
+    context: AgentContext
+    duration_minutes: int = Field(default=60, ge=OFFER_MIN_DURATION, le=OFFER_MAX_DURATION)
+    window_hours: int = Field(default=168, ge=1, le=MAX_WINDOW_HOURS)
+    max_slots: int = Field(default=6, ge=1, le=OFFER_MAX_SLOTS)
+
+
+class SlotsResponse(BaseModel):
+    slots: List[Slot] = Field(default_factory=list)
+
+
 class NegotiateResponse(BaseModel):
     accepted: bool = False
     slot: Optional[Slot] = None

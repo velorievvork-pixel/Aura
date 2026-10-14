@@ -93,6 +93,10 @@ struct Config {
     // Админ-панель: email будущих администраторов через запятую/пробел.
     // Роль admin выдаётся только подтверждённому адресу (при старте и при входе).
     std::string adminEmails;                             // AURA_ADMIN_EMAILS
+    // Адрес веб-клиента для ссылок-приглашений (invite.create → url):
+    // https://aura.example.com → https://aura.example.com/#/i/<токен>. Пусто — ссылку
+    // строит клиент.
+    std::string publicUrl;                               // AURA_PUBLIC_URL
 
     static Config fromEnv();
     std::string describe() const;  // для стартового лога (без секретов)

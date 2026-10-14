@@ -272,6 +272,27 @@ struct PushDeviceRecord {
     Json toJson() const;  // без token: наружу отдаём только id/platform
 };
 
+// Приглашение по ссылке (invite.*): встреча с человеком без Aura.
+// status: open | accepted | declined | cancelled (expired вычисляется по expiresAt).
+// tokenHash — hex sha256 токена ссылки; сам токен не хранится.
+struct InviteRecord {
+    long long id = 0;
+    long long ownerId = 0;
+    std::string tokenHash;
+    std::string topic;
+    std::string note;
+    int durationMinutes = 60;
+    Json slots = Json::array();   // [{start, end}] ISO UTC
+    std::string status = "open";
+    std::string guestName;
+    std::string guestEmail;
+    std::string guestComment;
+    Json chosen = Json::object();  // {start, end} после accept
+    std::string expiresAt;
+    std::string createdAt;
+    std::string respondedAt;
+};
+
 struct DatabaseError {
     bool ok = true;
     std::string message;
@@ -488,6 +509,19 @@ public:
     virtual Json adminStats() = 0;
     // Журнал аудита страницами: userId 0 — все записи; beforeId 0 — с самых новых.
     virtual std::vector<AuditRecord> listAuditPage(long long userId, long long beforeId, int limit) = 0;
+
+    // Приглашения по ссылке (invite.*).
+    virtual DatabaseError createInvite(const InviteRecord& record, long long& outId) = 0;
+    virtual std::optional<InviteRecord> findInvite(long long id) = 0;
+    virtual std::optional<InviteRecord> findInviteByToken(const std::string& tokenHash) = 0;
+    // Новые сверху.
+    virtual std::vector<InviteRecord> listInvites(long long ownerId, int limit) = 0;
+    // Открытые (status=open, срок не истёк) приглашения владельца — для лимита.
+    virtual int countOpenInvites(long long ownerId) = 0;
+    // Атомарный переход open → status (accepted | declined | cancelled) с ответом
+    // гостя (guest*, chosen из response). false — запись не найдена или уже закрыта:
+    // два одновременных ответа не займут время дважды.
+    virtual bool closeInvite(long long id, const std::string& status, const InviteRecord& response) = 0;
 };
 
 std::unique_ptr<IDatabase> makePostgresDatabase(const std::string& url);

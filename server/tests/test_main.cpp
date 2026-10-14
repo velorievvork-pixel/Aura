@@ -19,6 +19,7 @@
 #include <ctime>
 #include <functional>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -27,9 +28,11 @@
 #include "aura/authmanager.h"
 #include "aura/crypto.h"
 #include "aura/idatabase.h"
+#include "aura/invitemanager.h"
 #include "aura/json.h"
 #include "aura/jwt.h"
 #include "aura/mailprovider.h"
+#include "aura/memorymanager.h"
 #include "aura/net.h"
 #include "aura/protocol.h"
 #include "aura/server.h"
@@ -3538,6 +3541,424 @@ TEST(admin_audit_paging) {
     // Дошли до конца — пустая страница.
     const long long oldest = page(0, 0, 200).items().back().getInt("id");
     CHECK_EQ(page(0, oldest, 10).items().size(), std::size_t(0));
+}
+
+// ------------------------------------------------- приглашения по ссылке (invite.*)
+namespace invite_test {
+
+// Поддельный AI-сервис: отвечает на каждый POST телом из reply(); запросы
+// складываются в requests. Живёт до деструктора (закрывает слушатель).
+struct FakeAi {
+    int listener = -1;
+    int port = 0;
+    std::function<std::string()> reply;
+    std::vector<std::string> requests;
+    std::mutex mutex;
+    std::thread thread;
+    bool stopping = false;
+
+    explicit FakeAi(std::function<std::string()> body) : reply(std::move(body)) {
+        listener = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        ::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof addr);
+        ::listen(listener, 8);
+        socklen_t len = sizeof addr;
+        ::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &len);
+        port = ntohs(addr.sin_port);
+        thread = std::thread([this] {
+            for (;;) {
+                const int fd = ::accept(listener, nullptr, nullptr);
+                if (fd < 0) return;
+                std::string request;
+                char chunk[4096];
+                std::size_t need = std::string::npos;
+                while (need == std::string::npos || request.size() < need) {
+                    const ssize_t n = ::recv(fd, chunk, sizeof chunk, 0);
+                    if (n <= 0) break;
+                    request.append(chunk, static_cast<std::size_t>(n));
+                    const std::size_t head = request.find("\r\n\r\n");
+                    if (head != std::string::npos && need == std::string::npos) {
+                        std::size_t length = 0;
+                        const std::size_t cl = request.find("Content-Length: ");
+                        if (cl != std::string::npos && cl < head) length = std::stoul(request.substr(cl + 16));
+                        need = head + 4 + length;
+                    }
+                }
+                std::string body;
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    if (stopping) {
+                        ::close(fd);
+                        return;
+                    }
+                    requests.push_back(request);
+                    body = reply();
+                }
+                const std::string answer = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+                                           std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+                ::send(fd, answer.data(), answer.size(), 0);
+                ::close(fd);
+            }
+        });
+    }
+
+    ~FakeAi() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            stopping = true;
+        }
+        ::shutdown(listener, SHUT_RDWR);
+        ::close(listener);
+        thread.join();
+    }
+
+    std::string url() const { return "http://127.0.0.1:" + std::to_string(port); }
+};
+
+// Час, кратный получасу, через hours часов от текущего момента (UTC).
+std::time_t future(int hours) {
+    const std::time_t now = std::time(nullptr);
+    return (now / 1800 + 1) * 1800 + static_cast<std::time_t>(hours) * 3600;
+}
+
+Json slot(std::time_t start, int minutes) {
+    Json json = Json::object();
+    json.set("start", Json(aura::isoUtc(start)));
+    json.set("end", Json(aura::isoUtc(start + minutes * 60)));
+    json.set("score", Json(0.9));
+    json.set("reason", Json("удобное время"));
+    return json;
+}
+
+// Перезапуск сервера фикстуры с адресом поддельного AI (БД-файл сохраняется).
+void useAi(Fixture& fixture, const std::string& url, const std::string& publicUrl = "") {
+    fixture.config.aiServiceUrl = url;
+    fixture.config.publicUrl = publicUrl;
+    fixture.server->stop();
+    fixture.server = std::make_unique<aura::Server>(fixture.config);
+    std::string error;
+    if (!fixture.server->start(error)) std::cout << "  не удалось перезапустить сервер: " << error << "\n";
+}
+
+Json createPayload(const std::string& topic, long long duration = 60) {
+    Json payload = Json::object();
+    payload.set("topic", Json(topic));
+    payload.set("duration_minutes", Json(duration));
+    payload.set("window_hours", Json(168LL));
+    return payload;
+}
+
+Json respondPayload(const std::string& token, const std::string& action, const std::string& start,
+                    const std::string& name) {
+    Json payload = Json::object();
+    payload.set("token", Json(token));
+    payload.set("action", Json(action));
+    if (!start.empty()) payload.set("start", Json(start));
+    payload.set("guest_name", Json(name));
+    return payload;
+}
+
+Json tokenPayload(const std::string& token) {
+    Json payload = Json::object();
+    payload.set("token", Json(token));
+    return payload;
+}
+
+}  // namespace invite_test
+
+TEST(invite_accept_flow) {
+    using namespace invite_test;
+    const std::time_t first = future(26);
+    const std::time_t second = future(50);
+    const std::time_t third = future(74);
+    // AI предлагает и лишнее: прошлое время, чужую длительность и пересечение —
+    // сервер это отбрасывает (LLM/AI не источник истины).
+    FakeAi ai([&] {
+        Json slots = Json::array();
+        slots.push(slot(third, 60));
+        slots.push(slot(first, 60));
+        slots.push(slot(std::time(nullptr) - 7200, 60));
+        slots.push(slot(second, 45));
+        slots.push(slot(second, 60));
+        slots.push(slot(first + 1800, 60));
+        Json body = Json::object();
+        body.set("slots", slots);
+        return body.dump();
+    });
+    Fixture fixture;
+    useAi(fixture, ai.url(), "https://aura.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "invite-owner");
+    fixture.registerUser(owner, "host@example.com", "Иван");
+
+    const Json created = fixture.call(owner, "invite.create", createPayload("Кофе и план"));
+    CHECK_EQ(created.getString("type"), std::string("ok"));
+    if (created.getString("type") != "ok") {
+        std::cout << "  invite.create: " << created.dump() << "\n";
+        return;
+    }
+    const Json createdPayload = integration::payloadOf(created);
+    const std::string token = createdPayload.getString("token");
+    CHECK_EQ(token.size(), std::size_t(43));
+    CHECK_EQ(createdPayload.getString("url"), "https://aura.example.com/#/i/" + token);
+    const Json invite = createdPayload.get("invite");
+    CHECK_EQ(invite.getString("status"), std::string("open"));
+    CHECK_EQ(invite.get("slots").items().size(), std::size_t(3));
+    CHECK_EQ(invite.get("slots").items().front().getString("start"), aura::isoUtc(first));
+    CHECK_EQ(invite.getString("expires_at"), aura::isoUtc(third));
+    {
+        std::lock_guard<std::mutex> lock(ai.mutex);
+        // Первый запрос — проверка /healthz при старте сервера.
+        const auto slotsRequest = std::find_if(ai.requests.begin(), ai.requests.end(), [](const std::string& r) {
+            return r.find("POST /v1/agent/slots") != std::string::npos;
+        });
+        CHECK(slotsRequest != ai.requests.end());
+        if (slotsRequest != ai.requests.end()) {
+            CHECK(slotsRequest->find("\"duration_minutes\":60") != std::string::npos);
+            CHECK(slotsRequest->find("\"context\"") != std::string::npos);
+        }
+    }
+    // В БД — только хэш токена; в списке владельца токена нет.
+    auto& db = fixture.server->database().db();
+    const auto stored = db.findInvite(invite.getInt("id"));
+    CHECK(stored.has_value());
+    CHECK(stored->tokenHash != token);
+    CHECK_EQ(stored->tokenHash, aura::InviteManager::tokenHash(token));
+    const Json listed = integration::payloadOf(fixture.call(owner, "invite.list"));
+    CHECK_EQ(listed.get("invites").items().size(), std::size_t(1));
+    CHECK(listed.dump().find(token) == std::string::npos);
+
+    // Гость без входа видит приглашение, но не email владельца.
+    auto guest = sockets.open(fixture, "invite-guest");
+    const Json seen = fixture.call(guest, "invite.get", tokenPayload(token));
+    CHECK_EQ(seen.getString("type"), std::string("ok"));
+    const Json guestView = integration::payloadOf(seen).get("invite");
+    CHECK_EQ(guestView.getString("owner_name"), std::string("Иван"));
+    CHECK_EQ(guestView.getString("topic"), std::string("Кофе и план"));
+    CHECK_EQ(guestView.get("slots").items().size(), std::size_t(3));
+    CHECK(seen.dump().find("host@example.com") == std::string::npos);
+    CHECK_EQ(fixture.call(guest, "invite.get", tokenPayload(std::string(43, 'A'))).getString("code"),
+             std::string("not_found"));
+    CHECK_EQ(fixture.call(guest, "invite.get", tokenPayload("short")).getString("code"), std::string("not_found"));
+
+    // Ошибки ввода гостя.
+    CHECK_EQ(fixture.call(guest, "invite.respond", respondPayload(token, "accept", aura::isoUtc(first + 600), "Мария"))
+                 .getString("code"),
+             std::string("bad_request"));
+    CHECK_EQ(fixture.call(guest, "invite.respond", respondPayload(token, "accept", aura::isoUtc(first), "  "))
+                 .getString("code"),
+             std::string("bad_request"));
+    Json badEmail = respondPayload(token, "accept", aura::isoUtc(first), "Мария");
+    badEmail.set("guest_email", Json("not an email"));
+    CHECK_EQ(fixture.call(guest, "invite.respond", badEmail).getString("code"), std::string("bad_request"));
+
+    // Выбор времени: ответ гостя закрывает приглашение.
+    Json accept = respondPayload(token, "accept", aura::isoUtc(second), "Мария");
+    accept.set("guest_email", Json("maria@example.com"));
+    accept.set("comment", Json("Возьму ноутбук"));
+    const Json accepted = fixture.call(guest, "invite.respond", accept);
+    CHECK_EQ(accepted.getString("type"), std::string("ok"));
+    const Json acceptedView = integration::payloadOf(accepted).get("invite");
+    CHECK_EQ(acceptedView.getString("status"), std::string("accepted"));
+    CHECK_EQ(acceptedView.get("chosen").getString("start"), aura::isoUtc(second));
+    CHECK_EQ(acceptedView.get("chosen").getString("end"), aura::isoUtc(second + 3600));
+    CHECK_EQ(acceptedView.get("slots").items().size(), std::size_t(0));
+    // Повторный ответ (в т.ч. отказ) — conflict.
+    CHECK_EQ(fixture.call(guest, "invite.respond", respondPayload(token, "decline", "", "Мария")).getString("code"),
+             std::string("conflict"));
+
+    // У владельца: статус, задача с напоминанием, встреча в расписании, уведомление.
+    const Json invitesAfter = integration::payloadOf(fixture.call(owner, "invite.list")).get("invites");
+    CHECK_EQ(invitesAfter.items().size(), std::size_t(1));
+    if (invitesAfter.items().empty()) return;
+    const Json after = invitesAfter.items().front();
+    CHECK_EQ(after.getString("status"), std::string("accepted"));
+    CHECK_EQ(after.getString("guest_name"), std::string("Мария"));
+    CHECK_EQ(after.getString("guest_email"), std::string("maria@example.com"));
+    CHECK_EQ(after.getString("guest_comment"), std::string("Возьму ноутбук"));
+    bool taskFound = false;
+    const Json tasks = integration::payloadOf(fixture.call(owner, "tasks.list")).get("tasks");
+    for (const auto& task : tasks.items()) {
+        if (task.getString("title") != "Встреча: Кофе и план — Мария") continue;
+        taskFound = true;
+        CHECK_EQ(task.getString("due_at"), aura::isoUtc(second));
+        CHECK_EQ(task.getString("remind_at"), aura::isoUtc(second - 900));
+        CHECK(task.getString("notes").find("maria@example.com") != std::string::npos);
+    }
+    CHECK(taskFound);
+    const long long ownerId = db.findUserByEmail("host@example.com")->id;
+    bool busy = false;
+    for (const auto& [start, end] : fixture.server->memory().busy(ownerId)) {
+        if (start == second && end == second + 3600) busy = true;
+    }
+    CHECK(busy);
+    bool notified = false;
+    const Json notifications = integration::payloadOf(fixture.call(owner, "notifications.list")).get("notifications");
+    for (const auto& item : notifications.items()) {
+        if (item.getString("kind") == "invite.accepted") {
+            notified = true;
+            CHECK_EQ(item.get("payload").getString("start"), aura::isoUtc(second));
+        }
+    }
+    CHECK(notified);
+    // Страница гостя после выбора: время видно, слотов нет.
+    const Json reopened = integration::payloadOf(fixture.call(guest, "invite.get", tokenPayload(token))).get("invite");
+    CHECK_EQ(reopened.getString("status"), std::string("accepted"));
+    CHECK_EQ(reopened.get("chosen").getString("start"), aura::isoUtc(second));
+}
+
+TEST(invite_busy_cancel_and_decline) {
+    using namespace invite_test;
+    const std::time_t first = future(30);
+    const std::time_t second = future(54);
+    FakeAi ai([&] {
+        Json slots = Json::array();
+        slots.push(slot(first, 60));
+        slots.push(slot(second, 60));
+        Json body = Json::object();
+        body.set("slots", slots);
+        return body.dump();
+    });
+    Fixture fixture;
+    useAi(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "busy-owner");
+    fixture.registerUser(owner, "busy@example.com", "Ольга");
+    const Json a = integration::payloadOf(fixture.call(owner, "invite.create", createPayload("Созвон")));
+    const Json b = integration::payloadOf(fixture.call(owner, "invite.create", createPayload("Обед")));
+    const Json c = integration::payloadOf(fixture.call(owner, "invite.create", createPayload("Прогулка")));
+    CHECK_EQ(a.getString("url"), std::string());  // AURA_PUBLIC_URL не задан
+    auto guest = sockets.open(fixture, "busy-guest");
+
+    // Время, занятое гостем приглашения A, исчезает из B и не принимается в B.
+    CHECK_EQ(fixture.call(guest, "invite.respond",
+                          respondPayload(a.getString("token"), "accept", aura::isoUtc(first), "Пётр"))
+                 .getString("type"),
+             std::string("ok"));
+    const Json bView = integration::payloadOf(fixture.call(guest, "invite.get", tokenPayload(b.getString("token"))));
+    CHECK_EQ(bView.get("invite").get("slots").items().size(), std::size_t(1));
+    CHECK_EQ(bView.get("invite").get("slots").items().front().getString("start"), aura::isoUtc(second));
+    const Json taken = fixture.call(guest, "invite.respond",
+                                    respondPayload(b.getString("token"), "accept", aura::isoUtc(first), "Анна"));
+    CHECK_EQ(taken.getString("code"), std::string("conflict"));
+    CHECK(taken.getString("message").find("занято") != std::string::npos);
+
+    // Отказ: приглашение закрыто, владельцу — уведомление invite.declined.
+    Json decline = respondPayload(b.getString("token"), "decline", "", "Анна");
+    decline.set("comment", Json("Уезжаю"));
+    const Json declined = fixture.call(guest, "invite.respond", decline);
+    CHECK_EQ(integration::payloadOf(declined).get("invite").getString("status"), std::string("declined"));
+    bool declineNotified = false;
+    const Json notifications = integration::payloadOf(fixture.call(owner, "notifications.list")).get("notifications");
+    for (const auto& item : notifications.items()) {
+        if (item.getString("kind") == "invite.declined") {
+            declineNotified = true;
+            CHECK_EQ(item.get("payload").getString("comment"), std::string("Уезжаю"));
+        }
+    }
+    CHECK(declineNotified);
+
+    // Отмена: только владелец и только открытое.
+    const long long cId = c.get("invite").getInt("id");
+    Json byId = Json::object();
+    byId.set("invite_id", Json(cId));
+    auto stranger = sockets.open(fixture, "busy-stranger");
+    fixture.registerUser(stranger, "stranger@example.com", "Чужой");
+    CHECK_EQ(fixture.call(stranger, "invite.cancel", byId).getString("code"), std::string("not_found"));
+    const Json cancelled = fixture.call(owner, "invite.cancel", byId);
+    CHECK_EQ(integration::payloadOf(cancelled).get("invite").getString("status"), std::string("cancelled"));
+    CHECK_EQ(fixture.call(owner, "invite.cancel", byId).getString("code"), std::string("conflict"));
+    CHECK_EQ(fixture.call(guest, "invite.respond",
+                          respondPayload(c.getString("token"), "accept", aura::isoUtc(second), "Пётр"))
+                 .getString("code"),
+             std::string("conflict"));
+    CHECK_EQ(integration::payloadOf(fixture.call(guest, "invite.get", tokenPayload(c.getString("token"))))
+                 .get("invite")
+                 .getString("status"),
+             std::string("cancelled"));
+    // Чужие приглашения в список не попадают.
+    CHECK_EQ(integration::payloadOf(fixture.call(stranger, "invite.list")).get("invites").items().size(),
+             std::size_t(0));
+}
+
+TEST(invite_validation_limits_and_upstream) {
+    using namespace invite_test;
+    Fixture fixture;  // AI недоступен
+    admin_test::Sockets sockets;
+    auto anonymous = sockets.open(fixture, "inv-anon");
+    CHECK_EQ(fixture.call(anonymous, "invite.create", createPayload("Кофе")).getString("code"),
+             std::string("unauthorized"));
+    CHECK_EQ(fixture.call(anonymous, "invite.list").getString("code"), std::string("unauthorized"));
+    auto owner = sockets.open(fixture, "inv-owner");
+    fixture.registerUser(owner, "limits@example.com", "Лимит");
+    CHECK_EQ(fixture.call(owner, "invite.create", createPayload("  ")).getString("code"), std::string("bad_request"));
+    CHECK_EQ(fixture.call(owner, "invite.create", createPayload("Строка\nс переводом")).getString("code"),
+             std::string("bad_request"));
+    CHECK_EQ(fixture.call(owner, "invite.create", createPayload(std::string(121, 'x'))).getString("code"),
+             std::string("bad_request"));
+    CHECK_EQ(fixture.call(owner, "invite.create", createPayload("Кофе", 10)).getString("code"),
+             std::string("bad_request"));
+    Json wide = createPayload("Кофе");
+    wide.set("window_hours", Json(400LL));
+    CHECK_EQ(fixture.call(owner, "invite.create", wide).getString("code"), std::string("bad_request"));
+    CHECK_EQ(fixture.call(owner, "invite.create", createPayload("Кофе")).getString("code"),
+             std::string("upstream_error"));
+
+    // Пустой ответ AI — conflict «нет свободных окон».
+    FakeAi empty([] { return std::string("{\"slots\":[]}"); });
+    useAi(fixture, empty.url());
+    auto again = sockets.open(fixture, "inv-owner-2");
+    Json login = Json::object();
+    login.set("email", Json("limits@example.com"));
+    login.set("password", Json("aura1234"));
+    CHECK_EQ(fixture.call(again, "auth.login", login).getString("type"), std::string("ok"));
+    CHECK_EQ(fixture.call(again, "invite.create", createPayload("Кофе")).getString("code"), std::string("conflict"));
+
+    // Лимит ответов гостя с одного IP.
+    std::string lastCode;
+    for (int i = 0; i <= aura::InviteManager::kRespondPerMinute; ++i) {
+        lastCode = fixture.call(anonymous, "invite.respond",
+                                respondPayload(std::string(43, 'B'), "accept", aura::isoUtc(future(30)), "Гость"))
+                       .getString("code");
+    }
+    CHECK_EQ(lastCode, std::string("forbidden"));
+}
+
+TEST(invite_effective_status_and_open_limit) {
+    using namespace invite_test;
+    aura::InviteRecord record;
+    record.status = "open";
+    record.expiresAt = aura::isoUtc(std::time(nullptr) - 60);
+    CHECK_EQ(aura::InviteManager::effectiveStatus(record, std::time(nullptr)), std::string("expired"));
+    record.expiresAt = aura::isoUtc(std::time(nullptr) + 3600);
+    CHECK_EQ(aura::InviteManager::effectiveStatus(record, std::time(nullptr)), std::string("open"));
+    record.status = "declined";
+    CHECK_EQ(aura::InviteManager::effectiveStatus(record, std::time(nullptr)), std::string("declined"));
+    CHECK_EQ(aura::InviteManager::tokenHash("bad token with spaces and 43 symbols long.."), std::string());
+
+    // Не больше kMaxOpenInvites открытых приглашений у владельца.
+    const std::time_t start = future(30);
+    FakeAi ai([&] {
+        Json slots = Json::array();
+        slots.push(slot(start, 30));
+        Json body = Json::object();
+        body.set("slots", slots);
+        return body.dump();
+    });
+    Fixture fixture;
+    useAi(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "open-limit");
+    fixture.registerUser(owner, "many@example.com", "Много");
+    for (int i = 0; i < aura::InviteManager::kMaxOpenInvites; ++i) {
+        CHECK_EQ(fixture.call(owner, "invite.create", createPayload("Встреча " + std::to_string(i), 30))
+                     .getString("type"),
+                 std::string("ok"));
+    }
+    CHECK_EQ(fixture.call(owner, "invite.create", createPayload("Лишняя", 30)).getString("code"),
+             std::string("forbidden"));
 }
 
 int main(int argc, char** argv) {

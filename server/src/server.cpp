@@ -156,6 +156,7 @@ bool Server::start(std::string& error) {
     agent_ = std::make_unique<AgentManager>(config_, *database_, *memory_, *tools_, *chats_);
     taskManager_ = std::make_unique<TaskManager>(*database_, connections_);
     admin_ = std::make_unique<AdminManager>(*database_, config_);
+    invites_ = std::make_unique<InviteManager>(*database_, *memory_, notifications_.get(), config_);
     admin_->bootstrapAll();
 
     registerHandlers();
@@ -855,6 +856,39 @@ void Server::registerHandlers() {
                                    notifyPayload);
         }
         return protocol::ok(request.id, result.payload);
+    });
+
+    // ------------------------------------------------------------ invite
+    // Приглашение по ссылке: владелец (вход нужен) и гость без аккаунта
+    // (invite.get / invite.respond — публичные, доступ по токену ссылки).
+    registerHandler("invite.create", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = invites_->create(session->userId(), request.payload);
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    });
+
+    registerHandler("invite.list", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = invites_->list(session->userId(), request.payload);
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    });
+
+    registerHandler("invite.cancel", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = invites_->cancel(session->userId(), request.payload);
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    });
+
+    registerHandler("invite.get", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = invites_->get(request.payload, session->remoteAddr());
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    });
+
+    registerHandler("invite.respond", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = invites_->respond(request.payload, session->remoteAddr());
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
     });
 
     registerHandler("speech.transcribe", [this](std::shared_ptr<Session>, const protocol::Request& request) {

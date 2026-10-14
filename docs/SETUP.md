@@ -88,6 +88,7 @@ AURA_2FA_KEY="$(openssl rand -hex 32)" \
 | Google OAuth | `AURA_GOOGLE_CLIENT_ID/_SECRET`, `AURA_GOOGLE_AUTH_URL/_TOKEN_URL/_REVOKE_URL/_CALENDAR_URL/_GMAIL_URL`, `AURA_OAUTH_STATE_TTL` |
 | push | `AURA_PUSH_DRIVER` (`dev`/`webhook`), `AURA_PUSH_WEBHOOK_URL`, `AURA_APNS_TOPIC` (ai.aura.app), `AURA_APNS_URL`, `AURA_FCM_URL` (FCM HTTP v1, этап 11: замените `aura` на id проекта Firebase) |
 | админ-панель | `AURA_ADMIN_EMAILS` — email первых администраторов через запятую; роль `admin` выдаётся только подтверждённому адресу при старте сервера и при входе (см. PROTOCOL.md → «Администрирование»). Нужна миграция `schema/migrations/2026_10_13_roles.sql` |
+| приглашения по ссылке | `AURA_PUBLIC_URL` — адрес веб-клиента (`https://aura.example.com`): `invite.create` вернёт готовую ссылку `…/#/i/<токен>`; без него ссылку собирает клиент (в браузере на своём домене) или показывает только токен (Electron/Capacitor/localhost). Нужна миграция `schema/migrations/2026_10_14_invites.sql` |
 | прочее | `AURA_SCHEDULER_INTERVAL_MS` (0 — только ручной tick), `AURA_TOOLS_MODE`, `AURA_MAPS_API_URL`, `AURA_LOG_LEVEL` |
 
 Лимиты по IP считаются по адресу без порта. Если сервер стоит за обратным

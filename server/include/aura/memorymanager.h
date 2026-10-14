@@ -1,7 +1,9 @@
 // aura/memorymanager.h — загрузка и обновление долговременной памяти пользователя.
 #pragma once
 
+#include <ctime>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "aura/config.h"
@@ -9,6 +11,11 @@
 #include "aura/json.h"
 
 namespace aura {
+
+// «YYYY-MM-DDTHH:MM[:SS][.fff](Z|±HH:MM)» → секунды UTC; false, если это не ISO-метка.
+bool parseIsoUtc(const std::string& value, std::time_t& out);
+// Секунды UTC → «YYYY-MM-DDTHH:MM:SSZ».
+std::string isoUtc(std::time_t t);
 
 class MemoryManager {
 public:
@@ -39,6 +46,8 @@ public:
     static Json defaultPrivacy();
 
     std::vector<MemoryRecord> schedule(long long userId);
+    // Занятые интервалы [start, end) из расписания (те же, что уходят в AI как calendar).
+    std::vector<std::pair<std::time_t, std::time_t>> busy(long long userId);
 
 private:
     DatabaseManager& database_;

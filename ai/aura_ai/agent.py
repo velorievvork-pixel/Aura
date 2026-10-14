@@ -38,6 +38,8 @@ from .models import (
     Plan,
     Preferences,
     Slot,
+    SlotsRequest,
+    SlotsResponse,
     ToolCall,
     ToolResult,
     utcnow,
@@ -341,6 +343,32 @@ class AuraAgent:
             ),
             counter_slots=shared[1:4],
         )
+
+    # ---------------------------------------------------------------- slots
+    def offer_slots(self, request: SlotsRequest) -> SlotsResponse:
+        """Слоты владельца для приглашения по ссылке (гость без Ауры).
+
+        «Сейчас» — реальное время, но не раньше context.now: так слоты никогда
+        не окажутся в прошлом, даже если сервер прислал устаревший now.
+        """
+        context = request.context
+        now = utcnow()
+        if context.now is not None and context.now > now:
+            now = context.now
+        # Пределы window_hours/duration_minutes/max_slots проверены моделью (422).
+        window = planner.TimeWindow(
+            start=now, end=now + timedelta(hours=request.window_hours), label="окно приглашения"
+        )
+        slots = planner.offer_slots(
+            window,
+            context.calendar,
+            context.preferences,
+            context.timezone,
+            duration_minutes=request.duration_minutes,
+            max_slots=request.max_slots,
+            now=now,
+        )
+        return SlotsResponse(slots=slots)
 
 
 def _local(now: datetime, tz_name: str) -> datetime:

@@ -24,6 +24,7 @@ import struct
 import sys
 import time
 import uuid
+from datetime import datetime
 from typing import Any, Dict
 
 import websockets
@@ -556,6 +557,104 @@ async def main() -> int:
     agent_messages = anya.events_of("chat.message")
     check(len(agent_messages) >= 2, "результат Ауры опубликован в чате",
           len(agent_messages))
+
+    # ------------------------------------- приглашение по ссылке (invite.*)
+    print("\n3a. Приглашение по ссылке: встреча с человеком без Aura")
+    created = await anna.call("invite.create", {
+        "topic": f"Кофе по стартапу {RUN}",
+        "duration_minutes": 45,
+        "window_hours": 168,
+        "note": "Можно у метро",
+        "guest_name": "Борис",
+    }, timeout=40)
+    check(created.get("type") == "ok", "invite.create: ссылка создана", created)
+    created_payload = created.get("payload", {})
+    invite = created_payload.get("invite", {})
+    token = created_payload.get("token", "")
+    check(len(token) == 43, "токен ссылки — 43 символа base64url", len(token))
+    url = created_payload.get("url", "")
+    check(url == "" or url.endswith("/#/i/" + token), "url ведёт на #/i/<токен> (или пуст без AURA_PUBLIC_URL)", url)
+    offered = invite.get("slots", [])
+    check(1 <= len(offered) <= 6, "предложено 1–6 слотов", offered)
+
+    def minutes_of(slot_item: Dict[str, Any]) -> float:
+        start = datetime.fromisoformat(slot_item["start"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(slot_item["end"].replace("Z", "+00:00"))
+        return (end - start).total_seconds() / 60
+
+    check(all(minutes_of(item) == 45 for item in offered), "все слоты по 45 минут", offered)
+    listed_invites = await anna.call("invite.list")
+    invites_payload = listed_invites.get("payload", {})
+    check(any(i.get("id") == invite.get("id") for i in invites_payload.get("invites", [])),
+          "invite.list содержит приглашение", invites_payload)
+    check(token not in json.dumps(invites_payload), "в списке владельца токена нет")
+
+    # Гость — отдельное соединение без входа.
+    guest = Client("guest")
+    await guest.connect()
+    seen = await guest.call("invite.get", {"token": token})
+    check(seen.get("type") == "ok", "invite.get без входа", seen)
+    guest_view = seen.get("payload", {}).get("invite", {})
+    check(guest_view.get("owner_name") == "Анна" and guest_view.get("status") == "open",
+          "гость видит организатора и статус open", guest_view)
+    check(f"anna.{RUN}@example.com" not in json.dumps(seen), "email владельца гостю не отдаётся")
+    missing = await guest.call("invite.get", {"token": "A" * 43})
+    check(missing.get("code") == "not_found", "неизвестный токен — not_found", missing)
+    no_auth = await guest.call("invite.create", {"topic": "чужое"})
+    check(no_auth.get("code") == "unauthorized", "invite.create без входа — unauthorized", no_auth)
+
+    chosen_start = (guest_view.get("slots") or offered or [{}])[0].get("start", "")
+    accepted = await guest.call("invite.respond", {
+        "token": token, "action": "accept", "start": chosen_start,
+        "guest_name": "Борис", "guest_email": f"boris.{RUN}@example.com", "comment": "Буду вовремя",
+    })
+    check(accepted.get("type") == "ok", "гость выбрал время", accepted)
+    accepted_view = accepted.get("payload", {}).get("invite", {})
+    check(accepted_view.get("status") == "accepted"
+          and accepted_view.get("chosen", {}).get("start") == chosen_start,
+          "приглашение закрыто выбранным временем", accepted_view)
+    again = await guest.call("invite.respond", {"token": token, "action": "decline", "guest_name": "Борис"})
+    check(again.get("code") == "conflict", "повторный ответ — conflict", again)
+
+    await asyncio.sleep(0.3)
+    invite_events = [e for e in anna.events_of("notification.new")
+                     if e.get("payload", {}).get("kind") == "invite.accepted"]
+    check(bool(invite_events), "владелец получил notification.new invite.accepted",
+          [e.get("payload", {}).get("kind") for e in anna.events_of("notification.new")])
+    owner_tasks = (await anna.call("tasks.list", {})).get("payload", {}).get("tasks", [])
+    meeting = [t for t in owner_tasks if t.get("title") == f"Встреча: Кофе по стартапу {RUN} — Борис"]
+    def instant(value: str) -> datetime | None:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (AttributeError, ValueError):
+            return None
+
+    check(bool(meeting) and instant(meeting[0].get("due_at", "")) == instant(chosen_start),
+          "у владельца задача-встреча на выбранное время", [t.get("title") for t in owner_tasks])
+
+    # Отказ и отмена.
+    second_invite = await anna.call("invite.create", {"topic": f"Обед {RUN}", "duration_minutes": 30},
+                                    timeout=40)
+    second_token = second_invite.get("payload", {}).get("token", "")
+    second_view = (await guest.call("invite.get", {"token": second_token})).get("payload", {}).get("invite", {})
+    check(all(s.get("start") != chosen_start for s in second_view.get("slots", [])),
+          "занятое время не предлагается в другом приглашении", second_view.get("slots"))
+    declined = await guest.call("invite.respond", {"token": second_token, "action": "decline",
+                                                   "guest_name": "Вера", "comment": "Уезжаю"})
+    check(declined.get("payload", {}).get("invite", {}).get("status") == "declined",
+          "гость отказался", declined)
+    third_invite = await anna.call("invite.create", {"topic": f"Прогулка {RUN}"}, timeout=40)
+    third_id = third_invite.get("payload", {}).get("invite", {}).get("id", 0)
+    cancelled = await anna.call("invite.cancel", {"invite_id": third_id})
+    check(cancelled.get("payload", {}).get("invite", {}).get("status") == "cancelled",
+          "владелец отменил приглашение", cancelled)
+    late = await guest.call("invite.respond", {
+        "token": third_invite.get("payload", {}).get("token", ""), "action": "decline", "guest_name": "Гость",
+    })
+    check(late.get("code") == "conflict", "ответ на отменённое — conflict", late)
+    foreign = await anya.call("invite.cancel", {"invite_id": third_id})
+    check(foreign.get("code") == "not_found", "чужое приглашение не отменить", foreign)
+    await guest.close()
 
     # ------------------------------------- разрешения и барьер подтверждения
     print("\n3c. Разрешения и барьер подтверждения (этап 8)")

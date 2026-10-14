@@ -29,6 +29,7 @@ target_compile_options(argon2 PRIVATE -w)
 
 set(AURA_SOURCES
     src/adminmanager.cpp
+    src/invitemanager.cpp
     src/agentmanager.cpp
     src/authmanager.cpp
     src/chatmanager.cpp
@@ -60,6 +61,7 @@ set(AURA_SOURCES
 
 set(AURA_HEADERS
     include/aura/adminmanager.h
+    include/aura/invitemanager.h
     include/aura/agentmanager.h
     include/aura/authmanager.h
     include/aura/chatmanager.h

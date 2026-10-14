@@ -49,6 +49,7 @@ bool isPublicType(const std::string& type) {
            type == "auth.verifyEmail" || type == "auth.resendCode" ||
            type == "auth.forgotPassword" || type == "auth.resetPassword" ||
            type == "auth.refresh" ||
+           type == "invite.get" || type == "invite.respond" ||
            type == "ping" || type == "server.info";
 }
 

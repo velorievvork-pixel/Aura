@@ -107,6 +107,8 @@ Config Config::fromEnv() {
     config.fcmUrl = envOr("AURA_FCM_URL", config.fcmUrl);
     config.logLevel = envOr("AURA_LOG_LEVEL", config.logLevel);
     config.adminEmails = envOr("AURA_ADMIN_EMAILS", "");
+    config.publicUrl = envOr("AURA_PUBLIC_URL", "");
+    while (!config.publicUrl.empty() && config.publicUrl.back() == '/') config.publicUrl.pop_back();
     return config;
 }
 
@@ -171,6 +173,14 @@ bool Config::validate(std::string& error, std::vector<std::string>& warnings) {
         }
         warnings.push_back("AURA_DEV_MODE: AURA_2FA_KEY не задан — TOTP-секреты шифруются ключом, "
                            "выведенным из AURA_JWT_SECRET");
+    }
+
+    if (!publicUrl.empty() && publicUrl.rfind("https://", 0) != 0 && publicUrl.rfind("http://", 0) != 0) {
+        error = "AURA_PUBLIC_URL: нужен адрес веб-клиента вида https://aura.example.com";
+        return false;
+    }
+    if (publicUrl.rfind("http://", 0) == 0 && !devMode) {
+        warnings.push_back("AURA_PUBLIC_URL без https: ссылки-приглашения уйдут гостям по открытому каналу");
     }
 
     if (resetTtlSeconds <= 0 || resetTtlSeconds > 3600) {

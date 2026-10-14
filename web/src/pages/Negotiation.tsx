@@ -8,6 +8,7 @@ import { emailError } from '../lib/validate';
 import { useData } from '../state/data';
 import { useSession } from '../state/session';
 import { NegotiationBadge } from './Home';
+import { InviteSection } from './Invites';
 
 const DURATIONS = [
   { value: '30', label: '30 мин' },
@@ -54,6 +55,7 @@ export function Negotiations() {
             ))}
           </div>
         </section>
+        <InviteSection />
       </div>
     </div>
   );

@@ -292,6 +292,46 @@ public final class AuraClient: @unchecked Sendable {
 
     // MARK: - Разрешения и подтверждения (этап 8)
 
+    // MARK: - Страницы записи и рефералы
+
+    public func bookingPageCreate(_ fields: BookingPageFields) async throws -> BookingPage {
+        if let problem = fields.validate() { throw AuraError(code: "bad_request", message: problem) }
+        return BookingPage(json: try await request("booking.pageCreate", fields.payload)["page"] ?? .null)
+    }
+
+    /// status — active | paused; fields == nil — меняется только статус.
+    public func bookingPageUpdate(id: Int64, fields: BookingPageFields? = nil,
+                                  status: String? = nil) async throws -> BookingPage {
+        if let problem = fields?.validate() { throw AuraError(code: "bad_request", message: problem) }
+        var payload = fields?.payload ?? [:]
+        payload["page_id"] = .from(id)
+        if let status { payload["status"] = .string(status) }
+        return BookingPage(json: try await request("booking.pageUpdate", payload)["page"] ?? .null)
+    }
+
+    public func bookingPageList() async throws -> [BookingPage] {
+        try await request("booking.pageList").array("pages").map(BookingPage.init(json:))
+    }
+
+    public func bookingPageDelete(id: Int64) async throws -> JSONValue {
+        try await request("booking.pageDelete", ["page_id": .from(id)])
+    }
+
+    public func bookingList(limit: Int = 50) async throws -> [Booking] {
+        try await request("booking.list", ["limit": .from(limit)]).array("bookings").map(Booking.init(json:))
+    }
+
+    /// occurrence — start одной встречи серии; nil — все предстоящие.
+    public func bookingOwnerCancel(id: Int64, occurrence: String? = nil) async throws -> Booking {
+        var payload: [String: JSONValue] = ["booking_id": .from(id)]
+        if let occurrence { payload["occurrence"] = .string(occurrence) }
+        return Booking(json: try await request("booking.ownerCancel", payload)["booking"] ?? .null)
+    }
+
+    public func referralGet() async throws -> ReferralInfo {
+        ReferralInfo(json: try await request("referral.get"))
+    }
+
     public func permissionsList() async throws -> JSONValue {
         try await request("permissions.list")
     }

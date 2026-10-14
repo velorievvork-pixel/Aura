@@ -45,6 +45,7 @@ struct MainShell: View {
                 case .settings: SettingsView()
                 case .confirmations: ConfirmationsView()
                 case .notifications: NotificationsView()
+                case .booking: BookingView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

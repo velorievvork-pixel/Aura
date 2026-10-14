@@ -164,3 +164,55 @@ final class PrivacyTests: XCTestCase {
         XCTAssertNil(payload["preferences"])
     }
 }
+
+final class BookingModelTests: XCTestCase {
+
+    private func decode(_ text: String) throws -> JSONValue {
+        try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
+    }
+
+    func testPageAndPayload() throws {
+        let page = BookingPage(json: try decode("""
+        {"id": 3, "slug": "abc123def4", "url": "", "title": "Консультация", "description": "Час",
+         "duration_minutes": 60, "days_ahead": 14, "max_per_day": 4, "notice_hours": 2,
+         "max_series": 3, "weekends": true, "status": "paused", "upcoming": 2}
+        """))
+        XCTAssertEqual(page.link, "#/b/abc123def4")
+        XCTAssertEqual(page.fields.maxSeries, 3)
+        XCTAssertTrue(page.fields.weekends)
+        XCTAssertEqual(page.status, "paused")
+        let payload = BookingPageFields(title: " Консультация ", durationMinutes: 60).payload
+        XCTAssertEqual(payload["title"], .string("Консультация"))
+        XCTAssertEqual(payload["duration_minutes"], .number(60))
+        XCTAssertEqual(Set(payload.keys), ["title", "description", "duration_minutes", "days_ahead",
+                                           "max_per_day", "notice_hours", "max_series", "weekends"])
+    }
+
+    func testValidateLikeServer() {
+        XCTAssertNil(BookingPageFields(title: "Встреча").validate())
+        XCTAssertNotNil(BookingPageFields(title: "  ").validate())
+        XCTAssertNotNil(BookingPageFields(title: "X", durationMinutes: 10).validate())
+        XCTAssertNotNil(BookingPageFields(title: "X", maxSeries: 13).validate())
+        XCTAssertNotNil(BookingPageFields(title: "X", noticeHours: 169).validate())
+        XCTAssertNotNil(BookingPageFields(title: String(repeating: "а", count: 121)).validate())
+    }
+
+    func testBookingAndReferral() throws {
+        let booking = Booking(json: try decode("""
+        {"id": 9, "page_id": 3, "page_title": "Консультация", "guest_name": "Пётр", "guest_email": "p@x.ru",
+         "guest_comment": "", "status": "active", "cancelled_by": "", "reschedules": 1, "occurrences": [
+           {"start": "2026-10-28T07:00:00Z", "end": "2026-10-28T08:00:00Z", "status": "cancelled"},
+           {"start": "2026-10-21T07:00:00Z", "end": "2026-10-21T08:00:00Z", "status": "active", "local": "2026-10-21T10:00"}]}
+        """))
+        XCTAssertEqual(booking.occurrences.first?.start, "2026-10-21T07:00:00Z")
+        XCTAssertEqual(booking.occurrences.first?.local, "2026-10-21T10:00")
+        XCTAssertEqual(booking.occurrences.last?.active, false)
+        let referral = ReferralInfo(json: try decode("""
+        {"code": "ABCD2345", "url": "", "joined": 2, "verified": 1,
+         "referrals": [{"display_name": "Фёдор", "source": "booking", "joined_at": "2026-10-14T08:00:00Z", "verified": true}]}
+        """))
+        XCTAssertEqual(referral.link, "#/signup?ref=ABCD2345")
+        XCTAssertEqual(referral.referrals.first?.displayName, "Фёдор")
+        XCTAssertEqual(referral.verified, 1)
+    }
+}

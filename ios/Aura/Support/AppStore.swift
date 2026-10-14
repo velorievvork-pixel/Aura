@@ -22,6 +22,7 @@ enum AppTab: Hashable {
     case settings
     case confirmations
     case notifications
+    case booking
 }
 
 // MARK: - Модели экранов
@@ -229,6 +230,10 @@ final class AppStore: ObservableObject {
     @Published var tasks: [AuraTask] = []
     @Published var confirmations: [PendingAction] = []
     @Published var permissions: [PermissionRow] = []
+    // Страницы записи (booking.*) и рефералы (referral.*); nil — ещё не загружены.
+    @Published var bookingPages: [BookingPage]?
+    @Published var bookings: [Booking] = []
+    @Published var referral: ReferralInfo?
     @Published var connections: [ConnectionRow] = []
     @Published var providers: [IntegrationProvider] = []
 
@@ -482,6 +487,7 @@ final class AppStore: ObservableObject {
         chats = []; contacts = []; foundUsers = []; openChatId = 0; messages = []
         tasks = []; confirmations = []; permissions = []; connections = []; providers = []
         notices = []; unreadNotifications = 0; pushDevices = []
+        bookingPages = nil; bookings = []; referral = nil
         twoFaEnabled = false; twoFaSecret = ""; recoveryCodes = []
         userId = 0; userName = ""; userEmail = ""; userBio = ""; profileError = ""; tab = .home
         updateBadge()
@@ -518,6 +524,9 @@ final class AppStore: ObservableObject {
             }
         case AuraEventName.notificationNew:
             loadNotifications()
+            let kind = payload.string("kind")
+            if kind.hasPrefix("booking."), tab == .booking { loadBooking() }
+            if kind == "referral.joined", referral != nil { loadReferral() }
         case AuraEventName.sessionRevoked:
             sessionRevoked(reason: payload.string("reason"))
         default:
@@ -541,7 +550,9 @@ final class AppStore: ObservableObject {
         if value != .contacts { openChatId = 0 }
         switch value {
         case .settings:
-            loadPermissions(); loadIntegrations(); load2faStatus(); loadPrivacy()
+            loadPermissions(); loadIntegrations(); load2faStatus(); loadPrivacy(); loadReferral()
+        case .booking:
+            loadBooking()
         case .confirmations:
             loadConfirmations()
         case .notifications:
@@ -929,6 +940,61 @@ final class AppStore: ObservableObject {
             self.setStatus(approve ? "Подтверждено" : "Отклонено")
             self.loadConfirmations(); self.loadChats(); self.loadNotifications()
         }
+    }
+
+    // MARK: Страницы записи и рефералы
+
+    func loadBooking() {
+        run {
+            self.bookingPages = try await self.client.bookingPageList()
+            self.bookings = try await self.client.bookingList(limit: 100)
+        }
+    }
+
+    /// pageId == nil — новая страница. true — сохранено (форму можно закрыть).
+    func saveBookingPage(id: Int64?, fields: BookingPageFields) async -> Bool {
+        do {
+            let page: BookingPage
+            if let id {
+                page = try await client.bookingPageUpdate(id: id, fields: fields)
+                bookingPages = (bookingPages ?? []).map { $0.id == page.id ? page : $0 }
+            } else {
+                page = try await client.bookingPageCreate(fields)
+                bookingPages = [page] + (bookingPages ?? []).filter { $0.id != page.id }
+            }
+            return true
+        } catch {
+            fail(error)
+            return false
+        }
+    }
+
+    func setBookingPagePaused(_ page: BookingPage, paused: Bool) {
+        run {
+            let updated = try await self.client.bookingPageUpdate(id: page.id, status: paused ? "paused" : "active")
+            self.bookingPages = (self.bookingPages ?? []).map { $0.id == updated.id ? updated : $0 }
+            self.setStatus(paused ? "Запись на паузе — новые гости не смогут записаться" : "Запись снова открыта")
+        }
+    }
+
+    func deleteBookingPage(_ page: BookingPage) {
+        run {
+            _ = try await self.client.bookingPageDelete(id: page.id)
+            self.bookingPages = (self.bookingPages ?? []).filter { $0.id != page.id }
+            self.setStatus("Страница удалена. Уже сделанные записи остаются в силе.")
+        }
+    }
+
+    func cancelBooking(_ booking: Booking) {
+        run {
+            let updated = try await self.client.bookingOwnerCancel(id: booking.id)
+            self.bookings = self.bookings.map { $0.id == updated.id ? updated : $0 }
+            self.loadTasks()
+        }
+    }
+
+    func loadReferral() {
+        run { self.referral = try await self.client.referralGet() }
     }
 
     func loadPermissions() {

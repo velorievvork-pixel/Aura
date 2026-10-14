@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from . import memory as memory_module
 from . import planner
@@ -97,7 +97,7 @@ class AuraAgent:
         understanding = planner.understand(context.message, _local(now, context.timezone))
 
         # payload уже проверен (sanitize_payload): типы, пределы, виды памяти.
-        payload = self._complete(context, understanding)
+        payload, used_llm = self._complete(context, understanding)
         intent = payload["intent"] or understanding.intent
         reply = payload["reply"]
         confidence = payload["confidence"]
@@ -135,16 +135,24 @@ class AuraAgent:
             results=results,
             memory_updates=updates,
             a2a=proposal,
-            llm=self.llm.name,
+            llm=used_llm,
         )
 
-    def _complete(self, context: AgentContext, understanding: planner.Understanding) -> Dict[str, Any]:
-        """Ответ модели, прошедший проверку; при сбое/мусоре — локальные правила."""
+    def _complete(
+        self, context: AgentContext, understanding: planner.Understanding
+    ) -> Tuple[Dict[str, Any], str]:
+        """Ответ модели, прошедший проверку; при сбое/мусоре — локальные правила.
+
+        Второй элемент — кто на самом деле ответил: имя модели или
+        «<модель>-fallback», если сработали правила (в ответе поле ``llm``:
+        по нему видно, что настоящая LLM не ответила — ключ, сеть, лимиты).
+        """
         try:
-            return sanitize_payload(self.llm.complete_json(context, understanding))
+            return sanitize_payload(self.llm.complete_json(context, understanding)), self.llm.name
         except LLMError as exc:
             logger.warning("LLM unavailable or invalid (%s), falling back to local rules", exc)
-            return sanitize_payload(self.fallback_llm.complete_json(context, understanding))
+            fallback = sanitize_payload(self.fallback_llm.complete_json(context, understanding))
+            return fallback, f"{self.llm.name}-fallback" if self.llm.name != self.fallback_llm.name else self.llm.name
 
     def _execute(self, actions: List[ToolCall], context: AgentContext) -> List[ToolResult]:
         results: List[ToolResult] = []

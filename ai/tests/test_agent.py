@@ -179,7 +179,8 @@ def test_llm_failure_falls_back_to_local_rules():
         AgentRequest(context=user_context(message="напомни завтра купить кофе"))
     )
     assert response.intent == "reminder"
-    assert response.llm == "broken"
+    # Видно, что настоящая модель не ответила: сработали локальные правила.
+    assert response.llm == "broken-fallback"
 
 
 def test_negotiate_accepts_shared_slot():

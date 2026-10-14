@@ -13,6 +13,7 @@ iOS (SwiftUI). База — PostgreSQL, 28 таблиц (`schema/schema.sql` + `
 | `make server-build` / `make server-test` | сборка и юнит-тесты C++-сервера |
 | `make protocol-check` | сверка типов сообщений iOS/Android с сервером (`tools/check_*_protocol.py`) |
 | `make e2e` | сквозной сценарий `tools/e2e.py` (нужны запущенные AI :8000 и сервер :9000) |
+| `make llm-check` | отвечает ли настоящая LLM (`OPENAI_API_KEY` в окружении) |
 | `make schema-check` | применить `schema/schema.sql` + `seed.sql` к PostgreSQL |
 | `make docker-up` / `docker-down` / `docker-logs` | прод-стек (postgres + ai + server) |
 

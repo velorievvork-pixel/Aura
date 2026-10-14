@@ -45,6 +45,9 @@ services:
       AURA_LLM_PROVIDER: ${AURA_LLM_PROVIDER:-mock}
       AURA_LLM_MODEL: ${AURA_LLM_MODEL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Другой OpenAI-совместимый провайдер (пусто — api.openai.com).
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      AURA_LLM_TIMEOUT: ${AURA_LLM_TIMEOUT:-20}
       AURA_RAG_MODE: ${AURA_RAG_MODE:-auto}
       AURA_CORS_ORIGINS: http://server:9000
     healthcheck:

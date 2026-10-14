@@ -5,7 +5,7 @@ check: ai-test server-test protocol-check
 
 # Python AI-сервис: тесты
 ai-test:
-	cd ai && PYTHONPATH=. pytest -q
+	cd ai && PYTHONPATH=. python3 -m pytest -q
 
 # Python AI-сервис: запуск (dev). Слушает 127.0.0.1:8000. Без AURA_AI_TOKEN
 # сервис закрыт (503), поэтому для локальной разработки включаем

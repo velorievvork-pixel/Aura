@@ -9,7 +9,7 @@ e2e — на реальном PostgreSQL.
 изменения — файлами `schema/migrations/` (применяются по порядку имени).
 Демо-данные: `schema/seed.sql`.
 
-## 23 таблицы по доменам
+## 26 таблиц по доменам
 
 ### Аутентификация и безопасность
 | таблица | назначение |
@@ -59,6 +59,9 @@ e2e — на реальном PostgreSQL.
 | таблица | назначение |
 | --- | --- |
 | `meeting_invites` | встреча с человеком без Aura (`invite.*`): `owner_id`, `token_hash` UNIQUE (sha256 токена ссылки — сам токен не хранится), тема, заметка, `duration_minutes` CHECK 15–240, `slots` JSONB `[{start,end}]`, `status` CHECK (`open`/`accepted`/`declined`/`cancelled`; `expired` вычисляется по `expires_at`), ответ гостя (`guest_name/email/comment`, `chosen` JSONB), `responded_at`; индекс (owner_id, id DESC). Миграция `2026_10_14_invites.sql` |
+| `booking_pages` | страницы записи (`booking.*`): `slug` UNIQUE (публичный), название, описание, `duration_minutes`, `window_days`, `min_notice_hours`, `buffer_minutes` (CHECK-диапазоны), `hours`/`weekdays` JSONB, `allow_weekly`, `active` |
+| `bookings` | записи гостей: `manage_token_hash` UNIQUE (sha256 личной ссылки), `page_id` (ON DELETE SET NULL), гость, `first_start`, `weekly`/`weeks` (серия: занятие k — +7k суток), `skipped` JSONB (отменённые индексы), `moved` JSONB (`{"индекс": "новое начало"}`), `reminded` JSONB, `status` (`active`/`cancelled`) |
+| `referrals` | кто кого пригласил: `referrer_id`, `invitee_id` UNIQUE, `qualified_at` (приглашённый начал пользоваться — бонус выдан); в `users` — `referral_code` (UNIQUE) и `pro_until`. Миграция `2026_10_14_booking_referrals.sql` |
 
 ## Соглашения
 

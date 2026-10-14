@@ -4,7 +4,7 @@
 
 * ``POST /v1/agent/run``        — главный запрос Ауры (AgentManager);
 * ``POST /v1/agent/negotiate``  — Agent-to-Agent переговоры между двумя Аурами;
-* ``POST /v1/agent/slots``      — слоты владельца для приглашения по ссылке;
+* ``POST /v1/agent/slots``      — слоты владельца (приглашение по ссылке, страница записи);
 * ``POST /v1/memory/extract``   — извлечение фактов в долговременную память;
 * ``POST /v1/planner/slots``    — свободные слоты (Planner напрямую);
 * ``GET  /v1/tools``            — список инструментов (ToolManager).
@@ -189,7 +189,7 @@ def agent_negotiate(request: NegotiateRequest) -> NegotiateResponse:
 
 @app.post("/v1/agent/slots", response_model=AgentSlotsResponse, dependencies=[Depends(require_token)])
 def agent_slots(request: AgentSlotsRequest) -> AgentSlotsResponse:
-    """Слоты владельца для приглашения по ссылке (invite.create на C++-сервере)."""
+    """Слоты владельца: приглашение по ссылке (invite.*) и страница записи (booking.*)."""
     try:
         return get_agent().offer_slots(request)
     except OverflowError as exc:  # context.now у самой границы datetime.max

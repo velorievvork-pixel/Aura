@@ -293,6 +293,55 @@ struct InviteRecord {
     std::string respondedAt;
 };
 
+// Страница записи (booking.*): постоянная публичная ссылка /#/b/<slug>.
+struct BookingPageRecord {
+    long long id = 0;
+    long long ownerId = 0;
+    std::string slug;
+    std::string title;
+    std::string description;
+    int durationMinutes = 60;
+    int windowDays = 14;
+    int minNoticeHours = 12;
+    int bufferMinutes = 0;
+    Json hours = Json::array();     // локальные часы владельца; [] — рабочие часы из настроек
+    Json weekdays = Json::array();  // 0 = понедельник
+    bool allowWeekly = true;
+    bool active = true;
+    std::string createdAt;
+    std::string updatedAt;
+};
+
+// Запись гостя: одно занятие или серия «каждую неделю» (занятие k — firstStart + 7k суток).
+struct BookingRecord {
+    long long id = 0;
+    long long ownerId = 0;
+    long long pageId = 0;
+    std::string manageTokenHash;
+    std::string title;
+    int durationMinutes = 60;
+    std::string guestName;
+    std::string guestEmail;
+    std::string guestComment;
+    std::string firstStart;          // ISO UTC
+    bool weekly = false;
+    int weeks = 1;
+    Json skipped = Json::array();    // индексы отменённых занятий
+    Json moved = Json::object();     // {"<индекс>": "<новое начало ISO>"}
+    Json reminded = Json::array();   // индексы, по которым ушло напоминание
+    std::string status = "active";   // active | cancelled
+    std::string createdAt;
+    std::string updatedAt;
+};
+
+struct ReferralRecord {
+    long long id = 0;
+    long long referrerId = 0;
+    long long inviteeId = 0;
+    std::string createdAt;
+    std::string qualifiedAt;
+};
+
 struct DatabaseError {
     bool ok = true;
     std::string message;
@@ -522,6 +571,40 @@ public:
     // гостя (guest*, chosen из response). false — запись не найдена или уже закрыта:
     // два одновременных ответа не займут время дважды.
     virtual bool closeInvite(long long id, const std::string& status, const InviteRecord& response) = 0;
+
+    // Страницы записи и записи гостей (booking.*).
+    virtual DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) = 0;
+    // Обновляет изменяемые поля (всё, кроме owner_id и created_at), включая slug.
+    virtual DatabaseError updateBookingPage(const BookingPageRecord& record) = 0;
+    virtual DatabaseError deleteBookingPage(long long id) = 0;
+    virtual std::optional<BookingPageRecord> findBookingPage(long long id) = 0;
+    virtual std::optional<BookingPageRecord> findBookingPageBySlug(const std::string& slug) = 0;
+    virtual std::vector<BookingPageRecord> listBookingPages(long long ownerId) = 0;
+
+    virtual DatabaseError createBooking(const BookingRecord& record, long long& outId) = 0;
+    // Обновляет skipped, moved, reminded, weeks, status (updated_at = сейчас).
+    virtual DatabaseError updateBooking(const BookingRecord& record) = 0;
+    virtual std::optional<BookingRecord> findBooking(long long id) = 0;
+    virtual std::optional<BookingRecord> findBookingByToken(const std::string& tokenHash) = 0;
+    // Активные записи владельца (ownerId = 0 — всех владельцев, для напоминаний).
+    virtual std::vector<BookingRecord> listActiveBookings(long long ownerId) = 0;
+    // Все записи владельца (включая отменённые), новые сверху.
+    virtual std::vector<BookingRecord> listBookings(long long ownerId, int limit) = 0;
+
+    // Реферальная программа.
+    virtual std::string getReferralCode(long long userId) = 0;
+    // false — код уже занят другим пользователем.
+    virtual bool setReferralCode(long long userId, const std::string& code) = 0;
+    virtual long long findUserIdByReferralCode(const std::string& code) = 0;
+    virtual std::string getProUntil(long long userId) = 0;
+    virtual DatabaseError setProUntil(long long userId, const std::string& isoUntil) = 0;
+    virtual DatabaseError createReferral(long long referrerId, long long inviteeId) = 0;
+    virtual std::optional<ReferralRecord> findReferralByInvitee(long long inviteeId) = 0;
+    // Атомарно: qualified_at NULL → сейчас. false — уже засчитан или нет записи.
+    virtual bool qualifyReferral(long long id) = 0;
+    virtual int countReferrals(long long referrerId) = 0;
+    // Засчитанные с момента sinceIso (ISO UTC).
+    virtual int countQualifiedReferrals(long long referrerId, const std::string& sinceIso) = 0;
 };
 
 std::unique_ptr<IDatabase> makePostgresDatabase(const std::string& url);

@@ -23,6 +23,8 @@
 #include "aura/taskmanager.h"
 #include "aura/toolmanager.h"
 #include "aura/invitemanager.h"
+#include "aura/bookingmanager.h"
+#include "aura/referralmanager.h"
 
 namespace aura {
 
@@ -101,6 +103,8 @@ private:
     std::unique_ptr<NotificationsManager> notifications_;
     std::unique_ptr<AdminManager> admin_;
     std::unique_ptr<InviteManager> invites_;
+    std::unique_ptr<ReferralManager> referrals_;
+    std::unique_ptr<BookingManager> bookings_;
     std::unique_ptr<Listener> listener_;
     ConnectionManager connections_;
 

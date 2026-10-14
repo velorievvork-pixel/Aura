@@ -1644,7 +1644,353 @@ public:
         return false;
     }
 
+    // --------------------------------------------------------- booking_pages
+    DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.slug.empty() || record.title.empty()) return DatabaseError::failure("страница без slug или названия");
+        for (const auto& entry : table("booking_pages").items()) {
+            if (entry.getString("slug") == record.slug) return DatabaseError::failure("slug уже занят");
+        }
+        const long long id = nextId("booking_pages");
+        Json entry = bookingPageJson(record);
+        entry.set("id", Json(id));
+        entry.set("owner_id", Json(record.ownerId));
+        entry.set("created_at", Json(isoNow()));
+        entry.set("updated_at", Json(isoNow()));
+        table("booking_pages").push(entry);
+        flush();
+        outId = id;
+        return DatabaseError::success();
+    }
+
+    DatabaseError updateBookingPage(const BookingPageRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("booking_pages").items()) {
+            if (entry.getInt("id") != record.id && entry.getString("slug") == record.slug) {
+                return DatabaseError::failure("slug уже занят");
+            }
+        }
+        for (auto& entry : mutableTable("booking_pages")) {
+            if (entry.getInt("id") != record.id) continue;
+            const Json fields = bookingPageJson(record);
+            for (const auto& key : {"slug", "title", "description", "duration_minutes", "window_days",
+                                    "min_notice_hours", "buffer_minutes", "hours", "weekdays", "allow_weekly",
+                                    "active"}) {
+                entry.set(key, fields.get(key));
+            }
+            entry.set("updated_at", Json(isoNow()));
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("страница записи не найдена");
+    }
+
+    DatabaseError deleteBookingPage(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& pages = mutableTable("booking_pages");
+        const auto before = pages.size();
+        pages.erase(std::remove_if(pages.begin(), pages.end(), [id](const Json& e) { return e.getInt("id") == id; }),
+                    pages.end());
+        if (pages.size() == before) return DatabaseError::failure("страница записи не найдена");
+        // ON DELETE SET NULL: записи остаются без страницы.
+        for (auto& booking : mutableTable("bookings")) {
+            if (booking.getInt("page_id") == id) booking.set("page_id", Json(0LL));
+        }
+        flush();
+        return DatabaseError::success();
+    }
+
+    std::optional<BookingPageRecord> findBookingPage(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("booking_pages").items()) {
+            if (entry.getInt("id") == id) return toBookingPage(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::optional<BookingPageRecord> findBookingPageBySlug(const std::string& slug) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (slug.empty()) return std::nullopt;
+        for (const auto& entry : table("booking_pages").items()) {
+            if (entry.getString("slug") == slug) return toBookingPage(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::vector<BookingPageRecord> listBookingPages(long long ownerId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingPageRecord> result;
+        for (const auto& entry : table("booking_pages").items()) {
+            if (entry.getInt("owner_id") == ownerId) result.push_back(toBookingPage(entry));
+        }
+        return result;
+    }
+
+    // -------------------------------------------------------------- bookings
+    DatabaseError createBooking(const BookingRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.manageTokenHash.empty()) return DatabaseError::failure("запись без токена");
+        for (const auto& entry : table("bookings").items()) {
+            if (entry.getString("manage_token_hash") == record.manageTokenHash) {
+                return DatabaseError::failure("токен записи уже существует");
+            }
+        }
+        const long long id = nextId("bookings");
+        Json entry = Json::object();
+        entry.set("id", Json(id));
+        entry.set("owner_id", Json(record.ownerId));
+        entry.set("page_id", Json(record.pageId));
+        entry.set("manage_token_hash", Json(record.manageTokenHash));
+        entry.set("title", Json(record.title));
+        entry.set("duration_minutes", Json(static_cast<long long>(record.durationMinutes)));
+        entry.set("guest_name", Json(record.guestName));
+        entry.set("guest_email", Json(record.guestEmail));
+        entry.set("guest_comment", Json(record.guestComment));
+        entry.set("first_start", Json(record.firstStart));
+        entry.set("weekly", Json(record.weekly));
+        entry.set("weeks", Json(static_cast<long long>(record.weeks)));
+        entry.set("skipped", record.skipped.isArray() ? record.skipped : Json::array());
+        entry.set("moved", record.moved.isObject() ? record.moved : Json::object());
+        entry.set("reminded", record.reminded.isArray() ? record.reminded : Json::array());
+        entry.set("status", Json(record.status.empty() ? std::string("active") : record.status));
+        entry.set("created_at", Json(isoNow()));
+        entry.set("updated_at", Json(isoNow()));
+        table("bookings").push(entry);
+        flush();
+        outId = id;
+        return DatabaseError::success();
+    }
+
+    DatabaseError updateBooking(const BookingRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : mutableTable("bookings")) {
+            if (entry.getInt("id") != record.id) continue;
+            entry.set("skipped", record.skipped.isArray() ? record.skipped : Json::array());
+            entry.set("moved", record.moved.isObject() ? record.moved : Json::object());
+            entry.set("reminded", record.reminded.isArray() ? record.reminded : Json::array());
+            entry.set("weeks", Json(static_cast<long long>(record.weeks)));
+            entry.set("status", Json(record.status));
+            entry.set("updated_at", Json(isoNow()));
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("запись не найдена");
+    }
+
+    std::optional<BookingRecord> findBooking(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("bookings").items()) {
+            if (entry.getInt("id") == id) return toBooking(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::optional<BookingRecord> findBookingByToken(const std::string& tokenHash) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (tokenHash.empty()) return std::nullopt;
+        for (const auto& entry : table("bookings").items()) {
+            if (entry.getString("manage_token_hash") == tokenHash) return toBooking(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::vector<BookingRecord> listActiveBookings(long long ownerId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingRecord> result;
+        for (const auto& entry : table("bookings").items()) {
+            if (entry.getString("status") != "active") continue;
+            if (ownerId > 0 && entry.getInt("owner_id") != ownerId) continue;
+            result.push_back(toBooking(entry));
+        }
+        return result;
+    }
+
+    std::vector<BookingRecord> listBookings(long long ownerId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingRecord> result;
+        const auto& entries = table("bookings").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId) continue;
+            result.push_back(toBooking(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    // ------------------------------------------------------------- referrals
+    std::string getReferralCode(long long userId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& user : table("users").items()) {
+            if (user.getInt("id") == userId) return user.getString("referral_code");
+        }
+        return "";
+    }
+
+    bool setReferralCode(long long userId, const std::string& code) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& user : table("users").items()) {
+            if (user.getInt("id") != userId && user.getString("referral_code") == code) return false;
+        }
+        for (auto& user : mutableTable("users")) {
+            if (user.getInt("id") != userId) continue;
+            user.set("referral_code", Json(code));
+            flush();
+            return true;
+        }
+        return false;
+    }
+
+    long long findUserIdByReferralCode(const std::string& code) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (code.empty()) return 0;
+        for (const auto& user : table("users").items()) {
+            if (user.getString("referral_code") == code) return user.getInt("id");
+        }
+        return 0;
+    }
+
+    std::string getProUntil(long long userId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& user : table("users").items()) {
+            if (user.getInt("id") == userId) return user.getString("pro_until");
+        }
+        return "";
+    }
+
+    DatabaseError setProUntil(long long userId, const std::string& isoUntil) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& user : mutableTable("users")) {
+            if (user.getInt("id") != userId) continue;
+            user.set("pro_until", Json(isoUntil));
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("пользователь не найден");
+    }
+
+    DatabaseError createReferral(long long referrerId, long long inviteeId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (referrerId == inviteeId) return DatabaseError::failure("нельзя пригласить себя");
+        for (const auto& entry : table("referrals").items()) {
+            if (entry.getInt("invitee_id") == inviteeId) return DatabaseError::failure("приглашение уже учтено");
+        }
+        Json entry = Json::object();
+        entry.set("id", Json(nextId("referrals")));
+        entry.set("referrer_id", Json(referrerId));
+        entry.set("invitee_id", Json(inviteeId));
+        entry.set("created_at", Json(isoNow()));
+        entry.set("qualified_at", Json(std::string()));
+        table("referrals").push(entry);
+        flush();
+        return DatabaseError::success();
+    }
+
+    std::optional<ReferralRecord> findReferralByInvitee(long long inviteeId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("referrals").items()) {
+            if (entry.getInt("invitee_id") != inviteeId) continue;
+            ReferralRecord record;
+            record.id = entry.getInt("id");
+            record.referrerId = entry.getInt("referrer_id");
+            record.inviteeId = inviteeId;
+            record.createdAt = entry.getString("created_at");
+            record.qualifiedAt = entry.getString("qualified_at");
+            return record;
+        }
+        return std::nullopt;
+    }
+
+    bool qualifyReferral(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : mutableTable("referrals")) {
+            if (entry.getInt("id") != id) continue;
+            if (!entry.getString("qualified_at").empty()) return false;
+            entry.set("qualified_at", Json(isoNow()));
+            flush();
+            return true;
+        }
+        return false;
+    }
+
+    int countReferrals(long long referrerId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        int count = 0;
+        for (const auto& entry : table("referrals").items()) {
+            if (entry.getInt("referrer_id") == referrerId) ++count;
+        }
+        return count;
+    }
+
+    int countQualifiedReferrals(long long referrerId, const std::string& sinceIso) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        int count = 0;
+        for (const auto& entry : table("referrals").items()) {
+            const std::string qualified = entry.getString("qualified_at");
+            if (entry.getInt("referrer_id") == referrerId && !qualified.empty() && qualified >= sinceIso) ++count;
+        }
+        return count;
+    }
+
 private:
+    static Json bookingPageJson(const BookingPageRecord& record) {
+        Json entry = Json::object();
+        entry.set("slug", Json(record.slug));
+        entry.set("title", Json(record.title));
+        entry.set("description", Json(record.description));
+        entry.set("duration_minutes", Json(static_cast<long long>(record.durationMinutes)));
+        entry.set("window_days", Json(static_cast<long long>(record.windowDays)));
+        entry.set("min_notice_hours", Json(static_cast<long long>(record.minNoticeHours)));
+        entry.set("buffer_minutes", Json(static_cast<long long>(record.bufferMinutes)));
+        entry.set("hours", record.hours.isArray() ? record.hours : Json::array());
+        entry.set("weekdays", record.weekdays.isArray() ? record.weekdays : Json::array());
+        entry.set("allow_weekly", Json(record.allowWeekly));
+        entry.set("active", Json(record.active));
+        return entry;
+    }
+
+    BookingPageRecord toBookingPage(const Json& entry) const {
+        BookingPageRecord record;
+        record.id = entry.getInt("id");
+        record.ownerId = entry.getInt("owner_id");
+        record.slug = entry.getString("slug");
+        record.title = entry.getString("title");
+        record.description = entry.getString("description");
+        record.durationMinutes = static_cast<int>(entry.getInt("duration_minutes", 60));
+        record.windowDays = static_cast<int>(entry.getInt("window_days", 14));
+        record.minNoticeHours = static_cast<int>(entry.getInt("min_notice_hours", 12));
+        record.bufferMinutes = static_cast<int>(entry.getInt("buffer_minutes", 0));
+        record.hours = entry.get("hours").isArray() ? entry.get("hours") : Json::array();
+        record.weekdays = entry.get("weekdays").isArray() ? entry.get("weekdays") : Json::array();
+        record.allowWeekly = entry.getBool("allow_weekly", true);
+        record.active = entry.getBool("active", true);
+        record.createdAt = entry.getString("created_at");
+        record.updatedAt = entry.getString("updated_at");
+        return record;
+    }
+
+    BookingRecord toBooking(const Json& entry) const {
+        BookingRecord record;
+        record.id = entry.getInt("id");
+        record.ownerId = entry.getInt("owner_id");
+        record.pageId = entry.getInt("page_id");
+        record.manageTokenHash = entry.getString("manage_token_hash");
+        record.title = entry.getString("title");
+        record.durationMinutes = static_cast<int>(entry.getInt("duration_minutes", 60));
+        record.guestName = entry.getString("guest_name");
+        record.guestEmail = entry.getString("guest_email");
+        record.guestComment = entry.getString("guest_comment");
+        record.firstStart = entry.getString("first_start");
+        record.weekly = entry.getBool("weekly", false);
+        record.weeks = static_cast<int>(entry.getInt("weeks", 1));
+        record.skipped = entry.get("skipped").isArray() ? entry.get("skipped") : Json::array();
+        record.moved = entry.get("moved").isObject() ? entry.get("moved") : Json::object();
+        record.reminded = entry.get("reminded").isArray() ? entry.get("reminded") : Json::array();
+        record.status = entry.getString("status", "active");
+        record.createdAt = entry.getString("created_at");
+        record.updatedAt = entry.getString("updated_at");
+        return record;
+    }
+
     InviteRecord toInvite(const Json& entry) const {
         InviteRecord record;
         record.id = entry.getInt("id");

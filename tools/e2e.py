@@ -656,6 +656,98 @@ async def main() -> int:
     check(foreign.get("code") == "not_found", "чужое приглашение не отменить", foreign)
     await guest.close()
 
+    # --------------------------- запись по постоянной ссылке (booking.*) и рефералы
+    print("\n3b. Запись по постоянной ссылке, серия, перенос; реферальный бонус")
+    referral = await anna.call("referral.info")
+    ref_code = referral.get("payload", {}).get("code", "")
+    check(len(ref_code) == 8, "referral.info: код приглашения", referral)
+    check(referral.get("payload", {}).get("plan", {}).get("name") in ("free", "pro"), "в ответе тариф", referral)
+
+    # Коллега регистрируется по коду Анны и заводит страницу записи.
+    gleb = Client("gleb")
+    await gleb.connect()
+    gleb_reg = await gleb.call("auth.register", {
+        "email": f"gleb.{RUN}@example.com", "password": "aura1234", "display_name": "Глеб",
+        "referral_code": ref_code.lower(),
+    })
+    check(gleb_reg.get("payload", {}).get("referral_applied") is True, "регистрация по коду приглашения", gleb_reg)
+    await gleb.call("auth.verifyEmail", {"email": f"gleb.{RUN}@example.com",
+                                         "code": gleb_reg.get("payload", {}).get("email_code", "")})
+    await gleb.call("auth.login", {"email": f"gleb.{RUN}@example.com", "password": "aura1234"})
+    page_saved = await gleb.call("booking.pages.save", {
+        "title": f"Математика {RUN}", "duration_minutes": 60, "min_notice_hours": 0,
+        "weekdays": [0, 1, 2, 3, 4, 5, 6], "window_days": 14,
+    })
+    check(page_saved.get("type") == "ok", "booking.pages.save: страница создана", page_saved)
+    page = page_saved.get("payload", {}).get("page", {})
+    slug = page.get("slug", "")
+    check(len(slug) == 10, "slug страницы — 10 символов", slug)
+    pages = (await gleb.call("booking.pages.list")).get("payload", {})
+    check(pages.get("plan", {}).get("name") == "free" and pages.get("plan", {}).get("max_pages") == 1,
+          "тариф Free: 1 страница", pages.get("plan"))
+    second_page = await gleb.call("booking.pages.save", {"title": "Вторая"})
+    check(second_page.get("code") == "forbidden", "вторая страница на Free — forbidden", second_page)
+
+    student = Client("student")
+    await student.connect()
+    opened = await student.call("booking.get", {"slug": slug}, timeout=40)
+    check(opened.get("type") == "ok", "booking.get без входа", opened)
+    booking_slots = opened.get("payload", {}).get("slots", [])
+    check(len(booking_slots) >= 3, "страница предлагает свободное время", len(booking_slots))
+    check(opened.get("payload", {}).get("page", {}).get("owner_name") == "Глеб", "имя владельца на странице")
+    check(f"gleb.{RUN}@example.com" not in json.dumps(opened), "email владельца гостю не отдаётся")
+    first_slot = booking_slots[0]["start"] if booking_slots else ""
+    booked = await student.call("booking.book", {
+        "slug": slug, "start": first_slot, "guest_name": "Ученик Саша", "weekly": True,
+    }, timeout=40)
+    check(booked.get("type") == "ok", "booking.book: запись каждую неделю", booked)
+    booked_payload = booked.get("payload", {})
+    manage_token = booked_payload.get("manage_token", "")
+    check(len(manage_token) == 43, "ссылка управления записью (токен 43 символа)", len(manage_token))
+    occurrences = booked_payload.get("booking", {}).get("occurrences", [])
+    check(len(occurrences) == 8, "серия из 8 занятий (Free)", len(occurrences))
+    again_slot = await student.call("booking.book", {"slug": slug, "start": first_slot, "guest_name": "Другой"},
+                                    timeout=40)
+    check(again_slot.get("code") == "conflict", "занятое время второй раз не записать", again_slot)
+
+    await asyncio.sleep(0.3)
+    gleb_kinds = [e.get("payload", {}).get("kind") for e in gleb.events_of("notification.new")]
+    check("booking.created" in gleb_kinds, "владелец получил booking.created", gleb_kinds)
+    # Первая запись приглашённого — бонус обоим.
+    check("referral.rewarded" in gleb_kinds, "приглашённый получил бонус referral.rewarded", gleb_kinds)
+    gleb_plan = (await gleb.call("referral.info")).get("payload", {}).get("plan", {})
+    check(gleb_plan.get("name") == "pro", "у приглашённого Pro", gleb_plan)
+    anna_info = (await anna.call("referral.info")).get("payload", {})
+    check(anna_info.get("qualified", 0) >= 1 and anna_info.get("plan", {}).get("name") == "pro",
+          "у пригласившей Pro и засчитанное приглашение", anna_info)
+
+    owner_bookings = (await gleb.call("booking.list")).get("payload", {}).get("bookings", [])
+    check(len(owner_bookings) == 1 and owner_bookings[0].get("guest_name") == "Ученик Саша",
+          "booking.list у владельца", owner_bookings)
+
+    managed = await student.call("booking.manage.get", {"token": manage_token}, timeout=40)
+    check(managed.get("type") == "ok", "booking.manage.get по личной ссылке", managed)
+    move_to = next((s["start"] for s in managed.get("payload", {}).get("slots", []) if s["start"] != first_slot), "")
+    moved = await student.call("booking.manage.reschedule", {"token": manage_token, "index": 0, "start": move_to},
+                               timeout=40)
+    moved_occurrences = moved.get("payload", {}).get("booking", {}).get("occurrences", [])
+    check(moved.get("type") == "ok" and moved_occurrences and moved_occurrences[0].get("start") == move_to,
+          "перенос первого занятия", moved)
+    cancel_one = await student.call("booking.manage.cancel", {"token": manage_token, "index": 1})
+    check(cancel_one.get("payload", {}).get("booking", {}).get("occurrences", [{}, {}])[1].get("status") == "cancelled",
+          "отмена одного занятия", cancel_one)
+    cancel_all = await student.call("booking.manage.cancel", {"token": manage_token})
+    check(cancel_all.get("payload", {}).get("booking", {}).get("status") == "cancelled", "отмена всей записи",
+          cancel_all)
+    await asyncio.sleep(0.3)
+    gleb_kinds = [e.get("payload", {}).get("kind") for e in gleb.events_of("notification.new")]
+    check("booking.rescheduled" in gleb_kinds and "booking.cancelled" in gleb_kinds,
+          "владелец узнал о переносе и отмене", gleb_kinds)
+    pro_pages = await gleb.call("booking.pages.save", {"title": "Вторая страница"})
+    check(pro_pages.get("type") == "ok", "на Pro можно вторую страницу", pro_pages)
+    await student.close()
+    await gleb.close()
+
     # ------------------------------------- разрешения и барьер подтверждения
     print("\n3c. Разрешения и барьер подтверждения (этап 8)")
 

@@ -24,6 +24,7 @@ namespace aura {
 class DatabaseManager;
 class MemoryManager;
 class NotificationsManager;
+class ReferralManager;
 struct Config;
 struct InviteRecord;
 
@@ -49,6 +50,10 @@ public:
 
     InviteManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
                   const Config& config);
+
+    // Реферальная программа: ответ гостя засчитывает приглашение владельца,
+    // а страница гостя ведёт на регистрацию с кодом владельца.
+    void setReferrals(ReferralManager* referrals) { referrals_ = referrals; }
 
     // Владелец (нужен вход).
     Result create(long long ownerId, const Json& payload);
@@ -79,6 +84,7 @@ private:
     DatabaseManager& database_;
     MemoryManager& memory_;
     NotificationsManager* notifications_;
+    ReferralManager* referrals_ = nullptr;
     const Config& config_;
 
     // Выбор времени: проверка «свободно» и запись встречи — под одной блокировкой,

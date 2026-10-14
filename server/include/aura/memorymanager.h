@@ -3,6 +3,7 @@
 
 #include <ctime>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -48,6 +49,8 @@ public:
     std::vector<MemoryRecord> schedule(long long userId);
     // Занятые интервалы [start, end) из расписания (те же, что уходят в AI как calendar).
     std::vector<std::pair<std::time_t, std::time_t>> busy(long long userId);
+    // Занятия по записи (booking.*): {название, начало, конец}.
+    std::vector<std::tuple<std::string, std::time_t, std::time_t>> bookingEvents(long long userId);
 
 private:
     DatabaseManager& database_;

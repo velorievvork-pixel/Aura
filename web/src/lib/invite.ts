@@ -1,10 +1,13 @@
 /*
   Приглашение по ссылке: чистая логика без React — ссылка для гостя, группировка
   слотов по дням в часовом поясе браузера, файл .ics, подписи статусов, проверка
-  форм и тексты ошибок. Проверяется юнит-тестами (invite.test.ts).
+  форм и тексты ошибок. Общие части (ссылка, время, .ics) — в publicLink.ts,
+  slots.ts и ics.ts, здесь реэкспортируются. Проверяется юнит-тестами (invite.test.ts).
 */
 import type { GuestInvite, Invite, InviteSlot, InviteStatus } from '../net/inviteApi';
 import { AuraError, isNetworkError } from '../net/socket';
+import { buildIcs, icsFileNameFor, stableUid } from './ics';
+import { publicLink, type LocationLike, type PublicLink } from './publicLink';
 import { nameError } from './validate';
 
 // ------------------------------------------------------------------ статусы
@@ -53,24 +56,9 @@ export function chosenSlot(invite: { chosen?: Partial<InviteSlot> | null }): Inv
 
 // ------------------------------------------------------------------ ссылка
 
-export interface LocationLike {
-  protocol: string;
-  hostname: string;
-  origin: string;
-  pathname: string;
-}
+export { isPublicWebOrigin, type LocationLike } from './publicLink';
 
-export type InviteLink = { kind: 'url'; url: string } | { kind: 'token'; token: string };
-
-/** Адрес, который откроется у другого человека: http(s) и не localhost/loopback (Capacitor — https://localhost). */
-export function isPublicWebOrigin(loc: LocationLike | null | undefined): boolean {
-  if (!loc || (loc.protocol !== 'http:' && loc.protocol !== 'https:')) return false;
-  const host = loc.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (!host) return false;
-  if (host === 'localhost' || host.endsWith('.localhost')) return false;
-  if (host === '::1' || host === '0.0.0.0' || /^127\./.test(host)) return false;
-  return true;
-}
+export type InviteLink = PublicLink;
 
 /**
   Ссылка для гостя: готовая от сервера (AURA_PUBLIC_URL), иначе — адрес этого
@@ -78,10 +66,7 @@ export function isPublicWebOrigin(loc: LocationLike | null | undefined): boolean
   на сервере нужен AURA_PUBLIC_URL).
 */
 export function inviteLink(token: string, serverUrl: string, loc: LocationLike | null | undefined): InviteLink {
-  const url = serverUrl.trim();
-  if (/^https?:\/\//i.test(url)) return { kind: 'url', url };
-  if (loc && isPublicWebOrigin(loc)) return { kind: 'url', url: `${loc.origin}${loc.pathname}#/i/${token}` };
-  return { kind: 'token', token };
+  return publicLink(`/i/${token}`, token, serverUrl, loc);
 }
 
 /** Токен из адреса: base64url; заведомо битый не отправляем на сервер. */
@@ -91,192 +76,15 @@ export function isPlausibleToken(token: string | undefined): token is string {
 
 // ------------------------------------------------------------------ время
 
-export function browserTimeZone(): string {
-  try {
-    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  } catch {
-    return 'UTC';
-  }
-}
-
-function safeZone(timeZone: string): string {
-  try {
-    new Intl.DateTimeFormat('ru-RU', { timeZone });
-    return timeZone;
-  } catch {
-    return 'UTC';
-  }
-}
-
-/** Ключ дня «ГГГГ-ММ-ДД» в часовом поясе. */
-export function dayKey(date: Date, timeZone: string): string {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: safeZone(timeZone), year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date);
-  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
-  return `${get('year')}-${get('month')}-${get('day')}`;
-}
-
-function nextDayKey(key: string): string {
-  const [y, m, d] = key.split('-').map(Number);
-  const next = new Date(Date.UTC(y, m - 1, d + 1));
-  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`;
-}
-
-/** «10:00» в часовом поясе. */
-export function timeIn(date: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat('ru-RU', { timeZone: safeZone(timeZone), hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(date);
-}
-
-/** «четверг, 15 октября» в часовом поясе. */
-function dateIn(date: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat('ru-RU', { timeZone: safeZone(timeZone), weekday: 'long', day: 'numeric', month: 'long' }).format(date);
-}
-
-const capitalize = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
-
-/** «Сегодня, 15 октября» / «Завтра, 16 октября» / «Суббота, 17 октября». */
-export function dayTitleIn(date: Date, timeZone: string, now = new Date()): string {
-  const key = dayKey(date, timeZone);
-  const today = dayKey(now, timeZone);
-  const full = dateIn(date, timeZone);
-  const dayMonth = full.includes(',') ? full.slice(full.indexOf(',') + 1).trim() : full;
-  if (key === today) return `Сегодня, ${dayMonth}`;
-  if (key === nextDayKey(today)) return `Завтра, ${dayMonth}`;
-  return capitalize(full);
-}
-
-export interface SlotView extends InviteSlot {
-  /** «10:00–11:00» */
-  label: string;
-}
-
-export interface DayGroup {
-  key: string;
-  title: string;
-  slots: SlotView[];
-}
-
-/** Слоты по дням (в поясе гостя), хронологически; прошедшие и битые отбрасываются. */
-export function groupSlotsByDay(slots: InviteSlot[], timeZone: string, now = new Date()): DayGroup[] {
-  const valid = (slots ?? [])
-    .map((s) => ({ s, start: Date.parse(s?.start), end: Date.parse(s?.end) }))
-    .filter((x) => !Number.isNaN(x.start) && !Number.isNaN(x.end) && x.end > x.start && x.start > now.getTime())
-    .sort((a, b) => a.start - b.start);
-  const groups: DayGroup[] = [];
-  for (const { s, start, end } of valid) {
-    const startDate = new Date(start);
-    const key = dayKey(startDate, timeZone);
-    let group = groups.find((g) => g.key === key);
-    if (!group) {
-      group = { key, title: dayTitleIn(startDate, timeZone, now), slots: [] };
-      groups.push(group);
-    }
-    group.slots.push({ start: s.start, end: s.end, label: `${timeIn(startDate, timeZone)}–${timeIn(new Date(end), timeZone)}` });
-  }
-  return groups;
-}
-
-/** «Суббота, 17 октября, 10:00–11:00» — выбранное время целиком. */
-export function slotPhrase(slot: InviteSlot, timeZone: string, now = new Date()): string {
-  const start = new Date(slot.start);
-  const end = new Date(slot.end);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '';
-  return `${dayTitleIn(start, timeZone, now)}, ${timeIn(start, timeZone)}–${timeIn(end, timeZone)}`;
-}
-
-/** «Europe/Moscow (GMT+3)» — подпись часового пояса. */
-export function timeZoneLabel(timeZone: string, at = new Date()): string {
-  const zone = safeZone(timeZone);
-  try {
-    const offset = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'shortOffset' })
-      .formatToParts(at)
-      .find((p) => p.type === 'timeZoneName')?.value;
-    return offset ? `${zone.replace(/_/g, ' ')} (${offset})` : zone.replace(/_/g, ' ');
-  } catch {
-    return zone;
-  }
-}
+export { browserTimeZone, dayKey, dayTitleIn, groupSlotsByDay, slotPhrase, timeIn, timeZoneLabel, type DayGroup, type SlotView } from './slots';
 
 // ------------------------------------------------------------------ .ics
 
-export interface IcsEvent {
-  uid: string;
-  start: string;
-  end: string;
-  summary: string;
-  description?: string;
-  /** Момент создания файла (DTSTAMP). */
-  now?: Date;
-}
-
-/** 2026-10-15T07:00:00Z → 20261015T070000Z (всегда UTC). */
-export function icsUtc(date: Date): string {
-  return date.toISOString().replace(/\.\d{3}Z$/, 'Z').replace(/[-:]/g, '');
-}
-
-/** Экранирование TEXT по RFC 5545: \ ; , и переводы строк. */
-export function icsEscape(text: string): string {
-  return text
-    .replace(/\\/g, '\\\\')
-    .replace(/;/g, '\\;')
-    .replace(/,/g, '\\,')
-    .replace(/\r\n|\r|\n/g, '\\n');
-}
-
-/** Перенос строк длиннее 75 октетов (UTF-8), не разрывая символы; продолжение — с пробела. */
-export function foldIcsLine(line: string): string {
-  const encoder = new TextEncoder();
-  const out: string[] = [];
-  let current = '';
-  let bytes = 0;
-  let limit = 75;
-  for (const ch of line) {
-    const size = encoder.encode(ch).length;
-    if (bytes + size > limit) {
-      out.push(current);
-      current = ' ';
-      bytes = 1;
-      limit = 75;
-    }
-    current += ch;
-    bytes += size;
-  }
-  out.push(current);
-  return out.join('\r\n');
-}
-
-/** Файл календаря с одним событием; строки через CRLF, время — в UTC. */
-export function buildIcs(event: IcsEvent): string {
-  const start = new Date(event.start);
-  const end = new Date(event.end);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) throw new Error('Неверное время встречи');
-  const lines = [
-    'BEGIN:VCALENDAR',
-    'VERSION:2.0',
-    'PRODID:-//Aura//Invite//RU',
-    'CALSCALE:GREGORIAN',
-    'METHOD:PUBLISH',
-    'BEGIN:VEVENT',
-    `UID:${icsEscape(event.uid)}`,
-    `DTSTAMP:${icsUtc(event.now ?? new Date())}`,
-    `DTSTART:${icsUtc(start)}`,
-    `DTEND:${icsUtc(end)}`,
-    `SUMMARY:${icsEscape(event.summary)}`,
-    ...(event.description ? [`DESCRIPTION:${icsEscape(event.description)}`] : []),
-    'END:VEVENT',
-    'END:VCALENDAR',
-  ];
-  return lines.map(foldIcsLine).join('\r\n') + '\r\n';
-}
+export { buildIcs, foldIcsLine, icsEscape, icsUtc, type IcsEvent } from './ics';
 
 /** Стабильный UID без секретов (токен в файл не попадает): FNV-1a от темы, владельца и времени. */
 export function inviteUid(topic: string, owner: string, start: string): string {
-  let hash = 0x811c9dc5;
-  for (const ch of `${topic}\u0000${owner}\u0000${start}`) {
-    hash ^= ch.codePointAt(0) ?? 0;
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  const at = Number.isNaN(Date.parse(start)) ? 'x' : icsUtc(new Date(start));
-  return `invite-${at}-${hash.toString(16).padStart(8, '0')}@aura`;
+  return stableUid('invite', start, topic, owner);
 }
 
 /** Событие календаря для гостя по принятому приглашению. */
@@ -295,8 +103,7 @@ export function guestIcs(invite: Pick<GuestInvite, 'topic' | 'note' | 'owner_nam
 }
 
 export function icsFileName(slot: InviteSlot): string {
-  const d = new Date(slot.start);
-  return Number.isNaN(d.getTime()) ? 'aura-invite.ics' : `aura-invite-${icsUtc(d).slice(0, 8)}.ics`;
+  return icsFileNameFor('invite', slot.start);
 }
 
 // ------------------------------------------------------------------ формы
@@ -358,7 +165,7 @@ export function ownerErrorText(error: unknown): string {
   if (!(error instanceof AuraError)) return 'Что-то пошло не так';
   if (error.code === 'timeout') return 'Сервер не ответил вовремя — попробуйте ещё раз';
   if (isNetworkError(error)) return 'Нет связи с сервером Aura';
-  if (error.code === 'upstream') return 'Аура сейчас не может подобрать время — попробуйте позже';
+  if (error.code === 'upstream' || error.code === 'upstream_error') return 'Аура сейчас не может подобрать время — попробуйте позже';
   if (error.code === 'conflict' && !error.message) return 'Нет свободных окон в выбранный период';
   // forbidden — лимит открытых приглашений (текст от сервера).
   if (error.code === 'forbidden' && !error.message) return 'Слишком много открытых приглашений — отмените ненужные';
@@ -386,13 +193,13 @@ export function guestErrorKind(error: unknown): GuestErrorKind {
 }
 
 /** Текст ошибки для гостя: сетевые — своими словами, остальное — как сказал сервер. */
-export function guestErrorText(error: unknown): string {
+export function guestErrorText(error: unknown, notFound = 'Приглашение не найдено'): string {
   const kind = guestErrorKind(error);
   if (kind === 'network') {
     return error instanceof AuraError && error.code === 'timeout' ? 'Сервер не ответил вовремя — попробуйте ещё раз' : 'Нет связи с сервером Aura — ответ не отправлен';
   }
   const message = error instanceof AuraError ? sentence(error.message) : '';
   if (kind === 'limited') return message || 'Слишком много попыток — подождите минуту';
-  if (kind === 'notFound') return 'Приглашение не найдено';
+  if (kind === 'notFound') return notFound;
   return message || 'Что-то пошло не так';
 }

@@ -12,73 +12,19 @@
 #include "aura/memorymanager.h"
 #include "aura/net.h"
 #include "aura/protocol.h"
+#include "aura/referralmanager.h"
 #include "aura/session.h"
+#include "linkutil.h"
 #include "notificationsmanager.h"
 
 namespace aura {
 
 namespace {
 
-constexpr std::size_t kTokenBytes = 32;    // 256 бит случайности
-constexpr std::size_t kTokenLength = 43;   // base64url без '=' от 32 байт
+using namespace linkutil;
+
 constexpr int kMaxSlots = 6;
 constexpr int kReminderLeadSec = 15 * 60;
-
-std::string trim(const std::string& value) {
-    const std::size_t begin = value.find_first_not_of(" \t\r\n");
-    if (begin == std::string::npos) return "";
-    const std::size_t end = value.find_last_not_of(" \t\r\n");
-    return value.substr(begin, end - begin + 1);
-}
-
-// Длина в символах UTF-8 (продолжающие байты 10xxxxxx не считаются).
-std::size_t utf8Length(const std::string& value) {
-    std::size_t count = 0;
-    for (const unsigned char ch : value) {
-        if ((ch & 0xC0) != 0x80) ++count;
-    }
-    return count;
-}
-
-// Проверка текстового поля: длина в символах и управляющие символы
-// (переводы строк допустимы только в многострочных полях).
-bool validText(const std::string& value, std::size_t maxChars, bool multiline) {
-    if (utf8Length(value) > maxChars) return false;
-    for (const unsigned char ch : value) {
-        if (ch == 0x7F) return false;
-        if (ch < 0x20 && !(multiline && (ch == '\n' || ch == '\r' || ch == '\t'))) return false;
-    }
-    return true;
-}
-
-bool plausibleEmail(const std::string& email) {
-    if (email.size() < 3 || email.size() > 254) return false;
-    const std::size_t at = email.find('@');
-    if (at == std::string::npos || at == 0 || at + 1 >= email.size()) return false;
-    if (email.find('@', at + 1) != std::string::npos) return false;
-    for (const unsigned char ch : email) {
-        if (ch <= 0x20 || ch == 0x7F || ch == '<' || ch == '>' || ch == '"' || ch == ',' || ch == ';') return false;
-    }
-    return true;
-}
-
-std::string joinUrl(const std::string& base, const std::string& path) {
-    std::string url = base;
-    if (!url.empty() && url.back() == '/') url.pop_back();
-    return url + path;
-}
-
-// Интервал слота {start, end}; false — запись повреждена.
-bool slotTimes(const Json& slot, std::time_t& start, std::time_t& end) {
-    return parseIsoUtc(slot.getString("start"), start) && parseIsoUtc(slot.getString("end"), end) && end > start;
-}
-
-Json slotJson(std::time_t start, std::time_t end) {
-    Json slot = Json::object();
-    slot.set("start", Json(isoUtc(start)));
-    slot.set("end", Json(isoUtc(end)));
-    return slot;
-}
 
 }  // namespace
 
@@ -86,13 +32,7 @@ InviteManager::InviteManager(DatabaseManager& database, MemoryManager& memory, N
                              const Config& config)
     : database_(database), memory_(memory), notifications_(notifications), config_(config) {}
 
-std::string InviteManager::tokenHash(const std::string& token) {
-    if (token.size() != kTokenLength) return "";
-    for (const unsigned char ch : token) {
-        if (std::isalnum(ch) == 0 && ch != '-' && ch != '_') return "";
-    }
-    return crypto::toHex(crypto::sha256(token));
-}
+std::string InviteManager::tokenHash(const std::string& token) { return linkutil::tokenHash(token); }
 
 std::string InviteManager::effectiveStatus(const InviteRecord& record, std::time_t now) {
     if (record.status != "open") return record.status;
@@ -151,6 +91,7 @@ Json InviteManager::guestJson(const InviteRecord& record, std::time_t now) {
     json.set("guest_name", Json(record.guestName));
     json.set("chosen", status == "accepted" ? record.chosen : Json::object());
     json.set("expires_at", Json(record.expiresAt));
+    json.set("referral_code", Json(referrals_ ? referrals_->codeFor(record.ownerId) : std::string()));
     return json;
 }
 
@@ -271,8 +212,7 @@ InviteManager::Result InviteManager::create(long long ownerId, const Json& paylo
     std::string token;
     long long id = 0;
     for (int attempt = 0; attempt < 3 && id == 0; ++attempt) {
-        token = crypto::base64UrlEncode(crypto::randomBytes(kTokenBytes));
-        while (!token.empty() && token.back() == '=') token.pop_back();
+        token = newToken();
         record.tokenHash = tokenHash(token);
         if (record.tokenHash.empty()) continue;
         const DatabaseError saved = database_.db().createInvite(record, id);
@@ -431,6 +371,7 @@ InviteManager::Result InviteManager::respond(const Json& payload, const std::str
             notifications_->create(record->ownerId, "invite.accepted", response.guestName + " выбрал(а) время",
                                    record->topic, notify);
         }
+        if (referrals_) referrals_->onActivity(record->ownerId);
     } else if (notifications_) {
         Json notify = Json::object();
         notify.set("invite_id", Json(record->id));

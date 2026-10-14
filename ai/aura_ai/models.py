@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import datetime, timezone
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
@@ -234,23 +234,43 @@ class NegotiateRequest(BaseModel):
     choose_place: bool = True
 
 
-#: Пределы для слотов приглашения по ссылке (invite.create на сервере).
+#: Пределы для слотов приглашения по ссылке (invite.*) и страниц записи (booking.*).
 OFFER_MIN_DURATION = 15
 OFFER_MAX_DURATION = 240
-OFFER_MAX_SLOTS = 12
+OFFER_MAX_WINDOW_HOURS = 60 * 24
+OFFER_MAX_SLOTS = 200
+OFFER_MAX_PER_DAY = 48
+OFFER_MAX_NOTICE_MINUTES = 7 * 24 * 60
+OFFER_MAX_BUFFER_MINUTES = 120
+
+#: Час суток 0..23 и день недели 0..6 (0 = понедельник) — строгая проверка (422).
+LocalHour = Annotated[int, Field(strict=True, ge=0, le=23)]
+LocalWeekday = Annotated[int, Field(strict=True, ge=0, le=6)]
 
 
 class SlotsRequest(BaseModel):
-    """Слоты владельца для приглашения по ссылке (POST /v1/agent/slots).
+    """Слоты владельца для приглашения по ссылке и страниц записи (POST /v1/agent/slots).
 
     Ищутся только в рабочих часах владельца в его поясе (context.timezone),
-    без пересечения с context.calendar, не раньше чем через час.
+    без пересечения с context.calendar (расширенным на buffer_minutes),
+    не раньше чем через min_notice_minutes. Все поля, кроме context, необязательны;
+    без новых полей поведение прежнее (invite.*). Смысл per_day и порядок
+    выбора — см. planner.offer_slots.
     """
 
     context: AgentContext
     duration_minutes: int = Field(default=60, ge=OFFER_MIN_DURATION, le=OFFER_MAX_DURATION)
-    window_hours: int = Field(default=168, ge=1, le=MAX_WINDOW_HOURS)
+    window_hours: int = Field(default=168, ge=1, le=OFFER_MAX_WINDOW_HOURS)
     max_slots: int = Field(default=6, ge=1, le=OFFER_MAX_SLOTS)
+    per_day: int = Field(default=2, ge=1, le=OFFER_MAX_PER_DAY)
+    min_notice_minutes: int = Field(default=60, ge=0, le=OFFER_MAX_NOTICE_MINUTES)
+    buffer_minutes: int = Field(default=0, ge=0, le=OFFER_MAX_BUFFER_MINUTES)
+    step_minutes: Literal[15, 30, 60] = 30
+    # Пусто/нет — prefs.work_hours (а если и там пусто — 9..18).
+    work_hours: Optional[List[LocalHour]] = Field(default=None, max_length=24)
+    # Нет (или пусто) — будни, выходные только если в будни ничего нет;
+    # задано — строго эти местные дни недели, без запасного выхода на выходные.
+    weekdays: Optional[List[LocalWeekday]] = Field(default=None, max_length=7)
 
 
 class SlotsResponse(BaseModel):

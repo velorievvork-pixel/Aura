@@ -5,12 +5,14 @@
   переадресаций на экран входа. invite.get / invite.respond — публичные методы,
   сокет отдаёт их и на неавторизованном соединении (onOpen без токенов просто
   ничего не восстанавливает). Слоты — по дням в часовом поясе браузера; после
-  согласия — «Готово» и файл .ics, собранный здесь же, в браузере.
+  согласия — «Готово» и файл .ics, собранный здесь же, в браузере. «Заведите свою
+  Ауру» ведёт на регистрацию с кодом владельца (invite.referral_code).
 */
-import { CalendarPlus, Check, Clock, RefreshCw, WifiOff } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Link, useParams } from 'react-router-dom';
-import { Field, Logo, Spinner } from '../components/ui';
+import { Check, Clock } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useParams } from 'react-router-dom';
+import { CalendarButton, GuestLayout, GuestLoading, GuestMessage, GuestOffline, OwnAura, RetryButton } from '../components/GuestLayout';
+import { Field, Spinner } from '../components/ui';
 import { genitive } from '../lib/format';
 import {
   browserTimeZone,
@@ -37,89 +39,8 @@ import { useSession } from '../state/session';
 
 type Outcome = { action: 'accept'; slot: InviteSlot | null } | { action: 'decline' };
 
-function GuestLayout({ children }: { children: ReactNode }) {
-  return (
-    <div className="auth">
-      <div className="auth-card invite-card">
-        <span className="logo">
-          <Logo />
-        </span>
-        {children}
-        <div className="auth-foot small faint">Aura — личный ИИ-агент, который договаривается о встречах.</div>
-      </div>
-    </div>
-  );
-}
-
-function Message({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
-  return (
-    <GuestLayout>
-      <div className="stack">
-        <h1 className="title-lg">{title}</h1>
-        {children && <p className="lead" style={{ margin: 0 }}>{children}</p>}
-        {action}
-      </div>
-    </GuestLayout>
-  );
-}
-
-/** «Заведите свою Ауру» — или «Открыть Aura», если человек уже вошёл. */
-function OwnAura() {
-  const { status } = useSession();
-  if (status === 'signedIn') {
-    return (
-      <div className="notice">
-        <span>
-          У вас уже есть Аура —{' '}
-          <Link className="link" to="/">
-            открыть Aura
-          </Link>
-          .
-        </span>
-      </div>
-    );
-  }
-  return (
-    <div className="notice">
-      <span>
-        Хотите, чтобы встречи согласовывались сами?{' '}
-        <Link className="link" to="/signup">
-          Заведите свою Ауру
-        </Link>
-        .
-      </span>
-    </div>
-  );
-}
-
-function downloadIcs(invite: GuestInvite, slot: InviteSlot): boolean {
-  try {
-    const blob = new Blob([guestIcs(invite, slot)], { type: 'text/calendar;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = icsFileName(slot);
-    a.rel = 'noopener';
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10_000);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function CalendarButton({ invite, slot }: { invite: GuestInvite; slot: InviteSlot }) {
-  const [failed, setFailed] = useState(false);
-  return (
-    <>
-      <button className="btn btn-primary btn-lg btn-block" onClick={() => setFailed(!downloadIcs(invite, slot))}>
-        <CalendarPlus size={17} /> Добавить в календарь
-      </button>
-      {failed && <div className="field-error">Не удалось создать файл календаря.</div>}
-    </>
-  );
+function CalendarFor({ invite, slot }: { invite: GuestInvite; slot: InviteSlot }) {
+  return <CalendarButton build={() => guestIcs(invite, slot)} fileName={icsFileName(slot)} />;
 }
 
 export function InviteGuest() {
@@ -231,15 +152,15 @@ export function InviteGuest() {
   // ------------------------------------------------------------ экраны
 
   if (missing) {
-    return <Message title="Приглашение не найдено">Проверьте ссылку: возможно, она скопирована не полностью. Если всё верно — попросите прислать новую.</Message>;
+    return <GuestMessage title="Приглашение не найдено">Проверьте ссылку: возможно, она скопирована не полностью. Если всё верно — попросите прислать новую.</GuestMessage>;
   }
 
   if (outcome && invite) {
     if (outcome.action === 'decline') {
       return (
-        <Message title="Ответ отправлен" action={<OwnAura />}>
+        <GuestMessage title="Ответ отправлен" action={<OwnAura referralCode={invite.referral_code} />}>
           {invite.owner_name ? `${invite.owner_name} узнает, что в этот раз не получится.` : 'Организатор узнает, что в этот раз не получится.'}
-        </Message>
+        </GuestMessage>
       );
     }
     return (
@@ -259,10 +180,10 @@ export function InviteGuest() {
                 <div className="muted">{slotPhrase(outcome.slot, zone)}</div>
                 <div className="small faint">{timeZoneLabel(zone, new Date(outcome.slot.start))}</div>
               </div>
-              <CalendarButton invite={invite} slot={outcome.slot} />
+              <CalendarFor invite={invite} slot={outcome.slot} />
             </>
           )}
-          <OwnAura />
+          <OwnAura referralCode={invite.referral_code} />
         </div>
       </GuestLayout>
     );
@@ -288,16 +209,16 @@ export function InviteGuest() {
                   <div className="title-md">{invite.topic || 'Встреча'}</div>
                   <div className="muted">{slotPhrase(chosen, zone)}</div>
                 </div>
-                <CalendarButton invite={invite} slot={chosen} />
+                <CalendarFor invite={invite} slot={chosen} />
               </>
             )}
           </div>
         </GuestLayout>
       );
     }
-    if (status === 'declined') return <Message title="Приглашение закрыто">На это приглашение уже ответили отказом.</Message>;
-    if (status === 'cancelled') return <Message title="Приглашение отменено">{`${owner} отменил(а) это приглашение.`}</Message>;
-    if (status === 'expired') return <Message title="Срок приглашения истёк">{`Попросите новую ссылку у ${ofOwner}.`}</Message>;
+    if (status === 'declined') return <GuestMessage title="Приглашение закрыто">На это приглашение уже ответили отказом.</GuestMessage>;
+    if (status === 'cancelled') return <GuestMessage title="Приглашение отменено">{`${owner} отменил(а) это приглашение.`}</GuestMessage>;
+    if (status === 'expired') return <GuestMessage title="Срок приглашения истёк">{`Попросите новую ссылку у ${ofOwner}.`}</GuestMessage>;
 
     const ownerZoneDiffers = invite.owner_timezone && timeIn(new Date(), invite.owner_timezone) !== timeIn(new Date(), zone);
 
@@ -403,44 +324,16 @@ export function InviteGuest() {
 
   if (loadError) {
     return (
-      <Message
+      <GuestMessage
         title="Не удалось открыть приглашение"
-        action={
-          <button className="btn btn-secondary" onClick={() => void load()}>
-            <RefreshCw size={15} /> Повторить
-          </button>
-        }
+        action={<RetryButton onClick={() => void load()} />}
       >
         {loadError}
-      </Message>
+      </GuestMessage>
     );
   }
 
-  if (conn !== 'open' && (conn === 'offline' || connError)) {
-    return (
-      <GuestLayout>
-        <div className="stack">
-          <div className="row">
-            <WifiOff size={16} className="faint" />
-            <h1 className="title-md">Нет связи с сервером Aura</h1>
-          </div>
-          <p className="lead" style={{ margin: 0 }}>
-            Проверьте интернет — мы пробуем подключиться снова автоматически.
-          </p>
-          <button className="btn btn-secondary" onClick={retry}>
-            <RefreshCw size={15} /> Повторить
-          </button>
-        </div>
-      </GuestLayout>
-    );
-  }
+  if (conn !== 'open' && (conn === 'offline' || connError)) return <GuestOffline retry={retry} />;
 
-  return (
-    <div className="gate">
-      <div className="gate-card">
-        <Spinner />
-        <span className="muted small">Открываем приглашение…</span>
-      </div>
-    </div>
-  );
+  return <GuestLoading text="Открываем приглашение…" />;
 }

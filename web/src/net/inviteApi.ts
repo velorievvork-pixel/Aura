@@ -46,6 +46,8 @@ export interface GuestInvite {
   guest_name: string;
   chosen: InviteSlot | Record<string, never>;
   expires_at: string;
+  /** Код владельца для «Заведите свою Ауру» (#/signup?ref=<код>); "" или нет у старого сервера. */
+  referral_code?: string;
 }
 
 export interface CreateInvite {

@@ -1,17 +1,9 @@
 import { Bell, Check, CheckCheck, ShieldAlert, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { Empty } from '../components/ui';
 import { toolTitle, when } from '../lib/format';
-import type { Notice } from '../net/api';
+import { noticeDetail, noticeKindLabel, noticeTarget } from '../lib/notifications';
 import { useData } from '../state/data';
-
-/** Текст уведомления без технических полей: для «нового входа» — устройство, а не сетевой адрес. */
-function detail(n: Notice): string {
-  if (n.kind === 'login.new') {
-    const device = (n.payload as { device?: string } | undefined)?.device;
-    return device ? `Устройство: ${device}` : '';
-  }
-  return n.body;
-}
 
 export function Inbox() {
   const { confirmations, notices, unread, approve, deny, readAll } = useData();
@@ -60,16 +52,31 @@ export function Inbox() {
           <h2 className="title-sm section-title">Уведомления</h2>
           <div className="card flush list">
             {notices.length === 0 && <Empty>Уведомлений нет.</Empty>}
-            {notices.map((n) => (
-              <div key={n.id} className="list-row">
-                {n.read ? <Bell size={16} className="faint" /> : <span className="dot accent" style={{ margin: '0 4px' }} />}
-                <div className="body">
-                  <div style={{ fontWeight: n.read ? 400 : 500 }}>{n.title}</div>
-                  {detail(n) && <div className="small muted">{detail(n)}</div>}
+            {notices.map((n) => {
+              const label = noticeKindLabel(n.kind);
+              const detail = noticeDetail(n);
+              const target = noticeTarget(n.kind);
+              const content = (
+                <>
+                  {n.read ? <Bell size={16} className="faint" /> : <span className="dot accent" style={{ margin: '0 4px' }} />}
+                  <div className="body">
+                    {label && <div className="tiny faint">{label}</div>}
+                    <div style={{ fontWeight: n.read ? 400 : 500 }}>{n.title || label}</div>
+                    {detail && <div className="small muted">{detail}</div>}
+                  </div>
+                  <span className="meta">{when(n.created_at)}</span>
+                </>
+              );
+              return target ? (
+                <Link key={n.id} to={target} className="list-row">
+                  {content}
+                </Link>
+              ) : (
+                <div key={n.id} className="list-row">
+                  {content}
                 </div>
-                <span className="meta">{when(n.created_at)}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       </div>

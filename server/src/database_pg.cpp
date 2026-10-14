@@ -1807,7 +1807,354 @@ public:
         return touched;
     }
 
+    // --------------------------------------------------------- booking_pages
+    DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO booking_pages (owner_id, slug, title, description, duration_minutes, window_days, "
+                     "min_notice_hours, buffer_minutes, hours, weekdays, allow_weekly, active) "
+                     "VALUES ($1, $2, $3, $4, $5::int, $6::int, $7::int, $8::int, $9::jsonb, $10::jsonb, $11::bool, "
+                     "$12::bool) RETURNING id",
+                     pageArgs(record, std::to_string(record.ownerId)), &result)) {
+            PQclear(result);
+            return DatabaseError::failure(lastError_);
+        }
+        outId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    DatabaseError updateBookingPage(const BookingPageRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE booking_pages SET slug = $2, title = $3, description = $4, duration_minutes = $5::int, "
+                     "window_days = $6::int, min_notice_hours = $7::int, buffer_minutes = $8::int, hours = $9::jsonb, "
+                     "weekdays = $10::jsonb, allow_weekly = $11::bool, active = $12::bool, updated_at = now() "
+                     "WHERE id = $1",
+                     pageArgs(record, std::to_string(record.id)), &result)) {
+            return DatabaseError::failure(lastError_);
+        }
+        const bool updated = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return updated ? DatabaseError::success() : DatabaseError::failure("страница записи не найдена");
+    }
+
+    DatabaseError deleteBookingPage(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("DELETE FROM booking_pages WHERE id = $1", {std::to_string(id)}, &result)) {
+            return DatabaseError::failure(lastError_);
+        }
+        const bool deleted = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return deleted ? DatabaseError::success() : DatabaseError::failure("страница записи не найдена");
+    }
+
+    std::optional<BookingPageRecord> findBookingPage(long long id) override {
+        return findPageWhere("id = $1", std::to_string(id));
+    }
+
+    std::optional<BookingPageRecord> findBookingPageBySlug(const std::string& slug) override {
+        if (slug.empty()) return std::nullopt;
+        return findPageWhere("slug = $1", slug);
+    }
+
+    std::vector<BookingPageRecord> listBookingPages(long long ownerId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingPageRecord> pages;
+        PGresult* result = nullptr;
+        if (!execute(pageSelect() + " WHERE owner_id = $1 ORDER BY id", {std::to_string(ownerId)}, &result)) {
+            return pages;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) pages.push_back(readPage(result, row));
+        PQclear(result);
+        return pages;
+    }
+
+    // -------------------------------------------------------------- bookings
+    DatabaseError createBooking(const BookingRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO bookings (owner_id, page_id, manage_token_hash, title, duration_minutes, guest_name, "
+                     "guest_email, guest_comment, first_start, weekly, weeks, skipped, moved, reminded, status) "
+                     "VALUES ($1, NULLIF($2, '0')::bigint, $3, $4, $5::int, $6, $7, $8, $9::timestamptz, $10::bool, "
+                     "$11::int, $12::jsonb, $13::jsonb, $14::jsonb, $15) RETURNING id",
+                     {std::to_string(record.ownerId), std::to_string(record.pageId), record.manageTokenHash,
+                      record.title, std::to_string(record.durationMinutes), record.guestName, record.guestEmail,
+                      record.guestComment, record.firstStart, record.weekly ? "true" : "false",
+                      std::to_string(record.weeks), jsonOr(record.skipped, "[]"), jsonOr(record.moved, "{}"),
+                      jsonOr(record.reminded, "[]"), record.status.empty() ? std::string("active") : record.status},
+                     &result)) {
+            PQclear(result);
+            return DatabaseError::failure(lastError_);
+        }
+        outId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    DatabaseError updateBooking(const BookingRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE bookings SET skipped = $2::jsonb, moved = $3::jsonb, reminded = $4::jsonb, "
+                     "weeks = $5::int, status = $6, updated_at = now() WHERE id = $1",
+                     {std::to_string(record.id), jsonOr(record.skipped, "[]"), jsonOr(record.moved, "{}"),
+                      jsonOr(record.reminded, "[]"), std::to_string(record.weeks), record.status},
+                     &result)) {
+            return DatabaseError::failure(lastError_);
+        }
+        const bool updated = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return updated ? DatabaseError::success() : DatabaseError::failure("запись не найдена");
+    }
+
+    std::optional<BookingRecord> findBooking(long long id) override {
+        return findBookingWhere("id = $1", std::to_string(id));
+    }
+
+    std::optional<BookingRecord> findBookingByToken(const std::string& tokenHash) override {
+        if (tokenHash.empty()) return std::nullopt;
+        return findBookingWhere("manage_token_hash = $1", tokenHash);
+    }
+
+    std::vector<BookingRecord> listActiveBookings(long long ownerId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingRecord> bookings;
+        PGresult* result = nullptr;
+        if (!execute(bookingSelect() + " WHERE status = 'active' AND ($1::bigint = 0 OR owner_id = $1::bigint) "
+                                       "ORDER BY id",
+                     {std::to_string(ownerId)}, &result)) {
+            return bookings;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) bookings.push_back(readBooking(result, row));
+        PQclear(result);
+        return bookings;
+    }
+
+    std::vector<BookingRecord> listBookings(long long ownerId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingRecord> bookings;
+        PGresult* result = nullptr;
+        if (!execute(bookingSelect() + " WHERE owner_id = $1 ORDER BY id DESC LIMIT $2",
+                     {std::to_string(ownerId), std::to_string(limit > 0 ? limit : 200)}, &result)) {
+            return bookings;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) bookings.push_back(readBooking(result, row));
+        PQclear(result);
+        return bookings;
+    }
+
+    // ------------------------------------------------------------- referrals
+    std::string getReferralCode(long long userId) override {
+        return scalar("SELECT COALESCE(referral_code, '') FROM users WHERE id = $1", std::to_string(userId));
+    }
+
+    bool setReferralCode(long long userId, const std::string& code) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        // Конфликт уникального индекса — ошибка запроса: значит, код занят.
+        if (!execute("UPDATE users SET referral_code = $2 WHERE id = $1", {std::to_string(userId), code}, &result)) {
+            return false;
+        }
+        const bool updated = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return updated;
+    }
+
+    long long findUserIdByReferralCode(const std::string& code) override {
+        if (code.empty()) return 0;
+        return std::atoll(scalar("SELECT id FROM users WHERE referral_code = $1", code).c_str());
+    }
+
+    std::string getProUntil(long long userId) override {
+        return scalar("SELECT COALESCE(to_char(pro_until AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '') "
+                      "FROM users WHERE id = $1",
+                      std::to_string(userId));
+    }
+
+    DatabaseError setProUntil(long long userId, const std::string& isoUntil) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE users SET pro_until = NULLIF($2, '')::timestamptz WHERE id = $1",
+                     {std::to_string(userId), isoUntil}, &result)) {
+            return DatabaseError::failure(lastError_);
+        }
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    DatabaseError createReferral(long long referrerId, long long inviteeId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO referrals (referrer_id, invitee_id) VALUES ($1, $2)",
+                     {std::to_string(referrerId), std::to_string(inviteeId)}, &result)) {
+            return DatabaseError::failure(lastError_);
+        }
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    std::optional<ReferralRecord> findReferralByInvitee(long long inviteeId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT id, referrer_id, invitee_id, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), COALESCE(to_char(qualified_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '') "
+                     "FROM referrals WHERE invitee_id = $1",
+                     {std::to_string(inviteeId)}, &result)) {
+            return std::nullopt;
+        }
+        std::optional<ReferralRecord> record;
+        if (PQntuples(result) > 0) {
+            ReferralRecord found;
+            found.id = std::atoll(value_(result, 0, 0).c_str());
+            found.referrerId = std::atoll(value_(result, 0, 1).c_str());
+            found.inviteeId = std::atoll(value_(result, 0, 2).c_str());
+            found.createdAt = value_(result, 0, 3);
+            found.qualifiedAt = value_(result, 0, 4);
+            record = found;
+        }
+        PQclear(result);
+        return record;
+    }
+
+    bool qualifyReferral(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE referrals SET qualified_at = now() WHERE id = $1 AND qualified_at IS NULL",
+                     {std::to_string(id)}, &result)) {
+            return false;
+        }
+        const bool updated = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return updated;
+    }
+
+    int countReferrals(long long referrerId) override {
+        return std::atoi(scalar("SELECT count(*) FROM referrals WHERE referrer_id = $1",
+                                std::to_string(referrerId)).c_str());
+    }
+
+    int countQualifiedReferrals(long long referrerId, const std::string& sinceIso) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT count(*) FROM referrals WHERE referrer_id = $1 AND qualified_at >= $2::timestamptz",
+                     {std::to_string(referrerId), sinceIso}, &result)) {
+            return 0;
+        }
+        const int count = PQntuples(result) > 0 ? std::atoi(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return count;
+    }
+
 private:
+    // Первая ячейка первой строки запроса с одним параметром ("" — нет строк/ошибка).
+    std::string scalar(const std::string& sql, const std::string& arg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute(sql, {arg}, &result)) return "";
+        const std::string value = PQntuples(result) > 0 ? value_(result, 0, 0) : "";
+        PQclear(result);
+        return value;
+    }
+
+    static std::string jsonOr(const Json& value, const char* fallback) {
+        return value.isNull() ? std::string(fallback) : value.dump();
+    }
+
+    static std::vector<std::string> pageArgs(const BookingPageRecord& record, const std::string& first) {
+        return {first,
+                record.slug,
+                record.title,
+                record.description,
+                std::to_string(record.durationMinutes),
+                std::to_string(record.windowDays),
+                std::to_string(record.minNoticeHours),
+                std::to_string(record.bufferMinutes),
+                record.hours.isArray() ? record.hours.dump() : std::string("[]"),
+                record.weekdays.isArray() ? record.weekdays.dump() : std::string("[]"),
+                record.allowWeekly ? "true" : "false",
+                record.active ? "true" : "false"};
+    }
+
+    static std::string pageSelect() {
+        return "SELECT id, owner_id, slug, title, description, duration_minutes, window_days, min_notice_hours, "
+               "buffer_minutes, hours::text, weekdays::text, allow_weekly, active, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+               "FROM booking_pages";
+    }
+
+    std::optional<BookingPageRecord> findPageWhere(const std::string& condition, const std::string& value) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute(pageSelect() + " WHERE " + condition, {value}, &result)) return std::nullopt;
+        std::optional<BookingPageRecord> record;
+        if (PQntuples(result) > 0) record = readPage(result, 0);
+        PQclear(result);
+        return record;
+    }
+
+    BookingPageRecord readPage(PGresult* result, int row) const {
+        BookingPageRecord record;
+        record.id = std::atoll(value_(result, row, 0).c_str());
+        record.ownerId = std::atoll(value_(result, row, 1).c_str());
+        record.slug = value_(result, row, 2);
+        record.title = value_(result, row, 3);
+        record.description = value_(result, row, 4);
+        record.durationMinutes = std::atoi(value_(result, row, 5).c_str());
+        record.windowDays = std::atoi(value_(result, row, 6).c_str());
+        record.minNoticeHours = std::atoi(value_(result, row, 7).c_str());
+        record.bufferMinutes = std::atoi(value_(result, row, 8).c_str());
+        const Json hours = Json::parse(value_(result, row, 9));
+        record.hours = hours.isArray() ? hours : Json::array();
+        const Json weekdays = Json::parse(value_(result, row, 10));
+        record.weekdays = weekdays.isArray() ? weekdays : Json::array();
+        record.allowWeekly = value_(result, row, 11) == "t";
+        record.active = value_(result, row, 12) == "t";
+        record.createdAt = value_(result, row, 13);
+        record.updatedAt = value_(result, row, 14);
+        return record;
+    }
+
+    static std::string bookingSelect() {
+        return "SELECT id, owner_id, COALESCE(page_id, 0), manage_token_hash, title, duration_minutes, guest_name, "
+               "guest_email, guest_comment, to_char(first_start AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), weekly, weeks, skipped::text, moved::text, reminded::text, "
+               "status, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') FROM bookings";
+    }
+
+    std::optional<BookingRecord> findBookingWhere(const std::string& condition, const std::string& value) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute(bookingSelect() + " WHERE " + condition, {value}, &result)) return std::nullopt;
+        std::optional<BookingRecord> record;
+        if (PQntuples(result) > 0) record = readBooking(result, 0);
+        PQclear(result);
+        return record;
+    }
+
+    BookingRecord readBooking(PGresult* result, int row) const {
+        BookingRecord record;
+        record.id = std::atoll(value_(result, row, 0).c_str());
+        record.ownerId = std::atoll(value_(result, row, 1).c_str());
+        record.pageId = std::atoll(value_(result, row, 2).c_str());
+        record.manageTokenHash = value_(result, row, 3);
+        record.title = value_(result, row, 4);
+        record.durationMinutes = std::atoi(value_(result, row, 5).c_str());
+        record.guestName = value_(result, row, 6);
+        record.guestEmail = value_(result, row, 7);
+        record.guestComment = value_(result, row, 8);
+        record.firstStart = value_(result, row, 9);
+        record.weekly = value_(result, row, 10) == "t";
+        record.weeks = std::atoi(value_(result, row, 11).c_str());
+        const Json skipped = Json::parse(value_(result, row, 12));
+        record.skipped = skipped.isArray() ? skipped : Json::array();
+        const Json moved = Json::parse(value_(result, row, 13));
+        record.moved = moved.isObject() ? moved : Json::object();
+        const Json reminded = Json::parse(value_(result, row, 14));
+        record.reminded = reminded.isArray() ? reminded : Json::array();
+        record.status = value_(result, row, 15);
+        record.createdAt = value_(result, row, 16);
+        record.updatedAt = value_(result, row, 17);
+        return record;
+    }
+
     static std::string inviteSelect() {
         return "SELECT id, owner_id, token_hash, topic, note, duration_minutes, slots::text, status, "
                "guest_name, guest_email, guest_comment, chosen::text, "

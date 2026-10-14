@@ -1,17 +1,23 @@
 /*
-  Настройки: профиль, предпочтения Ауры, приватность ИИ и разрешения,
+  Настройки: профиль и «Пригласить коллегу», предпочтения Ауры, приватность ИИ и разрешения,
   безопасность (пароль, 2FA, доверенные устройства, сессии), сервер и выход.
 */
 import { ChevronRight, Copy, Download, KeyRound, LogOut, Monitor, Share2, Shield, ShieldCheck, Smartphone, Trash2, Upload } from 'lucide-react';
 import QRCode from 'qrcode';
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ServerAddress } from '../components/ServerAddress';
+import { LinkBox } from '../components/share';
 import { Avatar, Field, PasswordInput, Segmented, Spinner, Switch } from '../components/ui';
-import { DIETS, toolDescription, toolTitle, when } from '../lib/format';
+import { bookingErrorText, planView, referralLink } from '../lib/booking';
+import { DIETS, plural, toolDescription, toolTitle, when } from '../lib/format';
+import { currentLocation } from '../lib/publicLink';
+import { browserTimeZone } from '../lib/slots';
 import { cleanCode, nameError, otpError, passwordError } from '../lib/validate';
 import { isStaff } from '../net/adminApi';
+import { makeBookingApi, type ReferralInfo } from '../net/bookingApi';
 import { secureStore } from '../net/secureStore';
+import { isNetworkError } from '../net/socket';
 import { isNative } from '../platform';
 import type { Permission, Privacy, SessionRow, TrustedDevice, TwoFaSetup } from '../net/api';
 import { useData } from '../state/data';
@@ -42,7 +48,12 @@ export function Settings() {
           ))}
         </nav>
         <div className="stack-lg">
-          {section === 'profile' && <ProfileSection />}
+          {section === 'profile' && (
+            <>
+              <ProfileSection />
+              <ReferralSection />
+            </>
+          )}
           {section === 'aura' && <PrefsSection />}
           {section === 'privacy' && <PrivacySection />}
           {section === 'security' && (
@@ -178,6 +189,82 @@ function ProfileSection() {
           </button>
         </div>
       </form>
+    </Card>
+  );
+}
+
+// ------------------------------------------------------ Пригласить коллегу
+
+function ReferralSection() {
+  const { socket, conn } = useSession();
+  const api = useMemo(() => makeBookingApi(socket), [socket]);
+  const [info, setInfo] = useState<ReferralInfo | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (conn !== 'open') return;
+    let alive = true;
+    api.referral().then(
+      (reply) => {
+        if (!alive) return;
+        setInfo(reply);
+        setError('');
+      },
+      (err) => {
+        if (alive && !isNetworkError(err)) setError(bookingErrorText(err));
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [api, conn]);
+
+  // Бонус начислен, пока страница открыта, — перечитываем счётчики и срок Pro.
+  useEffect(
+    () =>
+      socket.onEvent((event) => {
+        if (event.event === 'notification.new' && (event.payload as { kind?: unknown }).kind === 'referral.rewarded') {
+          api.referral().then(setInfo, () => undefined);
+        }
+      }),
+    [socket, api],
+  );
+
+  const days = info?.reward_days ?? 30;
+  const plan = planView(info?.plan, new Date(), browserTimeZone());
+  const link = info ? referralLink(info, currentLocation()) : null;
+  return (
+    <Card
+      title="Пригласить коллегу"
+      desc={`Когда коллега зарегистрируется по вашей ссылке и к нему впервые запишутся (или выберут время по его приглашению), вы оба получите ${days} ${plural(days, 'день', 'дня', 'дней')} Pro: 5 страниц записи и серии до 26 занятий.`}
+    >
+      {error && <div className="notice error">{error}</div>}
+      {!info && !error && <Spinner />}
+      {info && link && (
+        <>
+          <LinkBox link={link} label={link.kind === 'url' ? 'Ссылка для коллеги' : 'Код приглашения'} share={{ title: 'Aura', text: 'Попробуй Aura — запись учеников по ссылке и встречи без переписки' }} />
+          {link.kind === 'token' && <span className="hint">Готовую ссылку не собрать: приложение открыто локально, а на сервере не задан AURA_PUBLIC_URL. Коллега может открыть веб-клиент Aura с адресом #/signup?ref= и этим кодом.</span>}
+          <dl className="admin-facts">
+            <div>
+              <dt>Приглашено</dt>
+              <dd>{info.invited}</dd>
+            </div>
+            <div>
+              <dt>Получили бонус</dt>
+              <dd>{info.qualified}</dd>
+            </div>
+            <div>
+              <dt>Осталось наград</dt>
+              <dd>{info.rewards_left}</dd>
+            </div>
+            <div>
+              <dt>Тариф</dt>
+              <dd>{plan.pro ? `Pro ${plan.until}` : 'Free'}</dd>
+            </div>
+          </dl>
+          <span className="hint">Наград — не больше 12 за год. Сама регистрация бонуса не даёт: он начисляется, когда коллега начал пользоваться Аурой.</span>
+        </>
+      )}
     </Card>
   );
 }

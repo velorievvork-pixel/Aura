@@ -2,11 +2,12 @@
   Аккаунт: вход, регистрация, код из письма, код 2FA при входе, восстановление
   пароля. Все шаги — реальные вызовы сервера (auth.*), ошибки — под полем.
 */
-import { ArrowLeft, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, Gift, ShieldCheck } from 'lucide-react';
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { ServerAddress } from '../components/ServerAddress';
 import { Field, Logo, PasswordInput, Spinner } from '../components/ui';
+import { forgetReferral, pendingReferral, referralFromSearch, rememberReferral } from '../lib/booking';
 import { cleanCode, emailError, nameError, otpError, passwordError, twoFaCodeError } from '../lib/validate';
 import { deviceInfo } from '../net/secureStore';
 import { errorText, useSession, type LoginStep } from '../state/session';
@@ -102,9 +103,24 @@ export function Login() {
   );
 }
 
+/**
+  Код пригласившего коллеги: из адреса #/signup?ref=<код> (запоминается на время
+  вкладки — переход на «Войти» и обратно его не теряет), иначе — запомненный ранее.
+*/
+function useReferral(): string {
+  const { search } = useLocation();
+  const [code] = useState(() => {
+    const fromUrl = referralFromSearch(search);
+    if (fromUrl) rememberReferral(fromUrl);
+    return fromUrl || pendingReferral();
+  });
+  return code;
+}
+
 export function Signup() {
   const { register } = useSession();
   const navigate = useNavigate();
+  const referral = useReferral();
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [errors, setErrors] = useState<{ name?: string | null; email?: string | null; password?: string | null; form?: string }>({});
   const [busy, setBusy] = useState(false);
@@ -117,7 +133,9 @@ export function Signup() {
     if (next.name || next.email || next.password) return;
     setBusy(true);
     try {
-      const { devCode } = await register(form.name, form.email, form.password);
+      const { devCode } = await register(form.name, form.email, form.password, referral);
+      // Код ушёл на сервер вместе с регистрацией — больше не нужен.
+      forgetReferral();
       navigate('/verify', { state: { devCode } });
     } catch (error) {
       setErrors({ form: errorText(error) });
@@ -137,6 +155,12 @@ export function Signup() {
       }
     >
       <form className="stack" onSubmit={submit} noValidate>
+        {referral && (
+          <div className="notice referral-note">
+            <Gift size={15} aria-hidden="true" />
+            <span>Вас пригласили в Aura. Когда к вам впервые запишутся по вашей ссылке или выберут время по вашему приглашению, вы и пригласивший получите по 30 дней Pro.</span>
+          </div>
+        )}
         {errors.form && <div className="notice error">{errors.form}</div>}
         <Field label="Имя" error={errors.name}>
           <input className={`input ${errors.name ? 'invalid' : ''}`} autoComplete="name" value={form.name} onChange={set('name')} placeholder="Алекс Морган" autoFocus />

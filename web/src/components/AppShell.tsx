@@ -1,4 +1,4 @@
-import { Bell, CheckSquare, Handshake, Home, MessageCircle, Settings, Shield, Users } from 'lucide-react';
+import { Bell, CalendarCheck, CheckSquare, Handshake, Home, MessageCircle, Settings, Shield, Users } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { isStaff } from '../net/adminApi';
 import { useData } from '../state/data';
@@ -10,6 +10,7 @@ const MAIN = [
   { to: '/', label: 'Главная', icon: Home, end: true },
   { to: '/aura', label: 'Аура', icon: MessageCircle },
   { to: '/negotiations', label: 'Переговоры', icon: Handshake },
+  { to: '/booking', label: 'Запись', icon: CalendarCheck },
   { to: '/tasks', label: 'Задачи', icon: CheckSquare },
   { to: '/contacts', label: 'Контакты', icon: Users },
 ];

@@ -9,6 +9,7 @@
 #include <regex>
 #include <set>
 
+#include "aura/bookingmanager.h"
 #include "aura/log.h"
 #include "aura/net.h"
 
@@ -174,6 +175,15 @@ Json MemoryManager::context(long long userId, const std::string& focusMessage) {
             for (const auto& tag : record.tags) tags.push(Json(tag));
             return tags;
         }());
+        calendar.push(event);
+    }
+    // Занятия по записи (booking.*) — тоже занятое время.
+    for (const auto& [title, start, end] : bookingEvents(userId)) {
+        Json event = Json::object();
+        event.set("title", Json(title));
+        event.set("start", Json(isoUtc(start)));
+        event.set("end", Json(isoUtc(end)));
+        event.set("source", Json("booking"));
         calendar.push(event);
     }
     context.set("calendar", calendar);
@@ -363,7 +373,24 @@ std::vector<std::pair<std::time_t, std::time_t>> MemoryManager::busy(long long u
             intervals.emplace_back(start, end);
         }
     }
+    for (const auto& [title, start, end] : bookingEvents(userId)) intervals.emplace_back(start, end);
     return intervals;
+}
+
+// Будущие (и шедшие последние сутки) занятия активных записей, на 120 дней вперёд.
+std::vector<std::tuple<std::string, std::time_t, std::time_t>> MemoryManager::bookingEvents(long long userId) {
+    std::vector<std::tuple<std::string, std::time_t, std::time_t>> events;
+    const std::time_t now = std::time(nullptr);
+    for (const auto& booking : database_.db().listActiveBookings(userId)) {
+        for (const auto& occurrence : bookingOccurrences(booking)) {
+            if (occurrence.cancelled || occurrence.end < now - 24 * 3600 || occurrence.start > now + 120 * 24 * 3600) {
+                continue;
+            }
+            events.emplace_back("Занятие: " + booking.title + " — " + booking.guestName, occurrence.start,
+                                occurrence.end);
+        }
+    }
+    return events;
 }
 
 std::vector<MemoryRecord> MemoryManager::schedule(long long userId) {

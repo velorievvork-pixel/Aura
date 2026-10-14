@@ -11,7 +11,7 @@ from aura_ai import planner
 from aura_ai.agent import AuraAgent
 from aura_ai.config import Settings, reset_settings
 from aura_ai.llm import MockLLM
-from aura_ai.models import MAX_WINDOW_HOURS, CalendarEvent, Preferences
+from aura_ai.models import OFFER_MAX_SLOTS, OFFER_MAX_WINDOW_HOURS, CalendarEvent, Preferences
 from aura_ai.tools import ToolManager
 
 MONDAY = datetime(2026, 9, 14, 0, 0, tzinfo=timezone.utc)  # понедельник, 03:00 по Москве
@@ -277,9 +277,9 @@ def test_slots_endpoint_defaults(client):
         {"duration_minutes": 14},
         {"duration_minutes": 241},
         {"window_hours": 0},
-        {"window_hours": MAX_WINDOW_HOURS + 1},
+        {"window_hours": OFFER_MAX_WINDOW_HOURS + 1},
         {"max_slots": 0},
-        {"max_slots": 13},
+        {"max_slots": OFFER_MAX_SLOTS + 1},
         {"duration_minutes": "долго"},
     ],
 )

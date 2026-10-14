@@ -331,7 +331,9 @@ Access-токен автоматически обновляется по `refres
 операция ждёт решения), `a2a.proposal` (другой агент начал переговоры),
 `login.new` (новый вход), `twofactor.enabled` / `twofactor.disabled`
 (изменение 2FA), `invite.accepted` / `invite.declined` (гость ответил на
-приглашение по ссылке). Push-доставка — через устройства в `push_devices`
+приглашение по ссылке), `booking.created` / `booking.rescheduled` /
+`booking.cancelled` / `booking.reminder` (запись по постоянной ссылке),
+`referral.rewarded` (реферальный бонус). Push-доставка — через устройства в `push_devices`
 (платформы `apns` | `fcm` | `webhook` | `dev`); платформенный конверт
 уходит во внешний шлюз (`AURA_PUSH_DRIVER=webhook`,
 `AURA_PUSH_WEBHOOK_URL`), который подписывает ключи провайдера (JWT для
@@ -407,7 +409,7 @@ expires_at, created_at, responded_at}`. `status`: `open` | `accepted` |
 | `invite.respond` | `{token, action: "accept" \| "decline", start? (для accept — start одного из слотов), guest_name (1–80), guest_email? (≤ 254), comment? (≤ 500)}` | `{invite}` — вид гостя |
 
 Вид гостя: `{topic, note, duration_minutes, owner_name, owner_timezone, status,
-slots, guest_name, chosen, expires_at}` — без email владельца и данных других
+slots, guest_name, chosen, expires_at, referral_code}` — без email владельца и данных других
 гостей; `slots` у открытого — только будущие и ещё свободные у владельца (может
 быть пустым). Ошибки: `not_found` — неизвестный токен; `conflict` — приглашение
 уже закрыто, срок истёк или время уже занято; `bad_request` — слот не из списка,
@@ -421,6 +423,90 @@ slots, guest_name, chosen, expires_at}` — без email владельца и �
 уведомление `invite.accepted` (`payload: {invite_id, start, end, guest_name,
 task_id}`). `decline` — уведомление `invite.declined` (`payload: {invite_id,
 guest_name, comment}`).
+
+### Запись по постоянной ссылке (страницы записи, серии занятий)
+
+Для репетиторов и всех, к кому записываются регулярно. Владелец заводит
+страницу записи с постоянной публичной ссылкой `<AURA_PUBLIC_URL>/#/b/<slug>`
+(slug — 10 символов, не секрет; `booking.pages.rotate` выдаёт новый). Гость без
+аккаунта выбирает свободное время, может записаться «каждую неделю» и получает
+личную ссылку `<AURA_PUBLIC_URL>/#/m/<токен>` для переноса и отмены (токен — 43
+символа base64url, показывается один раз, в БД только sha256). Слоты считает
+AI-сервис (`/v1/agent/slots`: часы и дни страницы, минимальный срок, перерыв,
+шаг 60 минут для занятий от часа, до 24 вариантов в день, до 200 всего); сервер
+перепроверяет длительность, срок, окно и занятость с перерывом. Занятия занимают
+время владельца: их не предложат в приглашениях, на других страницах и в
+переговорах агентов (уходят в `calendar` контекста AI).
+
+Тариф (`plan`): `{name: "free"|"pro", pro_until, max_pages, max_weeks}` — Free: 1
+страница, серия из 8 занятий; Pro: 5 страниц, 26 занятий. Pro пока даётся только
+реферальным бонусом (оплаты нет).
+
+Методы владельца (нужен вход):
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `booking.pages.list` | `{}` | `{pages: [page], plan}` |
+| `booking.pages.save` | `{id?, title (1–120), description? (≤ 1000), duration_minutes? (15–240, 60), window_days? (1–60, 14), min_notice_hours? (0–168, 12), buffer_minutes? (0–120, 0), hours? ([0..23]; [] — рабочие часы из настроек), weekdays? ([0..6], 0 — понедельник; по умолчанию Пн–Сб), allow_weekly? (true), active? (true)}` | `{page}`; без `id` — создать (`forbidden` сверх тарифа) |
+| `booking.pages.delete` | `{id}` | `{deleted: true}` — записи остаются |
+| `booking.pages.rotate` | `{id}` | `{page}` с новым slug |
+| `booking.list` | `{days? (1–120, 30), include_cancelled? (false)}` | `{bookings: [booking]}` — по ближайшему занятию |
+| `booking.cancel` | `{booking_id, index?}` | `{booking}` — одно занятие или вся запись |
+
+`page`: `{id, slug, url, title, description, duration_minutes, window_days,
+min_notice_hours, buffer_minutes, hours, weekdays, allow_weekly, active,
+created_at, updated_at}` (`url` пуст без `AURA_PUBLIC_URL`). `booking` (вид
+владельца): `{id, page_id, title, guest_name, guest_email, guest_comment,
+duration_minutes, weekly, weeks, status: active|cancelled, created_at,
+occurrences: [{index, start, end, status: booked|cancelled}]}` — занятия в окне
+[сейчас − сутки, сейчас + days]. Занятие `k` серии — `first_start + 7k` суток по
+UTC (перенос одного занятия хранится отдельно); в поясах с переходом на летнее
+время серия сдвигается на час по местному времени.
+
+Методы гостя (публичные, без входа):
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `booking.get` | `{slug}` | `{page: {title, description, duration_minutes, owner_name, owner_timezone, allow_weekly, max_weeks, referral_code}, slots: [{start, end}]}` |
+| `booking.book` | `{slug, start, guest_name (1–80), guest_email? (≤ 254), comment? (≤ 500), weekly? (false)}` | `{booking, manage_token, manage_url, skipped: [ISO]}` |
+| `booking.manage.get` | `{token}` | `{booking, slots}` — slots для переноса (пусто, если запись отменена или страница выключена) |
+| `booking.manage.reschedule` | `{token, index, start}` | `{booking}` — перенос одного будущего занятия на свободный слот |
+| `booking.manage.cancel` | `{token, index?}` | `{booking}` — одно занятие или вся запись |
+
+`booking` (вид гостя): `{title, owner_name, owner_timezone, duration_minutes,
+weekly, weeks, status, guest_name, occurrences, referral_code}` — без email
+владельца; occurrences — будущие и за последние сутки. `start` должен быть
+началом одного из текущих `slots` (иначе `conflict` «это время уже занято»).
+Серия: `max_weeks` занятий тарифа владельца; недели, где время занято, создаются
+отменёнными и перечислены в `skipped`. Ошибки: `not_found` — нет страницы
+(или выключена) / записи; `conflict` — время занято, занятие уже прошло или
+отменено; `upstream_error` — AI-сервис недоступен; `forbidden` — лимиты на IP
+(`booking.get`, `booking.manage.get` — 30 в минуту; `booking.book` — 5 в час;
+перенос и отмена — 20 в минуту).
+
+Уведомления владельцу: `booking.created` (`{booking_id, start, weekly,
+guest_name}`), `booking.rescheduled` (`{booking_id, index, from, to,
+guest_name}`), `booking.cancelled` (`{booking_id, index (−1 — вся запись),
+guest_name}`; только когда отменил гость), `booking.reminder` за 15 минут до
+занятия (`{booking_id, index, start, guest_name}`; планировщик, как `task.due`).
+
+### Реферальная программа
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `referral.info` | `{}` | `{code, url, invited, qualified, reward_days: 30, rewards_left, plan}` |
+
+`code` — 8 символов `[A-Z2-9]` (выдаётся при первом запросе), `url` —
+`<AURA_PUBLIC_URL>/#/signup?ref=<code>` или пусто. `auth.register` принимает
+необязательный `referral_code` (регистр и дефисы не важны); неизвестный код
+регистрации не мешает, в ответе `referral_applied: bool`. Бонус начисляется не
+за регистрацию: когда приглашённый впервые получил запись на свою страницу
+(`booking.book`) или выбранное время по приглашению (`invite.respond` accept),
+обоим +30 дней Pro (от `max(сейчас, pro_until)`) и уведомление
+`referral.rewarded` (`{days, pro_until, role: referrer|invitee}`). Пригласившему —
+не больше 12 наград за 365 дней. Код владельца приходит гостям в
+`booking.get`, `booking.manage.get` и `invite.get` (`referral_code`) — для
+ссылки «Заведите свою Ауру».
 
 ### Администрирование
 
@@ -474,7 +560,7 @@ guest_name, comment}`).
 | --- | --- | --- |
 | `POST` | `/v1/agent/run` | главный запрос Ауры |
 | `POST` | `/v1/agent/negotiate` | Agent-to-Agent переговоры |
-| `POST` | `/v1/agent/slots` | слоты владельца для приглашения по ссылке: `{context, duration_minutes (15–240), window_hours, max_slots (1–12)}` → `{slots: [{start, end, score, reason}]}` |
+| `POST` | `/v1/agent/slots` | слоты владельца для приглашений и страниц записи: `{context, duration_minutes (15–240), window_hours (1–1440), max_slots (1–200), per_day (1–48, 2), min_notice_minutes (60), buffer_minutes (0), step_minutes (15/30/60), work_hours?, weekdays?}` → `{slots: [{start, end, score, reason}]}`; `per_day` > 2 — все подходящие варианты дня по времени (страница записи) |
 | `POST` | `/v1/speech/transcribe` | распознавание речи (Whisper-совместимое, ru/en/auto) |
 | `POST` | `/v1/memory/extract` | извлечение фактов в память |
 | `GET` | `/v1/memory/{user_key}` | записи памяти (можно `?query=` — гибридный RAG) |

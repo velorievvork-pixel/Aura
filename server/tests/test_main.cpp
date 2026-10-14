@@ -3961,6 +3961,423 @@ TEST(invite_effective_status_and_open_limit) {
              std::string("forbidden"));
 }
 
+// ------------------------------------- запись по ссылке (booking.*) и рефералы
+namespace booking_test {
+
+using invite_test::FakeAi;
+using invite_test::future;
+using invite_test::slot;
+using invite_test::useAi;
+
+Json pagePayload(const std::string& title) {
+    Json payload = Json::object();
+    payload.set("title", Json(title));
+    payload.set("duration_minutes", Json(60LL));
+    payload.set("min_notice_hours", Json(0LL));
+    Json weekdays = Json::array();
+    for (long long day = 0; day <= 6; ++day) weekdays.push(Json(day));
+    payload.set("weekdays", weekdays);
+    return payload;
+}
+
+Json bookPayload(const std::string& slug, std::time_t start, const std::string& name, bool weekly = false) {
+    Json payload = Json::object();
+    payload.set("slug", Json(slug));
+    payload.set("start", Json(aura::isoUtc(start)));
+    payload.set("guest_name", Json(name));
+    payload.set("weekly", Json(weekly));
+    return payload;
+}
+
+Json tokenPayload(const std::string& token) {
+    Json payload = Json::object();
+    payload.set("token", Json(token));
+    return payload;
+}
+
+// Слоты AI: каждый start — часовой слот.
+std::function<std::string()> slotsReply(std::vector<std::time_t>* starts) {
+    return [starts] {
+        Json slots = Json::array();
+        for (const std::time_t start : *starts) slots.push(slot(start, 60));
+        slots.push(slot(future(40), 45));  // чужая длительность — сервер отбросит
+        Json body = Json::object();
+        body.set("slots", slots);
+        return body.dump();
+    };
+}
+
+bool hasNotification(Fixture& fixture, const std::shared_ptr<aura::Session>& session, const std::string& kind,
+                     Json* found = nullptr) {
+    const Json items = integration::payloadOf(fixture.call(session, "notifications.list")).get("notifications");
+    for (const auto& item : items.items()) {
+        if (item.getString("kind") != kind) continue;
+        if (found != nullptr) *found = item;
+        return true;
+    }
+    return false;
+}
+
+Json registerWithCode(Fixture& fixture, const std::shared_ptr<aura::Session>& session, const std::string& email,
+                      const std::string& name, const std::string& code) {
+    Json payload = Json::object();
+    payload.set("email", Json(email));
+    payload.set("password", Json("aura1234"));
+    payload.set("display_name", Json(name));
+    payload.set("referral_code", Json(code));
+    const Json registered = fixture.call(session, "auth.register", payload);
+    Json verify = Json::object();
+    verify.set("email", Json(email));
+    verify.set("code", Json(registered.get("payload").getString("email_code")));
+    fixture.call(session, "auth.verifyEmail", verify);
+    Json login = Json::object();
+    login.set("email", Json(email));
+    login.set("password", Json("aura1234"));
+    fixture.call(session, "auth.login", login);
+    return registered;
+}
+
+}  // namespace booking_test
+
+TEST(booking_pages_crud_and_plan) {
+    using namespace booking_test;
+    Fixture fixture;
+    admin_test::Sockets sockets;
+    auto anonymous = sockets.open(fixture, "bp-anon");
+    CHECK_EQ(fixture.call(anonymous, "booking.pages.list").getString("code"), std::string("unauthorized"));
+    auto owner = sockets.open(fixture, "bp-owner");
+    fixture.registerUser(owner, "tutor@example.com", "Ирина");
+
+    Json minimal = Json::object();
+    minimal.set("title", Json("Математика"));
+    const Json created = fixture.call(owner, "booking.pages.save", minimal);
+    CHECK_EQ(created.getString("type"), std::string("ok"));
+    const Json page = integration::payloadOf(created).get("page");
+    CHECK_EQ(page.getString("slug").size(), std::size_t(10));
+    CHECK_EQ(page.getInt("duration_minutes"), 60LL);
+    CHECK_EQ(page.getInt("window_days"), 14LL);
+    CHECK_EQ(page.getInt("min_notice_hours"), 12LL);
+    CHECK_EQ(page.get("weekdays").dump(), std::string("[0,1,2,3,4,5]"));
+    CHECK_EQ(page.get("hours").dump(), std::string("[]"));
+    CHECK_EQ(page.getString("url"), std::string());
+
+    const Json listed = integration::payloadOf(fixture.call(owner, "booking.pages.list"));
+    CHECK_EQ(listed.get("pages").items().size(), std::size_t(1));
+    CHECK_EQ(listed.get("plan").getString("name"), std::string("free"));
+    CHECK_EQ(listed.get("plan").getInt("max_pages"), 1LL);
+    CHECK_EQ(listed.get("plan").getInt("max_weeks"), 8LL);
+    // Free — одна страница.
+    CHECK_EQ(fixture.call(owner, "booking.pages.save", minimal).getString("code"), std::string("forbidden"));
+
+    // Изменение: часы вечера, суббота, перерыв.
+    Json update = Json::object();
+    update.set("id", Json(page.getInt("id")));
+    update.set("title", Json("Математика, 60 минут"));
+    Json hours = Json::array();
+    for (long long hour : {18LL, 15LL, 16LL, 17LL, 16LL}) hours.push(Json(hour));
+    update.set("hours", hours);
+    update.set("buffer_minutes", Json(10LL));
+    const Json updated = integration::payloadOf(fixture.call(owner, "booking.pages.save", update)).get("page");
+    CHECK_EQ(updated.getString("title"), std::string("Математика, 60 минут"));
+    CHECK_EQ(updated.get("hours").dump(), std::string("[15,16,17,18]"));
+    CHECK_EQ(updated.getInt("buffer_minutes"), 10LL);
+    CHECK_EQ(updated.getString("slug"), page.getString("slug"));
+
+    Json bad = update;
+    Json badHours = Json::array();
+    badHours.push(Json(24LL));
+    bad.set("hours", badHours);
+    CHECK_EQ(fixture.call(owner, "booking.pages.save", bad).getString("code"), std::string("bad_request"));
+    bad = update;
+    bad.set("weekdays", Json::array());
+    CHECK_EQ(fixture.call(owner, "booking.pages.save", bad).getString("code"), std::string("bad_request"));
+    bad = update;
+    bad.set("duration_minutes", Json(5LL));
+    CHECK_EQ(fixture.call(owner, "booking.pages.save", bad).getString("code"), std::string("bad_request"));
+    bad = update;
+    bad.set("title", Json("  "));
+    CHECK_EQ(fixture.call(owner, "booking.pages.save", bad).getString("code"), std::string("bad_request"));
+
+    // Чужая страница — not_found.
+    auto stranger = sockets.open(fixture, "bp-stranger");
+    fixture.registerUser(stranger, "other-tutor@example.com", "Чужой");
+    CHECK_EQ(fixture.call(stranger, "booking.pages.save", update).getString("code"), std::string("not_found"));
+    Json byId = Json::object();
+    byId.set("id", Json(page.getInt("id")));
+    CHECK_EQ(fixture.call(stranger, "booking.pages.rotate", byId).getString("code"), std::string("not_found"));
+
+    // Новая ссылка: старый slug больше не работает.
+    const Json rotated = integration::payloadOf(fixture.call(owner, "booking.pages.rotate", byId)).get("page");
+    CHECK(rotated.getString("slug") != page.getString("slug"));
+    auto& db = fixture.server->database().db();
+    CHECK(!db.findBookingPageBySlug(page.getString("slug")).has_value());
+    CHECK(db.findBookingPageBySlug(rotated.getString("slug")).has_value());
+
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "booking.pages.delete", byId)).getBool("deleted"), true);
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "booking.pages.list")).get("pages").items().size(),
+             std::size_t(0));
+}
+
+TEST(booking_weekly_reschedule_cancel) {
+    using namespace booking_test;
+    std::vector<std::time_t> starts{future(30), future(54), future(78)};
+    FakeAi ai(slotsReply(&starts));
+    Fixture fixture;
+    useAi(fixture, ai.url(), "https://aura.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "bk-owner");
+    fixture.registerUser(owner, "teacher@example.com", "Ольга");
+    const Json page =
+        integration::payloadOf(fixture.call(owner, "booking.pages.save", pagePayload("Английский"))).get("page");
+    const std::string slug = page.getString("slug");
+    CHECK_EQ(page.getString("url"), "https://aura.example.com/#/b/" + slug);
+
+    auto guest = sockets.open(fixture, "bk-guest");
+    const Json opened = fixture.call(guest, "booking.get", [&] {
+        Json p = Json::object();
+        p.set("slug", Json(slug));
+        return p;
+    }());
+    CHECK_EQ(opened.getString("type"), std::string("ok"));
+    const Json publicPage = integration::payloadOf(opened).get("page");
+    CHECK_EQ(publicPage.getString("owner_name"), std::string("Ольга"));
+    CHECK_EQ(publicPage.getInt("max_weeks"), 8LL);
+    CHECK_EQ(publicPage.getString("referral_code").size(), std::size_t(8));
+    CHECK_EQ(integration::payloadOf(opened).get("slots").items().size(), std::size_t(3));
+    CHECK(opened.dump().find("teacher@example.com") == std::string::npos);
+    {
+        std::lock_guard<std::mutex> lock(ai.mutex);
+        const std::string& last = ai.requests.back();
+        CHECK(last.find("\"per_day\":24") != std::string::npos);
+        CHECK(last.find("\"min_notice_minutes\":0") != std::string::npos);
+        CHECK(last.find("\"step_minutes\":60") != std::string::npos);
+        CHECK(last.find("\"weekdays\":[0,1,2,3,4,5,6]") != std::string::npos);
+    }
+    Json unknown = Json::object();
+    unknown.set("slug", Json("nopenopeno"));
+    CHECK_EQ(fixture.call(guest, "booking.get", unknown).getString("code"), std::string("not_found"));
+
+    // Ошибки ввода.
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, starts[0] + 600, "Маша")).getString("code"),
+             std::string("conflict"));
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, starts[0], " ")).getString("code"),
+             std::string("bad_request"));
+
+    // Серия «каждую неделю»: 8 занятий на Free.
+    Json weekly = bookPayload(slug, starts[0], "Маша", true);
+    weekly.set("guest_email", Json("masha@example.com"));
+    const Json booked = fixture.call(guest, "booking.book", weekly);
+    CHECK_EQ(booked.getString("type"), std::string("ok"));
+    const Json bookedPayload = integration::payloadOf(booked);
+    const std::string token = bookedPayload.getString("manage_token");
+    CHECK_EQ(token.size(), std::size_t(43));
+    CHECK_EQ(bookedPayload.getString("manage_url"), "https://aura.example.com/#/m/" + token);
+    const Json guestBooking = bookedPayload.get("booking");
+    CHECK_EQ(guestBooking.getInt("weeks"), 8LL);
+    CHECK_EQ(guestBooking.get("occurrences").items().size(), std::size_t(8));
+    CHECK_EQ(bookedPayload.get("skipped").items().size(), std::size_t(0));
+    CHECK(hasNotification(fixture, owner, "booking.created"));
+
+    // Время занято: его нет в слотах и второй гость его не получит.
+    Json slugPayload = Json::object();
+    slugPayload.set("slug", Json(slug));
+    const Json slotsAfter = integration::payloadOf(fixture.call(guest, "booking.get", slugPayload)).get("slots");
+    CHECK_EQ(slotsAfter.items().size(), std::size_t(2));
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, starts[0], "Петя")).getString("code"),
+             std::string("conflict"));
+    // Занятие занимает время и для приглашений/переговоров.
+    const long long ownerId = fixture.server->database().db().findUserByEmail("teacher@example.com")->id;
+    bool busy = false;
+    for (const auto& [start, end] : fixture.server->memory().busy(ownerId)) {
+        if (start == starts[0] && end == starts[0] + 3600) busy = true;
+    }
+    CHECK(busy);
+
+    // Владелец видит запись с занятиями в ближайшие 30 дней.
+    const Json ownerList = integration::payloadOf(fixture.call(owner, "booking.list")).get("bookings");
+    CHECK_EQ(ownerList.items().size(), std::size_t(1));
+    const long long bookingId = ownerList.items().front().getInt("id");
+    CHECK_EQ(ownerList.items().front().getString("guest_email"), std::string("masha@example.com"));
+    CHECK(ownerList.items().front().get("occurrences").items().size() >= 4);
+
+    // Перенос второго занятия на свободный слот.
+    const Json managed = integration::payloadOf(fixture.call(guest, "booking.manage.get", tokenPayload(token)));
+    CHECK_EQ(managed.get("booking").getString("guest_name"), std::string("Маша"));
+    CHECK_EQ(managed.get("slots").items().size(), std::size_t(2));
+    Json move = tokenPayload(token);
+    move.set("index", Json(1LL));
+    move.set("start", Json(aura::isoUtc(starts[2])));
+    const Json moved = fixture.call(guest, "booking.manage.reschedule", move);
+    CHECK_EQ(moved.getString("type"), std::string("ok"));
+    const Json movedOccurrences = integration::payloadOf(moved).get("booking").get("occurrences");
+    CHECK_EQ(movedOccurrences.items()[1].getString("start"), aura::isoUtc(starts[2]));
+    Json rescheduled;
+    CHECK(hasNotification(fixture, owner, "booking.rescheduled", &rescheduled));
+    CHECK_EQ(rescheduled.get("payload").getString("to"), aura::isoUtc(starts[2]));
+    move.set("start", Json(aura::isoUtc(starts[0])));  // своё же занятое время
+    CHECK_EQ(fixture.call(guest, "booking.manage.reschedule", move).getString("code"), std::string("conflict"));
+
+    // Отмена одного занятия гостем и одного — владельцем.
+    Json cancelOne = tokenPayload(token);
+    cancelOne.set("index", Json(2LL));
+    const Json cancelled = integration::payloadOf(fixture.call(guest, "booking.manage.cancel", cancelOne));
+    CHECK_EQ(cancelled.get("booking").get("occurrences").items()[2].getString("status"), std::string("cancelled"));
+    CHECK_EQ(fixture.call(guest, "booking.manage.cancel", cancelOne).getString("code"), std::string("conflict"));
+    CHECK(hasNotification(fixture, owner, "booking.cancelled"));
+    Json ownerCancel = Json::object();
+    ownerCancel.set("booking_id", Json(bookingId));
+    ownerCancel.set("index", Json(3LL));
+    CHECK_EQ(fixture.call(owner, "booking.cancel", ownerCancel).getString("type"), std::string("ok"));
+    auto stranger = sockets.open(fixture, "bk-stranger");
+    fixture.registerUser(stranger, "nosy@example.com", "Чужой");
+    CHECK_EQ(fixture.call(stranger, "booking.cancel", ownerCancel).getString("code"), std::string("not_found"));
+
+    // Отмена всей записи: время освобождается.
+    const Json all = integration::payloadOf(fixture.call(guest, "booking.manage.cancel", tokenPayload(token)));
+    CHECK_EQ(all.get("booking").getString("status"), std::string("cancelled"));
+    CHECK_EQ(fixture.call(guest, "booking.manage.cancel", tokenPayload(token)).getString("code"),
+             std::string("conflict"));
+    busy = false;
+    for (const auto& [start, end] : fixture.server->memory().busy(ownerId)) {
+        if (start == starts[0]) busy = true;
+    }
+    CHECK(!busy);
+    CHECK_EQ(fixture.call(guest, "booking.manage.get", tokenPayload(std::string(43, 'Z'))).getString("code"),
+             std::string("not_found"));
+    // Выключенная страница: запись по ней закрыта.
+    Json off = Json::object();
+    off.set("id", Json(page.getInt("id")));
+    off.set("active", Json(false));
+    fixture.call(owner, "booking.pages.save", off);
+    CHECK_EQ(fixture.call(guest, "booking.get", slugPayload).getString("code"), std::string("not_found"));
+}
+
+TEST(booking_buffer_weekly_skip_and_reminder) {
+    using namespace booking_test;
+    const std::time_t soon = std::time(nullptr) + 600;  // через 10 минут
+    std::vector<std::time_t> starts{future(30), future(54), soon};
+    FakeAi ai(slotsReply(&starts));
+    Fixture fixture;
+    useAi(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "bf-owner");
+    fixture.registerUser(owner, "buffer@example.com", "Анна");
+    Json payload = pagePayload("Физика");
+    payload.set("buffer_minutes", Json(30LL));
+    const std::string slug =
+        integration::payloadOf(fixture.call(owner, "booking.pages.save", payload)).get("page").getString("slug");
+    auto& db = fixture.server->database().db();
+    const long long ownerId = db.findUserByEmail("buffer@example.com")->id;
+    // Встреча через 10 минут после конца второго слота (буфер 30) и встреча
+    // через неделю после первого — в серии эта неделя пропускается.
+    const std::time_t meeting = starts[1] + 3600 + 600;
+    db.upsertMemory(ownerId, "schedule",
+                    "Встреча: созвон (" + aura::isoUtc(meeting) + "/" + aura::isoUtc(meeting + 1800) + ")", 1.5, {});
+    const std::time_t nextWeek = starts[0] + 7 * 24 * 3600;
+    db.upsertMemory(ownerId, "schedule",
+                    "Встреча: врач (" + aura::isoUtc(nextWeek) + "/" + aura::isoUtc(nextWeek + 3600) + ")", 1.5, {});
+
+    auto guest = sockets.open(fixture, "bf-guest");
+    Json slugPayload = Json::object();
+    slugPayload.set("slug", Json(slug));
+    const Json slots = integration::payloadOf(fixture.call(guest, "booking.get", slugPayload)).get("slots");
+    bool secondOffered = false;
+    for (const auto& item : slots.items()) {
+        if (item.getString("start") == aura::isoUtc(starts[1])) secondOffered = true;
+    }
+    CHECK(!secondOffered);  // буфер 30 минут до встречи
+    CHECK_EQ(slots.items().size(), std::size_t(2));
+
+    const Json weekly = integration::payloadOf(fixture.call(guest, "booking.book", bookPayload(slug, starts[0], "Лёша", true)));
+    CHECK_EQ(weekly.get("skipped").items().size(), std::size_t(1));
+    CHECK_EQ(weekly.get("skipped").items().front().asString(), aura::isoUtc(nextWeek));
+    CHECK_EQ(weekly.get("booking").get("occurrences").items()[1].getString("status"), std::string("cancelled"));
+
+    // Напоминание за 15 минут — один раз.
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, soon, "Вера")).getString("type"),
+             std::string("ok"));
+    fixture.call(owner, "tasks.due");
+    fixture.call(owner, "tasks.due");
+    int reminders = 0;
+    const Json items = integration::payloadOf(fixture.call(owner, "notifications.list")).get("notifications");
+    for (const auto& item : items.items()) {
+        if (item.getString("kind") == "booking.reminder") {
+            ++reminders;
+            CHECK_EQ(item.get("payload").getString("guest_name"), std::string("Вера"));
+        }
+    }
+    CHECK_EQ(reminders, 1);
+}
+
+TEST(referral_reward_flow) {
+    using namespace booking_test;
+    std::vector<std::time_t> starts{future(30)};
+    FakeAi ai(slotsReply(&starts));
+    Fixture fixture;
+    useAi(fixture, ai.url(), "https://aura.example.com");
+    admin_test::Sockets sockets;
+    auto referrer = sockets.open(fixture, "rf-referrer");
+    fixture.registerUser(referrer, "senior@example.com", "Наставник");
+    const Json info = integration::payloadOf(fixture.call(referrer, "referral.info"));
+    const std::string code = info.getString("code");
+    CHECK_EQ(code.size(), std::size_t(8));
+    CHECK_EQ(info.getString("url"), "https://aura.example.com/#/signup?ref=" + code);
+    CHECK_EQ(info.getInt("invited"), 0LL);
+    CHECK_EQ(info.getInt("rewards_left"), 12LL);
+    CHECK_EQ(info.get("plan").getString("name"), std::string("free"));
+    // Код стабилен.
+    CHECK_EQ(integration::payloadOf(fixture.call(referrer, "referral.info")).getString("code"), code);
+
+    // Неизвестный код не мешает регистрации.
+    auto stranger = sockets.open(fixture, "rf-stranger");
+    const Json plain = registerWithCode(fixture, stranger, "plain-ref@example.com", "Без кода", "ZZZZZZZZ");
+    CHECK_EQ(plain.getString("type"), std::string("ok"));
+    CHECK_EQ(plain.get("payload").getBool("referral_applied", true), false);
+
+    // Код вводят как угодно: регистр и дефис не важны.
+    auto invitee = sockets.open(fixture, "rf-invitee");
+    std::string typed = code.substr(0, 4) + "-" + code.substr(4);
+    std::transform(typed.begin(), typed.end(), typed.begin(), [](unsigned char c) { return std::tolower(c); });
+    const Json joined = registerWithCode(fixture, invitee, "junior@example.com", "Новичок", typed);
+    CHECK_EQ(joined.get("payload").getBool("referral_applied"), true);
+    CHECK_EQ(integration::payloadOf(fixture.call(referrer, "referral.info")).getInt("invited"), 1LL);
+    // Регистрация сама по себе бонуса не даёт.
+    CHECK_EQ(integration::payloadOf(fixture.call(invitee, "referral.info")).get("plan").getString("name"),
+             std::string("free"));
+
+    // Первая запись на страницу приглашённого — бонус обоим.
+    const std::string slug =
+        integration::payloadOf(fixture.call(invitee, "booking.pages.save", pagePayload("Химия"))).get("page").getString("slug");
+    auto guest = sockets.open(fixture, "rf-guest");
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, starts[0], "Ученик")).getString("type"),
+             std::string("ok"));
+    const Json inviteePlan = integration::payloadOf(fixture.call(invitee, "referral.info")).get("plan");
+    CHECK_EQ(inviteePlan.getString("name"), std::string("pro"));
+    CHECK_EQ(inviteePlan.getInt("max_pages"), 5LL);
+    CHECK_EQ(inviteePlan.getInt("max_weeks"), 26LL);
+    const Json referrerInfo = integration::payloadOf(fixture.call(referrer, "referral.info"));
+    CHECK_EQ(referrerInfo.getInt("qualified"), 1LL);
+    CHECK_EQ(referrerInfo.getInt("rewards_left"), 11LL);
+    CHECK_EQ(referrerInfo.get("plan").getString("name"), std::string("pro"));
+    std::time_t until = 0;
+    CHECK(aura::parseIsoUtc(referrerInfo.get("plan").getString("pro_until"), until));
+    CHECK(until > std::time(nullptr) + 29 * 24 * 3600 && until <= std::time(nullptr) + 30 * 24 * 3600 + 5);
+    Json rewarded;
+    CHECK(hasNotification(fixture, referrer, "referral.rewarded", &rewarded));
+    CHECK_EQ(rewarded.get("payload").getString("role"), std::string("referrer"));
+    CHECK(hasNotification(fixture, invitee, "referral.rewarded"));
+
+    // Повторная активность бонус не начисляет; Pro даёт вторую страницу.
+    const std::string before = referrerInfo.get("plan").getString("pro_until");
+    starts.push_back(future(54));
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, starts[1], "Ещё ученик")).getString("type"),
+             std::string("ok"));
+    CHECK_EQ(integration::payloadOf(fixture.call(referrer, "referral.info")).get("plan").getString("pro_until"),
+             before);
+    CHECK_EQ(fixture.call(invitee, "booking.pages.save", pagePayload("Биология")).getString("type"),
+             std::string("ok"));
+}
+
 int main(int argc, char** argv) {
     std::signal(SIGPIPE, SIG_IGN);  // сессии в тестах пишут в socketpair
     std::cout.setf(std::ios::unitbuf);

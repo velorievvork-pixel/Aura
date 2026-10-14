@@ -1225,6 +1225,77 @@ button.chip:hover {
   word-break: break-word;
 }
 
+/* ------------------------------------------------------- Запись по ссылке */
+.booking-weekly {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+
+.booking-weekly:first-child {
+  padding-top: 12px;
+}
+
+.booking-day {
+  padding: 10px 16px 6px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-2);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.list > [role='group']:first-child .booking-day {
+  border-top: 0;
+}
+
+.booking-time {
+  flex: none;
+  min-width: 92px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.booking-dim {
+  opacity: 0.55;
+}
+
+.booking-struck {
+  text-decoration: line-through;
+}
+
+.booking-off {
+  border-style: dashed;
+}
+
+.booking-hours {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(62px, 1fr));
+  gap: 6px;
+}
+
+.booking-hours .chip {
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.booking-plan {
+  gap: 12px 14px;
+}
+
+.referral-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.referral-note > svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
 /* ------------------------------------------------------- Offline / gate */
 .gate {
   min-height: 100dvh;

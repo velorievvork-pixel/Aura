@@ -6,10 +6,12 @@
   отдаёт один раз — сразу после создания, в списке его нет. Список обновляется
   при уведомлениях invite.* (гость выбрал время / отказался).
 */
-import { Copy, Link2, Share2, X } from 'lucide-react';
+import { Link2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { LinkBox } from '../components/share';
 import { Empty, Field, Segmented, Spinner } from '../components/ui';
 import { shortWhen, when, WINDOWS, plural } from '../lib/format';
+import { currentLocation } from '../lib/publicLink';
 import {
   chosenSlot,
   GUEST_NAME_MAX,
@@ -35,32 +37,6 @@ const DURATIONS = [
   { value: '60', label: '1 час' },
   { value: '90', label: '1,5 часа' },
 ];
-
-/** Копирование в буфер: Clipboard API, иначе — через скрытое поле (старые WebView). */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    /* нет доступа к буферу — пробуем по-старому */
-  }
-  try {
-    const area = document.createElement('textarea');
-    area.value = text;
-    area.setAttribute('readonly', '');
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    document.body.appendChild(area);
-    area.select();
-    const ok = document.execCommand('copy');
-    area.remove();
-    return ok;
-  } catch {
-    return false;
-  }
-}
-
-const canShare = () => typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
 export function InviteSection() {
   const { socket, conn } = useSession();
@@ -165,7 +141,7 @@ function NewInvite({ api, onCreated }: { api: ReturnType<typeof makeInviteApi>; 
         note: note.trim() || undefined,
         guest_name: guestName.trim() || undefined,
       });
-      onCreated(reply.invite, inviteLink(reply.token, reply.url ?? '', typeof location === 'undefined' ? null : location));
+      onCreated(reply.invite, inviteLink(reply.token, reply.url ?? '', currentLocation()));
       setTopic('');
       setGuestName('');
       setNote('');
@@ -219,26 +195,6 @@ function NewInvite({ api, onCreated }: { api: ReturnType<typeof makeInviteApi>; 
 }
 
 function CreatedLink({ topic, link, onDone }: { topic: string; link: InviteLink; onDone: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const [copyFailed, setCopyFailed] = useState(false);
-  const text = link.kind === 'url' ? link.url : link.token;
-
-  const copy = async () => {
-    const ok = await copyText(text);
-    setCopied(ok);
-    setCopyFailed(!ok);
-    if (ok) setTimeout(() => setCopied(false), 2000);
-  };
-
-  const share = async () => {
-    if (link.kind !== 'url') return;
-    try {
-      await navigator.share({ title: 'Приглашение на встречу', text: `${topic} — выберите удобное время`, url: link.url });
-    } catch {
-      /* пользователь закрыл окно «Поделиться» */
-    }
-  };
-
   return (
     <div className="card stack" role="status">
       <div className="card-head" style={{ marginBottom: 0 }}>
@@ -247,18 +203,11 @@ function CreatedLink({ topic, link, onDone }: { topic: string; link: InviteLink;
           <X size={16} />
         </button>
       </div>
-      <div className="invite-link">
-        <input className="input mono" readOnly value={text} aria-label={link.kind === 'url' ? 'Ссылка-приглашение' : 'Токен приглашения'} onFocus={(e) => e.currentTarget.select()} />
-        <button type="button" className="btn btn-secondary" onClick={copy}>
-          <Copy size={15} /> {copied ? 'Скопировано' : 'Скопировать'}
-        </button>
-        {link.kind === 'url' && canShare() && (
-          <button type="button" className="btn btn-secondary" onClick={share}>
-            <Share2 size={15} /> Поделиться
-          </button>
-        )}
-      </div>
-      {copyFailed && <div className="field-error">Не удалось скопировать — выделите текст и скопируйте вручную.</div>}
+      <LinkBox
+        link={link}
+        label={link.kind === 'url' ? 'Ссылка-приглашение' : 'Токен приглашения'}
+        share={{ title: 'Приглашение на встречу', text: `${topic} — выберите удобное время` }}
+      />
       {link.kind === 'token' && (
         <div className="notice warn">
           Сервер не знает свой публичный адрес, а это приложение открыто локально — готовую ссылку не собрать. Задайте на сервере AURA_PUBLIC_URL (адрес веб-клиента), тогда ссылки будут приходить готовыми. Пока гостю можно открыть веб-клиент Aura с адресом #/i/ и этим токеном.

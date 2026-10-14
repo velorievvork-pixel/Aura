@@ -406,13 +406,17 @@ def intersect_slots(
     return merged
 
 
-# ------------------------------------------------- слоты для приглашения по ссылке
-#: Минимальный зазор между «сейчас» и началом предлагаемой встречи.
+# ------------------------------------------- слоты для приглашения и страниц записи
+#: Минимальный зазор между «сейчас» и началом встречи по умолчанию (min_notice_minutes).
 OFFER_LEAD = timedelta(hours=1)
-#: Шаг кандидатов (по местному времени владельца: :00 и :30).
+#: Шаг кандидатов по умолчанию (по местному времени владельца: :00 и :30).
 OFFER_STEP_MINUTES = 30
+#: Допустимые шаги: кандидаты выровнены по местным :00/:15/:30/:45.
+OFFER_STEPS = (15, 30, 60)
 #: Рабочие часы по умолчанию, если у владельца список пуст (или весь был мусором).
 DEFAULT_WORK_HOURS = tuple(range(9, 19))
+#: per_day больше этого — режим «страница записи»: все подходящие варианты подряд.
+INVITE_MAX_PER_DAY = 2
 
 
 def _zone(tz_name: str) -> ZoneInfo:
@@ -423,16 +427,25 @@ def _zone(tz_name: str) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def _ceil_local_half_hour(moment: datetime, zone: ZoneInfo) -> datetime:
-    """Округляет момент вверх до :00/:30 по местному времени; результат в UTC."""
+def _ceil_local_step(moment: datetime, zone: ZoneInfo, step_minutes: int = OFFER_STEP_MINUTES) -> datetime:
+    """Округляет момент вверх до кратного step_minutes по местному времени; результат в UTC.
+
+    Шаг 15/30/60 делит час, поэтому кратность считаем по минутам внутри часа:
+    60 → :00, 30 → :00/:30, 15 → :00/:15/:30/:45.
+    """
     local = moment.astimezone(zone)
     rounded = local.replace(second=0, microsecond=0)
     if rounded < local:
         rounded += timedelta(minutes=1)
-    extra = rounded.minute % OFFER_STEP_MINUTES
+    extra = rounded.minute % step_minutes
     if extra:
-        rounded += timedelta(minutes=OFFER_STEP_MINUTES - extra)
+        rounded += timedelta(minutes=step_minutes - extra)
     return rounded.astimezone(timezone.utc)
+
+
+def _ceil_local_half_hour(moment: datetime, zone: ZoneInfo) -> datetime:
+    """Округляет момент вверх до :00/:30 по местному времени; результат в UTC."""
+    return _ceil_local_step(moment, zone, OFFER_STEP_MINUTES)
 
 
 def _within_work_hours(start: datetime, end: datetime, zone: ZoneInfo, hours: frozenset) -> bool:
@@ -450,6 +463,27 @@ def _within_work_hours(start: datetime, end: datetime, zone: ZoneInfo, hours: fr
     return (end - timedelta(microseconds=1)).astimezone(zone).hour in hours
 
 
+def _merged_busy(
+    calendar: Sequence[CalendarEvent], buffer: timedelta
+) -> List[Tuple[datetime, datetime]]:
+    """Занятые интервалы, расширенные на buffer с обеих сторон и слитые.
+
+    После слияния интервалы не пересекаются и упорядочены и по началу, и по концу —
+    это позволяет проверять монотонно растущие кандидаты одним указателем.
+    """
+    merged: List[Tuple[datetime, datetime]] = []
+    for start, end in _busy_intervals(calendar):
+        # Событие нулевой длины (точка) тоже занимает: как и в _overlaps, оно
+        # блокирует кандидата, если лежит строго внутри него.
+        start, end = start - buffer, end + buffer
+        if merged and start <= merged[-1][1]:
+            if end > merged[-1][1]:
+                merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+    return merged
+
+
 def offer_slots(
     window: TimeWindow,
     calendar: Sequence[CalendarEvent],
@@ -457,96 +491,136 @@ def offer_slots(
     tz_name: str,
     duration_minutes: int = 60,
     max_slots: int = 6,
-    per_day: int = 2,
+    per_day: int = INVITE_MAX_PER_DAY,
     now: Optional[datetime] = None,
+    min_notice_minutes: int = 60,
+    buffer_minutes: int = 0,
+    step_minutes: int = OFFER_STEP_MINUTES,
+    work_hours: Optional[Sequence[int]] = None,
+    weekdays: Optional[Sequence[int]] = None,
 ) -> List[Slot]:
-    """Слоты владельца для приглашения по ссылке (гость без Ауры выбирает один).
+    """Слоты владельца: приглашение по ссылке (invite.*) и страница записи (booking.*).
 
-    Правила (см. спецификацию invite.*, раздел «AI-сервис»):
-    * кандидаты каждые 30 минут, не раньше now + 1 час (округление вверх до :00/:30
-      по местному времени владельца) и целиком внутри окна;
-    * вся встреча [start, end) — в рабочих часах владельца (prefs.work_hours,
-      местные часы) в ЕГО поясе tz_name (неизвестный пояс → UTC): часы 9..18
-      означают начало не раньше 09:00 и конец не позже 19:00;
-    * выходные (сб/вс по местному времени) пропускаются, если без них есть хоть
+    Общие правила (спецификации invite.* и booking.*, раздел «AI-сервис»):
+    * кандидаты каждые step_minutes (15/30/60; иначе 30), выровненные по местному
+      времени владельца (60 → :00, 30 → :00/:30, 15 → четверти часа), не раньше
+      now + min_notice_minutes (по умолчанию 1 час) и целиком внутри окна;
+    * вся встреча [start, end) — в рабочих часах владельца (work_hours, если список
+      не пуст, иначе prefs.work_hours, иначе 9..18; часы местные) в ЕГО поясе
+      tz_name (неизвестный пояс → UTC): часы 9..18 означают начало не раньше 09:00
+      и конец не позже 19:00;
+    * дни недели: weekdays задан (непуст) — строго эти местные дни (0 = пн), без
+      запасного выхода; не задан — сб/вс пропускаются, если без них есть хоть
       один слот;
-    * без пересечения с событиями календаря;
-    * не больше per_day слотов в местный день; внутри дня сначала предпочтительные
-      часы (prefs.preferred_hours, местные), затем раньше; слоты одного дня не
+    * без пересечения с событиями календаря, каждое расширено на buffer_minutes
+      с обеих сторон;
+    * start/end — aware UTC, итог хронологический, не больше max_slots.
+
+    Выбор зависит от per_day:
+    * per_day ≤ 2 — приглашение (гость без Ауры выбирает один из немногих): не больше
+      per_day слотов в местный день; внутри дня сначала предпочтительные часы
+      (prefs.preferred_hours, местные), затем раньше; слоты одного дня не
       перекрываются; по дням — равномерно (по кругу: сначала лучший слот каждого
       дня, потом второй);
-    * итог хронологический, не больше max_slots; start/end — aware UTC.
+    * per_day > 2 — страница записи: ВСЕ подходящие варианты подряд, в т.ч.
+      перекрывающиеся (15:00, 15:30, 16:00 для часового урока — гость берёт один);
+      в дне — первые per_day по времени, затем по дням хронологически до max_slots
+      (ближайшие дни важнее дальних). Именно «первые», а не «равномерно по дню»:
+      при сдвиге now уже показанные гостю варианты не пропадают (booking.book
+      сверяет start с текущими слотами); длинные рабочие часы при малом per_day
+      вызывающий покрывает шагом step_minutes=60.
     """
     zone = _zone(tz_name)
     now = _as_aware(now or utcnow())
     duration = timedelta(minutes=max(15, int(duration_minutes)))
-    step = timedelta(minutes=OFFER_STEP_MINUTES)
+    step_value = int(step_minutes) if int(step_minutes) in OFFER_STEPS else OFFER_STEP_MINUTES
+    step = timedelta(minutes=step_value)
+    lead = timedelta(minutes=max(0, int(min_notice_minutes)))
+    buffer = timedelta(minutes=max(0, int(buffer_minutes)))
     max_slots = max(0, int(max_slots))
     per_day = max(1, int(per_day))
     if max_slots == 0:
         return []
 
-    work = frozenset(prefs.work_hours or DEFAULT_WORK_HOURS)
+    work = frozenset(h for h in (work_hours or []) if 0 <= int(h) <= 23) or frozenset(
+        prefs.work_hours or DEFAULT_WORK_HOURS
+    )
+    allowed_days = frozenset(d for d in (weekdays or []) if 0 <= int(d) <= 6)
     preferred = frozenset(prefs.preferred_hours or [])
-    busy = _busy_intervals(calendar)
+    busy = _merged_busy(calendar, buffer)
 
     window_start = _as_aware(window.start)
     window_end = _as_aware(window.end)
-    cursor = _ceil_local_half_hour(max(window_start, now + OFFER_LEAD), zone)
+    cursor = _ceil_local_step(max(window_start, now + lead), zone, step_value)
 
-    weekdays: List[Tuple[datetime, datetime]] = []
+    regular: List[Tuple[datetime, datetime]] = []
     weekends: List[Tuple[datetime, datetime]] = []
-    guard = 0
-    while cursor + duration <= window_end and guard < 5000:
-        guard += 1
+    pointer = 0
+    while cursor + duration <= window_end:
         end = cursor + duration
-        if _within_work_hours(cursor, end, zone, work) and not _overlaps(cursor, end, busy):
-            target = weekends if cursor.astimezone(zone).weekday() >= 5 else weekdays
-            target.append((cursor, end))
+        # Интервалы, закончившиеся до начала кандидата, дальше не нужны (кандидаты растут).
+        while pointer < len(busy) and busy[pointer][1] <= cursor:
+            pointer += 1
+        free = pointer >= len(busy) or busy[pointer][0] >= end
+        if free and _within_work_hours(cursor, end, zone, work):
+            day = cursor.astimezone(zone).weekday()
+            if allowed_days:
+                if day in allowed_days:
+                    regular.append((cursor, end))
+            elif day >= 5:
+                weekends.append((cursor, end))
+            else:
+                regular.append((cursor, end))
         cursor += step
 
-    candidates = weekdays or weekends
+    fallback = not regular and bool(weekends)
+    candidates = regular or weekends
     if not candidates:
         return []
 
-    # Группировка по местному дню владельца; внутри дня — предпочтительные часы вперёд.
+    # Группировка по местному дню владельца (кандидаты уже хронологические).
     by_day: Dict[object, List[Tuple[datetime, datetime]]] = {}
     for start, end in candidates:
         by_day.setdefault(start.astimezone(zone).date(), []).append((start, end))
 
-    picks_by_day: List[List[Tuple[datetime, datetime]]] = []
-    for day in sorted(by_day):
-        ranked = sorted(
-            by_day[day],
-            key=lambda item: (item[0].astimezone(zone).hour not in preferred, item[0]),
-        )
-        chosen: List[Tuple[datetime, datetime]] = []
-        for start, end in ranked:
-            if len(chosen) >= per_day:
-                break
-            if _overlaps(start, end, chosen):
-                continue
-            chosen.append((start, end))
-        picks_by_day.append(chosen)
-
-    # По кругу: первый (лучший) слот каждого дня, затем второй и т.д.
     selected: List[Tuple[datetime, datetime]] = []
-    for rank in range(per_day):
-        for chosen in picks_by_day:
-            if rank < len(chosen) and len(selected) < max_slots:
-                selected.append(chosen[rank])
-    selected.sort()
+    if per_day > INVITE_MAX_PER_DAY:
+        for day in sorted(by_day):
+            selected.extend(by_day[day][:per_day])
+        selected = selected[:max_slots]
+    else:
+        picks_by_day: List[List[Tuple[datetime, datetime]]] = []
+        for day in sorted(by_day):
+            ranked = sorted(
+                by_day[day],
+                key=lambda item: (item[0].astimezone(zone).hour not in preferred, item[0]),
+            )
+            chosen: List[Tuple[datetime, datetime]] = []
+            for start, end in ranked:
+                if len(chosen) >= per_day:
+                    break
+                if _overlaps(start, end, chosen):
+                    continue
+                chosen.append((start, end))
+            picks_by_day.append(chosen)
+
+        # По кругу: первый (лучший) слот каждого дня, затем второй и т.д.
+        for rank in range(per_day):
+            for chosen in picks_by_day:
+                if rank < len(chosen) and len(selected) < max_slots:
+                    selected.append(chosen[rank])
+        selected.sort()
 
     result: List[Slot] = []
     for start, end in selected:
         local = start.astimezone(zone)
         is_preferred = local.hour in preferred
         score = 0.6 + (0.3 if is_preferred else 0.0)
-        if local.weekday() >= 5:
+        if fallback:
             score -= 0.05
         hours_ahead = max(0.0, (start - now).total_seconds() / 3600.0)
         score += max(0.0, 0.05 - hours_ahead / 2000.0)
-        if local.weekday() >= 5:
+        if fallback:
             reason = "выходной день (в будни свободных окон нет)"
         elif is_preferred:
             reason = "удобное время"

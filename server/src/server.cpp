@@ -156,7 +156,10 @@ bool Server::start(std::string& error) {
     agent_ = std::make_unique<AgentManager>(config_, *database_, *memory_, *tools_, *chats_);
     taskManager_ = std::make_unique<TaskManager>(*database_, connections_);
     admin_ = std::make_unique<AdminManager>(*database_, config_);
+    referrals_ = std::make_unique<ReferralManager>(*database_, notifications_.get(), config_);
     invites_ = std::make_unique<InviteManager>(*database_, *memory_, notifications_.get(), config_);
+    invites_->setReferrals(referrals_.get());
+    bookings_ = std::make_unique<BookingManager>(*database_, *memory_, notifications_.get(), *referrals_, config_);
     admin_->bootstrapAll();
 
     registerHandlers();
@@ -194,6 +197,8 @@ void Server::schedulerLoop() {
 }
 
 std::size_t Server::runSchedulerTick(int limit, long long userId) {
+    // Напоминания о занятиях по записи (booking.reminder) — отдельно от задач.
+    if (bookings_) bookings_->remindTick(userId);
     if (!taskManager_) return 0;
     const auto due = taskManager_->dueTick(limit, userId);
     // Этап 13: каждое сработавшее напоминание — ещё и уведомление (in-app + push).
@@ -422,7 +427,12 @@ void Server::registerHandlers() {
                                                                 request.payload.getString("device", "qt-client"),
                                                                 session->remoteAddr());
                         if (!result.ok) return protocol::error(request.id, result.code, result.message);
-                        return protocol::ok(request.id, result.payload);
+                        // Код приглашения не мешает регистрации: неизвестный просто не учитывается.
+                        Json payload = result.payload;
+                        const std::string referralCode = request.payload.getString("referral_code");
+                        payload.set("referral_applied",
+                                    Json(!referralCode.empty() && referrals_->applyOnRegister(result.userId, referralCode)));
+                        return protocol::ok(request.id, payload);
                     });
 
     registerHandler("auth.verifyEmail",
@@ -889,6 +899,43 @@ void Server::registerHandlers() {
         const auto result = invites_->respond(request.payload, session->remoteAddr());
         return result.ok ? protocol::ok(request.id, result.payload)
                          : protocol::error(request.id, result.code, result.message);
+    });
+
+    // ----------------------------------------------------------- booking
+    // Запись по постоянной ссылке: владелец (вход нужен) и гость без аккаунта
+    // (booking.get / book / manage.* — публичные: slug страницы или токен записи).
+    const auto bookingHandler = [this](auto method) {
+        return [this, method](std::shared_ptr<Session> session, const protocol::Request& request) {
+            const auto result = ((*bookings_).*method)(session->userId(), request.payload);
+            return result.ok ? protocol::ok(request.id, result.payload)
+                             : protocol::error(request.id, result.code, result.message);
+        };
+    };
+    const auto publicBookingHandler = [this](auto method) {
+        return [this, method](std::shared_ptr<Session> session, const protocol::Request& request) {
+            const auto result = ((*bookings_).*method)(request.payload, session->remoteAddr());
+            return result.ok ? protocol::ok(request.id, result.payload)
+                             : protocol::error(request.id, result.code, result.message);
+        };
+    };
+    registerHandler("booking.pages.list", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = bookings_->listPages(session->userId());
+        return protocol::ok(request.id, result.payload);
+    });
+    registerHandler("booking.pages.save", bookingHandler(&BookingManager::savePage));
+    registerHandler("booking.pages.delete", bookingHandler(&BookingManager::deletePage));
+    registerHandler("booking.pages.rotate", bookingHandler(&BookingManager::rotatePage));
+    registerHandler("booking.list", bookingHandler(&BookingManager::list));
+    registerHandler("booking.cancel", bookingHandler(&BookingManager::cancelByOwner));
+    registerHandler("booking.get", publicBookingHandler(&BookingManager::get));
+    registerHandler("booking.book", publicBookingHandler(&BookingManager::book));
+    registerHandler("booking.manage.get", publicBookingHandler(&BookingManager::manageGet));
+    registerHandler("booking.manage.reschedule", publicBookingHandler(&BookingManager::reschedule));
+    registerHandler("booking.manage.cancel", publicBookingHandler(&BookingManager::cancelByGuest));
+
+    // ---------------------------------------------------------- referral
+    registerHandler("referral.info", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        return protocol::ok(request.id, referrals_->info(session->userId()));
     });
 
     registerHandler("speech.transcribe", [this](std::shared_ptr<Session>, const protocol::Request& request) {

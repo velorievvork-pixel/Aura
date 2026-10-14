@@ -8,6 +8,9 @@ import { NativeBridge } from './platform/NativeBridge';
 import { initPlatform } from './platform/native';
 import { Admin } from './pages/Admin';
 import { ForgotPassword, Login, Signup, TwoFactor, VerifyEmail } from './pages/Auth';
+import { Booking } from './pages/Booking';
+import { BookingGuest } from './pages/BookingGuest';
+import { BookingManage } from './pages/BookingManage';
 import { Chat } from './pages/Chat';
 import { ContactChat, Contacts } from './pages/Contacts';
 import { Home } from './pages/Home';
@@ -25,14 +28,20 @@ initPlatform();
 
 function Root() {
   const { status, conn, everConnected, connError } = useSession();
+  // Хуки — все и всегда, без короткого замыкания.
   const invite = useMatch('/i/:token');
+  const bookingPage = useMatch('/b/:slug');
+  const bookingManage = useMatch('/m/:token');
 
-  // Приглашение по ссылке — публичная страница гостя: и без входа, и со входом,
-  // вне оболочки и без переадресаций на вход; о связи она сообщает сама.
-  if (invite) {
+  // Публичные страницы гостя — приглашение, запись, управление записью: и без
+  // входа, и со входом, вне оболочки и без переадресаций на вход; о связи они
+  // сообщают сами.
+  if (invite || bookingPage || bookingManage) {
     return (
       <Routes>
         <Route path="/i/:token" element={<InviteGuest />} />
+        <Route path="/b/:slug" element={<BookingGuest />} />
+        <Route path="/m/:token" element={<BookingManage />} />
       </Routes>
     );
   }
@@ -74,6 +83,7 @@ function Root() {
           <Route path="tasks" element={<Tasks />} />
           <Route path="contacts" element={<Contacts />} />
           <Route path="contacts/:chatId" element={<ContactChat />} />
+          <Route path="booking" element={<Booking />} />
           <Route path="inbox" element={<Inbox />} />
           <Route path="settings" element={<Settings />} />
           <Route path="admin" element={<Admin />} />

@@ -216,6 +216,11 @@ void Server::stop() {
     const bool already = stopping_.exchange(true);
     if (listener_) listener_->stop();
     connections_.closeAll(1001, "server shutdown");
+    // Рабочие потоки соединений вызывают обработчики Server — дожидаемся их,
+    // иначе они переживут Server (ASan: use-after-free в Listener::releaseIpSlot).
+    if (listener_ && !listener_->drain(std::chrono::seconds(10))) {
+        AURA_LOG(log::Level::Warn, "server") << "не все соединения завершились за 10 с";
+    }
     // Останавливаем фоновый планировщик и дожидаемся его.
     schedulerCv_.notify_all();
     if (schedulerThread_ && schedulerThread_->joinable()) schedulerThread_->join();

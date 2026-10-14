@@ -2,6 +2,8 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -29,6 +31,10 @@ public:
 
     bool start(std::string& error);
     void stop();
+    // После stop(): закрыть ещё живые соединения (в т.ч. не прошедшие рукопожатие)
+    // и дождаться рабочих потоков — они вызывают обработчик Server и трогают
+    // поля Listener, поэтому не должны пережить их владельца. false — не успели.
+    bool drain(std::chrono::milliseconds timeout);
 
     int port() const { return boundPort_; }
     bool running() const { return running_.load(); }
@@ -49,6 +55,9 @@ private:
     std::atomic<unsigned long long> accepted_{0};
     std::thread acceptThread_;
     std::atomic<unsigned long long> activeWorkers_{0};
+    std::mutex workersMutex_;
+    std::condition_variable workersDone_;
+    std::map<const Session*, std::weak_ptr<Session>> live_;  // под workersMutex_
     std::mutex perIpMutex_;
     std::map<std::string, std::size_t> perIp_;
 };

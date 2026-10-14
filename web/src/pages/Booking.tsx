@@ -30,7 +30,7 @@ import { makeBookingApi, type Booking, type BookingApi, type BookingPage as Page
 import { isNetworkError } from '../net/socket';
 import { useData } from '../state/data';
 import { useSession } from '../state/session';
-import { canShare, copyText } from './Invites';
+import { canShare, copyText } from '../lib/clipboard';
 
 const DURATIONS = [
   { value: '15', label: '15 мин' },
@@ -88,20 +88,28 @@ export function BookingPage() {
     [socket, load],
   );
 
+  /*
+    После изменения: ответ сервера показываем сразу, а затем перечитываем оба списка.
+    load() сам отбрасывает ответ загрузки, начатой раньше (её данные могли быть до
+    изменения), — но та загрузка могла быть начата уведомлением booking.created, и
+    без повторного запроса новая запись так и не появилась бы в списке.
+  */
+  const refresh = () => void load();
+
   const saved = (page: Page) => {
-    seq.current += 1;
     setPages((list) => {
       const rest = (list ?? []).filter((x) => x.id !== page.id);
       return editing === 'new' ? [page, ...rest] : (list ?? []).map((x) => (x.id === page.id ? page : x));
     });
     setEditing(null);
+    refresh();
   };
 
   const setStatus = async (page: Page, status: 'active' | 'paused') => {
     try {
       const reply = await api.updatePage(page.id, { status });
-      seq.current += 1;
       setPages((list) => (list ?? []).map((x) => (x.id === page.id ? reply.page : x)));
+      refresh();
       notify(status === 'paused' ? 'Запись на паузе — новые гости не смогут записаться' : 'Запись снова открыта');
     } catch (e) {
       notify(bookingOwnerErrorText(e), 'error');
@@ -111,8 +119,8 @@ export function BookingPage() {
   const remove = async (page: Page) => {
     try {
       await api.deletePage(page.id);
-      seq.current += 1;
       setPages((list) => (list ?? []).filter((x) => x.id !== page.id));
+      refresh();
       notify('Страница удалена. Уже сделанные записи остаются в силе.');
     } catch (e) {
       notify(bookingOwnerErrorText(e), 'error');
@@ -122,12 +130,11 @@ export function BookingPage() {
   const cancelBooking = async (booking: Booking) => {
     try {
       const reply = await api.ownerCancel(booking.id);
-      seq.current += 1;
       setBookings((list) => (list ?? []).map((x) => (x.id === booking.id ? reply.booking : x)));
-      void load();
+      refresh();
     } catch (e) {
       notify(bookingOwnerErrorText(e), 'error');
-      void load();
+      refresh();
     }
   };
 

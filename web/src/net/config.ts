@@ -34,8 +34,33 @@ export interface ServerEnv {
 }
 
 /**
+ * Локальный или частный адрес: localhost, *.localhost, *.local, имя без точки
+ * (хост в своей сети / docker), loopback 127/8, частные 10/8, 172.16/12,
+ * 192.168/16, link-local 169.254/16 и такие же IPv6 (::1, fc00::/7, fe80::/10).
+ * Только сюда разумно ходить без TLS.
+ */
+export function isLocalHost(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!host) return false;
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+  if (host.includes(':')) {
+    // IPv6
+    return host === '::1' || host === '::' || /^f[cd][0-9a-f]{0,2}:/.test(host) || /^fe[89ab][0-9a-f]?:/.test(host);
+  }
+  const ip = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (ip) {
+    const [a, b] = [Number(ip[1]), Number(ip[2])];
+    return a === 127 || a === 10 || a === 0 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  }
+  return !host.includes('.');
+}
+
+/**
  * Приводит ввод пользователя к ws(s)-адресу: «192.168.1.5» → ws://192.168.1.5:9000,
- * «https://aura.example.com» → wss://aura.example.com. Неразборчивый ввод → null.
+ * «https://aura.example.com» → wss://aura.example.com. Голый публичный хост
+ * («aura.example.com») — wss:// без порта: пароли и токены не должны идти открытым
+ * текстом; голый локальный/частный хост — ws:// и порт сервера разработки.
+ * Явный ws:// оставляем как ввели. Неразборчивый ввод → null.
  */
 export function normalizeServerUrl(input: string): string | null {
   let value = input.trim();
@@ -43,8 +68,16 @@ export function normalizeServerUrl(input: string): string | null {
   if (/^https?:\/\//i.test(value)) value = value.replace(/^http/i, 'ws');
   else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) && !/^wss?:\/\//i.test(value)) return null; // ftp://, file://…
   if (!/^wss?:\/\//i.test(value)) {
-    const hasPort = /:\d+$/.test(value.split('/')[0]);
-    value = `ws://${value}${hasPort ? '' : `:${DEV_PORT}`}`;
+    const authority = value.split(/[/?#]/)[0];
+    const hasPort = /:\d+$/.test(authority);
+    let hostname = '';
+    try {
+      hostname = new URL(`ws://${authority}`).hostname;
+    } catch {
+      return null;
+    }
+    const rest = value.slice(authority.length);
+    value = isLocalHost(hostname) ? `ws://${authority}${hasPort ? '' : `:${DEV_PORT}`}${rest}` : `wss://${value}`;
   }
   try {
     const url = new URL(value);

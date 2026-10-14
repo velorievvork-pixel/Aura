@@ -1241,6 +1241,17 @@ button.chip:hover {
   justify-items: center;
 }
 
+/* Ожидание ленивой страницы внутри оболочки (components/Lazy.tsx). */
+.page-loading {
+  min-height: 50vh;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
 .spinner {
   width: 22px;
   height: 22px;

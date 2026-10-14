@@ -416,8 +416,8 @@ InviteManager::Result InviteManager::respond(const Json& payload, const std::str
         return Result::failure(protocol::code::kConflict, "приглашение уже закрыто");
     }
 
+    const std::string title = "Встреча: " + record->topic + " — " + response.guestName;
     if (action == "accept") {
-        const std::string title = "Встреча: " + record->topic + " — " + response.guestName;
         // Интервал «(start/end)» — встреча занимает время в календаре для
         // переговоров и других приглашений (MemoryManager::busy).
         const DatabaseError remembered = database_.db().upsertMemory(
@@ -426,6 +426,13 @@ InviteManager::Result InviteManager::respond(const Json& payload, const std::str
         if (!remembered.ok) {
             AURA_LOG(log::Level::Warn, "invite") << "встреча не записана в расписание: " << remembered.message;
         }
+    }
+    // Время занято и записано — расписание владельца больше не держим: задача,
+    // уведомление и пуш (сетевые вызовы) идут без блокировки.
+    if (scheduleLock) scheduleLock->release();
+    if (localLock.owns_lock()) localLock.unlock();
+
+    if (action == "accept") {
         TaskRecord task;
         task.userId = record->ownerId;
         task.title = title;

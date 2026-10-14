@@ -5,14 +5,18 @@
   book / manage / reschedule / cancel — публичные методы. Время показывается по дням
   в часовом поясе браузера. После записи гость получает ссылку управления (сервер
   отдаёт токен один раз) — по ней можно перенести ближайшую встречу или отменить
-  одну/все встречи серии. Файл .ics собирается здесь же, в браузере.
+  одну/все встречи серии (отмена работает и когда страница на паузе). Если готовую
+  ссылку не собрать (нет AURA_PUBLIC_URL, Electron/localhost), гостя сразу переводим
+  на #/m/<токен> — именно её он сохранит в закладки. Файл .ics собирается здесь же,
+  в браузере.
 */
 import { CalendarPlus, Check, Clock, Copy, RefreshCw, Repeat, WifiOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { Field, Spinner } from '../components/ui';
 import {
   bookingIcs,
+  guestActions,
   isPlausibleSlug,
   isUpcoming,
   managePath,
@@ -45,14 +49,17 @@ import {
 import { makeBookingApi, type GuestBooking, type GuestPage } from '../net/bookingApi';
 import type { InviteSlot } from '../net/inviteApi';
 import { useSession } from '../state/session';
-import { copyText } from './Invites';
+import { copyText } from '../lib/clipboard';
 import { GuestLayout, Message, OwnAura } from './InviteGuest';
 
 const here = () => (typeof location === 'undefined' ? null : location);
 
-function downloadBookingIcs(booking: Pick<GuestBooking, 'page_title' | 'owner_name' | 'occurrences'>): boolean {
+type IcsBooking = Pick<GuestBooking, 'page_title' | 'owner_name' | 'occurrences' | 'reschedules_left'>;
+
+/** icsKey — токен ссылки управления: из него UID событий, стабильный при переносе. */
+function downloadBookingIcs(booking: IcsBooking, icsKey: string): boolean {
   try {
-    const blob = new Blob([bookingIcs(booking)], { type: 'text/calendar;charset=utf-8' });
+    const blob = new Blob([bookingIcs(booking, icsKey)], { type: 'text/calendar;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const first = sortedOccurrences(booking.occurrences).find((o) => o.status === 'active');
     const a = document.createElement('a');
@@ -69,11 +76,11 @@ function downloadBookingIcs(booking: Pick<GuestBooking, 'page_title' | 'owner_na
   }
 }
 
-function CalendarButton({ booking }: { booking: Pick<GuestBooking, 'page_title' | 'owner_name' | 'occurrences'> }) {
+function CalendarButton({ booking, icsKey }: { booking: IcsBooking; icsKey: string }) {
   const [failed, setFailed] = useState(false);
   return (
     <>
-      <button className="btn btn-secondary btn-block" onClick={() => setFailed(!downloadBookingIcs(booking))}>
+      <button className="btn btn-secondary btn-block" onClick={() => setFailed(!downloadBookingIcs(booking, icsKey))}>
         <CalendarPlus size={17} /> Добавить в календарь
       </button>
       {failed && <div className="field-error">Не удалось создать файл календаря.</div>}
@@ -174,9 +181,11 @@ function ManageLink({ token, url }: { token: string; url: string }) {
   const link = publicLink(managePath(token), url, here());
   const [copied, setCopied] = useState(false);
   if (!link) {
+    // Сюда обычно не попадаем: без готовой ссылки гостя сразу переводят на #/m/<токен>.
     return (
       <div className="notice">
-        Чтобы перенести или отменить встречу, сохраните эту страницу в закладки или напишите организатору.
+        Чтобы перенести или отменить встречу, откройте адрес <span className="mono">#{managePath(token)}</span> этого сайта и сохраните его в
+        закладки — или напишите организатору.
       </div>
     );
   }
@@ -219,6 +228,7 @@ function OccurrenceList({ booking, zone }: { booking: Pick<GuestBooking, 'occurr
 
 export function BookingGuest() {
   const { slug } = useParams();
+  const navigate = useNavigate();
   const { socket, conn, connError, retry } = useSession();
   const api = useMemo(() => makeBookingApi(socket), [socket]);
   const zone = useMemo(browserTimeZone, []);
@@ -285,6 +295,12 @@ export function BookingGuest() {
         count,
       });
       seq.current += 1;
+      if (!publicLink(managePath(reply.token), reply.url, here())) {
+        // Ссылку управления не собрать — переходим на страницу записи (#/m/<токен>) вместо
+        // #/b/<slug>: «сохранить в закладки» тогда сохраняет именно её, токен не теряется.
+        navigate(managePath(reply.token), { replace: true, state: { booked: true } });
+        return;
+      }
       setDone(reply);
     } catch (error) {
       const kind = guestErrorKind(error);
@@ -327,7 +343,7 @@ export function BookingGuest() {
             <OccurrenceList booking={done.booking} zone={zone} />
             <div className="small faint">{timeZoneLabel(zone)}</div>
           </div>
-          <CalendarButton booking={done.booking} />
+          <CalendarButton booking={done.booking} icsKey={done.token} />
           <ManageLink token={done.token} url={done.url} />
           <OwnAura refCode={done.booking.ref} source="booking" />
         </div>
@@ -337,7 +353,18 @@ export function BookingGuest() {
 
   if (page) {
     if (page.status !== 'active') {
-      return <Message title="Запись временно закрыта">{`${page.owner_name || 'Организатор'} пока не принимает новые записи. Загляните позже.`}</Message>;
+      // Новые записи закрыты, но уже записавшийся гость может запросить ссылку управления
+      // (booking.resendLink отказывает только для удалённых страниц) — и отменить встречу.
+      return (
+        <GuestLayout>
+          <div className="stack">
+            <h1 className="title-lg">Запись временно закрыта</h1>
+            <p className="lead" style={{ margin: 0 }}>{`${page.owner_name || 'Организатор'} пока не принимает новые записи. Загляните позже.`}</p>
+          </div>
+          {slug && <LostLink api={api} slug={slug} />}
+          <OwnAura refCode={page.ref} source="booking" />
+        </GuestLayout>
+      );
     }
     const seriesOptions = Array.from({ length: Math.max(1, page.max_series) }, (_, i) => i + 1);
     return (
@@ -428,7 +455,7 @@ function LostLink({ api, slug }: { api: ReturnType<typeof makeBookingApi>; slug:
   if (!open) {
     return (
       <button type="button" className="btn btn-ghost btn-sm" style={{ alignSelf: 'center' }} onClick={() => setOpen(true)}>
-        Уже записались? Пришлём ссылку для переноса
+        Уже записались? Пришлём ссылку для переноса или отмены
       </button>
     );
   }
@@ -471,6 +498,7 @@ function LostLink({ api, slug }: { api: ReturnType<typeof makeBookingApi>; slug:
 
 export function BookingManage() {
   const { token } = useParams();
+  const location = useLocation();
   const { socket, conn, connError, retry } = useSession();
   const api = useMemo(() => makeBookingApi(socket), [socket]);
   const zone = useMemo(browserTimeZone, []);
@@ -486,6 +514,8 @@ export function BookingManage() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+  // Пришли сюда сразу после записи (готовой ссылки управления не было) — эту страницу и сохраняют.
+  const justBooked = Boolean((location.state as { booked?: boolean } | null)?.booked);
   const seq = useRef(0);
   const connRef = useRef(conn);
   connRef.current = conn;
@@ -541,6 +571,9 @@ export function BookingManage() {
     const owner = booking.owner_name || 'Организатор';
     const next = nextOccurrence(booking.occurrences);
     const upcoming = upcomingCount(booking.occurrences);
+    const { canCancel, canReschedule } = guestActions(booking);
+    // Права могли смениться после перезагрузки (страницу поставили на паузу) — шаг пропадает.
+    const step = (mode === 'move' && !canReschedule) || (mode === 'cancel' && !canCancel) ? 'view' : mode;
     const againLink = booking.page_slug ? (
       <Link className="btn btn-secondary btn-block" to={pagePath(booking.page_slug)}>
         Записаться снова
@@ -584,6 +617,12 @@ export function BookingManage() {
           </div>
         </div>
         {conn !== 'open' && <div className="notice warn">Нет связи с сервером Aura — переподключаемся…</div>}
+        {justBooked && !notice && (
+          <div className="notice">
+            <Check size={15} /> Вы записаны — {booking.owner_name ? `${booking.owner_name} получил(а) уведомление` : 'организатор получил уведомление'}. Сохраните
+            эту страницу в закладки: по ней можно перенести или отменить встречу.
+          </div>
+        )}
         {notice && <div className="notice">{notice}</div>}
         {error && <div className="notice error">{error}</div>}
 
@@ -595,30 +634,39 @@ export function BookingManage() {
 
         {upcoming === 0 && <div className="notice">Все встречи этой записи уже прошли.</div>}
 
-        {mode === 'view' && upcoming > 0 && (
+        {step === 'view' && upcoming > 0 && (
           <div className="stack">
-            <CalendarButton booking={booking} />
-            {booking.can_change && (
+            {token && <CalendarButton booking={booking} icsKey={token} />}
+            {(canReschedule || canCancel) && (
               <div className="row wrap" style={{ gap: 8 }}>
-                <button className="btn btn-secondary" disabled={booking.reschedules_left <= 0} onClick={() => setMode('move')}>
-                  Перенести
-                </button>
-                <button
-                  className="btn btn-ghost"
-                  onClick={() => {
-                    setCancelTarget(null);
-                    setMode('cancel');
-                  }}
-                >
-                  Отменить
-                </button>
+                {canReschedule && (
+                  <button className="btn btn-secondary" onClick={() => setMode('move')}>
+                    Перенести
+                  </button>
+                )}
+                {canCancel && (
+                  <button
+                    className="btn btn-ghost"
+                    onClick={() => {
+                      setCancelTarget(null);
+                      setMode('cancel');
+                    }}
+                  >
+                    Отменить
+                  </button>
+                )}
               </div>
             )}
-            {booking.can_change && booking.reschedules_left <= 0 && <span className="hint">Перенести можно не больше трёх раз — дальше только отмена.</span>}
+            {canCancel && !canReschedule &&
+              (booking.reschedules_left <= 0 ? (
+                <span className="hint">Перенести можно не больше трёх раз — дальше только отмена.</span>
+              ) : (
+                <span className="hint">Перенос временно недоступен: {owner} сейчас не принимает новые записи. Отменить встречу можно.</span>
+              ))}
           </div>
         )}
 
-        {mode === 'move' && next && (
+        {step === 'move' && next && (
           <div className="stack">
             <div className="small muted">
               Переносим встречу {slotPhrase(next, zone)}. Осталось переносов: {booking.reschedules_left}.
@@ -648,7 +696,7 @@ export function BookingManage() {
           </div>
         )}
 
-        {mode === 'cancel' && (
+        {step === 'cancel' && (
           <div className="stack">
             {upcoming > 1 && (
               <Field label="Что отменить">

@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <atomic>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -27,6 +28,7 @@
 
 #include "aura/authmanager.h"
 #include "aura/crypto.h"
+#include "aura/databasemanager.h"
 #include "aura/idatabase.h"
 #include "aura/invitemanager.h"
 #include "aura/mailprovider.h"
@@ -36,6 +38,7 @@
 #include "aura/memorymanager.h"
 #include "aura/net.h"
 #include "aura/protocol.h"
+#include "aura/schedulelock.h"
 #include "aura/server.h"
 #include "aura/smtp.h"
 #include "aura/toolmanager.h"
@@ -4021,6 +4024,18 @@ Json bookPayload(const std::string& slug, std::time_t start, const std::string& 
 
 Json tokenPayload(const std::string& token) { return invite_test::tokenPayload(token); }
 
+// Письма гостям уходят из фоновой очереди — ждём, пока ящик dev перестанет меняться.
+std::vector<aura::MailNotice> settledOutbox() {
+    std::size_t last = aura::devOutbox().size();
+    for (int i = 0; i < 60; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const std::size_t now = aura::devOutbox().size();
+        if (now == last && i >= 2) break;
+        last = now;
+    }
+    return aura::devOutbox();
+}
+
 // Ответ поддельного AI на POST /v1/agent/series: повторы ровно через неделю
 // (пояс UTC), местное время — как в UTC.
 std::string seriesBody(const std::string& request) {
@@ -4205,6 +4220,8 @@ TEST(booking_page_book_reschedule_cancel) {
     const Json managed = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(token))).get("booking");
     CHECK_EQ(managed.getString("guest_name"), std::string("Пётр"));
     CHECK(managed.getBool("can_change"));
+    CHECK(managed.getBool("can_cancel"));
+    CHECK(managed.getBool("can_reschedule"));
     CHECK_EQ(managed.getInt("reschedules_left"), 3LL);
     CHECK(hasSlot(managed, third));
     Json move = tokenPayload(token);
@@ -4245,13 +4262,15 @@ TEST(booking_page_book_reschedule_cancel) {
     // Письма гостю: подтверждение со ссылкой управления (имя гостя в письмо не попадает).
     {
         int created = 0, cancelledMail = 0, rescheduledMail = 0;
-        for (const auto& notice : aura::devOutbox()) {
+        for (const auto& notice : settledOutbox()) {
             if (notice.to != "petr@example.com") continue;
             if (notice.kind == "booking.created") {
                 ++created;
                 CHECK_EQ(notice.linkUrl, "https://aura.example.com/#/m/" + token);
                 CHECK_EQ(notice.lines.size(), std::size_t(2));
-                CHECK(notice.subject.find("Консультация") != std::string::npos);
+                // Тема — только текст сервера; название страницы — в теле письма.
+                CHECK(notice.subject.find("Консультация") == std::string::npos);
+                CHECK(notice.note.find("Консультация") != std::string::npos);
                 CHECK(notice.title.find("Пётр") == std::string::npos && notice.lead.find("Пётр") == std::string::npos);
             }
             if (notice.kind == "booking.rescheduled") ++rescheduledMail;
@@ -4292,7 +4311,7 @@ TEST(booking_page_book_reschedule_cancel) {
     resend.set("email", Json("IRA@example.com"));
     CHECK(integration::payloadOf(fixture.call(guest, "booking.resendLink", resend)).getBool("sent"));
     std::string newLink;
-    for (const auto& notice : aura::devOutbox()) {
+    for (const auto& notice : settledOutbox()) {
         if (notice.to == "ira@example.com" && notice.kind == "booking.link") newLink = notice.linkUrl;
     }
     CHECK(!newLink.empty());
@@ -4301,9 +4320,9 @@ TEST(booking_page_book_reschedule_cancel) {
     CHECK_EQ(fixture.call(guest, "booking.manage", tokenPayload(iraToken)).getString("code"), std::string("not_found"));
     CHECK_EQ(fixture.call(guest, "booking.manage", tokenPayload(newToken)).getString("type"), std::string("ok"));
     resend.set("email", Json("nobody@example.com"));
-    const std::size_t before = aura::devOutbox().size();
+    const std::size_t before = settledOutbox().size();
     CHECK(integration::payloadOf(fixture.call(guest, "booking.resendLink", resend)).getBool("sent"));
-    CHECK_EQ(aura::devOutbox().size(), before);
+    CHECK_EQ(settledOutbox().size(), before);
     resend.set("email", Json("не-почта"));
     CHECK_EQ(fixture.call(guest, "booking.resendLink", resend).getString("code"), std::string("bad_request"));
 
@@ -4318,10 +4337,24 @@ TEST(booking_page_book_reschedule_cancel) {
     CHECK_EQ(paused.get("slots").items().size(), std::size_t(0));
     CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, third, "Иван")).getString("code"),
              std::string("conflict"));
+    // На паузе гость не переносит, но отменить может.
+    {
+        const Json view = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(newToken))).get("booking");
+        CHECK(view.getBool("can_cancel"));
+        CHECK(!view.getBool("can_reschedule"));
+        CHECK(!view.getBool("can_change"));
+    }
     Json remove = Json::object();
     remove.set("page_id", Json(page.getInt("id")));
     CHECK_EQ(fixture.call(owner, "booking.pageDelete", remove).getString("type"), std::string("ok"));
     CHECK_EQ(fixture.call(guest, "booking.get", slugPayload(slug)).getString("code"), std::string("not_found"));
+    // Страница удалена — сделанная запись остаётся, отменить её гость по-прежнему может.
+    {
+        const Json view = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(newToken))).get("booking");
+        CHECK(view.getBool("can_cancel"));
+        CHECK(!view.getBool("can_reschedule"));
+        CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(newToken)).getString("type"), std::string("ok"));
+    }
     CHECK_EQ(integration::payloadOf(fixture.call(owner, "booking.pageList")).get("pages").items().size(),
              std::size_t(0));
     // Методы владельца без входа недоступны.
@@ -4343,6 +4376,64 @@ TEST(booking_ai_unavailable) {
     CHECK_EQ(seen.get("slots").items().size(), std::size_t(0));
     CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, future(30), "Пётр")).getString("code"),
              std::string("upstream_error"));
+    // Заблокированный владелец гостей не принимает (страница не служит каналом рассылки).
+    const long long ownerId = fixture.server->database().db().findUserByEmail("coach2@example.com")->id;
+    CHECK(fixture.server->database().db().setUserActive(ownerId, false).ok);
+    CHECK_EQ(fixture.call(guest, "booking.get", slugPayload(slug)).getString("code"), std::string("not_found"));
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, future(30), "Пётр")).getString("code"),
+             std::string("not_found"));
+    CHECK(fixture.server->database().db().setUserActive(ownerId, true).ok);
+    CHECK_EQ(fixture.call(guest, "booking.get", slugPayload(slug)).getString("type"), std::string("ok"));
+}
+
+// Встроенная БД: id не переиспользуются — иначе task_id старой записи указал бы
+// на задачу другого пользователя (и отмена записи удалила бы чужую задачу).
+TEST(embedded_ids_not_reused) {
+    auto db = aura::makeEmbeddedDatabase("");
+    long long anna = 0, boris = 0;
+    CHECK(db->createUser("ids-anna@example.com", "argon2id$x", "Анна", anna).ok);
+    CHECK(db->createUser("ids-boris@example.com", "argon2id$x", "Борис", boris).ok);
+    aura::TaskRecord task;
+    task.userId = anna;
+    task.title = "встреча";
+    long long first = 0;
+    CHECK(db->createTask(task, first).ok);
+    CHECK(db->deleteTask(first).ok);
+    task.userId = boris;
+    long long second = 0;
+    CHECK(db->createTask(task, second).ok);
+    CHECK(second > first);
+}
+
+// Блокировка расписания — на владельца: чужой владелец не ждёт, тот же — ждёт release().
+TEST(schedule_lock_per_owner) {
+    aura::DatabaseManager database(aura::makeEmbeddedDatabase(""));
+    aura::ScheduleLock locks(database);
+    auto held = locks.acquire(1);
+    CHECK(held.ok());
+    const auto started = std::chrono::steady_clock::now();
+    std::thread other([&] { auto guard = locks.acquire(2); CHECK(guard.ok()); });
+    other.join();
+    CHECK(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(500));
+    std::atomic<bool> got{false};
+    std::thread same([&] { auto guard = locks.acquire(1); got = guard.ok(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK(!got.load());
+    held.release();
+    same.join();
+    CHECK(got.load());
+}
+
+// Ссылку, которая приходит только письмом, нельзя менять, если письма не уходят.
+TEST(mail_provider_delivers) {
+    aura::Config config;
+    config.mailDriver = "log";
+    CHECK(!aura::makeMailProvider(config)->delivers());
+    config.mailDriver = "dev";
+    config.devMode = true;
+    CHECK(aura::makeMailProvider(config)->delivers());
+    config.mailDriver = "smtp";
+    CHECK(aura::makeMailProvider(config)->delivers());
 }
 
 TEST(referral_register_and_verify) {

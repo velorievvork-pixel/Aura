@@ -5,7 +5,9 @@ import {
   bookingIcs,
   bookingOwnerErrorText,
   bookingStatus,
+  bookingUid,
   forgetRef,
+  guestActions,
   isPlausibleSlug,
   nextOccurrence,
   PAGE_DEFAULTS,
@@ -129,9 +131,11 @@ describe('встречи', () => {
   });
 });
 
+const TOKEN = 'a'.repeat(43);
+
 describe('bookingIcs', () => {
   it('одно событие на каждую активную встречу, CRLF', () => {
-    const ics = bookingIcs({ page_title: 'Консультация', owner_name: 'Ольга', occurrences: [occ('2026-10-21T07:00:00Z'), occ('2026-10-28T07:00:00Z', 'cancelled'), occ('2026-11-04T07:00:00Z')] }, NOW);
+    const ics = bookingIcs({ page_title: 'Консультация', owner_name: 'Ольга', occurrences: [occ('2026-10-21T07:00:00Z'), occ('2026-10-28T07:00:00Z', 'cancelled'), occ('2026-11-04T07:00:00Z')] }, TOKEN, NOW);
     expect(ics.match(/BEGIN:VEVENT/g)).toHaveLength(2);
     expect(ics).toContain('DTSTART:20261021T070000Z');
     expect(ics).toContain('DTSTART:20261104T070000Z');
@@ -142,7 +146,57 @@ describe('bookingIcs', () => {
   });
 
   it('без активных встреч — ошибка', () => {
-    expect(() => bookingIcs({ page_title: 'X', owner_name: '', occurrences: [occ('2026-10-21T07:00:00Z', 'cancelled')] })).toThrow();
+    expect(() => bookingIcs({ page_title: 'X', owner_name: '', occurrences: [occ('2026-10-21T07:00:00Z', 'cancelled')] }, TOKEN)).toThrow();
+  });
+
+  it('UID встречи не меняется после переноса (без дубля в календаре), SEQUENCE растёт', () => {
+    const uids = (ics: string) => ics.split('\r\n').filter((l) => l.startsWith('UID:'));
+    const before = bookingIcs(
+      { page_title: 'Консультация', owner_name: 'Ольга', reschedules_left: 3, occurrences: [occ('2026-10-21T07:00:00Z'), occ('2026-10-28T07:00:00Z')] },
+      TOKEN,
+      NOW,
+    );
+    // Первую встречу перенесли на после второй: сервер оставляет её на том же месте в списке.
+    const after = bookingIcs(
+      { page_title: 'Консультация', owner_name: 'Ольга', reschedules_left: 2, occurrences: [occ('2026-11-02T09:00:00Z'), occ('2026-10-28T07:00:00Z')] },
+      TOKEN,
+      NOW,
+    );
+    expect(uids(before)).toEqual([`UID:${bookingUid(TOKEN, 0)}`, `UID:${bookingUid(TOKEN, 1)}`]);
+    // В файле события по времени, но UID каждой встречи прежний.
+    expect(uids(after)).toEqual([`UID:${bookingUid(TOKEN, 1)}`, `UID:${bookingUid(TOKEN, 0)}`]);
+    expect(before).toContain('SEQUENCE:0');
+    expect(after).toContain('SEQUENCE:1');
+  });
+
+  it('UID: без времени и токена, разный у разных записей и встреч', () => {
+    const uid = bookingUid(TOKEN, 0);
+    expect(uid).toMatch(/^booking-[0-9a-f]{16}-0@aura$/);
+    expect(uid).not.toContain(TOKEN);
+    expect(bookingUid(TOKEN, 0)).toBe(uid);
+    expect(bookingUid(TOKEN, 1)).not.toBe(uid);
+    expect(bookingUid('b'.repeat(43), 0)).not.toBe(uid);
+  });
+});
+
+describe('guestActions', () => {
+  const base = { can_change: false, reschedules_left: 3 };
+  it('страница на паузе: отменить можно, перенести нельзя', () => {
+    expect(guestActions({ ...base, can_cancel: true, can_reschedule: false })).toEqual({ canCancel: true, canReschedule: false });
+  });
+  it('всё открыто', () => {
+    expect(guestActions({ ...base, can_change: true, can_cancel: true, can_reschedule: true })).toEqual({ canCancel: true, canReschedule: true });
+  });
+  it('переносы кончились — только отмена', () => {
+    expect(guestActions({ can_change: true, can_cancel: true, can_reschedule: true, reschedules_left: 0 })).toEqual({ canCancel: true, canReschedule: false });
+  });
+  it('старый сервер без новых полей — по can_change', () => {
+    expect(guestActions({ ...base, can_change: true })).toEqual({ canCancel: true, canReschedule: true });
+    expect(guestActions({ ...base, can_change: false })).toEqual({ canCancel: false, canReschedule: false });
+    expect(guestActions({ can_change: true, reschedules_left: 0 })).toEqual({ canCancel: true, canReschedule: false });
+  });
+  it('запись отменена — ничего', () => {
+    expect(guestActions({ ...base, can_cancel: false, can_reschedule: false })).toEqual({ canCancel: false, canReschedule: false });
   });
 });
 

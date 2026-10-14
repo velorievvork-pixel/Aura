@@ -6,7 +6,7 @@
 import type { Booking, BookingPage, GuestBooking, Occurrence, PageFields } from '../net/bookingApi';
 import { AuraError, isNetworkError } from '../net/socket';
 import { plural } from './format';
-import { foldIcsLine, icsEscape, icsUtc, inviteUid, isPublicWebOrigin, type LocationLike } from './invite';
+import { foldIcsLine, icsEscape, icsUtc, isPublicWebOrigin, type LocationLike } from './invite';
 
 // ------------------------------------------------------------------ ссылки
 
@@ -144,11 +144,29 @@ export function upcomingCount(list: Occurrence[] | undefined, now = new Date()):
   return (list ?? []).filter((o) => isUpcoming(o, now)).length;
 }
 
+/**
+  Что гость может сделать со своей записью (booking.manage). can_cancel — запись
+  активна и есть предстоящая встреча (даже если страница на паузе или удалена);
+  can_reschedule — ещё и страница открыта, и переносы не кончились. Старый сервер
+  присылает только can_change (= can_reschedule) — тогда берём его для обоих.
+*/
+export function guestActions(
+  booking: Pick<GuestBooking, 'can_change' | 'can_cancel' | 'can_reschedule' | 'reschedules_left'>,
+): { canCancel: boolean; canReschedule: boolean } {
+  const fallback = Boolean(booking.can_change);
+  const canCancel = typeof booking.can_cancel === 'boolean' ? booking.can_cancel : fallback;
+  const reschedule = typeof booking.can_reschedule === 'boolean' ? booking.can_reschedule : fallback;
+  return { canCancel, canReschedule: reschedule && canCancel && booking.reschedules_left > 0 };
+}
+
 /** «Одна встреча» / «Серия: 4 встречи, раз в неделю». */
 export function seriesLabel(count: number): string {
   if (count <= 1) return 'Одна встреча';
   return `Серия: ${count} ${plural(count, 'встреча', 'встречи', 'встреч')}, раз в неделю`;
 }
+
+/** Сколько раз гость может перенести запись (kMaxReschedules на сервере). */
+export const MAX_RESCHEDULES = 3;
 
 export const PAGE_STATUS_LABEL: Record<string, string> = { active: 'Открыта', paused: 'На паузе', archived: 'Удалена' };
 
@@ -162,20 +180,56 @@ export function bookingStatus(booking: Pick<Booking, 'status' | 'cancelled_by' |
 
 // ------------------------------------------------------------------ .ics
 
-/** Календарь со всеми активными встречами записи (одна или серия). */
-export function bookingIcs(booking: Pick<GuestBooking, 'page_title' | 'owner_name' | 'occurrences'>, now = new Date()): string {
+/** FNV-1a (32 бита) с заданным началом — две разные затравки дают 64 бита. */
+function fnv1a(text: string, seed: number): string {
+  let hash = seed >>> 0;
+  for (const ch of text) {
+    hash ^= ch.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+/**
+  UID встречи записи — один и тот же до и после переноса, чтобы календарь обновил
+  событие, а не завёл второе. Основа — ключ записи (токен ссылки управления: он есть
+  у гостя и на экране «Вы записаны», и на #/m/<токен>) и номер встречи в записи
+  (сервер переносит встречу на её же месте в списке). Время в UID не входит.
+  Токен в файл не попадает — только его хэш.
+*/
+export function bookingUid(key: string, index: number): string {
+  const base = `${key}\u0000${index}`;
+  return `booking-${fnv1a(base, 0x811c9dc5)}${fnv1a(base, 0x050c5d1f)}-${index}@aura`;
+}
+
+/**
+  Календарь со всеми активными встречами записи (одна или серия). `key` — токен
+  ссылки управления (см. bookingUid). SEQUENCE растёт с каждым переносом.
+*/
+export function bookingIcs(
+  booking: Pick<GuestBooking, 'page_title' | 'owner_name' | 'occurrences'> & Partial<Pick<GuestBooking, 'reschedules_left'>>,
+  key: string,
+  now = new Date(),
+): string {
   const owner = booking.owner_name.trim();
   const topic = booking.page_title.trim() || 'Встреча';
-  const events = sortedOccurrences(booking.occurrences).filter((o) => o.status === 'active');
+  // Номер встречи — по порядку сервера (до сортировки): он не меняется при переносе.
+  const events = (booking.occurrences ?? [])
+    .map((occurrence, index) => ({ occurrence, index }))
+    .filter(({ occurrence }) => occurrence?.status === 'active' && !Number.isNaN(Date.parse(occurrence.start)))
+    .sort((a, b) => Date.parse(a.occurrence.start) - Date.parse(b.occurrence.start));
   if (events.length === 0) throw new Error('Нет встреч для календаря');
+  const left = booking.reschedules_left;
+  const sequence = typeof left === 'number' && Number.isFinite(left) ? Math.max(0, MAX_RESCHEDULES - left) : 0;
   const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Aura//Booking//RU', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH'];
-  for (const event of events) {
+  for (const { occurrence: event, index } of events) {
     const start = new Date(event.start);
     const end = new Date(event.end);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) continue;
     lines.push(
       'BEGIN:VEVENT',
-      `UID:${icsEscape(inviteUid(topic, owner, event.start))}`,
+      `UID:${icsEscape(bookingUid(key, index))}`,
+      `SEQUENCE:${sequence}`,
       `DTSTAMP:${icsUtc(now)}`,
       `DTSTART:${icsUtc(start)}`,
       `DTEND:${icsUtc(end)}`,

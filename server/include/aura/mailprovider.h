@@ -39,6 +39,9 @@ public:
 
     // true — драйвер позволяет вернуть код в API-ответе (режим dev).
     virtual bool exposesCodes() const = 0;
+    // true — письма действительно доходят до адресата (smtp; dev — в devOutbox).
+    // log только пишет в журнал: ссылку, которую можно получить лишь письмом, с ним менять нельзя.
+    virtual bool delivers() const = 0;
 
     virtual bool sendVerificationCode(const std::string& to, const std::string& code) = 0;
     virtual bool sendPasswordReset(const std::string& to, const std::string& code) = 0;

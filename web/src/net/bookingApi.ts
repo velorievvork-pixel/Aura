@@ -91,7 +91,15 @@ export interface GuestBooking {
   status: BookingStatus;
   cancelled_by: '' | 'guest' | 'owner';
   occurrences: Occurrence[];
+  /** Старое поле: равно can_reschedule (оставлено для совместимости). */
   can_change: boolean;
+  /**
+    Можно отменить: запись активна и есть предстоящая встреча — даже если страница
+    на паузе или удалена. Старый сервер не присылает — тогда смотрим can_change.
+  */
+  can_cancel?: boolean;
+  /** Можно перенести: страница открыта, запись активна, есть предстоящая встреча и переносы. */
+  can_reschedule?: boolean;
   reschedules_left: number;
   /** Свободное время для переноса ближайшей встречи. */
   slots: InviteSlot[];

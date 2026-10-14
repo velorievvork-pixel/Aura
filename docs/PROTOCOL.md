@@ -487,9 +487,12 @@ slots_unavailable, ref}` — без email владельца и чужих за�
 (страница видна, время не подобрано); `ref` — реферальный код владельца для
 ссылки «Заведите свою Ауру». Вид записи для гостя: `{page_title, page_slug
 ("" — запись на странице закрыта), owner_name, owner_timezone,
-duration_minutes, guest_name, status, cancelled_by, occurrences, can_change,
-reschedules_left, slots (свободное время для переноса ближайшей встречи),
-slots_unavailable, ref}`.
+duration_minutes, guest_name, status, cancelled_by, occurrences, can_cancel,
+can_reschedule, can_change, reschedules_left, slots (свободное время для
+переноса ближайшей встречи), slots_unavailable, ref}`. `can_cancel` — есть
+предстоящая встреча (отменить можно и на паузе, и после удаления страницы);
+`can_reschedule` — к тому же страница открыта и переносы не исчерпаны;
+`can_change` — устаревший синоним `can_reschedule`.
 
 Серия — та же встреча каждую неделю в том же **местном времени владельца**
 (AI `POST /v1/agent/series` считает повторы в его поясе: 10:00 остаётся 10:00

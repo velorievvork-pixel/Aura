@@ -721,7 +721,8 @@ async def main() -> int:
 
     managed = await guest.call("booking.manage", {"token": manage_token}, timeout=40)
     managed_view = managed.get("payload", {}).get("booking", {})
-    check(managed_view.get("can_change") is True and managed_view.get("reschedules_left") == 3,
+    check(managed_view.get("can_cancel") is True and managed_view.get("can_reschedule") is True
+          and managed_view.get("can_change") is True and managed_view.get("reschedules_left") == 3,
           "ссылка управления: можно перенести (3 раза) и отменить", managed_view)
     move_to = next((s.get("start") for s in managed_view.get("slots", []) if s.get("start") != first_slot), "")
     moved = await guest.call("booking.reschedule", {"token": manage_token, "start": move_to}, timeout=40)

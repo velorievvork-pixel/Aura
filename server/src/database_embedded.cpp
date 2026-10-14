@@ -80,6 +80,7 @@ public:
                 return false;
             }
             state_ = Json::object();
+            state_.set("sequences", Json::object());
             return true;
         }
         std::ostringstream buffer;
@@ -95,6 +96,9 @@ public:
             return false;
         }
         state_ = parsed;
+        // Ключ счётчиков id создаётся сразу: добавление ключа позже перераспределило бы
+        // поля state_ и сделало висячими ссылки на таблицы у вызывающего кода.
+        if (!state_.get("sequences").isObject()) state_.set("sequences", Json::object());
         // Файл содержит хэши паролей и токенов — только владельцу процесса.
         ::chmod(path_.c_str(), 0600);
         return true;
@@ -2053,10 +2057,15 @@ private:
 
     Json::Array& mutableTable(const std::string& name) { return table(name).items(); }
 
+    // id не переиспользуются: после удаления последней строки max(id)+1 вернул бы
+    // тот же id, и старые ссылки на него (task_id в записи) указали бы на чужую строку.
     long long nextId(const std::string& name) {
         long long maxId = 0;
         for (const auto& item : table(name).items()) maxId = std::max(maxId, item.getInt("id"));
-        return maxId + 1;
+        Json& sequences = state_["sequences"];  // создан при открытии (open)
+        const long long next = std::max(maxId, sequences.getInt(name)) + 1;
+        sequences.set(name, Json(next));
+        return next;
     }
 
     void flush() {

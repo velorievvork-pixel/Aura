@@ -229,10 +229,16 @@ describe('формы', () => {
 describe('ошибки', () => {
   it('владелец', () => {
     expect(ownerErrorText(new AuraError('offline', ''))).toBe('Нет связи с сервером Aura');
-    expect(ownerErrorText(new AuraError('upstream', 'ai down'))).toContain('Аура сейчас не может');
+    expect(ownerErrorText(new AuraError('upstream_error', 'не удалось подобрать время'))).toBe('Аура сейчас не может подобрать время — попробуйте позже');
     expect(ownerErrorText(new AuraError('conflict', 'нет свободных окон в выбранный период'))).toBe('Нет свободных окон в выбранный период');
     expect(ownerErrorText(new AuraError('forbidden', 'не больше 20 открытых приглашений'))).toBe('Не больше 20 открытых приглашений');
     expect(ownerErrorText(new Error('x'))).toBe('Что-то пошло не так');
+  });
+
+  it('владелец: код upstream_error (как шлёт сервер), а не upstream', () => {
+    // Чужой код — обычная ошибка с текстом сервера, без подмены.
+    expect(ownerErrorText(new AuraError('upstream', 'ai down'))).toBe('Ai down');
+    expect(ownerErrorText(new AuraError('upstream_error', ''))).toContain('Аура сейчас не может');
   });
 
   it('гость', () => {

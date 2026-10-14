@@ -9,29 +9,57 @@
 
 namespace aura {
 
-ScheduleLock::Guard::Guard(DatabaseManager* database, std::unique_lock<std::mutex> lock, long long ownerId, bool ok)
-    : database_(database), lock_(std::move(lock)), ownerId_(ownerId), ok_(ok) {}
+ScheduleLock::Guard::Guard(ScheduleLock* owner, long long ownerId) : owner_(owner), ownerId_(ownerId) {}
 
 ScheduleLock::Guard::Guard(Guard&& other) noexcept
-    : database_(other.database_), lock_(std::move(other.lock_)), ownerId_(other.ownerId_), ok_(other.ok_) {
+    : owner_(other.owner_), ownerId_(other.ownerId_), ok_(other.ok_), held_(other.held_) {
     other.ok_ = false;
-    other.database_ = nullptr;
+    other.held_ = false;
+    other.owner_ = nullptr;
 }
 
-ScheduleLock::Guard::~Guard() {
-    if (ok_ && database_) database_->db().unlockSchedule(ownerId_);
+ScheduleLock::Guard::~Guard() { release(); }
+
+void ScheduleLock::Guard::release() {
+    if (!held_ || !owner_) return;
+    held_ = false;
+    owner_->unlock(ownerId_, ok_);
+}
+
+std::shared_ptr<ScheduleLock::Slot> ScheduleLock::slot(long long ownerId) {
+    std::lock_guard<std::mutex> lock(mapMutex_);
+    auto& entry = slots_[ownerId];
+    if (!entry) entry = std::make_shared<Slot>();
+    ++entry->users;
+    return entry;
+}
+
+void ScheduleLock::unlock(long long ownerId, bool advisory) {
+    if (advisory) database_.db().unlockSchedule(ownerId);
+    std::lock_guard<std::mutex> lock(mapMutex_);
+    const auto it = slots_.find(ownerId);
+    if (it == slots_.end()) return;
+    const std::shared_ptr<Slot> entry = it->second;
+    entry->mutex.unlock();
+    if (--entry->users == 0) slots_.erase(it);
 }
 
 ScheduleLock::Guard ScheduleLock::acquire(long long ownerId) {
-    std::unique_lock<std::mutex> lock(mutex_);
+    const std::shared_ptr<Slot> entry = slot(ownerId);
+    entry->mutex.lock();
+    Guard guard(this, ownerId);
+    guard.held_ = true;
     // Короткие попытки вместо блокирующего ожидания: соединение с БД общее,
     // нельзя держать его, пока ждём другой экземпляр.
     for (int attempt = 0; attempt < 120; ++attempt) {
-        if (database_.db().tryLockSchedule(ownerId)) return Guard(&database_, std::move(lock), ownerId, true);
+        if (database_.db().tryLockSchedule(ownerId)) {
+            guard.ok_ = true;
+            return guard;
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
     }
     AURA_LOG(log::Level::Warn, "schedule") << "расписание владельца " << ownerId << " занято другим экземпляром";
-    return Guard(&database_, std::move(lock), ownerId, false);
+    return guard;
 }
 
 }  // namespace aura

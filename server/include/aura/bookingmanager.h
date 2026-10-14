@@ -18,20 +18,23 @@
 #pragma once
 
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <ctime>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "aura/json.h"
+#include "aura/mailprovider.h"
 
 namespace aura {
 
 class DatabaseManager;
-class MailProvider;
 class MemoryManager;
 class NotificationsManager;
 class ReferralManager;
@@ -63,6 +66,8 @@ public:
     static constexpr int kBookPerHour = 30;
     static constexpr int kChangePerMinute = 10;
     static constexpr int kMailPerAddressHour = 10;
+    static constexpr int kMailPerOwnerHour = 200;
+    static constexpr int kPageCreatesPerHour = 20;
     static constexpr int kResendPerMinute = 5;
 
     BookingManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
@@ -94,6 +99,9 @@ public:
     static bool validSlug(const std::string& slug);
 
     using Busy = std::vector<std::pair<std::time_t, std::time_t>>;
+
+    // Дождаться отправки писем из очереди (тесты, остановка).
+    void flushMail();
 
 private:
     struct Offer {
@@ -128,18 +136,26 @@ private:
                                                    const std::string& skipStart);
 
     long long createTask(const BookingRecord& booking, const std::string& pageTitle, std::time_t start);
-    // Отмена встреч: index < 0 — все будущие активные. Возвращает число отменённых.
-    int cancelOccurrences(BookingRecord& booking, int index, std::time_t now);
+    // Удалить задачу встречи — только если она принадлежит владельцу записи.
+    void deleteOwnTask(long long ownerId, long long taskId);
+    // Владелец страницы может принимать гостей: аккаунт активен и email подтверждён.
+    bool ownerAccepts(long long ownerId) const;
+    // Отмена встреч: index < 0 — все будущие активные. Возвращает число отменённых;
+    // id их задач — в tasks (удалять после сохранения записи).
+    int cancelOccurrences(BookingRecord& booking, int index, std::time_t now, std::vector<long long>& tasks);
     static int findOccurrence(const BookingRecord& booking, const std::string& start, std::time_t now);
 
     bool limited(const std::string& key, int perWindow, int windowSeconds = 60);
 
-    // Письмо гостю о записи (если указан email, есть лимит на адрес). Текст — только
-    // от сервера и владельца (название страницы, имя): имя гостя в письмо не попадает,
-    // чтобы форму нельзя было использовать для рассылки произвольного текста.
+    // Письмо гостю о записи (если указан email; лимиты на адрес и на владельца).
+    // Тема — только текст сервера; в теле — название страницы и имя владельца
+    // (экранируются), имя гостя не попадает никуда, чтобы форму нельзя было
+    // использовать для рассылки произвольного текста. Письмо уходит из фоновой
+    // очереди: запрос гостя не ждёт SMTP. reserved — лимит адреса уже списан.
     void mailGuest(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
                    const std::string& subject, const std::string& title, const std::string& lead,
-                   const std::string& token, bool onlyActive);
+                   const std::string& token, bool onlyActive, bool reserved = false);
+    void mailLoop();
     std::string manageUrl(const std::string& token) const;
 
     DatabaseManager& database_;
@@ -162,6 +178,13 @@ private:
     };
     std::mutex limitsMutex_;
     std::unordered_map<std::string, Window> limits_;
+
+    std::mutex mailMutex_;
+    std::condition_variable mailCv_;
+    std::deque<MailNotice> mailQueue_;
+    bool mailBusy_ = false;
+    bool mailStop_ = false;
+    std::thread mailThread_;  // запускается при первом письме
 };
 
 }  // namespace aura

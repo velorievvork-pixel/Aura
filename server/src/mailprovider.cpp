@@ -24,6 +24,7 @@ public:
     explicit LogMailProvider(bool expose) : expose_(expose) {}
 
     bool exposesCodes() const override { return expose_; }
+    bool delivers() const override { return expose_; }  // dev — во «входящие» devOutbox, log — никуда
 
     bool sendVerificationCode(const std::string& to, const std::string& code) override {
         if (expose_) {
@@ -160,6 +161,7 @@ public:
     }
 
     bool exposesCodes() const override { return false; }
+    bool delivers() const override { return true; }
 
     bool sendVerificationCode(const std::string& to, const std::string& code) override {
         smtp::Message message;

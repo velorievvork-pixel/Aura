@@ -4,7 +4,7 @@
 */
 import { ChevronRight, Copy, Download, KeyRound, LogOut, Monitor, Share2, Shield, ShieldCheck, Smartphone, Trash2, Upload } from 'lucide-react';
 import QRCode from 'qrcode';
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ServerAddress } from '../components/ServerAddress';
 import { Avatar, Field, PasswordInput, Segmented, Spinner, Switch } from '../components/ui';
@@ -14,7 +14,7 @@ import { cleanCode, nameError, otpError, passwordError } from '../lib/validate';
 import { isStaff } from '../net/adminApi';
 import { makeBookingApi, type ReferralInfo } from '../net/bookingApi';
 import { isNetworkError } from '../net/socket';
-import { canShare, copyText } from './Invites';
+import { canShare, copyText } from '../lib/clipboard';
 import { secureStore } from '../net/secureStore';
 import { isNative } from '../platform';
 import type { Permission, Privacy, SessionRow, TrustedDevice, TwoFaSetup } from '../net/api';
@@ -711,24 +711,41 @@ function ReferralSection() {
   const [info, setInfo] = useState<ReferralInfo | null>(null);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const seq = useRef(0);
+
+  const load = useCallback(async () => {
+    const mine = ++seq.current;
+    try {
+      const reply = await api.referral();
+      if (mine !== seq.current) return;
+      setInfo(reply);
+      setError('');
+    } catch (e) {
+      if (mine === seq.current && !isNetworkError(e)) setError(bookingOwnerErrorText(e));
+    }
+  }, [api]);
 
   useEffect(() => {
-    if (conn !== 'open') return;
-    let alive = true;
-    api
-      .referral()
-      .then((reply) => {
-        if (!alive) return;
-        setInfo(reply);
-        setError('');
-      })
-      .catch((e) => {
-        if (alive && !isNetworkError(e)) setError(bookingOwnerErrorText(e));
-      });
-    return () => {
-      alive = false;
-    };
-  }, [api, conn]);
+    if (conn === 'open') void load();
+  }, [conn, load]);
+
+  // Кто-то зарегистрировался по ссылке — обновляем счётчики и список (как десктоп и Android).
+  useEffect(
+    () =>
+      socket.onEvent((event) => {
+        if (event.event !== 'notification.new') return;
+        if (String((event.payload as { kind?: unknown }).kind ?? '') === 'referral.joined') void load();
+      }),
+    [socket, load],
+  );
+
+  // Ответы, пришедшие после ухода со страницы, не применяем.
+  useEffect(
+    () => () => {
+      seq.current += 1;
+    },
+    [],
+  );
 
   const link = info ? publicLink(signupPath(info.code), info.url, typeof location === 'undefined' ? null : location) : null;
 

@@ -153,7 +153,48 @@ BookingManager::BookingManager(DatabaseManager& database, MemoryManager& memory,
       mail_(makeMailProvider(config)),
       schedule_(scheduleLock) {}
 
-BookingManager::~BookingManager() = default;
+BookingManager::~BookingManager() {
+    {
+        std::lock_guard<std::mutex> lock(mailMutex_);
+        mailStop_ = true;
+    }
+    mailCv_.notify_all();
+    if (mailThread_.joinable()) mailThread_.join();  // очередь дописывается до конца
+}
+
+void BookingManager::mailLoop() {
+    std::unique_lock<std::mutex> lock(mailMutex_);
+    for (;;) {
+        mailCv_.wait(lock, [this] { return mailStop_ || !mailQueue_.empty(); });
+        if (mailQueue_.empty()) return;  // mailStop_ и всё отправлено
+        MailNotice notice = std::move(mailQueue_.front());
+        mailQueue_.pop_front();
+        mailBusy_ = true;
+        lock.unlock();
+        if (!mail_->sendNotice(notice)) {
+            AURA_LOG(log::Level::Warn, "booking") << "письмо гостю (" << notice.kind << ") не отправлено";
+        }
+        lock.lock();
+        mailBusy_ = false;
+        mailCv_.notify_all();
+    }
+}
+
+void BookingManager::flushMail() {
+    std::unique_lock<std::mutex> lock(mailMutex_);
+    mailCv_.wait(lock, [this] { return mailQueue_.empty() && !mailBusy_; });
+}
+
+bool BookingManager::ownerAccepts(long long ownerId) const {
+    const auto owner = database_.db().findUserById(ownerId);
+    return owner && owner->active && owner->emailVerified;
+}
+
+void BookingManager::deleteOwnTask(long long ownerId, long long taskId) {
+    if (taskId <= 0) return;
+    const auto task = database_.db().findTask(taskId);
+    if (task && task->userId == ownerId) database_.db().deleteTask(taskId);
+}
 
 std::string BookingManager::manageUrl(const std::string& token) const {
     return config_.publicUrl.empty() || token.empty() ? std::string() : config_.publicUrl + "/#/m/" + token;
@@ -161,14 +202,19 @@ std::string BookingManager::manageUrl(const std::string& token) const {
 
 void BookingManager::mailGuest(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
                                const std::string& subject, const std::string& title, const std::string& lead,
-                               const std::string& token, bool onlyActive) {
+                               const std::string& token, bool onlyActive, bool reserved) {
     if (booking.guestEmail.empty() || !mail_) return;
     std::string address = booking.guestEmail;
     std::transform(address.begin(), address.end(), address.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    // Лимит на адрес: форма записи не должна превращаться в рассылку на чужой email.
-    if (limited("booking.mail:" + address, kMailPerAddressHour, 3600)) {
+    // Лимиты на адрес и на владельца: форма записи не должна превращаться в
+    // рассылку на чужой email, а страница — в канал рассылки от имени Aura.
+    if (!reserved && limited("booking.mail:" + address, kMailPerAddressHour, 3600)) {
         AURA_LOG(log::Level::Warn, "booking") << "лимит писем на адрес исчерпан, письмо (" << kind << ") не отправлено";
+        return;
+    }
+    if (limited("booking.mail.owner:" + std::to_string(page.ownerId), kMailPerOwnerHour, 3600)) {
+        AURA_LOG(log::Level::Warn, "booking") << "лимит писем владельца " << page.ownerId << " исчерпан";
         return;
     }
     std::string ownerName;
@@ -198,9 +244,11 @@ void BookingManager::mailGuest(const BookingRecord& booking, const BookingPageRe
     }
     notice.note = "Письмо пришло, потому что этот адрес указали при записи на странице «" + page.title +
                   "» (" + ownerName + ") в Aura." + (link.empty() ? "" : " Ссылка — только для вас, не пересылайте её.");
-    if (!mail_->sendNotice(notice)) {
-        AURA_LOG(log::Level::Warn, "booking") << "письмо гостю (" << kind << ") не отправлено";
-    }
+    std::lock_guard<std::mutex> lock(mailMutex_);
+    if (mailStop_) return;
+    mailQueue_.push_back(std::move(notice));
+    if (!mailThread_.joinable()) mailThread_ = std::thread([this] { mailLoop(); });
+    mailCv_.notify_all();
 }
 
 std::string BookingManager::tokenHash(const std::string& token) {
@@ -315,8 +363,11 @@ Json BookingManager::guestBookingJson(const BookingRecord& booking, const Bookin
             upcoming = true;
         }
     }
-    const bool canChange = booking.status == "active" && upcoming && page.status != "archived";
     const int left = std::max(0, kMaxReschedules - booking.reschedules);
+    // Отменить можно всегда, пока есть предстоящая встреча (и на паузе, и после удаления
+    // страницы); перенести — только пока запись на странице открыта и переносы остались.
+    const bool canCancel = booking.status == "active" && upcoming;
+    const bool canReschedule = canCancel && page.status == "active" && left > 0;
     Json json = Json::object();
     json.set("page_title", Json(page.title));
     json.set("page_slug", Json(page.status == "active" ? page.slug : std::string()));
@@ -327,11 +378,13 @@ Json BookingManager::guestBookingJson(const BookingRecord& booking, const Bookin
     json.set("status", Json(booking.status));
     json.set("cancelled_by", Json(booking.cancelledBy));
     json.set("occurrences", occurrences);
-    json.set("can_change", Json(canChange));
+    json.set("can_cancel", Json(canCancel));
+    json.set("can_reschedule", Json(canReschedule));
+    json.set("can_change", Json(canReschedule));  // устаревшее: = can_reschedule (старые клиенты)
     json.set("reschedules_left", Json(static_cast<long long>(left)));
     Json slots = Json::array();
     bool slotsUnavailable = false;
-    if (withSlots && canChange && left > 0 && page.status == "active") {
+    if (withSlots && canReschedule) {
         std::vector<Offer> candidates;
         if (offers(page, candidates)) {
             // Слоты для переноса ближайшей встречи (её booking.reschedule двигает по умолчанию):
@@ -576,6 +629,13 @@ BookingManager::Result BookingManager::pageCreate(long long ownerId, const Json&
     page.maxSeries = static_cast<int>(maxSeries);
     page.weekends = payload.getBool("weekends", false);
 
+    // Удалённые страницы в лимит 10 не входят — создание ограничено ещё и по времени,
+    // чтобы цикл «создать → удалить» не плодил строки без конца.
+    if (limited("booking.page:" + std::to_string(ownerId), kPageCreatesPerHour, 3600)) {
+        return Result::failure(protocol::code::kForbidden, "слишком много новых страниц — попробуйте через час");
+    }
+    auto lock = schedule_.acquire(ownerId);  // проверка лимита и создание — без гонки двух запросов
+    if (!lock.ok()) return Result::failure(protocol::code::kConflict, "сервер занят — попробуйте ещё раз");
     if (database_.db().listBookingPages(ownerId).size() >= static_cast<std::size_t>(kMaxPages)) {
         return Result::failure(protocol::code::kForbidden, "не больше 10 страниц записи — удалите ненужные");
     }
@@ -753,7 +813,8 @@ int BookingManager::findOccurrence(const BookingRecord& booking, const std::stri
     return nearest;
 }
 
-int BookingManager::cancelOccurrences(BookingRecord& booking, int index, std::time_t now) {
+int BookingManager::cancelOccurrences(BookingRecord& booking, int index, std::time_t now,
+                                      std::vector<long long>& tasks) {
     int cancelled = 0;
     Json updated = Json::array();
     const auto& items = booking.occurrences.items();
@@ -765,7 +826,7 @@ int BookingManager::cancelOccurrences(BookingRecord& booking, int index, std::ti
         if (target && occurrence.getString("status") == "active") {
             occurrence.set("status", Json(std::string("cancelled")));
             const long long taskId = occurrence.getInt("task_id");
-            if (taskId > 0) database_.db().deleteTask(taskId);
+            if (taskId > 0) tasks.push_back(taskId);
             occurrence.set("task_id", Json(0LL));
             ++cancelled;
         }
@@ -793,19 +854,22 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
         index = findOccurrence(*booking, payload.getString("occurrence"), now);
         if (index < 0) return Result::failure(protocol::code::kBadRequest, "нет такой предстоящей встречи");
     }
-    if (cancelOccurrences(*booking, index, now) == 0) {
+    std::vector<long long> tasks;
+    if (cancelOccurrences(*booking, index, now, tasks) == 0) {
         return Result::failure(protocol::code::kConflict, "предстоящих встреч нет");
     }
     if (booking->status == "cancelled") booking->cancelledBy = "owner";
     if (!database_.db().updateBooking(*booking).ok) {
         return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
     }
+    lock.release();
+    for (const long long task : tasks) deleteOwnTask(booking->ownerId, task);
     const auto page = database_.db().findBookingPage(booking->pageId);
     if (page) {
         std::string ownerName;
         std::string ownerTimezone;
         ownerInfo(page->ownerId, ownerName, ownerTimezone);
-        mailGuest(*booking, *page, "booking.owner_cancelled", "Встреча отменена: " + page->title,
+        mailGuest(*booking, *page, "booking.owner_cancelled", "Aura: встреча отменена",
                   "Организатор отменил встречу",
                   ownerName + (booking->status == "cancelled" ? " отменил(а) запись. Встречи:"
                                                               : " отменил(а) одну встречу. Расписание:"),
@@ -825,7 +889,9 @@ BookingManager::Result BookingManager::get(const Json& payload, const std::strin
     }
     const std::string slug = payload.getString("slug");
     const auto page = validSlug(slug) ? database_.db().findBookingPageBySlug(slug) : std::nullopt;
-    if (!page || page->status == "archived") return Result::failure(protocol::code::kNotFound, "страница не найдена");
+    if (!page || page->status == "archived" || !ownerAccepts(page->ownerId)) {
+        return Result::failure(protocol::code::kNotFound, "страница не найдена");
+    }
 
     std::string ownerName;
     std::string ownerTimezone;
@@ -871,7 +937,9 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     }
     const std::string slug = payload.getString("slug");
     const auto page = validSlug(slug) ? database_.db().findBookingPageBySlug(slug) : std::nullopt;
-    if (!page || page->status == "archived") return Result::failure(protocol::code::kNotFound, "страница не найдена");
+    if (!page || page->status == "archived" || !ownerAccepts(page->ownerId)) {
+        return Result::failure(protocol::code::kNotFound, "страница не найдена");
+    }
     if (page->status != "active") return Result::failure(protocol::code::kConflict, "запись временно закрыта");
 
     BookingRecord booking;
@@ -980,6 +1048,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     if (!database_.db().updateBooking(booking).ok) {
         AURA_LOG(log::Level::Warn, "booking") << "id задач записи " << id << " не сохранены";
     }
+    lock.release();  // дальше — уведомление и письмо, расписание владельца не держим
 
     if (notifications_) {
         Json notify = Json::object();
@@ -998,7 +1067,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         std::string ownerName;
         std::string ownerTimezone;
         ownerInfo(page->ownerId, ownerName, ownerTimezone);
-        mailGuest(booking, *page, "booking.created", "Вы записаны: " + page->title, "Вы записаны",
+        mailGuest(booking, *page, "booking.created", "Aura: вы записаны", "Вы записаны",
                   ownerName + (count > 1 ? " ждёт вас на встречах:" : " ждёт вас:"), token, true);
     }
 
@@ -1077,7 +1146,6 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
     }
 
     const long long oldTask = occurrence.getInt("task_id");
-    if (oldTask > 0) database_.db().deleteTask(oldTask);
     occurrence.set("start", Json(isoUtc(chosen->start)));
     occurrence.set("end", Json(isoUtc(chosen->end)));
     occurrence.set("day", Json(chosen->day));
@@ -1090,8 +1158,12 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
     booking->occurrences = updated;
     booking->reschedules += 1;
     if (!database_.db().updateBooking(*booking).ok) {
+        // Запись не изменилась — новая задача не нужна, старая остаётся.
+        deleteOwnTask(booking->ownerId, occurrence.getInt("task_id"));
         return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
     }
+    lock.release();
+    deleteOwnTask(booking->ownerId, oldTask);
 
     if (notifications_) {
         Json notify = Json::object();
@@ -1104,7 +1176,7 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
         notifications_->create(page->ownerId, "booking.rescheduled", booking->guestName + " перенес(ла) встречу",
                                page->title, notify);
     }
-    mailGuest(*booking, *page, "booking.rescheduled", "Встреча перенесена: " + page->title, "Встреча перенесена",
+    mailGuest(*booking, *page, "booking.rescheduled", "Aura: встреча перенесена", "Встреча перенесена",
               "Новое расписание (перенести или отменить можно по ссылке из первого письма):", "", true);
     Result result;
     result.ok = true;
@@ -1135,12 +1207,15 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
         index = findOccurrence(*booking, payload.getString("occurrence"), now);
         if (index < 0) return Result::failure(protocol::code::kBadRequest, "нет такой предстоящей встречи");
     }
-    const int cancelled = cancelOccurrences(*booking, index, now);
+    std::vector<long long> tasks;
+    const int cancelled = cancelOccurrences(*booking, index, now, tasks);
     if (cancelled == 0) return Result::failure(protocol::code::kConflict, "предстоящих встреч нет");
     if (booking->status == "cancelled") booking->cancelledBy = "guest";
     if (!database_.db().updateBooking(*booking).ok) {
         return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
     }
+    lock.release();
+    for (const long long task : tasks) deleteOwnTask(booking->ownerId, task);
     if (notifications_) {
         Json notify = Json::object();
         notify.set("booking_id", Json(booking->id));
@@ -1152,7 +1227,7 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
                                booking->guestName + (cancelled > 1 ? " отменил(а) встречи" : " отменил(а) встречу"),
                                page->title, notify);
     }
-    mailGuest(*booking, *page, "booking.cancelled", "Отмена записи: " + page->title,
+    mailGuest(*booking, *page, "booking.cancelled", "Aura: запись отменена",
               booking->status == "cancelled" ? "Запись отменена" : "Встреча отменена",
               booking->status == "cancelled" ? "Организатор получил уведомление. Встречи записи:"
                                              : "Организатор получил уведомление. Остальные встречи в силе:",
@@ -1178,6 +1253,10 @@ BookingManager::Result BookingManager::resendLink(const Json& payload, const std
     const auto page = validSlug(slug) ? database_.db().findBookingPageBySlug(slug) : std::nullopt;
     if (!page || page->status == "archived") return result;
 
+    // Новая ссылка заменяет старую — менять её можно, только если письмо точно уйдёт:
+    // иначе любой, кто знает адрес страницы и email гостя, оставил бы гостя без
+    // ссылки (драйвер log писем не отправляет, лимит адреса исчерпан).
+    if (!mail_ || !mail_->delivers()) return result;
     const std::time_t now = std::time(nullptr);
     auto lock = schedule_.acquire(page->ownerId);
     if (!lock.ok()) return result;
@@ -1186,12 +1265,13 @@ BookingManager::Result BookingManager::resendLink(const Json& payload, const std
         std::transform(guest.begin(), guest.end(), guest.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         if (guest != email || findOccurrence(booking, "", now) < 0) continue;
+        if (limited("booking.mail:" + email, kMailPerAddressHour, 3600)) break;  // лимит адреса — до замены
         std::string token = crypto::base64UrlEncode(crypto::randomBytes(kTokenBytes));
         while (!token.empty() && token.back() == '=') token.pop_back();
         booking.manageHash = tokenHash(token);
         if (booking.manageHash.empty() || !database_.db().updateBooking(booking).ok) continue;
-        mailGuest(booking, *page, "booking.link", "Ссылка на вашу запись: " + page->title, "Ваша запись",
-                  "Вы просили прислать ссылку заново — прежняя больше не действует. Встречи:", token, true);
+        mailGuest(booking, *page, "booking.link", "Aura: ссылка на вашу запись", "Ваша запись",
+                  "Вы просили прислать ссылку заново — прежняя больше не действует. Встречи:", token, true, true);
     }
     return result;
 }

@@ -21,6 +21,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.EventAvailable
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Mail
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -79,6 +82,7 @@ fun SettingsScreen() {
     val privacyError by AppStore.privacyError.collectAsState()
     val profileSaving by AppStore.profileSaving.collectAsState()
     val profileError by AppStore.profileError.collectAsState()
+    val referral by AppStore.referral.collectAsState()
     var serverUrl by remember { mutableStateOf(AppStore.store.serverUrl) }
     var totpCode by remember { mutableStateOf("") }
     var disablePassword by remember { mutableStateOf("") }
@@ -140,6 +144,14 @@ fun SettingsScreen() {
                 }
             }
         }
+
+        item {
+            GlassButton("Страницы записи", { AppStore.selectTab(AppStore.Tab.BOOKING) }, Modifier.fillMaxWidth(),
+                icon = Icons.Outlined.EventAvailable, height = 44.dp)
+        }
+
+        item { SectionTitle("Пригласить друзей") }
+        item { ReferralCard(referral) }
 
         item { SectionTitle("Что может ваша Аура") }
         item { Muted("Аура лишь формирует намерение — исполняет сервер. Опасные действия по умолчанию ждут вашего подтверждения.") }
@@ -256,6 +268,37 @@ fun SettingsScreen() {
         item {
             GlassButton("Выйти", { AppStore.logout() }, Modifier.fillMaxWidth(), icon = Icons.AutoMirrored.Outlined.Logout,
                 danger = true, height = 50.dp)
+        }
+    }
+}
+
+/** Реферальный код и ссылка: друг заводит Ауру — регистрация засчитывается после подтверждения email. */
+@Composable
+private fun ReferralCard(info: ai.aura.kit.ReferralInfo?) {
+    val context = LocalContext.current
+    GlassCard(Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (info == null) Muted("Загружаем реферальный код…") else {
+            Muted("Друг заведёт свою Ауру — и ваши Ауры смогут договариваться о встречах напрямую. Регистрации со страниц записи тоже засчитываются вам.")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Muted("Ваш код", Modifier.weight(1f))
+                Text(info.code, style = MaterialTheme.typography.titleLarge, color = TextPrimary)
+            }
+            Text(info.link, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GlassButton("Копировать", { copyText(context, info.link) }, Modifier.weight(1f), icon = Icons.Outlined.ContentCopy, height = 40.dp)
+                GlassButton("Поделиться", { shareText(context, "Aura", "Заведи свою Ауру: ${info.link}") }, Modifier.weight(1f),
+                    icon = Icons.Outlined.Share, height = 40.dp)
+            }
+            Muted("Зарегистрировались: ${info.joined} · подтвердили email: ${info.verified}")
+            info.referrals.forEach { item ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(item.displayName.ifEmpty { "Без имени" }, style = MaterialTheme.typography.bodyMedium, color = TextPrimary,
+                        modifier = Modifier.weight(1f))
+                    Muted(if (item.verified) "С Aura" else "Ждёт подтверждения")
+                }
+            }
+            }
         }
     }
 }

@@ -22,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.EventAvailable
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Handshake
 import androidx.compose.material.icons.outlined.Mail
@@ -94,6 +95,9 @@ fun NegotiationsScreen() {
                 GlassButton("Новые", { composing = true }, icon = Icons.Outlined.Add, height = 40.dp)
             }
         }
+        // Страница записи: постоянная ссылка для людей без Aura.
+        GlassButton("Страница записи — пусть выбирают время сами", { AppStore.selectTab(AppStore.Tab.BOOKING) },
+            Modifier.fillMaxWidth(), icon = Icons.Outlined.EventAvailable, quiet = true, height = 42.dp)
 
         if (n != null && !composing) {
             val theirName = firstName(contacts.firstOrNull { it.email == n.target || it.name == n.target }?.name ?: n.target)

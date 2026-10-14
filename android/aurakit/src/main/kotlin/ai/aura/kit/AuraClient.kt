@@ -315,6 +315,52 @@ class AuraClient(private val transport: WebSocketTransport = WebSocketTransport(
     suspend fun devicesPushRevoke(id: Long): JsonObject? =
         request("devices.push.revoke", buildJsonObject { put("id", id) })
 
+    // ------------------------------------------------- страницы записи и рефералы
+
+    suspend fun bookingPageCreate(fields: BookingPageFields): BookingPage {
+        fields.validate()?.let { throw AuraError("bad_request", it) }
+        return BookingPage.from(request("booking.pageCreate", pageJson(fields, null)).obj("page"))
+    }
+
+    /** status — active | paused; fields == null — меняется только статус. */
+    suspend fun bookingPageUpdate(pageId: Long, fields: BookingPageFields? = null, status: String? = null): BookingPage {
+        fields?.validate()?.let { throw AuraError("bad_request", it) }
+        return BookingPage.from(request("booking.pageUpdate", pageJson(fields, status, pageId)).obj("page"))
+    }
+
+    suspend fun bookingPageList(): List<BookingPage> =
+        request("booking.pageList").arr("pages").map { BookingPage.from(it as? JsonObject) }
+
+    suspend fun bookingPageDelete(pageId: Long): JsonObject? =
+        request("booking.pageDelete", buildJsonObject { put("page_id", pageId) })
+
+    suspend fun bookingList(limit: Int = 50): List<Booking> =
+        request("booking.list", buildJsonObject { put("limit", limit) }).arr("bookings").map { Booking.from(it as? JsonObject) }
+
+    /** occurrence — start одной встречи серии; null — все предстоящие. */
+    suspend fun bookingOwnerCancel(bookingId: Long, occurrence: String? = null): Booking =
+        Booking.from(request("booking.ownerCancel", buildJsonObject {
+            put("booking_id", bookingId)
+            if (occurrence != null) put("occurrence", occurrence)
+        }).obj("booking"))
+
+    suspend fun referralGet(): ReferralInfo = ReferralInfo.from(request("referral.get"))
+
+    private fun pageJson(fields: BookingPageFields?, status: String?, pageId: Long? = null): JsonObject = buildJsonObject {
+        if (pageId != null) put("page_id", pageId)
+        if (fields != null) {
+            put("title", fields.title.trim())
+            put("description", fields.description.trim())
+            put("duration_minutes", fields.durationMinutes)
+            put("days_ahead", fields.daysAhead)
+            put("max_per_day", fields.maxPerDay)
+            put("notice_hours", fields.noticeHours)
+            put("max_series", fields.maxSeries)
+            put("weekends", fields.weekends)
+        }
+        if (status != null) put("status", status)
+    }
+
     // ---------------------------------------------------------------- сервер
 
     suspend fun serverInfo(): JsonObject? = request("server.info")

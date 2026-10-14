@@ -83,7 +83,7 @@ object AppStore {
     }
 
     /** Разделы v3: пять во вкладках снизу, остальные открываются из шапки Home. */
-    enum class Tab { HOME, AURA, NEGOTIATIONS, TASKS, CONTACTS, SETTINGS, CONFIRMATIONS, NOTICES }
+    enum class Tab { HOME, AURA, NEGOTIATIONS, TASKS, CONTACTS, SETTINGS, CONFIRMATIONS, NOTICES, BOOKING }
 
     // ------------------------------------------------------------- состояние
 
@@ -133,6 +133,14 @@ object AppStore {
 
     private val _pushStatus = MutableStateFlow("")
     val pushStatus: StateFlow<String> = _pushStatus
+
+    // Страницы записи (booking.*) и рефералы (referral.*).
+    private val _bookingPages = MutableStateFlow<List<ai.aura.kit.BookingPage>?>(null)
+    val bookingPages: StateFlow<List<ai.aura.kit.BookingPage>?> = _bookingPages
+    private val _bookings = MutableStateFlow<List<ai.aura.kit.Booking>>(emptyList())
+    val bookings: StateFlow<List<ai.aura.kit.Booking>> = _bookings
+    private val _referral = MutableStateFlow<ai.aura.kit.ReferralInfo?>(null)
+    val referral: StateFlow<ai.aura.kit.ReferralInfo?> = _referral
 
     private val _permissions = MutableStateFlow<List<PermissionRow>>(emptyList())
     val permissions: StateFlow<List<PermissionRow>> = _permissions
@@ -223,7 +231,12 @@ object AppStore {
                 when (event.name) {
                     AuraEventName.CHAT_MESSAGE -> refreshChats()
                     AuraEventName.TASK_DUE -> refreshTasks()
-                    AuraEventName.NOTIFICATION_NEW -> refreshNotifications()
+                    AuraEventName.NOTIFICATION_NEW -> {
+                        refreshNotifications()
+                        val kind = event.payload.str("kind")
+                        if (kind.startsWith("booking.") && _tab.value == Tab.BOOKING) refreshBooking()
+                        if (kind == "referral.joined" && _referral.value != null) refreshReferral()
+                    }
                     AuraEventName.SESSION_REVOKED -> onSessionRevoked(event.payload.str("reason"))
                 }
             }
@@ -505,6 +518,7 @@ object AppStore {
         _tasks.value = emptyList(); _confirmations.value = emptyList()
         _notices.value = emptyList(); _unread.value = 0
         _pushDevices.value = emptyList(); _permissions.value = emptyList()
+        _bookingPages.value = null; _bookings.value = emptyList(); _referral.value = null
         _connections.value = emptyList(); _askReply.value = ""
         _contacts.value = emptyList(); _dialog.value = emptyList(); _negotiation.value = null
         _negotiationHistory.value = emptyList(); _userResults.value = emptyList(); _memory.value = emptyList()
@@ -646,7 +660,8 @@ object AppStore {
         _tab.value = value
         if (value != Tab.CONTACTS) _openChatId.value = 0
         when (value) {
-            Tab.SETTINGS -> { refreshPermissions(); refreshIntegrations(); refresh2faStatus(); refreshPrivacy() }
+            Tab.SETTINGS -> { refreshPermissions(); refreshIntegrations(); refresh2faStatus(); refreshPrivacy(); refreshReferral() }
+            Tab.BOOKING -> refreshBooking()
             Tab.CONFIRMATIONS -> refreshConfirmations()
             Tab.NOTICES -> refreshNotifications()
             Tab.TASKS -> refreshTasks()
@@ -761,6 +776,56 @@ object AppStore {
             client.confirmationDecide(id, approve)
             refreshConfirmations(); refreshChats(); refreshNotifications()
         }
+    }
+
+    // ------------------------------------------------------------- запись
+
+    fun refreshBooking() = scope.launch {
+        guard {
+            _bookingPages.value = client.bookingPageList()
+            _bookings.value = client.bookingList(100)
+        }
+    }
+
+    /** pageId == null — новая страница. Возвращает true, если сохранено (форму можно закрыть). */
+    suspend fun saveBookingPage(pageId: Long?, fields: ai.aura.kit.BookingPageFields): Boolean {
+        var saved = false
+        guard {
+            val page = if (pageId == null) client.bookingPageCreate(fields) else client.bookingPageUpdate(pageId, fields)
+            val rest = _bookingPages.value.orEmpty().filter { it.id != page.id }
+            _bookingPages.value = if (pageId == null) listOf(page) + rest
+                else _bookingPages.value.orEmpty().map { if (it.id == page.id) page else it }
+            saved = true
+        }
+        return saved
+    }
+
+    fun setBookingPagePaused(page: ai.aura.kit.BookingPage, paused: Boolean) = scope.launch {
+        guard {
+            val updated = client.bookingPageUpdate(page.id, status = if (paused) "paused" else "active")
+            _bookingPages.value = _bookingPages.value.orEmpty().map { if (it.id == updated.id) updated else it }
+            _errorText.value = if (paused) "Запись на паузе — новые гости не смогут записаться" else "Запись снова открыта"
+        }
+    }
+
+    fun deleteBookingPage(page: ai.aura.kit.BookingPage) = scope.launch {
+        guard {
+            client.bookingPageDelete(page.id)
+            _bookingPages.value = _bookingPages.value.orEmpty().filter { it.id != page.id }
+            _errorText.value = "Страница удалена. Уже сделанные записи остаются в силе."
+        }
+    }
+
+    fun cancelBooking(booking: ai.aura.kit.Booking) = scope.launch {
+        guard {
+            val updated = client.bookingOwnerCancel(booking.id)
+            _bookings.value = _bookings.value.map { if (it.id == updated.id) updated else it }
+            refreshTasks()
+        }
+    }
+
+    fun refreshReferral() = scope.launch {
+        guard { _referral.value = client.referralGet() }
     }
 
     fun refreshPermissions() = scope.launch {

@@ -143,3 +143,75 @@ class PrivacyTests {
     /** Эхо сервера: prefs.set возвращает обновлённые настройки целиком. */
     private fun buildPrefs(payload: JsonObject): JsonObject = JsonObject(mapOf("privacy" to payload.obj("privacy")!!))
 }
+
+class BookingTests {
+
+    @Test
+    fun `page create sends all fields and parses page`() = runBlocking {
+        val transport = RecordingTransport { _, _ ->
+            json("""{"page":{"id":3,"slug":"abc123def4","url":"","title":"Консультация","description":"",
+                "duration_minutes":60,"days_ahead":14,"max_per_day":4,"notice_hours":2,"max_series":3,
+                "weekends":false,"status":"active","upcoming":0}}""")
+        }
+        val page = AuraClient(transport).bookingPageCreate(
+            BookingPageFields(" Консультация ", durationMinutes = 60, maxSeries = 3))
+        val (type, payload) = transport.sent.single()
+        assertEquals("booking.pageCreate", type)
+        assertEquals(setOf("title", "description", "duration_minutes", "days_ahead", "max_per_day",
+            "notice_hours", "max_series", "weekends"), payload.keys)
+        assertEquals("Консультация", payload.str("title"))
+        assertEquals(60L, payload.long("duration_minutes"))
+        assertEquals(3, page.maxSeries)
+        assertEquals("#/b/abc123def4", page.link)
+    }
+
+    @Test
+    fun `invalid page fails locally without a request`() = runBlocking {
+        val transport = RecordingTransport { _, _ -> fail("запрос не должен уходить"); null }
+        for (bad in listOf(BookingPageFields(""), BookingPageFields("X", durationMinutes = 10),
+                BookingPageFields("X", maxSeries = 13), BookingPageFields("X", noticeHours = 169))) {
+            try {
+                AuraClient(transport).bookingPageCreate(bad)
+                fail("ожидалась ошибка для $bad")
+            } catch (error: AuraError) {
+                assertEquals("bad_request", error.code)
+            }
+        }
+        assertTrue(transport.sent.isEmpty())
+    }
+
+    @Test
+    fun `pause sends only status`() = runBlocking {
+        val transport = RecordingTransport { _, _ -> json("""{"page":{"id":3,"status":"paused"}}""") }
+        val page = AuraClient(transport).bookingPageUpdate(3, status = "paused")
+        assertEquals(setOf("page_id", "status"), transport.sent.single().second.keys)
+        assertEquals("paused", page.status)
+    }
+
+    @Test
+    fun `bookings and referral are parsed`() = runBlocking {
+        val transport = RecordingTransport { type, _ ->
+            when (type) {
+                "booking.list" -> json("""{"bookings":[{"id":9,"page_id":3,"page_title":"Консультация",
+                    "guest_name":"Пётр","guest_email":"p@x.ru","guest_comment":"","status":"active",
+                    "cancelled_by":"","reschedules":1,"occurrences":[
+                    {"start":"2026-10-28T07:00:00Z","end":"2026-10-28T08:00:00Z","status":"cancelled"},
+                    {"start":"2026-10-21T07:00:00Z","end":"2026-10-21T08:00:00Z","status":"active","local":"2026-10-21T10:00"}]}]}""")
+                "referral.get" -> json("""{"code":"ABCD2345","url":"","joined":2,"verified":1,
+                    "referrals":[{"display_name":"Фёдор","source":"booking","joined_at":"2026-10-14T08:00:00Z","verified":true}]}""")
+                else -> json("{}")
+            }
+        }
+        val client = AuraClient(transport)
+        val booking = client.bookingList().single()
+        assertEquals("2026-10-21T07:00:00Z", booking.occurrences.first().start)
+        assertEquals("2026-10-21T10:00", booking.occurrences.first().local)
+        assertFalse(booking.occurrences.last().active)
+        val referral = client.referralGet()
+        assertEquals("#/signup?ref=ABCD2345", referral.link)
+        assertEquals(Referral("Фёдор", "booking", "2026-10-14T08:00:00Z", true), referral.referrals.single())
+        client.bookingOwnerCancel(9, "2026-10-21T07:00:00Z")
+        assertEquals(mapOf("booking_id" to JsonPrimitive(9L), "occurrence" to JsonPrimitive("2026-10-21T07:00:00Z")),
+            transport.sent.last().second.toMap())
+    }
+}

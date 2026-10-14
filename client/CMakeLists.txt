@@ -41,6 +41,7 @@ qt_add_qml_module(aura-client
         qml/ChatPage.qml
         qml/SettingsPage.qml
         qml/InboxPage.qml
+        qml/BookingPage.qml
         qml/Format.js
         qml/icons/Icons.js
         qml/theme/AuraTheme.qml

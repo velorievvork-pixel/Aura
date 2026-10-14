@@ -1,7 +1,9 @@
 // client/src/appstore.cpp
 #include "appstore.h"
 
+#include <QClipboard>
 #include <QDateTime>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSettings>
@@ -301,6 +303,12 @@ void AppStore::clearSession() {
     userEmail_.clear();
     userBio_.clear();
     privacyPending_ = 0;
+    bookingPages_.clear();
+    guestBookings_.clear();
+    bookingLoaded_ = false;
+    referral_.clear();
+    emit bookingChanged();
+    emit referralChanged();
     chats_.clear();
     messages_.clear();
     memory_.clear();
@@ -1137,6 +1145,9 @@ void AppStore::handleEvent(const QString& name, const QJsonObject& payload) {
         notifications_.prepend(payload.toVariantMap());
         ++unreadNotifications_;
         emit notificationsChanged();
+        const QString kind = payload.value(QStringLiteral("kind")).toString();
+        if (kind.startsWith(QLatin1String("booking.")) && bookingLoaded_) loadBooking();
+        if (kind == QLatin1String("referral.joined") && !referral_.isEmpty()) loadReferral();
         setStatus(QStringLiteral("%1: %2")
                       .arg(payload.value(QStringLiteral("title")).toString(),
                            payload.value(QStringLiteral("body")).toString()));
@@ -1481,6 +1492,144 @@ void AppStore::saveVoiceSettings() {
 // ---------------------------------------------------------------------------
 //  Этап 8: разрешения, подтверждения, задачи
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------- страницы записи
+namespace {
+
+// Те же пределы, что проверяет сервер (BookingManager::pageCreate); "" — всё верно.
+QString bookingFieldsProblem(const QVariantMap& fields) {
+    const QString title = fields.value(QStringLiteral("title")).toString().trimmed();
+    const auto inRange = [&fields](const char* key, int min, int max) {
+        bool ok = false;
+        const int value = fields.value(QLatin1String(key)).toInt(&ok);
+        return ok && value >= min && value <= max;
+    };
+    if (title.isEmpty()) return QStringLiteral("Назовите страницу — например, «Консультация»");
+    if (title.toUcs4().size() > 120 || title.contains(QLatin1Char('\n')))
+        return QStringLiteral("Название — до 120 символов в одну строку");
+    if (fields.value(QStringLiteral("description")).toString().trimmed().toUcs4().size() > 1000)
+        return QStringLiteral("Описание — до 1000 символов");
+    if (!inRange("duration_minutes", 15, 240)) return QStringLiteral("Длительность — от 15 до 240 минут");
+    if (!inRange("days_ahead", 1, 60)) return QStringLiteral("Запись вперёд — от 1 до 60 дней");
+    if (!inRange("max_per_day", 1, 16)) return QStringLiteral("Встреч в день — от 1 до 16");
+    if (!inRange("notice_hours", 0, 168)) return QStringLiteral("Запас до встречи — от 0 до 168 часов");
+    if (!inRange("max_series", 1, 12)) return QStringLiteral("Серия — от 1 до 12 встреч");
+    return QString();
+}
+
+}  // namespace
+
+void AppStore::loadBooking() {
+    client_->sendRequest(QStringLiteral("booking.pageList"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             bookingPages_ = response.value(QStringLiteral("payload")).toObject()
+                                                 .value(QStringLiteral("pages")).toArray().toVariantList();
+                             bookingLoaded_ = true;
+                             emit bookingChanged();
+                         });
+    QJsonObject payload;
+    payload.insert(QStringLiteral("limit"), 100);
+    client_->sendRequest(QStringLiteral("booking.list"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) return;
+                             guestBookings_ = response.value(QStringLiteral("payload")).toObject()
+                                                  .value(QStringLiteral("bookings")).toArray().toVariantList();
+                             emit bookingChanged();
+                         });
+}
+
+void AppStore::saveBookingPage(qint64 pageId, const QVariantMap& fields) {
+    const QString problem = bookingFieldsProblem(fields);
+    if (!problem.isEmpty()) {
+        emit bookingPageFailed(problem);
+        return;
+    }
+    QJsonObject payload;
+    payload.insert(QStringLiteral("title"), fields.value(QStringLiteral("title")).toString().trimmed());
+    payload.insert(QStringLiteral("description"), fields.value(QStringLiteral("description")).toString().trimmed());
+    for (const char* key : {"duration_minutes", "days_ahead", "max_per_day", "notice_hours", "max_series"}) {
+        payload.insert(QLatin1String(key), fields.value(QLatin1String(key)).toInt());
+    }
+    payload.insert(QStringLiteral("weekends"), fields.value(QStringLiteral("weekends")).toBool());
+    if (pageId > 0) payload.insert(QStringLiteral("page_id"), static_cast<double>(pageId));
+    client_->sendRequest(pageId > 0 ? QStringLiteral("booking.pageUpdate") : QStringLiteral("booking.pageCreate"),
+                         payload, [this](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 emit bookingPageFailed(error);
+                                 return;
+                             }
+                             emit bookingPageSaved();
+                             loadBooking();
+                         });
+}
+
+void AppStore::setBookingPagePaused(qint64 pageId, bool paused) {
+    QJsonObject payload;
+    payload.insert(QStringLiteral("page_id"), static_cast<double>(pageId));
+    payload.insert(QStringLiteral("status"), paused ? QStringLiteral("paused") : QStringLiteral("active"));
+    client_->sendRequest(QStringLiteral("booking.pageUpdate"), payload,
+                         [this, paused](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             setStatus(paused ? QStringLiteral("Запись на паузе — новые гости не смогут записаться")
+                                              : QStringLiteral("Запись снова открыта"));
+                             loadBooking();
+                         });
+}
+
+void AppStore::deleteBookingPage(qint64 pageId) {
+    QJsonObject payload;
+    payload.insert(QStringLiteral("page_id"), static_cast<double>(pageId));
+    client_->sendRequest(QStringLiteral("booking.pageDelete"), payload,
+                         [this](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             setStatus(QStringLiteral("Страница удалена. Уже сделанные записи остаются в силе."));
+                             loadBooking();
+                         });
+}
+
+void AppStore::cancelGuestBooking(qint64 bookingId) {
+    QJsonObject payload;
+    payload.insert(QStringLiteral("booking_id"), static_cast<double>(bookingId));
+    client_->sendRequest(QStringLiteral("booking.ownerCancel"), payload,
+                         [this](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             setStatus(QStringLiteral("Запись отменена"));
+                             loadBooking();
+                             loadTasks();
+                         });
+}
+
+void AppStore::loadReferral() {
+    client_->sendRequest(QStringLiteral("referral.get"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             referral_ = response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                             emit referralChanged();
+                         });
+}
+
+void AppStore::copyText(const QString& text) {
+    if (auto* clipboard = QGuiApplication::clipboard()) {
+        clipboard->setText(text);
+        setStatus(QStringLiteral("Скопировано"));
+    }
+}
 
 void AppStore::loadPermissions() {
     client_->sendRequest(QStringLiteral("permissions.list"), {},

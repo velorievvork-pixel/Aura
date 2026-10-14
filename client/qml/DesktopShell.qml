@@ -21,6 +21,7 @@ Item {
         { key: "home",          label: "Главная",    icon: "house" },
         { key: "aura",          label: "Моя Аура",   icon: "message-circle" },
         { key: "negotiations",  label: "Переговоры", icon: "handshake" },
+        { key: "booking",       label: "Запись",     icon: "calendar-clock" },
         { key: "tasks",         label: "Задачи",     icon: "square-check" },
         { key: "contacts",      label: "Контакты",   icon: "users" },
         { key: "settings",      label: "Настройки",  icon: "settings" }
@@ -29,7 +30,8 @@ Item {
     function navigate(page) {
         current = page
         if (!App) return
-        if (page === "settings") { App.loadPermissions(); App.loadIntegrations() }
+        if (page === "settings") { App.loadPermissions(); App.loadIntegrations(); App.loadReferral() }
+        else if (page === "booking") App.loadBooking()
         else if (page === "confirmations") App.loadConfirmations()
         else if (page === "notifications") { App.loadNotifications(); App.loadPushDevices() }
         else if (page === "tasks") App.loadTasks()
@@ -273,6 +275,7 @@ Item {
                     case "tasks": return tasksPage
                     case "contacts": return contactsPage
                     case "settings": return settingsPage
+                    case "booking": return bookingPage
                     case "confirmations": return confirmationsPage
                     case "notifications": return notificationsPage
                     default: return homePage
@@ -296,6 +299,7 @@ Item {
     Component { id: tasksPage; TasksPage {} }
     Component { id: contactsPage; ContactsPage {} }
     Component { id: settingsPage; SettingsPage { embedded: true } }
+    Component { id: bookingPage; BookingPage {} }
     Component { id: confirmationsPage; InboxPage { mode: "confirmations" } }
     Component { id: notificationsPage; InboxPage { mode: "notifications" } }
 }

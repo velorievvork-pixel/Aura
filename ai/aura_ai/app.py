@@ -5,6 +5,7 @@
 * ``POST /v1/agent/run``        — главный запрос Ауры (AgentManager);
 * ``POST /v1/agent/negotiate``  — Agent-to-Agent переговоры между двумя Аурами;
 * ``POST /v1/agent/slots``      — слоты владельца: приглашение по ссылке и страница записи;
+* ``POST /v1/agent/series``     — еженедельная серия записи в местном времени владельца;
 * ``POST /v1/memory/extract``   — извлечение фактов в долговременную память;
 * ``POST /v1/planner/slots``    — свободные слоты (Planner напрямую);
 * ``GET  /v1/tools``            — список инструментов (ToolManager).
@@ -52,6 +53,8 @@ from .models import (
     NegotiateRequest,
     NegotiateResponse,
     Preferences,
+    SeriesRequest,
+    SeriesResponse,
     SlotsRequest as AgentSlotsRequest,
     SlotsResponse as AgentSlotsResponse,
     as_aware,
@@ -185,6 +188,19 @@ def agent_run(request: AgentRequest) -> AgentResponse:
 @app.post("/v1/agent/negotiate", response_model=NegotiateResponse, dependencies=[Depends(require_token)])
 def agent_negotiate(request: NegotiateRequest) -> NegotiateResponse:
     return get_agent().negotiate(request)
+
+
+@app.post("/v1/agent/series", response_model=SeriesResponse, dependencies=[Depends(require_token)])
+def agent_series(request: SeriesRequest) -> SeriesResponse:
+    """Еженедельная серия страницы записи в местном времени владельца (booking.book)."""
+    try:
+        return SeriesResponse(
+            occurrences=planner.weekly_series(
+                request.start, request.timezone, request.duration_minutes, request.count, request.interval_days
+            )
+        )
+    except OverflowError as exc:
+        raise HTTPException(status_code=422, detail="time is out of range") from exc
 
 
 @app.post("/v1/agent/slots", response_model=AgentSlotsResponse, dependencies=[Depends(require_token)])

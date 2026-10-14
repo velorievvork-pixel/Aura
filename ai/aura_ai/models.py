@@ -201,6 +201,8 @@ class Slot(BaseModel):
     #: Местная дата владельца «YYYY-MM-DD» (только у слотов /v1/agent/slots):
     #: по ней сервер считает лимит записей в день страницы записи.
     day: Optional[str] = None
+    #: Местное время владельца «YYYY-MM-DDTHH:MM» (для писем и подписей на сервере).
+    local: Optional[str] = None
 
 
 class A2AProposal(BaseModel):
@@ -271,6 +273,28 @@ class SlotsRequest(BaseModel):
 
 class SlotsResponse(BaseModel):
     slots: List[Slot] = Field(default_factory=list)
+
+
+#: Серия страницы записи — до 12 встреч.
+SERIES_MAX_COUNT = 12
+
+
+class SeriesRequest(BaseModel):
+    """Еженедельная серия в поясе владельца (POST /v1/agent/series).
+
+    Повторы сохраняют местное время начала (10:00 по Москве остаётся 10:00
+    после перехода на летнее/зимнее время), а не сдвигаются на ровно 168 часов.
+    """
+
+    timezone: str = "UTC"
+    start: AwareDatetime
+    duration_minutes: int = Field(default=60, ge=OFFER_MIN_DURATION, le=OFFER_MAX_DURATION)
+    count: int = Field(default=1, ge=1, le=SERIES_MAX_COUNT)
+    interval_days: int = Field(default=7, ge=1, le=31)
+
+
+class SeriesResponse(BaseModel):
+    occurrences: List[Slot] = Field(default_factory=list)
 
 
 class NegotiateResponse(BaseModel):

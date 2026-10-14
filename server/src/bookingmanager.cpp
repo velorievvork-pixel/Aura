@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 
 #include "aura/config.h"
@@ -76,6 +77,15 @@ bool validDay(const std::string& day) {
     return parseIsoUtc(day + "T00:00:00Z", probe);
 }
 
+// Местное время YYYY-MM-DDTHH:MM.
+bool validLocal(const std::string& local) {
+    return local.size() == 16 && local[10] == 'T' && local[13] == ':' && validDay(local.substr(0, 10)) &&
+           std::isdigit(static_cast<unsigned char>(local[11])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(local[12])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(local[14])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(local[15])) != 0;
+}
+
 // Дата YYYY-MM-DD плюс days суток.
 std::string addDays(const std::string& day, int days) {
     std::time_t base = 0;
@@ -104,6 +114,7 @@ Json occurrenceView(const Json& occurrence) {
     json.set("start", Json(occurrence.getString("start")));
     json.set("end", Json(occurrence.getString("end")));
     json.set("status", Json(occurrence.getString("status")));
+    json.set("local", Json(occurrence.getString("local")));
     return json;
 }
 
@@ -327,6 +338,7 @@ bool BookingManager::offers(const BookingPageRecord& page, std::vector<Offer>& o
         if (overlaps) continue;
         offer.day = slot.getString("day");
         if (!validDay(offer.day)) offer.day = isoUtc(offer.start).substr(0, 10);
+        offer.local = validLocal(slot.getString("local")) ? slot.getString("local") : std::string();
         accepted.push_back(offer);
         if (static_cast<int>(accepted.size()) >= kAiMaxSlots) break;
     }
@@ -337,6 +349,64 @@ bool BookingManager::offers(const BookingPageRecord& page, std::vector<Offer>& o
         cache_[page.id] = Cached{std::chrono::steady_clock::now(), version, accepted};
     }
     out = std::move(accepted);
+    return true;
+}
+
+bool BookingManager::series(const BookingPageRecord& page, const Offer& first, int count, std::vector<Offer>& out) {
+    out.clear();
+    if (count <= 1) {
+        out.push_back(first);
+        return true;
+    }
+    std::string ownerName;
+    std::string ownerTimezone;
+    ownerInfo(page.ownerId, ownerName, ownerTimezone);
+    Json request = Json::object();
+    request.set("timezone", Json(ownerTimezone));
+    request.set("start", Json(isoUtc(first.start)));
+    request.set("duration_minutes", Json(static_cast<long long>(page.durationMinutes)));
+    request.set("count", Json(static_cast<long long>(count)));
+    request.set("interval_days", Json(7LL));
+
+    std::map<std::string, std::string> headers{{"Content-Type", "application/json"}};
+    if (!config_.aiServiceToken.empty()) headers["X-Aura-Token"] = config_.aiServiceToken;
+    std::string error;
+    std::string url = config_.aiServiceUrl;
+    while (!url.empty() && url.back() == '/') url.pop_back();
+    const net::HttpResponse response =
+        net::httpRequest("POST", url + "/v1/agent/series", headers, request.dump(), config_.aiTimeoutMs, error);
+    const Json answer = response.ok() ? Json::parse(response.body, &error) : Json();
+    if (!answer.isObject() || !answer.get("occurrences").isArray()) {
+        AURA_LOG(log::Level::Warn, "booking")
+            << "серия не рассчитана: " << (error.empty() ? "HTTP " + std::to_string(response.status) : error);
+        return false;
+    }
+    // AI не источник истины: первая встреча — ровно выбранная, длительность та же,
+    // повторы через неделю ± 2 часа (сдвиг перехода на летнее/зимнее время).
+    const std::time_t duration = static_cast<std::time_t>(page.durationMinutes) * 60;
+    const Json items = answer.get("occurrences");
+    for (const auto& item : items.items()) {
+        Offer offer;
+        if (!parseIsoUtc(item.getString("start"), offer.start) || !parseIsoUtc(item.getString("end"), offer.end) ||
+            offer.end - offer.start != duration) {
+            out.clear();
+            return false;
+        }
+        if (out.empty() ? offer.start != first.start
+                        : std::abs(static_cast<long long>(offer.start - out.back().start) - kWeekSec) > 2 * 3600) {
+            out.clear();
+            return false;
+        }
+        offer.day = validDay(item.getString("day")) ? item.getString("day")
+                                                    : addDays(first.day, static_cast<int>(out.size() * 7));
+        offer.local = validLocal(item.getString("local")) ? item.getString("local") : std::string();
+        if (out.empty() && offer.local.empty()) offer.local = first.local;
+        out.push_back(offer);
+    }
+    if (static_cast<int>(out.size()) != count) {
+        out.clear();
+        return false;
+    }
     return true;
 }
 
@@ -742,35 +812,42 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     if (!offers(*page, candidates)) {
         return Result::failure(protocol::code::kUpstream, "не удалось проверить свободное время — попробуйте позже");
     }
-    std::lock_guard<std::mutex> lock(changeMutex_);
-    const auto free = available(*page, candidates);
-    const auto chosen = std::find_if(free.begin(), free.end(), [wanted](const Offer& o) { return o.start == wanted; });
-    if (chosen == free.end()) {
-        const bool offered = std::any_of(candidates.begin(), candidates.end(),
-                                         [wanted](const Offer& o) { return o.start == wanted; });
-        return offered ? Result::failure(protocol::code::kConflict, "это время уже занято — выберите другое")
-                       : Result::failure(protocol::code::kBadRequest, "этого времени нет среди свободных");
+    const auto offered = std::find_if(candidates.begin(), candidates.end(),
+                                      [wanted](const Offer& o) { return o.start == wanted; });
+    if (offered == candidates.end()) {
+        return Result::failure(protocol::code::kBadRequest, "этого времени нет среди свободных");
+    }
+    // Серия: та же встреча каждую неделю в том же местном времени владельца
+    // (AI-сервис считает её в поясе владельца) — до блокировки, чтобы сетевой
+    // запрос не держал запись других гостей.
+    std::vector<Offer> plan;
+    if (!series(*page, *offered, static_cast<int>(count), plan)) {
+        return Result::failure(protocol::code::kUpstream, "не удалось рассчитать серию встреч — попробуйте позже");
     }
 
-    // Серия: та же встреча каждую неделю (через 7×24 ч). Каждая должна быть свободна
-    // и не превышать лимит записей в свой день.
+    std::lock_guard<std::mutex> lock(changeMutex_);
+    const auto free = available(*page, candidates);
+    if (std::none_of(free.begin(), free.end(), [wanted](const Offer& o) { return o.start == wanted; })) {
+        return Result::failure(protocol::code::kConflict, "это время уже занято — выберите другое");
+    }
+    const Offer* chosen = &plan.front();
+
+    // Каждая встреча серии должна быть свободна и не превышать лимит записей в свой день.
     const Busy busy = memory_.busy(page->ownerId);
     auto counts = dayCounts(*page, 0, "");
     Json occurrences = Json::array();
-    for (long long k = 0; k < count; ++k) {
-        const std::time_t start = chosen->start + static_cast<std::time_t>(k) * kWeekSec;
-        const std::time_t end = chosen->end + static_cast<std::time_t>(k) * kWeekSec;
-        const std::string day = addDays(chosen->day, static_cast<int>(k * 7));
-        if (!isFree(busy, start, end) || counts[day] >= page->maxPerDay) {
-            return Result::failure(protocol::code::kConflict, "в неделю " + day +
+    for (const auto& item : plan) {
+        if (!isFree(busy, item.start, item.end) || counts[item.day] >= page->maxPerDay) {
+            return Result::failure(protocol::code::kConflict, "в неделю " + item.day +
                                                                   " это время занято — выберите меньше встреч или "
                                                                   "другое время");
         }
-        ++counts[day];
+        ++counts[item.day];
         Json occurrence = Json::object();
-        occurrence.set("start", Json(isoUtc(start)));
-        occurrence.set("end", Json(isoUtc(end)));
-        occurrence.set("day", Json(day));
+        occurrence.set("start", Json(isoUtc(item.start)));
+        occurrence.set("end", Json(isoUtc(item.end)));
+        occurrence.set("day", Json(item.day));
+        occurrence.set("local", Json(item.local));
         occurrence.set("status", Json(std::string("active")));
         occurrence.set("task_id", Json(0LL));
         occurrences.push(occurrence);
@@ -899,6 +976,7 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
     occurrence.set("start", Json(isoUtc(chosen->start)));
     occurrence.set("end", Json(isoUtc(chosen->end)));
     occurrence.set("day", Json(chosen->day));
+    occurrence.set("local", Json(chosen->local));
     occurrence.set("task_id", Json(createTask(*booking, page->title, chosen->start)));
     Json updated = Json::array();
     for (std::size_t i = 0; i < items.size(); ++i) {

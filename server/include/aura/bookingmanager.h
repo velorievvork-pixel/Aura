@@ -89,7 +89,8 @@ private:
     struct Offer {
         std::time_t start = 0;
         std::time_t end = 0;
-        std::string day;  // местная дата владельца YYYY-MM-DD
+        std::string day;    // местная дата владельца YYYY-MM-DD
+        std::string local;  // местное время владельца YYYY-MM-DDTHH:MM ("" — неизвестно)
     };
     struct Cached {
         std::chrono::steady_clock::time_point at;
@@ -102,6 +103,10 @@ private:
     Json guestBookingJson(const BookingRecord& booking, const BookingPageRecord& page, bool withSlots);
     void ownerInfo(long long ownerId, std::string& name, std::string& timezone) const;
 
+    // Еженедельная серия от first в местном времени владельца (AI POST /v1/agent/series):
+    // повтор сохраняет местное время при переходе на летнее/зимнее. false — сервис недоступен
+    // или ответ не прошёл проверку.
+    bool series(const BookingPageRecord& page, const Offer& first, int count, std::vector<Offer>& out);
     // Кандидаты от AI-сервиса (кэш на минуту); false — сервис недоступен.
     bool offers(const BookingPageRecord& page, std::vector<Offer>& out);
     // Свободное время страницы сейчас: запас, занятость, лимит в день. skipBooking/skipStart —

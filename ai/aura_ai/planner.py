@@ -569,6 +569,43 @@ def offer_slots(
                 score=round(max(0.0, min(1.0, score)), 3),
                 reason=reason,
                 day=local.date().isoformat(),
+                local=local.strftime("%Y-%m-%dT%H:%M"),
+            )
+        )
+    return result
+
+
+# ------------------------------------------------- серия встреч страницы записи
+def weekly_series(
+    start: datetime,
+    tz_name: str,
+    duration_minutes: int,
+    count: int,
+    interval_days: int = 7,
+) -> List[Slot]:
+    """Повторы встречи через interval_days в том же МЕСТНОМ времени владельца.
+
+    Первая встреча — ровно start. Дальше берётся местная дата + interval_days и то
+    же местное время; несуществующее время (переход на летнее) нормализуется
+    вперёд через UTC, неоднозначное (переход на зимнее) — первое из двух (fold=0).
+    """
+    zone = _zone(tz_name)
+    first = _as_aware(start).astimezone(zone)
+    duration = timedelta(minutes=int(duration_minutes))
+    result: List[Slot] = []
+    for index in range(max(1, int(count))):
+        wall = first.replace(tzinfo=None) + timedelta(days=interval_days * index)
+        local = wall.replace(tzinfo=zone, fold=0)
+        begin = local.astimezone(timezone.utc)
+        # Несуществующее местное время: astimezone «проскакивает» вперёд — так и оставляем,
+        # но местную подпись берём из фактического момента.
+        actual = begin.astimezone(zone)
+        result.append(
+            Slot(
+                start=begin,
+                end=begin + duration,
+                day=actual.date().isoformat(),
+                local=actual.strftime("%Y-%m-%dT%H:%M"),
             )
         )
     return result

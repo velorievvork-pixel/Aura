@@ -4020,6 +4020,28 @@ Json bookPayload(const std::string& slug, std::time_t start, const std::string& 
 
 Json tokenPayload(const std::string& token) { return invite_test::tokenPayload(token); }
 
+// Ответ поддельного AI на POST /v1/agent/series: повторы ровно через неделю
+// (пояс UTC), местное время — как в UTC.
+std::string seriesBody(const std::string& request) {
+    const Json body = Json::parse(request.substr(request.find("\r\n\r\n") + 4));
+    std::time_t start = 0;
+    aura::parseIsoUtc(body.getString("start"), start);
+    const long long minutes = body.getInt("duration_minutes", 60);
+    Json occurrences = Json::array();
+    for (long long k = 0; k < body.getInt("count", 1); ++k) {
+        const std::time_t at = start + k * 7 * 86400;
+        Json item = Json::object();
+        item.set("start", Json(aura::isoUtc(at)));
+        item.set("end", Json(aura::isoUtc(at + minutes * 60)));
+        item.set("day", Json(aura::isoUtc(at).substr(0, 10)));
+        item.set("local", Json(aura::isoUtc(at).substr(0, 16)));
+        occurrences.push(item);
+    }
+    Json answer = Json::object();
+    answer.set("occurrences", occurrences);
+    return answer.dump();
+}
+
 bool hasSlot(const Json& page, std::time_t start) {
     const Json slots = page.get("slots");  // get() возвращает копию: держим её до конца цикла
     for (const auto& slot : slots.items()) {
@@ -4062,7 +4084,12 @@ TEST(booking_page_book_reschedule_cancel) {
     const std::time_t third = first + 4 * 3600;
     const std::string day = aura::isoUtc(first).substr(0, 10);
     // AI предлагает и лишнее (прошлое, чужая длительность, пересечение) — сервер отбрасывает.
+    FakeAi* self = nullptr;
     FakeAi ai([&] {
+        // Серия — отдельный эндпоинт; запрос уже записан в requests (под тем же мьютексом).
+        if (self && self->requests.back().find("POST /v1/agent/series") != std::string::npos) {
+            return seriesBody(self->requests.back());
+        }
         Json slots = Json::array();
         slots.push(daySlot(third, 60, day));
         slots.push(daySlot(first, 60, day));
@@ -4074,6 +4101,7 @@ TEST(booking_page_book_reschedule_cancel) {
         body.set("slots", slots);
         return body.dump();
     });
+    self = &ai;
     Fixture fixture;
     invite_test::useAi(fixture, ai.url(), "https://aura.example.com");
     admin_test::Sockets sockets;
@@ -4150,6 +4178,7 @@ TEST(booking_page_book_reschedule_cancel) {
     const Json bookedView = integration::payloadOf(booked).get("booking");
     CHECK_EQ(bookedView.get("occurrences").items().size(), std::size_t(2));
     CHECK_EQ(bookedView.get("occurrences").at(1).getString("start"), aura::isoUtc(first + 7 * 86400));
+    CHECK_EQ(bookedView.get("occurrences").at(1).getString("local"), aura::isoUtc(first + 7 * 86400).substr(0, 16));
     CHECK(isBusy(fixture, ownerId, first));
     CHECK(isBusy(fixture, ownerId, first + 7 * 86400));
     CHECK_EQ(countTasks(fixture, owner, "Запись: Консультация — Пётр"), 2);

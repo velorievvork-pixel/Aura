@@ -247,7 +247,7 @@ def test_slots_endpoint_moscow(client):
     assert response.status_code == 200, response.text
     slots = response.json()["slots"]
     assert len(slots) == 6
-    assert set(slots[0]) == {"start", "end", "score", "reason", "day"}
+    assert set(slots[0]) == {"start", "end", "score", "reason", "day", "local"}
     starts = [_parse(s["start"]) for s in slots]
     assert starts == sorted(starts)
     for slot in slots:
@@ -408,3 +408,8 @@ def test_slots_endpoint_booking_params(client):
         assert slot["day"] == start.date().isoformat()
         days[slot["day"]] = days.get(slot["day"], 0) + 1
     assert days and max(days.values()) == 6
+
+
+def test_local_is_owner_wall_time():
+    slot = _offer(tz="Europe/Moscow")[0]
+    assert slot.local == "2026-09-14T09:00"

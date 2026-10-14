@@ -456,7 +456,7 @@ max_per_day, notice_hours, max_series, weekends, status (active | paused),
 upcoming, created_at, updated_at}`; `url` пуст без `AURA_PUBLIC_URL`.
 `booking` (вид владельца): `{id, page_id, page_title, guest_name, guest_email,
 guest_comment, status (active | cancelled), cancelled_by ("" | guest | owner),
-reschedules, occurrences: [{start, end, status (active | cancelled)}],
+reschedules, occurrences: [{start, end, local, status (active | cancelled)}],
 created_at, updated_at}`.
 
 Методы гостя (публичные, без входа):
@@ -480,9 +480,13 @@ duration_minutes, guest_name, status, cancelled_by, occurrences, can_change,
 reschedules_left, slots (свободное время для переноса ближайшей встречи),
 slots_unavailable, ref}`.
 
-Серия — та же встреча каждую неделю (через 7×24 ч): каждая встреча должна быть
-свободна и не превышать лимит своего дня, иначе `conflict` «в неделю … это
-время занято». На каждую встречу владельцу создаётся задача с `due_at = start`
+Серия — та же встреча каждую неделю в том же **местном времени владельца**
+(AI `POST /v1/agent/series` считает повторы в его поясе: 10:00 остаётся 10:00
+после перехода на летнее/зимнее время; сервер проверяет первую встречу,
+длительность и шаг «неделя ± 2 часа»). Каждая встреча должна быть свободна и не
+превышать лимит своего дня, иначе `conflict` «в неделю … это время занято»;
+без AI-сервиса серия не записывается (`upstream_error`). У каждой встречи в
+`occurrences` есть `local` — местное время владельца `YYYY-MM-DDTHH:MM`. На каждую встречу владельцу создаётся задача с `due_at = start`
 и `remind_at = start − 15 мин` (при переносе — пересоздаётся, при отмене —
 удаляется) и уведомление `booking.created` (`{booking_id, page_id, start, end,
 count, guest_name}`), `booking.rescheduled` (`{booking_id, page_id, from,

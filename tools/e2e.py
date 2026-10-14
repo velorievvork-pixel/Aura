@@ -743,6 +743,9 @@ async def main() -> int:
           "гость отменил запись целиком", cancelled_view)
     twice = await guest.call("booking.cancel", {"token": manage_token})
     check(twice.get("code") == "conflict", "повторная отмена — conflict", twice)
+    resent = await guest.call("booking.resendLink", {"slug": slug, "email": f"nobody.{RUN}@example.com"})
+    check(resent.get("payload", {}).get("sent") is True,
+          "booking.resendLink: одинаковый ответ для неизвестного email", resent)
     after_tasks = (await anna.call("tasks.list", {"limit": 200})).get("payload", {}).get("tasks", [])
     check(not any(t.get("title") == f"Запись: Консультация {RUN} — Глеб" for t in after_tasks),
           "задачи отменённых встреч удалены", [t.get("title") for t in after_tasks])

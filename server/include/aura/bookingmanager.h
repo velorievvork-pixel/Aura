@@ -19,6 +19,7 @@
 
 #include <chrono>
 #include <ctime>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -30,6 +31,7 @@
 namespace aura {
 
 class DatabaseManager;
+class MailProvider;
 class MemoryManager;
 class NotificationsManager;
 class ReferralManager;
@@ -59,9 +61,12 @@ public:
     static constexpr int kBookPerMinute = 10;
     static constexpr int kBookPerHour = 30;
     static constexpr int kChangePerMinute = 10;
+    static constexpr int kMailPerAddressHour = 10;
+    static constexpr int kResendPerMinute = 5;
 
     BookingManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
                    ReferralManager& referrals, const Config& config);
+    ~BookingManager();
 
     // Владелец (нужен вход).
     Result pageCreate(long long ownerId, const Json& payload);
@@ -77,6 +82,10 @@ public:
     Result manage(const Json& payload, const std::string& remoteAddr);
     Result reschedule(const Json& payload, const std::string& remoteAddr);
     Result cancel(const Json& payload, const std::string& remoteAddr);
+    // Потерянная ссылка управления: новые ссылки на активные записи этой страницы
+    // уходят письмом на email гостя (старые перестают работать). Ответ всегда
+    // одинаковый — по нему нельзя узнать, записан ли кто-то с этим адресом.
+    Result resendLink(const Json& payload, const std::string& remoteAddr);
 
     // Токен ссылки управления → ключ поиска в БД (hex sha256); "" — заведомо неверный.
     static std::string tokenHash(const std::string& token);
@@ -124,11 +133,20 @@ private:
 
     bool limited(const std::string& key, int perWindow, int windowSeconds = 60);
 
+    // Письмо гостю о записи (если указан email, есть лимит на адрес). Текст — только
+    // от сервера и владельца (название страницы, имя): имя гостя в письмо не попадает,
+    // чтобы форму нельзя было использовать для рассылки произвольного текста.
+    void mailGuest(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
+                   const std::string& subject, const std::string& title, const std::string& lead,
+                   const std::string& token, bool onlyActive);
+    std::string manageUrl(const std::string& token) const;
+
     DatabaseManager& database_;
     MemoryManager& memory_;
     NotificationsManager* notifications_;
     ReferralManager& referrals_;
     const Config& config_;
+    std::unique_ptr<MailProvider> mail_;
 
     // Запись, перенос и отмена: проверка «свободно» и сохранение — под одной
     // блокировкой, чтобы два гостя не заняли одно время одновременно.

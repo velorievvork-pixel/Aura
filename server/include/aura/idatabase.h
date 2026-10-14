@@ -575,7 +575,8 @@ public:
     // Записи владельца (pageId = 0 — всех страниц), новые сверху; activeOnly — без отменённых.
     virtual std::vector<BookingRecord> listBookings(long long ownerId, long long pageId, bool activeOnly,
                                                     int limit) = 0;
-    // Перезаписывает occurrences, status, cancelled_by, reschedules; updated_at = now.
+    // Перезаписывает occurrences, status, cancelled_by, reschedules и непустой manage_hash
+    // (новая ссылка управления); updated_at = now.
     virtual DatabaseError updateBooking(const BookingRecord& record) = 0;
 
     // Рефералы (referral.*). Код — 8 символов [A-Z0-9], один на пользователя.

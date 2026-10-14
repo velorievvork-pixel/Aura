@@ -44,7 +44,7 @@ iOS (SwiftUI). База — PostgreSQL, 27 таблиц (`schema/schema.sql` + `
 - `chat.open` → payload `{chat:{id}}`.
 - `memories.kind` — только `fact|preference|schedule|contact`.
 - Публичные (без входа) методы гостя: `invite.get/respond`, `booking.get/book/manage/
-  reschedule/cancel` — веб-страницы `#/i/<токен>`, `#/b/<slug>`, `#/m/<токен>`; токены
+  reschedule/cancel/resendLink` — веб-страницы `#/i/<токен>`, `#/b/<slug>`, `#/m/<токен>`; токены
   ссылок в БД только sha256. Рефералы: `referral.get`, `auth.register` + `ref`.
 - Deep link `aura://`: `chats/<id>`, `voice`, `ask?text=`, `tasks`, `notifications`,
   `settings`, `oauth?provider=&code=&state=`.

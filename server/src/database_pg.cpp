@@ -1959,10 +1959,11 @@ private:
         std::lock_guard<std::mutex> lock(mutex_);
         PGresult* result = nullptr;
         if (!execute("UPDATE bookings SET occurrences = $2::jsonb, status = $3, cancelled_by = $4, "
-                     "reschedules = $5::int, updated_at = now() WHERE id = $1",
+                     "reschedules = $5::int, manage_hash = COALESCE(NULLIF($6, ''), manage_hash), "
+                     "updated_at = now() WHERE id = $1",
                      {std::to_string(record.id),
                       record.occurrences.isArray() ? record.occurrences.dump() : std::string("[]"), record.status,
-                      record.cancelledBy, std::to_string(record.reschedules)},
+                      record.cancelledBy, std::to_string(record.reschedules), record.manageHash},
                      &result)) {
             return DatabaseError::failure(lastError_);
         }

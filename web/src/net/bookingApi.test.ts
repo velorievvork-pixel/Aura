@@ -24,6 +24,7 @@ describe('makeBookingApi', () => {
     await api.reschedule('tok', '2026-10-21T07:00:00Z', '2026-10-20T07:00:00Z');
     await api.cancel('tok');
     await api.cancel('tok', { occurrence: '2026-10-27T07:00:00Z', reason: 'Заболела' });
+    await api.resendLink('abcdefghij', 'a@b.ru');
     expect(request.mock.calls).toEqual([
       ['booking.pageCreate', PAGE],
       ['booking.pageList', {}],
@@ -41,6 +42,7 @@ describe('makeBookingApi', () => {
       ['booking.reschedule', { token: 'tok', start: '2026-10-21T07:00:00Z', occurrence: '2026-10-20T07:00:00Z' }, 60_000],
       ['booking.cancel', { token: 'tok' }],
       ['booking.cancel', { token: 'tok', occurrence: '2026-10-27T07:00:00Z', reason: 'Заболела' }],
+      ['booking.resendLink', { slug: 'abcdefghij', email: 'a@b.ru' }],
     ]);
   });
 });

@@ -37,6 +37,8 @@ export interface BookingPage {
 
 export interface Occurrence extends InviteSlot {
   status: OccurrenceStatus;
+  /** Местное время владельца «YYYY-MM-DDTHH:MM» (старые записи — пусто). */
+  local?: string;
 }
 
 /** Запись гостя глазами владельца. */
@@ -169,6 +171,8 @@ export function makeBookingApi(socket: AuraSocket) {
       if (occurrence) payload.occurrence = occurrence;
       return call<{ booking: GuestBooking }>('booking.reschedule', payload, SLOTS_TIMEOUT_MS);
     },
+    /** Потерянная ссылка: новая уходит на email гостя (ответ одинаков, есть ли запись). */
+    resendLink: (slug: string, email: string) => call<{ sent: boolean }>('booking.resendLink', { slug, email }),
     cancel: (token: string, options: { occurrence?: string; reason?: string } = {}) => {
       const payload: Record<string, unknown> = { token };
       if (options.occurrence) payload.occurrence = options.occurrence;

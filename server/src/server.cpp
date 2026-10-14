@@ -952,6 +952,10 @@ void Server::registerHandlers() {
                                                            const protocol::Request& request) {
         return bookingReply(request, bookings_->cancel(request.payload, session->remoteAddr()));
     });
+    registerHandler("booking.resendLink", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->resendLink(request.payload, session->remoteAddr()));
+    });
 
     // ----------------------------------------------------------- referral
     registerHandler("referral.get", [this](std::shared_ptr<Session> session, const protocol::Request& request) {

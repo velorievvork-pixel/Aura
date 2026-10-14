@@ -11,6 +11,7 @@
 #include "aura/crypto.h"
 #include "aura/databasemanager.h"
 #include "aura/log.h"
+#include "aura/mailprovider.h"
 #include "aura/memorymanager.h"
 #include "aura/net.h"
 #include "aura/protocol.h"
@@ -86,6 +87,27 @@ bool validLocal(const std::string& local) {
            std::isdigit(static_cast<unsigned char>(local[15])) != 0;
 }
 
+// «чт, 15 октября 2026, 10:30 (Europe/Moscow)» — время встречи в письме: местное
+// время владельца из AI (local), иначе UTC.
+std::string whenText(const Json& occurrence, const std::string& timezone) {
+    static const char* const kMonths[] = {"января", "февраля", "марта",    "апреля",  "мая",    "июня",
+                                          "июля",   "августа", "сентября", "октября", "ноября", "декабря"};
+    static const char* const kDays[] = {"вс", "пн", "вт", "ср", "чт", "пт", "сб"};
+    std::string local = occurrence.getString("local");
+    std::string zone = timezone.empty() ? "UTC" : timezone;
+    if (!validLocal(local)) {
+        local = occurrence.getString("start").substr(0, 16);
+        zone = "UTC";
+        if (!validLocal(local)) return occurrence.getString("start");
+    }
+    std::time_t date = 0;
+    parseIsoUtc(local.substr(0, 10) + "T00:00:00Z", date);
+    std::tm parts{};
+    gmtime_r(&date, &parts);
+    return std::string(kDays[parts.tm_wday]) + ", " + std::to_string(parts.tm_mday) + " " + kMonths[parts.tm_mon] +
+           " " + std::to_string(parts.tm_year + 1900) + ", " + local.substr(11, 5) + " (" + zone + ")";
+}
+
 // Дата YYYY-MM-DD плюс days суток.
 std::string addDays(const std::string& day, int days) {
     std::time_t base = 0;
@@ -122,7 +144,62 @@ Json occurrenceView(const Json& occurrence) {
 
 BookingManager::BookingManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
                                ReferralManager& referrals, const Config& config)
-    : database_(database), memory_(memory), notifications_(notifications), referrals_(referrals), config_(config) {}
+    : database_(database),
+      memory_(memory),
+      notifications_(notifications),
+      referrals_(referrals),
+      config_(config),
+      mail_(makeMailProvider(config)) {}
+
+BookingManager::~BookingManager() = default;
+
+std::string BookingManager::manageUrl(const std::string& token) const {
+    return config_.publicUrl.empty() || token.empty() ? std::string() : config_.publicUrl + "/#/m/" + token;
+}
+
+void BookingManager::mailGuest(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
+                               const std::string& subject, const std::string& title, const std::string& lead,
+                               const std::string& token, bool onlyActive) {
+    if (booking.guestEmail.empty() || !mail_) return;
+    std::string address = booking.guestEmail;
+    std::transform(address.begin(), address.end(), address.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    // Лимит на адрес: форма записи не должна превращаться в рассылку на чужой email.
+    if (limited("booking.mail:" + address, kMailPerAddressHour, 3600)) {
+        AURA_LOG(log::Level::Warn, "booking") << "лимит писем на адрес исчерпан, письмо (" << kind << ") не отправлено";
+        return;
+    }
+    std::string ownerName;
+    std::string ownerTimezone;
+    ownerInfo(page.ownerId, ownerName, ownerTimezone);
+    const std::time_t now = std::time(nullptr);
+    MailNotice notice;
+    notice.kind = kind;
+    notice.to = booking.guestEmail;
+    notice.subject = subject;
+    notice.title = title;
+    notice.lead = lead;
+    for (const auto& occurrence : booking.occurrences.items()) {
+        std::time_t start = 0;
+        if (!parseIsoUtc(occurrence.getString("start"), start)) continue;
+        const bool active = occurrence.getString("status") == "active";
+        if (onlyActive && (!active || start <= now)) continue;
+        notice.lines.push_back(whenText(occurrence, ownerTimezone) + (active ? "" : " — отменена"));
+    }
+    const std::string link = manageUrl(token);
+    if (!link.empty()) {
+        notice.linkUrl = link;
+        notice.linkText = "Перенести или отменить";
+    } else if (token.empty() && page.status == "active" && !config_.publicUrl.empty()) {
+        notice.linkUrl = config_.publicUrl + "/#/b/" + page.slug;
+        notice.linkText = "Выбрать другое время";
+    }
+    notice.note = "Письмо пришло, потому что этот адрес указали при записи на странице «" + page.title +
+                  "» (" + ownerName + ") в Aura." + (link.empty() ? "" : " Ссылка — только для вас, не пересылайте её.");
+    if (!mail_->sendNotice(notice)) {
+        AURA_LOG(log::Level::Warn, "booking") << "письмо гостю (" << kind << ") не отправлено";
+    }
+}
 
 std::string BookingManager::tokenHash(const std::string& token) {
     if (token.size() != kTokenLength) return "";
@@ -720,6 +797,16 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
         return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
     }
     const auto page = database_.db().findBookingPage(booking->pageId);
+    if (page) {
+        std::string ownerName;
+        std::string ownerTimezone;
+        ownerInfo(page->ownerId, ownerName, ownerTimezone);
+        mailGuest(*booking, *page, "booking.owner_cancelled", "Встреча отменена: " + page->title,
+                  "Организатор отменил встречу",
+                  ownerName + (booking->status == "cancelled" ? " отменил(а) запись. Встречи:"
+                                                              : " отменил(а) одну встречу. Расписание:"),
+                  "", booking->status != "cancelled");
+    }
     Result result;
     result.ok = true;
     result.payload.set("booking", bookingJson(*booking, page ? page->title : std::string()));
@@ -897,6 +984,13 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
                                                               : " записался(ась) на встречу"),
                                page->title, notify);
     }
+    {
+        std::string ownerName;
+        std::string ownerTimezone;
+        ownerInfo(page->ownerId, ownerName, ownerTimezone);
+        mailGuest(booking, *page, "booking.created", "Вы записаны: " + page->title, "Вы записаны",
+                  ownerName + (count > 1 ? " ждёт вас на встречах:" : " ждёт вас:"), token, true);
+    }
 
     const auto stored = database_.db().findBooking(id);
     Result result;
@@ -999,6 +1093,8 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
         notifications_->create(page->ownerId, "booking.rescheduled", booking->guestName + " перенес(ла) встречу",
                                page->title, notify);
     }
+    mailGuest(*booking, *page, "booking.rescheduled", "Встреча перенесена: " + page->title, "Встреча перенесена",
+              "Новое расписание (перенести или отменить можно по ссылке из первого письма):", "", true);
     Result result;
     result.ok = true;
     result.payload.set("booking", guestBookingJson(*booking, *page, true));
@@ -1042,9 +1138,46 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
                                booking->guestName + (cancelled > 1 ? " отменил(а) встречи" : " отменил(а) встречу"),
                                page->title, notify);
     }
+    mailGuest(*booking, *page, "booking.cancelled", "Отмена записи: " + page->title,
+              booking->status == "cancelled" ? "Запись отменена" : "Встреча отменена",
+              booking->status == "cancelled" ? "Организатор получил уведомление. Встречи записи:"
+                                             : "Организатор получил уведомление. Остальные встречи в силе:",
+              "", booking->status != "cancelled");
     Result result;
     result.ok = true;
     result.payload.set("booking", guestBookingJson(*booking, *page, true));
+    return result;
+}
+
+BookingManager::Result BookingManager::resendLink(const Json& payload, const std::string& remoteAddr) {
+    if (limited("booking.resend:" + Session::ipOf(remoteAddr), kResendPerMinute)) {
+        return Result::failure(protocol::code::kForbidden, "слишком много запросов, попробуйте через минуту");
+    }
+    const std::string slug = payload.getString("slug");
+    std::string email = trim(payload.getString("email"));
+    if (!plausibleEmail(email)) return Result::failure(protocol::code::kBadRequest, "некорректный email");
+    std::transform(email.begin(), email.end(), email.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    Result result;
+    result.ok = true;
+    result.payload.set("sent", Json(true));  // одинаково для «нашли» и «не нашли»
+    const auto page = validSlug(slug) ? database_.db().findBookingPageBySlug(slug) : std::nullopt;
+    if (!page || page->status == "archived") return result;
+
+    const std::time_t now = std::time(nullptr);
+    std::lock_guard<std::mutex> lock(changeMutex_);
+    for (auto booking : database_.db().listBookings(page->ownerId, page->id, true, 1000)) {
+        std::string guest = booking.guestEmail;
+        std::transform(guest.begin(), guest.end(), guest.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (guest != email || findOccurrence(booking, "", now) < 0) continue;
+        std::string token = crypto::base64UrlEncode(crypto::randomBytes(kTokenBytes));
+        while (!token.empty() && token.back() == '=') token.pop_back();
+        booking.manageHash = tokenHash(token);
+        if (booking.manageHash.empty() || !database_.db().updateBooking(booking).ok) continue;
+        mailGuest(booking, *page, "booking.link", "Ссылка на вашу запись: " + page->title, "Ваша запись",
+                  "Вы просили прислать ссылку заново — прежняя больше не действует. Встречи:", token, true);
+    }
     return result;
 }
 

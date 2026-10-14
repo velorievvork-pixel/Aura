@@ -12,10 +12,26 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace aura {
 
 struct Config;
+
+// Письмо-уведомление (страницы записи и т.п.): заголовок, абзац, строки (время
+// встреч), кнопка-ссылка и примечание. Весь текст экранируется в HTML; в письмо
+// не должны попадать данные, которые задаёт анонимный отправитель формы.
+struct MailNotice {
+    std::string kind;     // для логов: booking.created и т.п.
+    std::string to;
+    std::string subject;
+    std::string title;
+    std::string lead;
+    std::vector<std::string> lines;
+    std::string linkUrl;  // пусто — без кнопки
+    std::string linkText;
+    std::string note;
+};
 
 class MailProvider {
 public:
@@ -26,7 +42,12 @@ public:
 
     virtual bool sendVerificationCode(const std::string& to, const std::string& code) = 0;
     virtual bool sendPasswordReset(const std::string& to, const std::string& code) = 0;
+    virtual bool sendNotice(const MailNotice& notice) = 0;
 };
+
+// Письма-уведомления, «отправленные» драйвером dev (AURA_DEV_MODE): последние 50,
+// для тестов и локальной отладки. В остальных режимах пусто.
+std::vector<MailNotice> devOutbox();
 
 // Фабрика по имени драйвера из Config::mailDriver.
 std::unique_ptr<MailProvider> makeMailProvider(const Config& config);

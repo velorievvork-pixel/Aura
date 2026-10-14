@@ -48,7 +48,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 `auth.resendCode`, `auth.forgotPassword`, `auth.resetPassword`,
 `auth.refresh`, `ping`, `server.info`, `invite.get`, `invite.respond`,
 `booking.get`, `booking.book`, `booking.manage`, `booking.reschedule`,
-`booking.cancel`, требуют авторизации.
+`booking.cancel`, `booking.resendLink`, требуют авторизации.
 
 ## Коды ошибок
 
@@ -468,6 +468,15 @@ created_at, updated_at}`.
 | `booking.manage` | `{token}` | `{booking}` — вид гостя по ссылке управления |
 | `booking.reschedule` | `{token, start, occurrence? (start переносимой встречи; по умолчанию ближайшая)}` | `{booking}`; не больше 3 переносов на запись |
 | `booking.cancel` | `{token, occurrence?, reason? (≤ 500)}` | `{booking}`; без `occurrence` — все предстоящие встречи |
+| `booking.resendLink` | `{slug, email}` | `{sent: true}` — всегда одинаково (нельзя узнать, есть ли запись); если на странице есть активная запись с этим email, ссылка управления перевыпускается (прежняя перестаёт работать) и уходит письмом |
+
+Письма гостю (если при записи указан email; драйвер почты — как у кодов
+подтверждения, `AURA_MAIL_DRIVER`): подтверждение записи со ссылкой управления,
+перенос, отмена гостем и отмена владельцем (со ссылкой «Выбрать другое время»),
+новая ссылка по `booking.resendLink`. Время — местное время владельца с
+поясом. В письмах только текст сервера и владельца (название страницы, имя
+владельца): имя и комментарий гостя туда не попадают, на один адрес — не больше
+10 писем в час.
 
 Вид страницы для гостя: `{slug, title, description, duration_minutes,
 max_series, owner_name, owner_timezone, status, slots: [{start, end, day}],

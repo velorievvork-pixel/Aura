@@ -29,6 +29,7 @@
 #include "aura/crypto.h"
 #include "aura/idatabase.h"
 #include "aura/invitemanager.h"
+#include "aura/mailprovider.h"
 #include "aura/json.h"
 #include "aura/jwt.h"
 #include "aura/mailprovider.h"
@@ -4241,6 +4242,26 @@ TEST(booking_page_book_reschedule_cancel) {
     CHECK_EQ(countNotifications(fixture, owner, "booking.cancelled"), 2);
     CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(token)).getString("code"), std::string("conflict"));
 
+    // Письма гостю: подтверждение со ссылкой управления (имя гостя в письмо не попадает).
+    {
+        int created = 0, cancelledMail = 0, rescheduledMail = 0;
+        for (const auto& notice : aura::devOutbox()) {
+            if (notice.to != "petr@example.com") continue;
+            if (notice.kind == "booking.created") {
+                ++created;
+                CHECK_EQ(notice.linkUrl, "https://aura.example.com/#/m/" + token);
+                CHECK_EQ(notice.lines.size(), std::size_t(2));
+                CHECK(notice.subject.find("Консультация") != std::string::npos);
+                CHECK(notice.title.find("Пётр") == std::string::npos && notice.lead.find("Пётр") == std::string::npos);
+            }
+            if (notice.kind == "booking.rescheduled") ++rescheduledMail;
+            if (notice.kind == "booking.cancelled") ++cancelledMail;
+        }
+        CHECK_EQ(created, 1);
+        CHECK_EQ(rescheduledMail, 1);
+        CHECK_EQ(cancelledMail, 2);
+    }
+
     // Владелец: список записей и отмена записи Анны.
     const Json bookings = integration::payloadOf(fixture.call(owner, "booking.list")).get("bookings");
     CHECK_EQ(bookings.items().size(), std::size_t(2));
@@ -4260,6 +4281,31 @@ TEST(booking_page_book_reschedule_cancel) {
     const Json ownerCancelled = fixture.call(owner, "booking.ownerCancel", byBooking);
     CHECK_EQ(integration::payloadOf(ownerCancelled).get("booking").getString("cancelled_by"), std::string("owner"));
     CHECK(!isBusy(fixture, ownerId, second));
+
+    // Потерянная ссылка: новая уходит письмом, старая перестаёт работать; чужой email —
+    // тот же ответ, но без письма.
+    Json withMail = bookPayload(slug, third, "Ира");
+    withMail.set("guest_email", Json("ira@example.com"));
+    const std::string iraToken = integration::payloadOf(fixture.call(guest, "booking.book", withMail)).getString("token");
+    CHECK_EQ(iraToken.size(), std::size_t(43));
+    Json resend = slugPayload(slug);
+    resend.set("email", Json("IRA@example.com"));
+    CHECK(integration::payloadOf(fixture.call(guest, "booking.resendLink", resend)).getBool("sent"));
+    std::string newLink;
+    for (const auto& notice : aura::devOutbox()) {
+        if (notice.to == "ira@example.com" && notice.kind == "booking.link") newLink = notice.linkUrl;
+    }
+    CHECK(!newLink.empty());
+    const std::string newToken = newLink.substr(newLink.rfind('/') + 1);
+    CHECK(newToken != iraToken);
+    CHECK_EQ(fixture.call(guest, "booking.manage", tokenPayload(iraToken)).getString("code"), std::string("not_found"));
+    CHECK_EQ(fixture.call(guest, "booking.manage", tokenPayload(newToken)).getString("type"), std::string("ok"));
+    resend.set("email", Json("nobody@example.com"));
+    const std::size_t before = aura::devOutbox().size();
+    CHECK(integration::payloadOf(fixture.call(guest, "booking.resendLink", resend)).getBool("sent"));
+    CHECK_EQ(aura::devOutbox().size(), before);
+    resend.set("email", Json("не-почта"));
+    CHECK_EQ(fixture.call(guest, "booking.resendLink", resend).getString("code"), std::string("bad_request"));
 
     // Пауза: страница видна, но записаться нельзя; удаление — ссылка перестаёт работать.
     Json pause = Json::object();

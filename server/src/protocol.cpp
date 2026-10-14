@@ -51,7 +51,7 @@ bool isPublicType(const std::string& type) {
            type == "auth.refresh" ||
            type == "invite.get" || type == "invite.respond" ||
            type == "booking.get" || type == "booking.book" || type == "booking.manage" ||
-           type == "booking.reschedule" || type == "booking.cancel" ||
+           type == "booking.reschedule" || type == "booking.cancel" || type == "booking.resendLink" ||
            type == "ping" || type == "server.info";
 }
 

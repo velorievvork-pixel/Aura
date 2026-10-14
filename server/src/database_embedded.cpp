@@ -1809,6 +1809,7 @@ private:
     }
 
     static void writeBooking(Json& entry, const BookingRecord& record) {
+        if (!record.manageHash.empty()) entry.set("manage_hash", Json(record.manageHash));
         entry.set("occurrences", record.occurrences.isArray() ? record.occurrences : Json::array());
         entry.set("status", Json(record.status));
         entry.set("cancelled_by", Json(record.cancelledBy));

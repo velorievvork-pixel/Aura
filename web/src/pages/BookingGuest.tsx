@@ -410,12 +410,61 @@ export function BookingGuest() {
             </button>
           </form>
         )}
+        {slug && <LostLink api={api} slug={slug} />}
         <OwnAura refCode={page.ref} source="booking" />
       </GuestLayout>
     );
   }
 
   return screens(loadError, () => void load(), 'Открываем страницу записи…');
+}
+
+/** «Уже записались?» — новая ссылка управления на email, указанный при записи. */
+function LostLink({ api, slug }: { api: ReturnType<typeof makeBookingApi>; slug: string }) {
+  const [open, setOpen] = useState(false);
+  const [email, setEmail] = useState('');
+  const [state, setState] = useState<'idle' | 'busy' | 'sent'>('idle');
+  const [error, setError] = useState('');
+  if (!open) {
+    return (
+      <button type="button" className="btn btn-ghost btn-sm" style={{ alignSelf: 'center' }} onClick={() => setOpen(true)}>
+        Уже записались? Пришлём ссылку для переноса
+      </button>
+    );
+  }
+  if (state === 'sent') {
+    return <div className="notice">Если вы записывались с этим email, новая ссылка уже в письме. Прежняя ссылка больше не действует.</div>;
+  }
+  return (
+    <form
+      className="stack"
+      noValidate
+      onSubmit={async (e) => {
+        e.preventDefault();
+        const value = email.trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value)) {
+          setError('Похоже, в email опечатка');
+          return;
+        }
+        setState('busy');
+        setError('');
+        try {
+          await api.resendLink(slug, value);
+          setState('sent');
+        } catch (err) {
+          setState('idle');
+          setError(guestErrorText(err));
+        }
+      }}
+    >
+      <Field label="Email, указанный при записи" error={error}>
+        <input className={`input ${error ? 'invalid' : ''}`} type="email" inputMode="email" autoComplete="email" value={email} maxLength={EMAIL_MAX} onChange={(e) => setEmail(e.target.value)} />
+      </Field>
+      <button className="btn btn-secondary" type="submit" disabled={state === 'busy'}>
+        {state === 'busy' ? <Spinner small /> : 'Прислать ссылку'}
+      </button>
+    </form>
+  );
 }
 
 // ================================================================ #/m/<токен>

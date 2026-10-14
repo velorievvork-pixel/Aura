@@ -216,18 +216,20 @@ Item {
                             Layout.fillWidth: true
                             Layout.leftMargin: 14
                             spacing: 14
-                            AuraAvatar { name: modelData.display_name || modelData.email; size: 38 }
+                            AuraAvatar { name: modelData.display_name || "?"; size: 38 }
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 0
                                 Text { text: modelData.display_name || ""; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontBody; font.weight: Font.DemiBold; color: AuraTheme.textPrimary }
-                                Text { text: modelData.email || ""; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontMicro; color: AuraTheme.textMuted }
+                                // users.search не отдаёт email — только имя и «в сети».
+                                Text { text: modelData.online ? "в сети" : "есть Аура"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontMicro; color: AuraTheme.textMuted }
                             }
                             GlassButton {
                                 text: "Добавить"
                                 symbol: "user-plus"
                                 implicitHeight: 36
-                                onClicked: { App.openChat(modelData.email); search.text = "" }
+                                // chat.open принимает id пользователя строкой.
+                                onClicked: { App.openChat(String(modelData.id)); search.text = "" }
                             }
                         }
                     }

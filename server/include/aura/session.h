@@ -73,8 +73,8 @@ private:
 
     const int socket_;
     const std::string sessionId_;
-    const std::string remoteAddr_;
-    const std::string remoteIp_;
+    std::string remoteAddr_;  // меняется только в рукопожатии (X-Forwarded-For доверенного прокси)
+    std::string remoteIp_;
     const Config& config_;
 
     mutable std::mutex sendMutex_;

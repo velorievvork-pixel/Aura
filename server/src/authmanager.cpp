@@ -1089,7 +1089,12 @@ AuthManager::Result AuthManager::login2fa(const std::string& email, const std::s
             audit(user->id, "2fa_recovery_failed", Json::object(), remoteAddr);
             return Result::failure(protocol::code::kUnauthorized, "неверный код");
         }
-        database_.db().useRecoveryCode(rc->id);
+        // Одноразовость: два параллельных входа с одним кодом — пройдёт только тот,
+        // кто первым пометил код использованным.
+        if (!database_.db().useRecoveryCode(rc->id).ok) {
+            hit(twoFactorKey, config_.twoFactorWindowSec);
+            return Result::failure(protocol::code::kUnauthorized, "неверный код");
+        }
         audit(user->id, "2fa_recovery_used", Json::object(), remoteAddr);
     } else {
         std::string secretRaw;

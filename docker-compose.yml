@@ -94,6 +94,7 @@ services:
       AURA_LOG_LEVEL: ${AURA_LOG_LEVEL:-info}
       # Админ-панель: email первых администраторов (только подтверждённые адреса).
       AURA_ADMIN_EMAILS: ${AURA_ADMIN_EMAILS:-}
+      AURA_TRUSTED_PROXIES: ${AURA_TRUSTED_PROXIES:-}
       AURA_PUBLIC_URL: ${AURA_PUBLIC_URL:-}
     healthcheck:
       # Порт 9000 принимает соединения (в образе есть bash, curl — нет).

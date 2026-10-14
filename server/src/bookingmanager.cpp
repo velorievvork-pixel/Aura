@@ -88,6 +88,25 @@ bool validLocal(const std::string& local) {
            std::isdigit(static_cast<unsigned char>(local[15])) != 0;
 }
 
+// day/local от AI-сервиса — не источник истины: они должны соответствовать start
+// (сдвиг пояса не больше 14 ч и кратен 15 мин; day — дата из local). Иначе
+// day — дата UTC, local пуст: лимит записей в день не обойти подменой даты.
+void checkLocal(std::time_t start, std::string& day, std::string& local) {
+    std::time_t asUtc = 0;
+    if (validLocal(local) && parseIsoUtc(local + ":00Z", asUtc)) {
+        const long long offset = static_cast<long long>(asUtc - start);
+        if (std::llabs(offset) <= 14 * 3600 && offset % 900 == 0) {
+            day = local.substr(0, 10);
+            return;
+        }
+    }
+    local.clear();
+    std::time_t midnight = 0;
+    const bool plausible = validDay(day) && parseIsoUtc(day + "T00:00:00Z", midnight) &&
+                           start - midnight >= -14 * 3600 && start - midnight < 38 * 3600;
+    if (!plausible) day = isoUtc(start).substr(0, 10);
+}
+
 // «чт, 15 октября 2026, 10:30 (Europe/Moscow)» — время встречи в письме: местное
 // время владельца из AI (local), иначе UTC.
 std::string whenText(const Json& occurrence, const std::string& timezone) {
@@ -470,8 +489,8 @@ bool BookingManager::offers(const BookingPageRecord& page, std::vector<Offer>& o
         });
         if (overlaps) continue;
         offer.day = slot.getString("day");
-        if (!validDay(offer.day)) offer.day = isoUtc(offer.start).substr(0, 10);
-        offer.local = validLocal(slot.getString("local")) ? slot.getString("local") : std::string();
+        offer.local = slot.getString("local");
+        checkLocal(offer.start, offer.day, offer.local);
         accepted.push_back(offer);
         if (static_cast<int>(accepted.size()) >= kAiMaxSlots) break;
     }
@@ -532,8 +551,9 @@ bool BookingManager::series(const BookingPageRecord& page, const Offer& first, i
         }
         offer.day = validDay(item.getString("day")) ? item.getString("day")
                                                     : addDays(first.day, static_cast<int>(out.size() * 7));
-        offer.local = validLocal(item.getString("local")) ? item.getString("local") : std::string();
-        if (out.empty() && offer.local.empty()) offer.local = first.local;
+        offer.local = item.getString("local");
+        if (out.empty() && !validLocal(offer.local)) offer.local = first.local;
+        checkLocal(offer.start, offer.day, offer.local);
         out.push_back(offer);
     }
     if (static_cast<int>(out.size()) != count) {

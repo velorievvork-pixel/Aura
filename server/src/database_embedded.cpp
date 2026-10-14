@@ -68,7 +68,11 @@ bool sessionLiveJson(const Json& item, const std::string& nowSeconds) {
 
 class EmbeddedDatabase : public IDatabase {
 public:
-    explicit EmbeddedDatabase(std::string path) : path_(std::move(path)) {}
+    explicit EmbeddedDatabase(std::string path) : path_(std::move(path)) {
+        // Ключ счётчиков id — сразу (и для базы в памяти без connect): добавление ключа
+        // позже перераспределило бы поля state_ и сделало висячими ссылки на таблицы.
+        state_.set("sequences", Json::object());
+    }
 
     std::string name() const override { return "embedded:" + path_; }
 
@@ -614,6 +618,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto& item : mutableTable("recovery_codes")) {
             if (item.getString("id") == id) {
+                if (!item.getString("used_at").empty()) break;  // уже использован
                 item.set("used_at", Json(isoNow()));
                 flush();
                 return DatabaseError::success();
@@ -1329,6 +1334,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto& entry : mutableTable("integration_oauth_states")) {
             if (entry.getString("state") != state) continue;
+            if (!entry.getString("used_at").empty()) break;  // уже использован
             entry.set("used_at", Json(isoNow()));
             flush();
             return DatabaseError::success();

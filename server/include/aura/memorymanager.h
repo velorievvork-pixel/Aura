@@ -28,7 +28,11 @@ public:
     Json context(long long userId, const std::string& focusMessage);
 
     // Сохраняет записи, которые вернул AI-сервис в memory_updates.
-    std::size_t remember(long long userId, const Json& updates);
+    // Сохраняет записи памяти, проверяя каждую: kind — fact|preference|schedule|contact,
+    // текст — до maxText символов, вес 0..5, до 10 тегов по 40 байт. maxEntries > 0 —
+    // не больше стольких записей (предложения LLM: она не источник истины).
+    std::size_t remember(long long userId, const Json& updates, std::size_t maxEntries = 0,
+                         std::size_t maxText = 1000);
 
     // Просит AI-сервис извлечь факты из фразы (POST /v1/memory/extract).
     // При недоступном сервисе работает локальное правило (см. extractLocally).

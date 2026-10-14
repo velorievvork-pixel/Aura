@@ -1548,7 +1548,8 @@ public:
     DatabaseError useOauthState(const std::string& state) override {
         Lease lease(pool_);
         PGresult* res = nullptr;
-        if (!execute("UPDATE integration_oauth_states SET used_at = now() WHERE state = $1", {state}, &res)) {
+        if (!execute("UPDATE integration_oauth_states SET used_at = now() WHERE state = $1 AND used_at IS NULL",
+                     {state}, &res)) {
             return DatabaseError::failure(lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(res)) > 0;

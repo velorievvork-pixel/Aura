@@ -181,23 +181,54 @@ Json MemoryManager::context(long long userId, const std::string& focusMessage) {
         (void)interval;
         calendar.push(event);
     }
+    // AI-сервис принимает до 2000 событий: прошедшие (раньше суток назад) не нужны,
+    // из остальных — ближайшие по времени начала.
+    constexpr std::size_t kMaxCalendar = 2000;
+    if (calendar.items().size() > kMaxCalendar) {
+        const std::time_t cutoff = std::time(nullptr) - 86400;
+        std::vector<std::pair<std::time_t, Json>> upcoming;
+        for (const auto& event : calendar.items()) {
+            std::time_t start = 0;
+            std::time_t end = 0;
+            if (!parseIsoUtc(event.getString("start"), start)) continue;
+            if (parseIsoUtc(event.getString("end"), end) && end < cutoff) continue;
+            upcoming.emplace_back(start, event);
+        }
+        std::stable_sort(upcoming.begin(), upcoming.end(),
+                         [](const auto& a, const auto& b) { return a.first < b.first; });
+        if (upcoming.size() > kMaxCalendar) upcoming.resize(kMaxCalendar);
+        Json trimmed = Json::array();
+        for (auto& item : upcoming) trimmed.push(std::move(item.second));
+        calendar = std::move(trimmed);
+    }
     context.set("calendar", calendar);
     return context;
 }
 
-std::size_t MemoryManager::remember(long long userId, const Json& updates) {
+std::size_t MemoryManager::remember(long long userId, const Json& updates, std::size_t maxEntries,
+                                    std::size_t maxText) {
     if (!updates.isArray()) return 0;
+    static const std::set<std::string> kinds = {"fact", "preference", "schedule", "contact"};
+    const auto codePoints = [](const std::string& text) {
+        return static_cast<std::size_t>(std::count_if(text.begin(), text.end(), [](unsigned char ch) {
+            return (ch & 0xC0) != 0x80;
+        }));
+    };
     std::size_t saved = 0;
+    std::size_t seen = 0;
     for (const auto& entry : updates.items()) {
+        if (maxEntries > 0 && ++seen > maxEntries) break;
         const std::string text = entry.getString("text");
-        if (text.empty()) continue;
+        const std::string kind = entry.getString("kind", "fact");
+        if (text.empty() || codePoints(text) > maxText || kinds.count(kind) == 0) continue;
         std::vector<std::string> tags;
         const Json tagArray = entry.get("tags");
         for (const auto& tag : tagArray.items()) {
-            if (!tag.asString().empty()) tags.push_back(tag.asString());
+            const std::string value = tag.asString();
+            if (!value.empty() && value.size() <= 40 && tags.size() < 10) tags.push_back(value);
         }
-        const DatabaseError result = database_.db().upsertMemory(
-            userId, entry.getString("kind", "fact"), text, entry.getDouble("weight", 1.0), tags);
+        const double weight = std::clamp(entry.getDouble("weight", 1.0), 0.0, 5.0);
+        const DatabaseError result = database_.db().upsertMemory(userId, kind, text, weight, tags);
         if (result.ok) {
             ++saved;
         } else {

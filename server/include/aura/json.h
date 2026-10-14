@@ -62,8 +62,10 @@ public:
 
     bool asBool(bool fallback = false) const { return isBool() ? bool_ : fallback; }
     double asDouble(double fallback = 0.0) const { return isNumber() ? number_ : fallback; }
+    // Вне диапазона long long (1e300, NaN) приведение double — UB: такие числа — fallback.
     long long asInt(long long fallback = 0) const {
-        return isNumber() ? static_cast<long long>(number_) : fallback;
+        if (!isNumber() || !(number_ >= -9.2e18 && number_ <= 9.2e18)) return fallback;
+        return static_cast<long long>(number_);
     }
     // Ссылочные аксессоры квалифицированы: у временного Json (get() возвращает
     // копию) они отдают значение, а не ссылку в умирающий объект —

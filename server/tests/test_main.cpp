@@ -2035,6 +2035,35 @@ TEST(server_push_devices) {
     badToken.set("token", Json(""));
     CHECK_EQ(fixture.call(session, "devices.push.register", badToken).getString("code"),
              std::string("bad_request"));
+    // Токен попадает в путь запроса к шлюзу APNs — только hex.
+    badToken.set("token", Json(std::string(64, 'a') + "/../x?"));
+    CHECK_EQ(fixture.call(session, "devices.push.register", badToken).getString("code"),
+             std::string("bad_request"));
+    badToken.set("platform", Json("webhook"));
+    badToken.set("token", Json("a b"));
+    CHECK_EQ(fixture.call(session, "devices.push.register", badToken).getString("code"),
+             std::string("bad_request"));
+    // Не больше 20 устройств; уже известный токен регистрируется повторно.
+    int accepted = 1;  // apns-устройство выше
+    for (int i = 0; i < 25; ++i) {
+        Json device = Json::object();
+        device.set("platform", Json("webhook"));
+        device.set("token", Json("cap-device-" + std::to_string(i)));
+        if (fixture.call(session, "devices.push.register", device).getString("type") == "ok") ++accepted;
+    }
+    CHECK_EQ(accepted, 20);
+    Json repeat = Json::object();
+    repeat.set("platform", Json("webhook"));
+    repeat.set("token", Json("cap-device-0"));
+    CHECK_EQ(fixture.call(session, "devices.push.register", repeat).getString("type"), std::string("ok"));
+    // Убираем добавленные устройства — дальше тест работает с одним apns.
+    const Json all = integration::payloadOf(fixture.call(session, "devices.push.list")).get("devices");
+    for (const auto& device : all.items()) {
+        if (device.getInt("id") == deviceId) continue;
+        Json drop = Json::object();
+        drop.set("id", Json(device.getInt("id")));
+        fixture.call(session, "devices.push.revoke", drop);
+    }
 
     // Отзыв: чужое устройство — not_found, своё — revoked, повтор — not_found.
     auto other = fixture.makeSession("push-other");
@@ -4388,6 +4417,54 @@ TEST(booking_ai_unavailable) {
              std::string("not_found"));
     CHECK(fixture.server->database().db().setUserActive(ownerId, true).ok);
     CHECK_EQ(fixture.call(guest, "booking.get", slugPayload(slug)).getString("type"), std::string("ok"));
+}
+
+// За доверенным прокси адрес клиента берётся из X-Forwarded-For (правый не-прокси),
+// от остальных заголовок игнорируется — иначе лимиты гостей обходились бы подделкой.
+TEST(session_forwarded_for_trusted_proxy) {
+    const auto shake = [](const std::string& peer, const std::string& trusted, const std::string& xff) {
+        aura::Config config;
+        config.trustedProxies = trusted;
+        int fds[2] = {-1, -1};
+        CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+        aura::Session session(fds[1], "xff", peer, config);
+        const std::string request = "GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+                                    "X-Forwarded-For: " + xff + "\r\n\r\n";
+        CHECK(::send(fds[0], request.data(), request.size(), 0) == static_cast<ssize_t>(request.size()));
+        std::string error;
+        CHECK(session.performHandshake(error));
+        ::close(fds[0]);
+        return session.remoteIp();
+    };
+    CHECK_EQ(shake("10.0.0.5:4000", "10.0.0.5", "1.2.3.4, 203.0.113.7"), std::string("203.0.113.7"));
+    CHECK_EQ(shake("10.0.0.5:4000", "10.0.0.5, 10.0.0.6", "203.0.113.7, 10.0.0.6"), std::string("203.0.113.7"));
+    CHECK_EQ(shake("198.51.100.1:4000", "10.0.0.5", "203.0.113.7"), std::string("198.51.100.1"));  // не прокси
+    CHECK_EQ(shake("10.0.0.5:4000", "", "203.0.113.7"), std::string("10.0.0.5"));  // прокси не задан
+    CHECK_EQ(shake("10.0.0.5:4000", "10.0.0.5", "<script>"), std::string("10.0.0.5"));  // мусор
+}
+
+// Одноразовые секреты: второе использование резервного кода 2FA и OAuth state не проходит
+// (иначе два параллельных запроса с одним кодом оба считались бы верными).
+TEST(one_time_secrets_single_use) {
+    auto db = aura::makeEmbeddedDatabase("");
+    long long userId = 0;
+    CHECK(db->createUser("once@example.com", "argon2id$x", "Раз", userId).ok);
+    aura::RecoveryCodeRecord code;
+    code.id = "11111111-1111-1111-1111-111111111111";
+    code.userId = userId;
+    code.codeHash = std::string(64, 'a');
+    CHECK(db->replaceRecoveryCodes(userId, {code}).ok);
+    CHECK(db->useRecoveryCode(code.id).ok);
+    CHECK(!db->useRecoveryCode(code.id).ok);
+    aura::OauthStateRecord state;
+    state.state = "state-once";
+    state.userId = userId;
+    state.provider = "google";
+    state.expiresAt = "2999-01-01T00:00:00Z";
+    CHECK(db->createOauthState(state).ok);
+    CHECK(db->useOauthState("state-once").ok);
+    CHECK(!db->useOauthState("state-once").ok);
 }
 
 // Встроенная БД: id не переиспользуются — иначе task_id старой записи указал бы

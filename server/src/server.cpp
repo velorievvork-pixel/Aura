@@ -194,7 +194,11 @@ void Server::schedulerLoop() {
                                   [this] { return stopping_.load(); });
         }
         if (stopping_.load()) break;
-        runSchedulerTick(100);
+        // Разбираем накопившиеся напоминания до конца, а не по 100 за интервал:
+        // утренний пик в тысячи напоминаний иначе отставал бы на десятки минут.
+        for (int batch = 0; batch < 100 && !stopping_.load(); ++batch) {
+            if (runSchedulerTick(100) < 100) break;
+        }
     }
 }
 

@@ -89,6 +89,7 @@ Handshake parseHandshake(const std::string& request) {
     if (const auto it = headers.find("origin"); it != headers.end()) result.origin = it->second;
     if (const auto it = headers.find("authorization"); it != headers.end()) result.authorization = it->second;
     if (const auto it = headers.find("user-agent"); it != headers.end()) result.userAgent = it->second;
+    if (const auto it = headers.find("x-forwarded-for"); it != headers.end()) result.forwardedFor = it->second;
     result.valid = true;
     return result;
 }

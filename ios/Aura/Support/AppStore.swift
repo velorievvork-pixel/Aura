@@ -74,10 +74,11 @@ struct Contact: Identifiable, Hashable {
     let lastAt: String
 }
 
+/// Найденный человек: users.search не отдаёт email — только имя и «в сети».
 struct FoundUser: Identifiable, Hashable {
     let id: Int64
     let name: String
-    let email: String
+    let online: Bool
 }
 
 /// Действие Ауры, ждущее решения, прямо под её репликой.
@@ -384,6 +385,24 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// Сервер отозвал сессию этого соединения и сейчас закроет сокет (код 4401):
+    /// токены мертвы — не переподключаемся с ними, а сразу возвращаемся на вход.
+    private func sessionRevoked(reason: String) {
+        keychain.delete(.accessToken)
+        keychain.delete(.refreshToken)
+        eventTask?.cancel()
+        eventTask = nil
+        client.disconnect()
+        authState = .loggedOut
+        resetData()
+        switch reason {
+        case "password_changed", "password_reset": errorMessage = "Пароль изменён — войдите снова"
+        case "account_disabled": errorMessage = "Аккаунт заблокирован администратором"
+        case "logout": errorMessage = "Вы вышли из аккаунта на другом устройстве"
+        default: errorMessage = "Сессия завершена — войдите снова"
+        }
+    }
+
     func logout() {
         Task {
             _ = try? await client.logout()
@@ -499,6 +518,8 @@ final class AppStore: ObservableObject {
             }
         case AuraEventName.notificationNew:
             loadNotifications()
+        case AuraEventName.sessionRevoked:
+            sessionRevoked(reason: payload.string("reason"))
         default:
             break
         }
@@ -744,6 +765,13 @@ final class AppStore: ObservableObject {
                 "at": .string(slot.start),
                 "people": .from(2)
             ])
+            if result.bool("requires_confirmation") {
+                // Режим «ask»: сервер ничего не забронировал, а создал отложенное действие —
+                // встречу в задачи не ставим, ждём подтверждения во «Входящих».
+                self.loadConfirmations()
+                self.setStatus("Бронирование ждёт вашего подтверждения")
+                return
+            }
             var booked = current
             booked.booking = result.string("confirmation").isEmpty ? "ok" : result.string("confirmation")
             self.negotiation = booked
@@ -769,8 +797,8 @@ final class AppStore: ObservableObject {
             guard let payload = try? await client.usersSearch(query: text) else { return }
             foundUsers = payload.array("users").map {
                 FoundUser(id: $0.int("id"),
-                          name: $0.string("display_name", default: $0.string("email")),
-                          email: $0.string("email"))
+                          name: $0.string("display_name", default: "Пользователь Aura"),
+                          online: $0.bool("online"))
             }.filter { $0.id != userId }
         }
     }

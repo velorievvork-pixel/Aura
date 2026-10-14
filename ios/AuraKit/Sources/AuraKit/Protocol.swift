@@ -45,4 +45,6 @@ public enum AuraEventName {
     public static let chatMessage = "chat.message"
     public static let taskDue = "task.due"
     public static let notificationNew = "notification.new"
+    /// Сессию соединения отозвали (выход/смена пароля на другом устройстве, блокировка).
+    public static let sessionRevoked = "session.revoked"
 }

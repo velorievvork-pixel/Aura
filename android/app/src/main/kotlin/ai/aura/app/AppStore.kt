@@ -52,7 +52,7 @@ object AppStore {
     /** Собеседник: человек из чатов (кроме меня). */
     data class Contact(val userId: Long, val name: String, val email: String, val chatId: Long,
                        val lastBody: String, val lastAt: String)
-    data class FoundUser(val id: Long, val name: String, val email: String)
+    data class FoundUser(val id: Long, val name: String, val online: Boolean)
     /** Действие Ауры, ждущее решения, прямо под её репликой. */
     data class DialogAction(val confirmationId: Long, val summary: String, val tool: String)
     data class DialogEntry(val id: Long, val fromAura: Boolean, val text: String, val error: Boolean = false,
@@ -224,6 +224,7 @@ object AppStore {
                     AuraEventName.CHAT_MESSAGE -> refreshChats()
                     AuraEventName.TASK_DUE -> refreshTasks()
                     AuraEventName.NOTIFICATION_NEW -> refreshNotifications()
+                    AuraEventName.SESSION_REVOKED -> onSessionRevoked(event.payload.str("reason"))
                 }
             }
         }
@@ -329,6 +330,23 @@ object AppStore {
         guard {
             applyAuth(client.login2fa(state.email, state.password, code, trustDevice,
                 store.deviceId, store.deviceName))
+        }
+    }
+
+    /**
+     * Сервер отозвал сессию этого соединения и сейчас закроет сокет (код 4401):
+     * токены мертвы — не переподключаемся с ними, а сразу возвращаемся на вход.
+     */
+    private fun onSessionRevoked(reason: String) {
+        store.clearTokens()
+        client.disconnect()
+        _auth.value = AuthState.LoggedOut
+        resetData()
+        _errorText.value = when (reason) {
+            "password_changed", "password_reset" -> "Пароль изменён — войдите снова"
+            "account_disabled" -> "Аккаунт заблокирован администратором"
+            "logout" -> "Вы вышли из аккаунта на другом устройстве"
+            else -> "Сессия завершена — войдите снова"
         }
     }
 
@@ -588,6 +606,13 @@ object AppStore {
                 put("at", slot.start)
                 put("people", 2)
             })
+            if (result.bool("requires_confirmation")) {
+                // Режим «ask»: сервер ничего не забронировал, а создал отложенное действие —
+                // встречу в задачи не ставим, ждём подтверждения во «Входящих».
+                refreshConfirmations()
+                _errorText.value = "Бронирование ждёт вашего подтверждения"
+                return@guard
+            }
             val booked = current.copy(booking = result.str("confirmation").ifEmpty { "ok" })
             _negotiation.value = booked
             _negotiationHistory.value = _negotiationHistory.value.map { if (it.at == current.at) booked else it }
@@ -608,7 +633,8 @@ object AppStore {
         runCatching {
             _userResults.value = client.usersSearch(query.trim()).arr("users").mapNotNull { element ->
                 val user = element as? JsonObject ?: return@mapNotNull null
-                FoundUser(user.long("id"), user.str("display_name").ifEmpty { user.str("email") }, user.str("email"))
+                // users.search не отдаёт email: только имя, аватар и «в сети».
+                FoundUser(user.long("id"), user.str("display_name").ifEmpty { "Пользователь Aura" }, user.bool("online"))
             }.filter { it.id != _userId.value }
         }
     }

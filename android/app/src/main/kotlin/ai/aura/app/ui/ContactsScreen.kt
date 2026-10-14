@@ -159,9 +159,10 @@ fun ContactsScreen() {
                     AuraAvatar(user.name, size = 38.dp)
                     Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                         Text(user.name, style = MaterialTheme.typography.titleSmall, color = TextPrimary)
-                        Muted(user.email)
+                        Muted(if (user.online) "в сети" else "есть Аура")
                     }
-                    GlassButton("Добавить", { AppStore.openChatByContact(user.email); query = "" }, icon = Icons.Outlined.PersonAdd, height = 36.dp)
+                    // chat.open принимает id пользователя строкой.
+                    GlassButton("Добавить", { AppStore.openChatByContact(user.id.toString()); query = "" }, icon = Icons.Outlined.PersonAdd, height = 36.dp)
                 }
             }
         }

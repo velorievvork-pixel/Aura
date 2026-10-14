@@ -122,3 +122,16 @@ def test_http_backend_falls_back_when_no_url():
     backends = ToolBackends(mode="http", urls={"maps": ""})
     result = find_cafe(Preferences(), city="Керкраде", backends=backends)
     assert result["results"]  # sandbox-данные вместо сетевых
+
+
+def test_tool_manager_log_is_bounded():
+    from aura_ai.tools import TOOL_LOG_LIMIT
+
+    manager = ToolManager()
+    context = make_context()
+    for index in range(TOOL_LOG_LIMIT + 50):
+        manager.run("create_note", {"text": f"заметка {index}"}, context)
+    assert len(manager.log) == TOOL_LOG_LIMIT
+    # Остаются последние записи, старые вытесняются.
+    assert manager.log[-1]["args"]["text"] == f"заметка {TOOL_LOG_LIMIT + 49}"
+    assert manager.log[0]["args"]["text"] == "заметка 50"

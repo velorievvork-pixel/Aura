@@ -43,6 +43,16 @@ MEMORY_KINDS = ("fact", "preference", "schedule", "contact")
 MAX_DURATION_MINUTES = 24 * 60
 MAX_WINDOW_HOURS = 31 * 24
 MAX_SLOTS = 50
+#: Пределы списков и текста запроса (защита от CPU-DoS: 20 000 событий — десятки
+#: секунд поиска слотов). C++-сервер шлёт меньше: календарь он режет до 2000
+#: событий, историю чата — 20 последних сообщений, память — 20 записей
+#: (AgentManager::ask, MemoryManager::context), сообщение чата — до 8000 символов.
+MAX_CALENDAR_EVENTS = 2000
+MAX_HISTORY_ITEMS = 50
+MAX_MEMORY_ENTRIES = 50
+MAX_CONTACTS = 500
+MAX_PEERS = 20
+MAX_MESSAGE_CHARS = 8000
 
 
 def normalize_timezone(value: Any) -> str:
@@ -79,6 +89,9 @@ def _drop_invalid_events(value: Any) -> Any:
     """
     if not isinstance(value, list):
         return value
+    # Предел — до разбора каждой записи: иначе огромный список валидируется целиком.
+    if len(value) > MAX_CALENDAR_EVENTS:
+        raise ValueError(f"календарь длиннее {MAX_CALENDAR_EVENTS} событий")
     kept: List[Any] = []
     for item in value:
         try:
@@ -88,8 +101,12 @@ def _drop_invalid_events(value: Any) -> Any:
     return kept
 
 
-#: Список занятых слотов с пропуском неполных записей.
-Calendar = Annotated[List[CalendarEvent], BeforeValidator(_drop_invalid_events)]
+#: Список занятых слотов (не больше MAX_CALENDAR_EVENTS) с пропуском неполных записей.
+Calendar = Annotated[
+    List[CalendarEvent],
+    BeforeValidator(_drop_invalid_events),
+    Field(max_length=MAX_CALENDAR_EVENTS),
+]
 
 
 def _hours(value: Any) -> Any:
@@ -157,12 +174,12 @@ class AgentContext(BaseModel):
     email: str = ""
     now: Optional[AwareDatetime] = None
     timezone: Annotated[str, BeforeValidator(normalize_timezone)] = "Europe/Moscow"
-    message: str = ""
-    history: List[Dict[str, Any]] = Field(default_factory=list)
-    memory: List[MemoryEntry] = Field(default_factory=list)
+    message: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
+    history: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_HISTORY_ITEMS)
+    memory: List[MemoryEntry] = Field(default_factory=list, max_length=MAX_MEMORY_ENTRIES)
     preferences: Preferences = Field(default_factory=Preferences)
     calendar: Calendar = Field(default_factory=list)
-    contacts: List[Dict[str, Any]] = Field(default_factory=list)
+    contacts: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_CONTACTS)
 
 
 class ToolCall(BaseModel):
@@ -223,7 +240,7 @@ class AgentRequest(BaseModel):
     # явная просьба вызывающего, и даже тогда внешние действия здесь не исполняются.
     execute: bool = False
     dry_run: bool = False
-    peers: List[AgentContext] = Field(default_factory=list)
+    peers: List[AgentContext] = Field(default_factory=list, max_length=MAX_PEERS)
 
 
 class NegotiateRequest(BaseModel):
@@ -232,7 +249,7 @@ class NegotiateRequest(BaseModel):
     initiator: AgentContext
     responder: AgentContext
     intent: str = "schedule_meeting"
-    topic: str = ""
+    topic: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
     duration_minutes: int = Field(default=60, ge=1, le=MAX_DURATION_MINUTES)
     window_hours: int = Field(default=96, ge=1, le=MAX_WINDOW_HOURS)
     # prefs.privacy.allow_place_choice обеих сторон: false — место не предлагаем.

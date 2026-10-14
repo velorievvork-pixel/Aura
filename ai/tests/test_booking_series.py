@@ -67,3 +67,24 @@ def test_series_endpoint(client):
 def test_series_endpoint_bad_input(client, extra):
     body = {"timezone": "UTC", "start": "2026-10-20T08:00:00Z", "duration_minutes": 60, "count": 2, **extra}
     assert client.post("/v1/agent/series", json=body).status_code == 422
+
+
+def test_series_first_occurrence_is_exact_start_on_dst_fold():
+    # Нью-Йорк, 1 ноября 2026: 01:30 бывает дважды; 06:30Z — второе (EST, fold=1).
+    start = _utc(2026, 11, 1, 6, 30)
+    occurrences = planner.weekly_series(start, "America/New_York", 60, 2)
+    assert occurrences[0].start == start
+    assert occurrences[0].end == start + timedelta(minutes=60)
+    assert occurrences[0].local == "2026-11-01T01:30"
+    # Следующая неделя — то же местное время 01:30 (уже EST).
+    assert occurrences[1].start == _utc(2026, 11, 8, 6, 30)
+    assert occurrences[1].local == "2026-11-08T01:30"
+
+
+def test_series_first_fold_occurrence_endpoint(client):
+    response = client.post("/v1/agent/series", json={
+        "timezone": "America/New_York", "start": "2026-11-01T06:30:00Z", "duration_minutes": 60, "count": 2,
+    })
+    assert response.status_code == 200, response.text
+    first = response.json()["occurrences"][0]
+    assert datetime.fromisoformat(first["start"].replace("Z", "+00:00")) == _utc(2026, 11, 1, 6, 30)

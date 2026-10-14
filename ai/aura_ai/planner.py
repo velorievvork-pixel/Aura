@@ -7,12 +7,13 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .models import CalendarEvent, Preferences, Slot, utcnow
+from .models import MAX_DURATION_MINUTES, CalendarEvent, Preferences, Slot, utcnow
 
 WEEKDAY_ALIASES: Dict[str, int] = {
     "понедельник": 0, "в понедельник": 0, "пн": 0,
@@ -63,6 +64,10 @@ TIME_RE = re.compile(r"\b(\d{1,2})[:.](\d{2})\b")
 HOUR_RE = re.compile(r"(?:^|\s)в\s+(\d{1,2})(?:\s*(?:час\w*|ч\b))?(?:\s+(утра|дня|вечера|ночи))?(?=$|[\s,.!?])")
 IN_N_RE = re.compile(r"через\s+(\d+)\s*(минут\w*|час\w*|день|дня|дней|недел\w*)")
 DURATION_RE = re.compile(r"\bна\s+(\d+)\s*(минут\w*|час\w*|ч\b)")
+#: «через N …» дальше 10 лет вперёд — не время, а мусор (иначе OverflowError → 500).
+MAX_RELATIVE_DAYS = 3650
+#: Больше цифр в числе фразы не разбираем: int() на >4300 цифрах — ValueError.
+_MAX_NUMBER_DIGITS = 9
 
 
 @dataclass
@@ -131,13 +136,26 @@ def detect_intent(text: str) -> str:
     return scores[0][1]
 
 
+def _small_int(digits: str) -> Optional[int]:
+    """Число из фразы; слишком длинное (> _MAX_NUMBER_DIGITS цифр) → None («не разобрано»)."""
+    if not digits or len(digits) > _MAX_NUMBER_DIGITS:
+        return None
+    try:
+        return int(digits)
+    except ValueError:
+        return None
+
+
 def parse_duration(text: str, default: int = 60) -> int:
     low = (text or "").lower()
     match = DURATION_RE.search(low)
     if match:
-        value = int(match.group(1))
+        value = _small_int(match.group(1))
         unit = match.group(2)
-        return value * 60 if unit.startswith(("час", "ч")) else value
+        if value is not None:
+            minutes = value * 60 if unit.startswith(("час", "ч")) else value
+            # «на 99999999 часов» — не длительность встречи: зажимаем в разумный предел.
+            return max(1, min(minutes, MAX_DURATION_MINUTES))
     if "полчаса" in low:
         return 30
     if "на час" in low:
@@ -215,6 +233,29 @@ def reminder_text(text: str) -> str:
     return value[0].upper() + value[1:]
 
 
+def _relative_offset(digits: str, unit: str) -> Optional[timedelta]:
+    """«через N минут/часов/дней/недель» → смещение; дальше MAX_RELATIVE_DAYS — None.
+
+    Огромное N из текста пользователя («через 99999999 недель», число из тысяч
+    цифр) не разбирается как время, а не роняет запрос (OverflowError/ValueError).
+    """
+    value = _small_int(digits)
+    if value is None:
+        return None
+    if unit.startswith("минут"):
+        minutes = value
+    elif unit.startswith("час"):
+        minutes = value * 60
+    elif unit.startswith("недел"):
+        minutes = value * 7 * 24 * 60
+    else:
+        minutes = value * 24 * 60
+    # Сравниваем в целых минутах: timedelta(weeks=10^9) сам бросает OverflowError.
+    if minutes > MAX_RELATIVE_DAYS * 24 * 60:
+        return None
+    return timedelta(minutes=minutes)
+
+
 def parse_time_window(text: str, now: Optional[datetime] = None) -> Optional[TimeWindow]:
     """Разбирает русские временные выражения в окно [start, end)."""
     now = _as_aware(now or utcnow())
@@ -278,20 +319,18 @@ def parse_time_window(text: str, now: Optional[datetime] = None) -> Optional[Tim
 
     # «через N часов/дней» — относительное окно
     in_match = IN_N_RE.search(low)
-    if in_match:
-        value = int(in_match.group(1))
-        unit = in_match.group(2)
-        if unit.startswith("минут"):
-            start = now + timedelta(minutes=value)
-        elif unit.startswith("час"):
-            start = now + timedelta(hours=value)
-        elif unit.startswith("недел"):
-            start = now + timedelta(weeks=value)
+    relative = _relative_offset(in_match.group(1), in_match.group(2)) if in_match else None
+    if relative is not None:
+        try:
+            relative_start = now + relative
+            relative_end = relative_start + timedelta(hours=4)
+        except OverflowError:
+            # «Сейчас» у самой границы datetime.max — относительное время не разобрано.
+            pass
         else:
-            start = now + timedelta(days=value)
-        end = start + timedelta(hours=4)
-        label = label or f"через {value} {unit}"
-        source = "relative"
+            start, end = relative_start, relative_end
+            label = label or f"через {int(in_match.group(1))} {in_match.group(2)}"
+            source = "relative"
 
     if end <= start:
         end = start + timedelta(hours=3)
@@ -321,7 +360,61 @@ def _busy_intervals(calendar: Sequence[CalendarEvent]) -> List[Tuple[datetime, d
 
 
 def _overlaps(a_start: datetime, a_end: datetime, busy: Iterable[Tuple[datetime, datetime]]) -> bool:
+    if isinstance(busy, BusyIndex):
+        return busy.overlaps(a_start, a_end)
     return any(a_start < b_end and b_start < a_end for b_start, b_end in busy)
+
+
+class BusyIndex:
+    """Занятость календаря для быстрых проверок пересечения (bisect вместо перебора).
+
+    События один раз отфильтровываются по окну поиска [start, end), сортируются
+    и сливаются в непересекающиеся интервалы; тогда концы возрастают, и проверка
+    «[a, b) пересекает занятость» — один bisect: O(log n) вместо O(n) на шаг.
+    Семантика та же, что у ``_overlaps``: a < конец события и начало < b
+    (событие нулевой длины внутри (a, b) тоже занимает время).
+    """
+
+    __slots__ = ("starts", "ends")
+
+    def __init__(
+        self,
+        calendar: Sequence[CalendarEvent],
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+    ):
+        intervals: List[Tuple[datetime, datetime]] = []
+        for event in calendar:
+            b_start, b_end = _as_aware(event.start), _as_aware(event.end)
+            # Событие, целиком лежащее вне окна, ни с одним кандидатом не пересечётся.
+            if start is not None and b_end <= start:
+                continue
+            if end is not None and b_start >= end:
+                continue
+            intervals.append((b_start, b_end))
+        intervals.sort()
+        starts: List[datetime] = []
+        ends: List[datetime] = []
+        for b_start, b_end in intervals:
+            if ends and b_start <= ends[-1]:
+                if b_end > ends[-1]:
+                    ends[-1] = b_end
+            else:
+                starts.append(b_start)
+                ends.append(b_end)
+        self.starts = starts
+        self.ends = ends
+
+    def __len__(self) -> int:
+        return len(self.starts)
+
+    def __iter__(self):
+        return iter(zip(self.starts, self.ends))
+
+    def overlaps(self, a_start: datetime, a_end: datetime) -> bool:
+        """[a_start, a_end) пересекает хоть одно занятое время (a_start < a_end)."""
+        index = bisect_right(self.ends, a_start)
+        return index < len(self.starts) and self.starts[index] < a_end
 
 
 def score_slot(
@@ -357,7 +450,6 @@ def free_slots(
     max_slots: int = 5,
 ) -> List[Slot]:
     """Ищет свободные слоты внутри окна, не пересекающиеся с календарём."""
-    busy = _busy_intervals(calendar)
     duration = timedelta(minutes=max(15, duration_minutes))
     step = timedelta(minutes=max(15, step_minutes))
     results: List[Slot] = []
@@ -365,6 +457,13 @@ def free_slots(
     # Округляем вверх до получаса, чтобы слоты выглядели по-человечески.
     if cursor.minute % 30:
         cursor = cursor.replace(minute=30, second=0, microsecond=0)
+    # Занятость — один раз на окно кандидатов; score_slot смотрит ещё 30 минут
+    # от начала слота, поэтому правая граница с запасом.
+    try:
+        busy_until: Optional[datetime] = window.end + max(duration, timedelta(minutes=30))
+    except OverflowError:  # окно у самой границы datetime.max — без правого фильтра
+        busy_until = None
+    busy = BusyIndex(calendar, min(cursor, window.start), busy_until)
     guard = 0
     while cursor + duration <= window.end and guard < 500:
         guard += 1
@@ -492,10 +591,10 @@ def offer_slots(
 
     work = frozenset(prefs.work_hours or DEFAULT_WORK_HOURS)
     preferred = frozenset(prefs.preferred_hours or [])
-    busy = _busy_intervals(calendar)
 
     window_start = _as_aware(window.start)
     window_end = _as_aware(window.end)
+    busy = BusyIndex(calendar, window_start, window_end)
     lead = max(timedelta(0), lead)
     cursor = _ceil_local_half_hour(max(window_start, now + lead), zone)
 
@@ -585,18 +684,26 @@ def weekly_series(
 ) -> List[Slot]:
     """Повторы встречи через interval_days в том же МЕСТНОМ времени владельца.
 
-    Первая встреча — ровно start. Дальше берётся местная дата + interval_days и то
-    же местное время; несуществующее время (переход на летнее) нормализуется
-    вперёд через UTC, неоднозначное (переход на зимнее) — первое из двух (fold=0).
+    Первая встреча — ровно start (в том числе второе из двух одинаковых местных
+    времён при переходе на зимнее: fold не теряется). Дальше берётся местная дата +
+    interval_days и то же местное время; несуществующее время (переход на летнее)
+    нормализуется вперёд через UTC, неоднозначное (переход на зимнее) — первое из
+    двух (fold=0).
     """
     zone = _zone(tz_name)
-    first = _as_aware(start).astimezone(zone)
+    origin = _as_aware(start).astimezone(timezone.utc)
+    first = origin.astimezone(zone)
     duration = timedelta(minutes=int(duration_minutes))
     result: List[Slot] = []
     for index in range(max(1, int(count))):
-        wall = first.replace(tzinfo=None) + timedelta(days=interval_days * index)
-        local = wall.replace(tzinfo=zone, fold=0)
-        begin = local.astimezone(timezone.utc)
+        if index == 0:
+            # Ровно start: пересборка из местного времени с fold=0 сдвинула бы
+            # второе «01:30» дня перехода на зимнее время на час раньше.
+            begin = origin
+        else:
+            wall = first.replace(tzinfo=None, fold=0) + timedelta(days=interval_days * index)
+            local = wall.replace(tzinfo=zone, fold=0)
+            begin = local.astimezone(timezone.utc)
         # Несуществующее местное время: astimezone «проскакивает» вперёд — так и оставляем,
         # но местную подпись берём из фактического момента.
         actual = begin.astimezone(zone)

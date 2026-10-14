@@ -25,7 +25,9 @@ psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_invites.sql  # пр
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_booking_referrals.sql  # запись и рефералы
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_rate_limits.sql  # общие лимиты
 # после обновления сервера: аккаунты PostgreSQL, обошедшие подтверждение email
-# (ошибка до октября 2026) — сначала отчёт, затем -v apply=1 [-v revoke=1]:
+# (ошибка до октября 2026) — сначала отчёт, затем -v apply=1 [-v revoke=1]
+# (apply=0 — только отчёт). Сбрасывать только при AURA_MAIL_DRIVER=smtp:
+# с log код подтверждения до пользователей не дойдёт.
 psql aura -f tools/sql/unverified_accounts.sql
 # демо-данные (необязательно):
 psql aura -f schema/seed.sql

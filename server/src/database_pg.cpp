@@ -1810,6 +1810,71 @@ public:
     }
 
 private:
+    // ----------------------------------------------------------- rate_limits
+    bool sharedRateLimits() const override { return true; }
+
+    int rateLimitHit(const std::string& key, int windowSec) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // Истёкшие окна чистим изредка, чтобы таблица не росла от уникальных ключей.
+        if (++rateHits_ % 1000 == 0) {
+            execute("DELETE FROM rate_limits WHERE window_start + make_interval(secs => window_sec) < now()", {},
+                    nullptr);
+        }
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO rate_limits (key, count, window_start, window_sec) VALUES ($1, 1, now(), $2::int) "
+                     "ON CONFLICT (key) DO UPDATE SET "
+                     "count = CASE WHEN rate_limits.window_start + make_interval(secs => rate_limits.window_sec) "
+                     "< now() THEN 1 ELSE rate_limits.count + 1 END, "
+                     "window_start = CASE WHEN rate_limits.window_start + make_interval(secs => rate_limits.window_sec) "
+                     "< now() THEN now() ELSE rate_limits.window_start END, "
+                     "window_sec = CASE WHEN rate_limits.window_start + make_interval(secs => rate_limits.window_sec) "
+                     "< now() THEN EXCLUDED.window_sec ELSE rate_limits.window_sec END "
+                     "RETURNING count",
+                     {key, std::to_string(windowSec > 0 ? windowSec : 1)}, &result)) {
+            return 0;
+        }
+        const int count = PQntuples(result) > 0 ? std::atoi(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return count;
+    }
+
+    int rateLimitCount(const std::string& key) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT count FROM rate_limits WHERE key = $1 "
+                     "AND window_start + make_interval(secs => window_sec) >= now()",
+                     {key}, &result)) {
+            return 0;
+        }
+        const int count = PQntuples(result) > 0 ? std::atoi(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return count;
+    }
+
+    void rateLimitClear(const std::string& key) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        execute("DELETE FROM rate_limits WHERE key = $1", {key}, nullptr);
+    }
+
+    // Advisory lock на соединении сервера: ключ — пространство Aura (старшие биты) + id владельца.
+    static std::string scheduleLockKey(long long ownerId) {
+        return std::to_string((0x4155LL << 40) | (ownerId & ((1LL << 40) - 1)));
+    }
+
+    bool tryLockSchedule(long long ownerId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT pg_try_advisory_lock($1::bigint)", {scheduleLockKey(ownerId)}, &result)) return false;
+        const bool locked = PQntuples(result) > 0 && value_(result, 0, 0) == "t";
+        PQclear(result);
+        return locked;
+    }
+
+    void unlockSchedule(long long ownerId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        execute("SELECT pg_advisory_unlock($1::bigint)", {scheduleLockKey(ownerId)}, nullptr);
+    }
+
     // --------------------------------------------------------- booking_pages
     DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) override {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -2357,6 +2422,7 @@ private:
     mutable std::mutex mutex_;
     PGconn* connection_ = nullptr;
     std::string lastError_;
+    unsigned long long rateHits_ = 0;  // счётчик вызовов rateLimitHit — для редкой чистки
 };
 
 }  // namespace

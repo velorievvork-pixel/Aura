@@ -35,6 +35,7 @@ class MailProvider;
 class MemoryManager;
 class NotificationsManager;
 class ReferralManager;
+class ScheduleLock;
 struct BookingPageRecord;
 struct BookingRecord;
 struct Config;
@@ -65,7 +66,7 @@ public:
     static constexpr int kResendPerMinute = 5;
 
     BookingManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
-                   ReferralManager& referrals, const Config& config);
+                   ReferralManager& referrals, ScheduleLock& scheduleLock, const Config& config);
     ~BookingManager();
 
     // Владелец (нужен вход).
@@ -148,9 +149,9 @@ private:
     const Config& config_;
     std::unique_ptr<MailProvider> mail_;
 
-    // Запись, перенос и отмена: проверка «свободно» и сохранение — под одной
-    // блокировкой, чтобы два гостя не заняли одно время одновременно.
-    std::mutex changeMutex_;
+    // Запись, перенос и отмена: проверка «свободно» и сохранение — под блокировкой
+    // расписания владельца (общей с invite.respond и с другими экземплярами сервера).
+    ScheduleLock& schedule_;
 
     std::mutex cacheMutex_;
     std::unordered_map<long long, Cached> cache_;

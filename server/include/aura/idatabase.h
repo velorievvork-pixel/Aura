@@ -560,6 +560,19 @@ public:
     // Журнал аудита страницами: userId 0 — все записи; beforeId 0 — с самых новых.
     virtual std::vector<AuditRecord> listAuditPage(long long userId, long long beforeId, int limit) = 0;
 
+    // Общие для всех экземпляров сервера счётчики попыток (вход, коды, лимиты гостей).
+    // По умолчанию (встроенное хранилище — один процесс) не поддерживаются: менеджеры
+    // считают в памяти. PostgreSQL — таблица rate_limits.
+    virtual bool sharedRateLimits() const { return false; }
+    // Засчитать событие в окне windowSec; возвращает число событий в текущем окне.
+    virtual int rateLimitHit(const std::string& /*key*/, int /*windowSec*/) { return 0; }
+    // Событий в текущем окне (0 — окна нет или оно истекло).
+    virtual int rateLimitCount(const std::string& /*key*/) { return 0; }
+    virtual void rateLimitClear(const std::string& /*key*/) {}
+    // Межпроцессная блокировка расписания владельца (ScheduleLock). true — захвачена.
+    virtual bool tryLockSchedule(long long /*ownerId*/) { return true; }
+    virtual void unlockSchedule(long long /*ownerId*/) {}
+
     // Страницы записи (booking.*).
     virtual DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) = 0;
     virtual std::optional<BookingPageRecord> findBookingPage(long long id) = 0;

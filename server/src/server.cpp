@@ -157,8 +157,11 @@ bool Server::start(std::string& error) {
     taskManager_ = std::make_unique<TaskManager>(*database_, connections_);
     admin_ = std::make_unique<AdminManager>(*database_, config_);
     referrals_ = std::make_unique<ReferralManager>(*database_, notifications_.get(), config_);
-    invites_ = std::make_unique<InviteManager>(*database_, *memory_, notifications_.get(), config_, referrals_.get());
-    bookings_ = std::make_unique<BookingManager>(*database_, *memory_, notifications_.get(), *referrals_, config_);
+    scheduleLock_ = std::make_unique<ScheduleLock>(*database_);
+    invites_ = std::make_unique<InviteManager>(*database_, *memory_, notifications_.get(), config_, referrals_.get(),
+                                               scheduleLock_.get());
+    bookings_ = std::make_unique<BookingManager>(*database_, *memory_, notifications_.get(), *referrals_,
+                                                 *scheduleLock_, config_);
     admin_->bootstrapAll();
 
     registerHandlers();

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <vector>
 
 #include "aura/config.h"
@@ -13,6 +14,7 @@
 #include "aura/net.h"
 #include "aura/protocol.h"
 #include "aura/referralmanager.h"
+#include "aura/schedulelock.h"
 #include "aura/session.h"
 #include "notificationsmanager.h"
 
@@ -84,8 +86,13 @@ Json slotJson(std::time_t start, std::time_t end) {
 }  // namespace
 
 InviteManager::InviteManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
-                             const Config& config, ReferralManager* referrals)
-    : database_(database), memory_(memory), notifications_(notifications), config_(config), referrals_(referrals) {}
+                             const Config& config, ReferralManager* referrals, ScheduleLock* scheduleLock)
+    : database_(database),
+      memory_(memory),
+      notifications_(notifications),
+      config_(config),
+      referrals_(referrals),
+      scheduleLock_(scheduleLock) {}
 
 std::string InviteManager::tokenHash(const std::string& token) {
     if (token.size() != kTokenLength) return "";
@@ -162,6 +169,7 @@ bool InviteManager::isFree(const Busy& busy, std::time_t start, std::time_t end)
 }
 
 bool InviteManager::limited(const std::string& key, int perMinute) {
+    if (database_.db().sharedRateLimits()) return database_.db().rateLimitHit(key, 60) > perMinute;
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(limitsMutex_);
     if (limits_.size() > 10000) {
@@ -364,7 +372,16 @@ InviteManager::Result InviteManager::respond(const Json& payload, const std::str
         return Result::failure(protocol::code::kBadRequest, "комментарий — не больше 500 символов");
     }
 
-    std::lock_guard<std::mutex> lock(respondMutex_);
+    // Проверка «свободно» и запись встречи — под блокировкой расписания владельца
+    // (общей с booking.*; между экземплярами сервера — через PostgreSQL).
+    std::unique_lock<std::mutex> localLock(respondMutex_, std::defer_lock);
+    std::optional<ScheduleLock::Guard> scheduleLock;
+    if (scheduleLock_) {
+        scheduleLock.emplace(scheduleLock_->acquire(record->ownerId));
+        if (!scheduleLock->ok()) return Result::failure(protocol::code::kConflict, "сервер занят — попробуйте ещё раз");
+    } else {
+        localLock.lock();
+    }
     const std::time_t now = std::time(nullptr);
     const std::string status = effectiveStatus(*record, now);
     if (status == "expired") return Result::failure(protocol::code::kConflict, "срок приглашения истёк");

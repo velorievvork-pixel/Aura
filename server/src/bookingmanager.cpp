@@ -16,6 +16,7 @@
 #include "aura/net.h"
 #include "aura/protocol.h"
 #include "aura/referralmanager.h"
+#include "aura/schedulelock.h"
 #include "aura/session.h"
 #include "notificationsmanager.h"
 
@@ -143,13 +144,14 @@ Json occurrenceView(const Json& occurrence) {
 }  // namespace
 
 BookingManager::BookingManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
-                               ReferralManager& referrals, const Config& config)
+                               ReferralManager& referrals, ScheduleLock& scheduleLock, const Config& config)
     : database_(database),
       memory_(memory),
       notifications_(notifications),
       referrals_(referrals),
       config_(config),
-      mail_(makeMailProvider(config)) {}
+      mail_(makeMailProvider(config)),
+      schedule_(scheduleLock) {}
 
 BookingManager::~BookingManager() = default;
 
@@ -217,6 +219,7 @@ bool BookingManager::validSlug(const std::string& slug) {
 }
 
 bool BookingManager::limited(const std::string& key, int perWindow, int windowSeconds) {
+    if (database_.db().sharedRateLimits()) return database_.db().rateLimitHit(key, windowSeconds) > perWindow;
     const auto now = std::chrono::steady_clock::now();
     const auto window = std::chrono::seconds(windowSeconds);
     std::lock_guard<std::mutex> lock(limitsMutex_);
@@ -779,7 +782,8 @@ int BookingManager::cancelOccurrences(BookingRecord& booking, int index, std::ti
 
 BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json& payload) {
     const long long id = payload.getInt("booking_id");
-    std::lock_guard<std::mutex> lock(changeMutex_);
+    auto lock = schedule_.acquire(ownerId);
+    if (!lock.ok()) return Result::failure(protocol::code::kConflict, "сервер занят — попробуйте ещё раз");
     auto booking = id > 0 ? database_.db().findBooking(id) : std::nullopt;
     if (!booking || booking->ownerId != ownerId) return Result::failure(protocol::code::kNotFound, "запись не найдена");
     if (booking->status != "active") return Result::failure(protocol::code::kConflict, "запись уже отменена");
@@ -902,7 +906,12 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     const auto offered = std::find_if(candidates.begin(), candidates.end(),
                                       [wanted](const Offer& o) { return o.start == wanted; });
     if (offered == candidates.end()) {
-        return Result::failure(protocol::code::kBadRequest, "этого времени нет среди свободных");
+        // Время могли занять только что (другой экземпляр сервера уже получил от AI
+        // список без него) — для гостя это «занято», а не ошибка запроса.
+        const std::time_t until = wanted + static_cast<std::time_t>(page->durationMinutes) * 60;
+        return isFree(memory_.busy(page->ownerId), wanted, until)
+                   ? Result::failure(protocol::code::kBadRequest, "этого времени нет среди свободных")
+                   : Result::failure(protocol::code::kConflict, "это время уже занято — выберите другое");
     }
     // Серия: та же встреча каждую неделю в том же местном времени владельца
     // (AI-сервис считает её в поясе владельца) — до блокировки, чтобы сетевой
@@ -912,7 +921,8 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         return Result::failure(protocol::code::kUpstream, "не удалось рассчитать серию встреч — попробуйте позже");
     }
 
-    std::lock_guard<std::mutex> lock(changeMutex_);
+    auto lock = schedule_.acquire(page->ownerId);
+    if (!lock.ok()) return Result::failure(protocol::code::kConflict, "сервер занят — попробуйте ещё раз");
     const auto free = available(*page, candidates);
     if (std::none_of(free.begin(), free.end(), [wanted](const Offer& o) { return o.start == wanted; })) {
         return Result::failure(protocol::code::kConflict, "это время уже занято — выберите другое");
@@ -1033,7 +1043,8 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
         return Result::failure(protocol::code::kUpstream, "не удалось проверить свободное время — попробуйте позже");
     }
 
-    std::lock_guard<std::mutex> lock(changeMutex_);
+    auto lock = schedule_.acquire(page->ownerId);
+    if (!lock.ok()) return Result::failure(protocol::code::kConflict, "сервер занят — попробуйте ещё раз");
     booking = database_.db().findBookingByToken(hash);  // перечитываем под блокировкой
     if (!booking || booking->status != "active") return Result::failure(protocol::code::kConflict, "запись отменена");
     if (booking->reschedules >= kMaxReschedules) {
@@ -1110,8 +1121,11 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
         return Result::failure(protocol::code::kBadRequest, "причина — не больше 500 символов");
     }
     const std::string hash = tokenHash(payload.getString("token"));
-    std::lock_guard<std::mutex> lock(changeMutex_);
     auto booking = hash.empty() ? std::nullopt : database_.db().findBookingByToken(hash);
+    if (!booking) return Result::failure(protocol::code::kNotFound, "запись не найдена");
+    auto lock = schedule_.acquire(booking->ownerId);
+    if (!lock.ok()) return Result::failure(protocol::code::kConflict, "сервер занят — попробуйте ещё раз");
+    booking = database_.db().findBookingByToken(hash);  // перечитываем под блокировкой
     const auto page = booking ? database_.db().findBookingPage(booking->pageId) : std::nullopt;
     if (!booking || !page) return Result::failure(protocol::code::kNotFound, "запись не найдена");
     if (booking->status != "active") return Result::failure(protocol::code::kConflict, "запись уже отменена");
@@ -1165,7 +1179,8 @@ BookingManager::Result BookingManager::resendLink(const Json& payload, const std
     if (!page || page->status == "archived") return result;
 
     const std::time_t now = std::time(nullptr);
-    std::lock_guard<std::mutex> lock(changeMutex_);
+    auto lock = schedule_.acquire(page->ownerId);
+    if (!lock.ok()) return result;
     for (auto booking : database_.db().listBookings(page->ownerId, page->id, true, 1000)) {
         std::string guest = booking.guestEmail;
         std::transform(guest.begin(), guest.end(), guest.begin(),

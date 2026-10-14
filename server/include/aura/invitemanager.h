@@ -25,6 +25,7 @@ class DatabaseManager;
 class MemoryManager;
 class NotificationsManager;
 class ReferralManager;
+class ScheduleLock;
 struct Config;
 struct InviteRecord;
 
@@ -50,7 +51,8 @@ public:
 
     // referrals (может быть nullptr) — код владельца в виде гостя (ссылка «Заведите свою Ауру»).
     InviteManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
-                  const Config& config, ReferralManager* referrals = nullptr);
+                  const Config& config, ReferralManager* referrals = nullptr,
+                  ScheduleLock* scheduleLock = nullptr);
 
     // Владелец (нужен вход).
     Result create(long long ownerId, const Json& payload);
@@ -83,6 +85,7 @@ private:
     NotificationsManager* notifications_;
     const Config& config_;
     ReferralManager* referrals_;
+    ScheduleLock* scheduleLock_;  // nullptr — только respondMutex_ (один процесс)
 
     // Выбор времени: проверка «свободно» и запись встречи — под одной блокировкой,
     // чтобы два гостя разных приглашений не заняли одно время одновременно.

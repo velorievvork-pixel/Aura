@@ -23,6 +23,7 @@ psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_09_20_notifications.sql
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_13_roles.sql   # роли админ-панели
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_invites.sql  # приглашения по ссылке
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_booking_referrals.sql  # запись и рефералы
+psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_rate_limits.sql  # общие лимиты
 # после обновления сервера: аккаунты PostgreSQL, обошедшие подтверждение email
 # (ошибка до октября 2026) — сначала отчёт, затем -v apply=1 [-v revoke=1]:
 psql aura -f tools/sql/unverified_accounts.sql
@@ -272,3 +273,20 @@ CI (GitHub Actions, `.github/workflows/ci.yml`) на каждый push гоня�
 локальные проверки из [TESTING.md](TESTING.md).
 
 Частые проблемы — [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+## Несколько экземпляров сервера
+
+На общем PostgreSQL можно запускать несколько `aura-server` за балансировщиком
+(WebSocket — с привязкой клиента к экземпляру на время соединения):
+
+- счётчики попыток (вход, коды из писем, 2FA, лимиты `invite.*`/`booking.*`)
+  общие — таблица `rate_limits`; перебор «по кругу» через экземпляры не
+  обходит лимиты;
+- запись встречи (`invite.respond`, `booking.book/reschedule/cancel`) идёт под
+  advisory lock'ом владельца — два экземпляра не займут одно время;
+- отзыв сессий на другом экземпляре закрывает соединения не мгновенно, а при
+  перепроверке сессии (`AURA_AUTH_RECHECK`, по умолчанию 15 с);
+- кэш свободного времени страниц записи — свой у каждого экземпляра (до
+  минуты); правильность записи от него не зависит: занятость проверяется по БД.
+
+Встроенное хранилище (без `AURA_DATABASE_URL`) — только для одного процесса.

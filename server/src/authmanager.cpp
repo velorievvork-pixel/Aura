@@ -290,6 +290,9 @@ std::string AuthManager::ipKey(const std::string& remoteAddr) {
 
 bool AuthManager::overLimit(const std::string& key, int limit) {
     if (key.empty() || limit <= 0) return false;
+    // Несколько экземпляров сервера на общем PostgreSQL: счётчики в БД, иначе
+    // перебор шёл бы «по кругу» через разные экземпляры.
+    if (database_.db().sharedRateLimits()) return database_.db().rateLimitCount("auth:" + key) >= limit;
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(attemptsMutex_);
     const auto it = attempts_.find(key);
@@ -304,6 +307,7 @@ bool AuthManager::overLimit(const std::string& key, int limit) {
 
 int AuthManager::hit(const std::string& key, int windowSec) {
     if (key.empty()) return 0;
+    if (database_.db().sharedRateLimits()) return database_.db().rateLimitHit("auth:" + key, std::max(1, windowSec));
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(attemptsMutex_);
     // Чистка большой таблицы — не чаще раза в секунду или когда она выросла
@@ -327,6 +331,10 @@ int AuthManager::hit(const std::string& key, int windowSec) {
 }
 
 void AuthManager::clearKey(const std::string& key) {
+    if (database_.db().sharedRateLimits()) {
+        database_.db().rateLimitClear("auth:" + key);
+        return;
+    }
     std::lock_guard<std::mutex> lock(attemptsMutex_);
     attempts_.erase(key);
 }

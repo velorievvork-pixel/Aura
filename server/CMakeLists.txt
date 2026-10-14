@@ -32,6 +32,7 @@ set(AURA_SOURCES
     src/invitemanager.cpp
     src/bookingmanager.cpp
     src/referralmanager.cpp
+    src/schedulelock.cpp
     src/agentmanager.cpp
     src/authmanager.cpp
     src/chatmanager.cpp
@@ -66,6 +67,7 @@ set(AURA_HEADERS
     include/aura/invitemanager.h
     include/aura/bookingmanager.h
     include/aura/referralmanager.h
+    include/aura/schedulelock.h
     include/aura/agentmanager.h
     include/aura/authmanager.h
     include/aura/chatmanager.h

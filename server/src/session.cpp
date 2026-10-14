@@ -156,7 +156,10 @@ void Session::readLoop(const MessageHandler& handler) {
                 std::lock_guard<std::mutex> lock(authMutex_);
                 since = unauthSince_;
             }
-            if (std::chrono::duration_cast<std::chrono::seconds>(now - since).count() >= config_.authTimeoutSec) {
+            // Гостевые страницы (invite.*, booking.*) — до 30 минут на соединение.
+            const long long limit = guest() ? std::max<long long>(config_.authTimeoutSec, kGuestTimeoutSec)
+                                            : config_.authTimeoutSec;
+            if (std::chrono::duration_cast<std::chrono::seconds>(now - since).count() >= limit) {
                 AURA_LOG(log::Level::Info, "session") << sessionId_ << " не авторизовался вовремя, закрываю";
                 close(4408, "authentication timeout");
                 break;

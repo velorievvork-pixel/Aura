@@ -459,7 +459,9 @@ guest_comment, status (active | cancelled), cancelled_by ("" | guest | owner),
 reschedules, occurrences: [{start, end, local, status (active | cancelled)}],
 created_at, updated_at}`.
 
-Методы гостя (публичные, без входа):
+Методы гостя (публичные, без входа). Соединение без входа сервер закрывает
+через `AURA_AUTH_TIMEOUT` (30 с), но если по нему вызывались гостевые методы
+`invite.*` / `booking.*` — только через 30 минут: гость успевает выбрать время.
 
 | тип | payload | ответ |
 | --- | --- | --- |

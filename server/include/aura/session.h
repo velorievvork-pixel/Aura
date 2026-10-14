@@ -40,6 +40,11 @@ public:
     void authenticate(long long userId, std::string displayName, std::string email, std::string jwtId);
     void resetAuth();
     bool authenticated() const { return userId_.load() != 0; }
+    // Соединение гостя (страница приглашения или записи без входа): ему положено
+    // жить дольше AURA_AUTH_TIMEOUT — человек читает страницу и выбирает время.
+    void markGuest() { guest_.store(true); }
+    static constexpr long long kGuestTimeoutSec = 30 * 60;
+    bool guest() const { return guest_.load(); }
     long long userId() const { return userId_.load(); }
     std::string displayName() const;
     std::string email() const;
@@ -80,6 +85,7 @@ private:
     std::string jwtId_;
     std::chrono::steady_clock::time_point lastAuthCheck_;
     std::chrono::steady_clock::time_point unauthSince_;  // с какого момента соединение без входа
+    std::atomic<bool> guest_{false};                     // пользовалось гостевыми методами
     std::string userAgent_;
     std::string authorization_;
     std::chrono::steady_clock::time_point lastActivity_;

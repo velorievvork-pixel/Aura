@@ -344,6 +344,11 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
                                "неизвестный тип сообщения: " + request.type);
     }
 
+    if (!session->authenticated() &&
+        (request.type.rfind("invite.", 0) == 0 || request.type.rfind("booking.", 0) == 0) &&
+        protocol::isPublicType(request.type)) {
+        session->markGuest();
+    }
     if (!protocol::isPublicType(request.type)) {
         // Открытое соединение не живёт дольше своей сессии: отзыв, истечение
         // срока или блокировка аккаунта видны не позже чем через AURA_AUTH_RECHECK.

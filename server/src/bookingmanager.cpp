@@ -192,7 +192,7 @@ void BookingManager::mailGuest(const BookingRecord& booking, const BookingPageRe
     if (!link.empty()) {
         notice.linkUrl = link;
         notice.linkText = "Перенести или отменить";
-    } else if (token.empty() && page.status == "active" && !config_.publicUrl.empty()) {
+    } else if (kind == "booking.owner_cancelled" && page.status == "active" && !config_.publicUrl.empty()) {
         notice.linkUrl = config_.publicUrl + "/#/b/" + page.slug;
         notice.linkText = "Выбрать другое время";
     }

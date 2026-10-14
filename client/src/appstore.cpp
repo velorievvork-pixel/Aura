@@ -58,6 +58,16 @@ QVariantList jsonToStringList(const QJsonArray& array) {
     for (const auto& value : array) list.append(value.toString());
     return list;
 }
+// Текст для экрана входа по причине из события session.revoked.
+QString revokedMessage(const QString& reason) {
+    if (reason == QLatin1String("password_changed") || reason == QLatin1String("password_reset"))
+        return QStringLiteral("Пароль изменён — войдите снова");
+    if (reason == QLatin1String("account_disabled"))
+        return QStringLiteral("Аккаунт заблокирован администратором");
+    if (reason == QLatin1String("logout"))
+        return QStringLiteral("Вы вышли из аккаунта на другом устройстве");
+    return QStringLiteral("Сессия завершена — войдите снова");
+}
 }  // namespace
 
 AppStore::~AppStore() = default;
@@ -196,18 +206,7 @@ void AppStore::applyAuth(const QJsonObject& payload) {
                                  : payload;
     const bool firstTime = userId_ == 0;
 
-    if (!payload.value(QStringLiteral("token")).toString().isEmpty()) {
-        token_ = payload.value(QStringLiteral("token")).toString();
-        QSettings settings;
-        settings.setValue(QLatin1String(kTokenKey), token_);
-        client_->setToken(token_);
-    }
-    const QString refresh = payload.value(QStringLiteral("refresh_token")).toString();
-    if (!refresh.isEmpty()) {
-        refreshToken_ = refresh;
-        QSettings settings;
-        settings.setValue(QLatin1String(kRefreshKey), refreshToken_);
-    }
+    storeTokens(payload);
     // Успешная авторизация гасит ожидания кодов.
     if (!pendingEmail_.isEmpty() || !devEmailCode_.isEmpty() || !devResetCode_.isEmpty()) {
         pendingEmail_.clear();
@@ -252,6 +251,21 @@ void AppStore::applyAuth(const QJsonObject& payload) {
     loadNotifications(); // этап 13
     loadPushDevices();   // этап 13
     setStatus(QStringLiteral("Добро пожаловать, %1").arg(userName_));
+}
+
+void AppStore::storeTokens(const QJsonObject& payload) {
+    if (!payload.value(QStringLiteral("token")).toString().isEmpty()) {
+        token_ = payload.value(QStringLiteral("token")).toString();
+        QSettings settings;
+        settings.setValue(QLatin1String(kTokenKey), token_);
+        client_->setToken(token_);
+    }
+    const QString refresh = payload.value(QStringLiteral("refresh_token")).toString();
+    if (!refresh.isEmpty()) {
+        refreshToken_ = refresh;
+        QSettings settings;
+        settings.setValue(QLatin1String(kRefreshKey), refreshToken_);
+    }
 }
 
 void AppStore::clearSession() {
@@ -532,6 +546,10 @@ void AppStore::changePassword(const QString& oldPassword, const QString& newPass
                                  setError(error);
                                  return;
                              }
+                             // Сервер отозвал все сессии и refresh-токены, включая наши, и выдал
+                             // этому устройству новую пару — без неё следующий вход по токену
+                             // (переподключение, перезапуск) выкинул бы на экран входа.
+                             storeTokens(response.value(QStringLiteral("payload")).toObject());
                              setStatus(QStringLiteral("Пароль изменён, прочие устройства отключены"));
                          });
 }
@@ -1078,6 +1096,15 @@ void AppStore::loadMemory() {
 }
 
 void AppStore::handleEvent(const QString& name, const QJsonObject& payload) {
+    if (name == QLatin1String("session.revoked")) {
+        // Сессию этого соединения отозвали (выход/смена пароля на другом устройстве,
+        // блокировка) — сервер сейчас закроет сокет кодом 4401. Токены мертвы:
+        // не ждём переподключения, сразу возвращаемся на экран входа.
+        const QString reason = payload.value(QStringLiteral("reason")).toString();
+        clearSession();
+        setStatus(revokedMessage(reason));
+        return;
+    }
     if (name == QLatin1String("chat.message")) {
         const qint64 chatId = static_cast<qint64>(payload.value(QStringLiteral("chat_id")).toDouble());
         if (chatId == currentChatId_) {
@@ -1892,8 +1919,16 @@ void AppStore::bookNegotiation() {
                                  setError(error);
                                  return;
                              }
-                             negotiation_.insert(QStringLiteral("booking"),
-                                                 response.value(QStringLiteral("payload")).toObject().toVariantMap());
+                             const QJsonObject booking = response.value(QStringLiteral("payload")).toObject();
+                             if (booking.value(QStringLiteral("requires_confirmation")).toBool()) {
+                                 // Режим «ask»: сервер ничего не забронировал, а создал отложенное
+                                 // действие. Встречу в задачи не ставим — ждём подтверждения.
+                                 emit negotiationChanged();
+                                 loadConfirmations();
+                                 setStatus(QStringLiteral("Бронирование ждёт вашего подтверждения"));
+                                 return;
+                             }
+                             negotiation_.insert(QStringLiteral("booking"), booking.toVariantMap());
                              if (!negotiationHistory_.isEmpty()) negotiationHistory_[0] = negotiation_;
                              emit negotiationChanged();
 

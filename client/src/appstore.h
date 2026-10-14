@@ -329,6 +329,7 @@ signals:
 private:
     void handleEvent(const QString& name, const QJsonObject& payload);
     void applyAuth(const QJsonObject& payload);
+    void storeTokens(const QJsonObject& payload);  // token/refresh_token из ответа, если есть
     void tryRefresh();  // обмен refresh-токена на новую пару при старте
     void clearSession();
     void setBusy(bool busy);

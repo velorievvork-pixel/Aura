@@ -312,6 +312,9 @@ struct BookingRecord {
     std::string updatedAt;
 };
 
+// Конец последней активной встречи записи (ISO UTC) или "" — активных нет.
+std::string bookingEndsAt(const Json& occurrences);
+
 // Приглашённый по реферальной ссылке (referral.*).
 struct ReferralRecord {
     long long referrerId = 0;
@@ -588,6 +591,10 @@ public:
     // Записи владельца (pageId = 0 — всех страниц), новые сверху; activeOnly — без отменённых.
     virtual std::vector<BookingRecord> listBookings(long long ownerId, long long pageId, bool activeOnly,
                                                     int limit) = 0;
+    // Активные записи с предстоящими встречами (конец последней активной встречи позже
+    // текущего момента; в PostgreSQL — колонка ends_at с индексом). Прошедшие записи
+    // остаются active навсегда — без этого фильтра они вытесняли бы будущие из лимита.
+    virtual std::vector<BookingRecord> listUpcomingBookings(long long ownerId, long long pageId, int limit) = 0;
     // Перезаписывает occurrences, status, cancelled_by, reschedules и непустой manage_hash
     // (новая ссылка управления); updated_at = now.
     virtual DatabaseError updateBooking(const BookingRecord& record) = 0;

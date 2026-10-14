@@ -300,7 +300,7 @@ void BookingManager::ownerInfo(long long ownerId, std::string& name, std::string
 Json BookingManager::pageJson(const BookingPageRecord& page) {
     const std::time_t now = std::time(nullptr);
     long long upcoming = 0;
-    for (const auto& booking : database_.db().listBookings(page.ownerId, page.id, true, 1000)) {
+    for (const auto& booking : database_.db().listUpcomingBookings(page.ownerId, page.id, 5000)) {
         for (const auto& occurrence : booking.occurrences.items()) {
             std::time_t start = 0;
             if (occurrence.getString("status") == "active" && parseIsoUtc(occurrence.getString("start"), start) &&
@@ -546,7 +546,7 @@ bool BookingManager::series(const BookingPageRecord& page, const Offer& first, i
 std::unordered_map<std::string, int> BookingManager::dayCounts(const BookingPageRecord& page, long long skipBooking,
                                                                const std::string& skipStart) {
     std::unordered_map<std::string, int> counts;
-    for (const auto& booking : database_.db().listBookings(page.ownerId, page.id, true, 1000)) {
+    for (const auto& booking : database_.db().listUpcomingBookings(page.ownerId, page.id, 5000)) {
         for (const auto& occurrence : booking.occurrences.items()) {
             if (occurrence.getString("status") != "active") continue;
             if (booking.id == skipBooking && occurrence.getString("start") == skipStart) continue;
@@ -1260,7 +1260,7 @@ BookingManager::Result BookingManager::resendLink(const Json& payload, const std
     const std::time_t now = std::time(nullptr);
     auto lock = schedule_.acquire(page->ownerId);
     if (!lock.ok()) return result;
-    for (auto booking : database_.db().listBookings(page->ownerId, page->id, true, 1000)) {
+    for (auto booking : database_.db().listUpcomingBookings(page->ownerId, page->id, 1000)) {
         std::string guest = booking.guestEmail;
         std::transform(guest.begin(), guest.end(), guest.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });

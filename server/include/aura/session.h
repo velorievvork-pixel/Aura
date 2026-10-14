@@ -42,9 +42,11 @@ public:
     bool authenticated() const { return userId_.load() != 0; }
     // Соединение гостя (страница приглашения или записи без входа): ему положено
     // жить дольше AURA_AUTH_TIMEOUT — человек читает страницу и выбирает время.
-    void markGuest() { guest_.store(true); }
-    static constexpr long long kGuestTimeoutSec = 30 * 60;
-    bool guest() const { return guest_.load(); }
+    // Отмечается только успешным гостевым вызовом; срок считается от последнего
+    // такого вызова (мусорный запрос не продлевает анонимный сокет).
+    void markGuest();
+    static constexpr long long kGuestIdleSec = 10 * 60;
+    bool guest() const { return lastGuestMs_.load() != 0; }
     long long userId() const { return userId_.load(); }
     std::string displayName() const;
     std::string email() const;
@@ -85,7 +87,7 @@ private:
     std::string jwtId_;
     std::chrono::steady_clock::time_point lastAuthCheck_;
     std::chrono::steady_clock::time_point unauthSince_;  // с какого момента соединение без входа
-    std::atomic<bool> guest_{false};                     // пользовалось гостевыми методами
+    std::atomic<long long> lastGuestMs_{0};              // steady_clock, мс: последний гостевой вызов
     std::string userAgent_;
     std::string authorization_;
     std::chrono::steady_clock::time_point lastActivity_;

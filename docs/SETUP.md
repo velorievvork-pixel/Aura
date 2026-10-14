@@ -24,6 +24,7 @@ psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_13_roles.sql   # ро�
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_invites.sql  # приглашения по ссылке
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_booking_referrals.sql  # запись и рефералы
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_rate_limits.sql  # общие лимиты
+psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_15_audit_fixes.sql  # ends_at записей, UNLOGGED rate_limits
 # после обновления сервера: аккаунты PostgreSQL, обошедшие подтверждение email
 # (ошибка до октября 2026) — сначала отчёт, затем -v apply=1 [-v revoke=1]
 # (apply=0 — только отчёт). Сбрасывать только при AURA_MAIL_DRIVER=smtp:

@@ -22,6 +22,7 @@
 #include "aura/idatabase.h"
 #include "aura/json.h"
 #include "aura/log.h"
+#include "aura/memorymanager.h"  // isoUtc
 
 namespace aura {
 
@@ -897,8 +898,13 @@ public:
             record.updatedAt = entry.getString("updated_at");
             result.push_back(record);
         }
-        std::sort(result.begin(), result.end(),
-                  [](const MemoryRecord& a, const MemoryRecord& b) { return a.weight > b.weight; });
+        // Тот же порядок, что в PostgreSQL (вес, свежесть, id): при обрезке по limit
+        // оба хранилища оставляют одни и те же записи.
+        std::sort(result.begin(), result.end(), [](const MemoryRecord& a, const MemoryRecord& b) {
+            if (a.weight != b.weight) return a.weight > b.weight;
+            if (a.updatedAt != b.updatedAt) return a.updatedAt > b.updatedAt;
+            return a.id > b.id;
+        });
         if (static_cast<int>(result.size()) > limit) result.resize(static_cast<std::size_t>(limit));
         return result;
     }
@@ -1099,8 +1105,12 @@ public:
         entry.set("notes", Json(record.notes));
         entry.set("status", Json(record.status.empty() ? std::string("pending") : record.status));
         entry.set("priority", Json(record.priority));
-        entry.set("due_at", Json(record.dueAt));
-        entry.set("remind_at", Json(record.remindAt));
+        // Формат как у PostgreSQL (to_char … MS): «…:SSZ» → «…:SS.000Z».
+        const auto withMillis = [](const std::string& iso) {
+            return iso.size() == 20 && iso.back() == 'Z' ? iso.substr(0, 19) + ".000Z" : iso;
+        };
+        entry.set("due_at", Json(withMillis(record.dueAt)));
+        entry.set("remind_at", Json(withMillis(record.remindAt)));
         entry.set("reminded_at", Json(record.remindedAt));
         entry.set("created_at", Json(isoNow()));
         entry.set("completed_at", Json(record.completedAt));
@@ -1795,6 +1805,22 @@ private:
             if (it->getInt("owner_id") != ownerId) continue;
             if (pageId > 0 && it->getInt("page_id") != pageId) continue;
             if (activeOnly && it->getString("status") != "active") continue;
+            result.push_back(toBooking(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    std::vector<BookingRecord> listUpcomingBookings(long long ownerId, long long pageId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const std::string now = isoUtc(std::time(nullptr));
+        std::vector<BookingRecord> result;
+        const auto& entries = table("bookings").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId || it->getString("status") != "active") continue;
+            if (pageId > 0 && it->getInt("page_id") != pageId) continue;
+            const std::string ends = bookingEndsAt(it->get("occurrences"));
+            if (ends.empty() || ends <= now) continue;  // ISO UTC одного формата сравнивается как строка
             result.push_back(toBooking(*it));
             if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
         }

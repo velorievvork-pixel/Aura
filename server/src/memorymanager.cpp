@@ -378,7 +378,7 @@ std::vector<std::pair<std::time_t, std::time_t>> MemoryManager::busy(long long u
 std::vector<std::pair<Json, std::pair<std::time_t, std::time_t>>> MemoryManager::bookingEvents(long long userId) {
     std::vector<std::pair<Json, std::pair<std::time_t, std::time_t>>> events;
     const std::time_t now = std::time(nullptr);
-    for (const auto& booking : database_.db().listBookings(userId, 0, true, 500)) {
+    for (const auto& booking : database_.db().listUpcomingBookings(userId, 0, 5000)) {
         for (const auto& occurrence : booking.occurrences.items()) {
             if (occurrence.getString("status") != "active") continue;
             std::time_t start = 0;
@@ -404,7 +404,9 @@ std::vector<std::pair<Json, std::pair<std::time_t, std::time_t>>> MemoryManager:
 
 std::vector<MemoryRecord> MemoryManager::schedule(long long userId) {
     std::vector<MemoryRecord> result;
-    for (const auto& record : database_.db().listMemory(userId, 200)) {
+    // Расписание — из всей памяти, а не из 200 самых «весомых» записей: встреча с
+    // малым весом иначе выпадала бы из занятости (двойная запись на то же время).
+    for (const auto& record : database_.db().listMemory(userId, 5000)) {
         const bool isSchedule = record.kind == "schedule" ||
                                 std::find(record.tags.begin(), record.tags.end(), "reminder") != record.tags.end();
         if (isSchedule) result.push_back(record);

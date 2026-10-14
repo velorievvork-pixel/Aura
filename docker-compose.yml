@@ -69,6 +69,7 @@ services:
     environment:
       # Роль aura_app: только DML, не суперпользователь.
       AURA_DATABASE_URL: postgresql://aura_app:${AURA_DB_PASSWORD:?AURA_DB_PASSWORD is required}@postgres/aura
+      AURA_DB_POOL_SIZE: ${AURA_DB_POOL_SIZE:-8}
       AURA_AI_URL: http://ai:8000
       AURA_AI_TOKEN: ${AURA_AI_TOKEN:?AURA_AI_TOKEN is required (openssl rand -hex 32)}
       AURA_JWT_SECRET: ${AURA_JWT_SECRET:?AURA_JWT_SECRET is required (openssl rand -hex 32)}

@@ -3787,8 +3787,12 @@ TEST(invite_accept_flow) {
     for (const auto& task : tasks.items()) {
         if (task.getString("title") != "Встреча: Кофе и план — Мария") continue;
         taskFound = true;
-        CHECK_EQ(task.getString("due_at"), aura::isoUtc(second));
-        CHECK_EQ(task.getString("remind_at"), aura::isoUtc(second - 900));
+        // Сравниваем моменты, а не строки: PostgreSQL и встроенная БД пишут «.000Z».
+        std::time_t due = 0, remind = 0;
+        CHECK(aura::parseIsoUtc(task.getString("due_at"), due));
+        CHECK(aura::parseIsoUtc(task.getString("remind_at"), remind));
+        CHECK_EQ(due, second);
+        CHECK_EQ(remind, second - 900);
         CHECK(task.getString("notes").find("maria@example.com") != std::string::npos);
     }
     CHECK(taskFound);

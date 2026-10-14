@@ -349,11 +349,9 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
                                "неизвестный тип сообщения: " + request.type);
     }
 
-    if (!session->authenticated() &&
-        (request.type.rfind("invite.", 0) == 0 || request.type.rfind("booking.", 0) == 0) &&
-        protocol::isPublicType(request.type)) {
-        session->markGuest();
-    }
+    const bool guestCall = !session->authenticated() &&
+                           (request.type.rfind("invite.", 0) == 0 || request.type.rfind("booking.", 0) == 0) &&
+                           protocol::isPublicType(request.type);
     if (!protocol::isPublicType(request.type)) {
         // Открытое соединение не живёт дольше своей сессии: отзыв, истечение
         // срока или блокировка аккаунта видны не позже чем через AURA_AUTH_RECHECK.
@@ -370,7 +368,9 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
     }
 
     try {
-        return handler(session, request);
+        Json response = handler(session, request);
+        if (guestCall && response.getString("type") == "ok") session->markGuest();
+        return response;
     } catch (const std::exception& exception) {
         // Текст исключения (SQL, пути, внутренности) — только в лог.
         AURA_LOG(log::Level::Error, "server")

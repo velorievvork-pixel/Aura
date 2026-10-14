@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
     bio            TEXT          NOT NULL DEFAULT '',
     timezone       TEXT          NOT NULL DEFAULT 'Europe/Moscow',
     is_active      BOOLEAN       NOT NULL DEFAULT TRUE,
-    email_verified BOOLEAN       NOT NULL DEFAULT TRUE,  -- подтверждён ли email
+    email_verified BOOLEAN       NOT NULL DEFAULT FALSE, -- подтверждён ли email (fail closed)
     created_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
     last_seen_at   TIMESTAMPTZ,
     -- админ-панель (admin.*); первые админы — AURA_ADMIN_EMAILS
@@ -417,12 +417,16 @@ CREATE TABLE IF NOT EXISTS bookings (
     status           TEXT          NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cancelled')),
     cancelled_by     TEXT          NOT NULL DEFAULT '',
     reschedules      INTEGER       NOT NULL DEFAULT 0,
+    ends_at          TIMESTAMPTZ,  -- конец последней активной встречи (NULL — активных нет)
     created_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ   NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS bookings_owner_idx ON bookings (owner_id, id DESC);
 CREATE INDEX IF NOT EXISTS bookings_page_idx ON bookings (page_id, status);
+-- Занятость владельца и лимит в день читают только записи с предстоящими встречами.
+CREATE INDEX IF NOT EXISTS bookings_owner_upcoming_idx ON bookings (owner_id, ends_at) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS bookings_page_upcoming_idx ON bookings (page_id, ends_at) WHERE status = 'active';
 
 -- Рефералы (referral.*): у каждого пользователя один код; приглашённый
 -- записывается при регистрации (auth.register → ref), verified_at — после
@@ -448,12 +452,15 @@ CREATE INDEX IF NOT EXISTS referrals_referrer_idx ON referrals (referrer_id, id 
 -- Счётчики попыток, общие для всех экземпляров сервера (вход, коды, 2FA, лимиты
 -- гостевых методов): окно [window_start, window_start + window_sec). Истёкшие
 -- строки сервер периодически удаляет.
-CREATE TABLE IF NOT EXISTS rate_limits (
+-- UNLOGGED: счётчики одноразовые — без WAL каждая попытка не ждёт fsync
+-- (после аварийного рестарта PostgreSQL таблица пуста — это допустимо).
+CREATE UNLOGGED TABLE IF NOT EXISTS rate_limits (
     key              TEXT          PRIMARY KEY,
     count            INTEGER       NOT NULL,
     window_start     TIMESTAMPTZ   NOT NULL,
     window_sec       INTEGER       NOT NULL CHECK (window_sec > 0)
 );
+CREATE INDEX IF NOT EXISTS rate_limits_window_idx ON rate_limits (window_start);
 
 -- --------------------------------------------------------------- Триггер ---
 CREATE OR REPLACE FUNCTION aura_touch_updated_at() RETURNS trigger AS $$

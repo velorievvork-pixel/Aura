@@ -156,10 +156,15 @@ void Session::readLoop(const MessageHandler& handler) {
                 std::lock_guard<std::mutex> lock(authMutex_);
                 since = unauthSince_;
             }
-            // Гостевые страницы (invite.*, booking.*) — до 30 минут на соединение.
-            const long long limit = guest() ? std::max<long long>(config_.authTimeoutSec, kGuestTimeoutSec)
-                                            : config_.authTimeoutSec;
-            if (std::chrono::duration_cast<std::chrono::seconds>(now - since).count() >= limit) {
+            // Гостевые страницы (invite.*, booking.*) — пока гость пользуется
+            // страницей: kGuestIdleSec с последнего успешного гостевого вызова.
+            bool overdue = std::chrono::duration_cast<std::chrono::seconds>(now - since).count() >=
+                           config_.authTimeoutSec;
+            if (overdue && guest()) {
+                const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                overdue = nowMs - lastGuestMs_.load() >= kGuestIdleSec * 1000;
+            }
+            if (overdue) {
                 AURA_LOG(log::Level::Info, "session") << sessionId_ << " не авторизовался вовремя, закрываю";
                 close(4408, "authentication timeout");
                 break;
@@ -258,6 +263,11 @@ bool Session::sendRaw(const std::string& frame) {
         return false;
     }
     return true;
+}
+
+void Session::markGuest() {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    lastGuestMs_.store(std::max<long long>(1, std::chrono::duration_cast<std::chrono::milliseconds>(now).count()));
 }
 
 void Session::close(std::uint16_t code, const std::string& reason) {

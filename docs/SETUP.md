@@ -23,6 +23,9 @@ psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_09_20_notifications.sql
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_13_roles.sql   # роли админ-панели
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_invites.sql  # приглашения по ссылке
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_booking_referrals.sql  # запись и рефералы
+# после обновления сервера: аккаунты PostgreSQL, обошедшие подтверждение email
+# (ошибка до октября 2026) — сначала отчёт, затем -v apply=1 [-v revoke=1]:
+psql aura -f tools/sql/unverified_accounts.sql
 # демо-данные (необязательно):
 psql aura -f schema/seed.sql
 ```

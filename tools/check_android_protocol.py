@@ -29,7 +29,7 @@ TYPE_RE = re.compile(r'"([a-z][a-z0-9]*\.[a-z0-9]+)"')
 ALLOWED: set[str] = set()
 
 # Серверные события: их клиент не отправляет, только принимает.
-EVENTS = {"chat.message", "task.due", "notification.new"}
+EVENTS = {"chat.message", "task.due", "notification.new", "session.revoked"}
 
 # Виды уведомлений (этап 13): значения NotificationRecord.kind — часть
 # протокола, но не типы запросов. Проверяются по create() в server.cpp.

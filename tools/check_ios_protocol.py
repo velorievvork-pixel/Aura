@@ -41,7 +41,7 @@ ALLOWED: set[str] = {
 }
 
 # Серверные события: их клиент не отправляет, только принимает.
-EVENTS = {"chat.message", "task.due", "notification.new"}
+EVENTS = {"chat.message", "task.due", "notification.new", "session.revoked"}
 
 # Виды уведомлений (этап 13): значения NotificationRecord.kind, часть
 # протокола, но не типы запросов. Проверяются по create() в server.cpp.

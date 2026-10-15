@@ -1,19 +1,19 @@
-// aura/integrationmanager.h — интеграции с внешними сервисами (этап 9).
+// selfvoy/integrationmanager.h — интеграции с внешними сервисами (этап 9).
 //
 // Google OAuth 2.0 Authorization Code + PKCE (S256). Токены хранятся
-// зашифрованными (AES-256-GCM, ключ — SHA-256 от AURA_2FA_KEY) в таблице
+// зашифрованными (AES-256-GCM, ключ — SHA-256 от SELFVOY_2FA_KEY) в таблице
 // integration_connections; одноразовые state/verifier — в
 // integration_oauth_states. Наружу секреты не отдаются никогда.
 #pragma once
 
 #include <string>
 
-#include "aura/config.h"
-#include "aura/databasemanager.h"
-#include "aura/idatabase.h"
-#include "aura/json.h"
+#include "selfvoy/config.h"
+#include "selfvoy/databasemanager.h"
+#include "selfvoy/idatabase.h"
+#include "selfvoy/json.h"
 
-namespace aura {
+namespace selfvoy {
 
 class IntegrationManager {
 public:
@@ -105,4 +105,4 @@ private:
     const Config& config_;
 };
 
-}  // namespace aura
+}  // namespace selfvoy

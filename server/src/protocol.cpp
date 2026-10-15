@@ -1,7 +1,7 @@
-// aura/protocol.cpp
-#include "aura/protocol.h"
+// selfvoy/protocol.cpp
+#include "selfvoy/protocol.h"
 
-namespace aura::protocol {
+namespace selfvoy::protocol {
 
 Json ok(const std::string& id, const Json& payload) {
     Json message = Json::object();
@@ -55,4 +55,4 @@ bool isPublicType(const std::string& type) {
            type == "ping" || type == "server.info";
 }
 
-}  // namespace aura::protocol
+}  // namespace selfvoy::protocol

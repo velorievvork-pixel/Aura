@@ -1,5 +1,5 @@
-// aura/session.cpp
-#include "aura/session.h"
+// selfvoy/session.cpp
+#include "selfvoy/session.h"
 
 #include <poll.h>
 #include <sys/socket.h>
@@ -13,13 +13,13 @@
 #include <vector>
 #include <utility>
 
-#include "aura/config.h"
-#include "aura/log.h"
-#include "aura/net.h"
-#include "aura/protocol.h"
-#include "aura/ws.h"
+#include "selfvoy/config.h"
+#include "selfvoy/log.h"
+#include "selfvoy/net.h"
+#include "selfvoy/protocol.h"
+#include "selfvoy/ws.h"
 
-namespace aura {
+namespace selfvoy {
 
 Session::Session(int socket, std::string sessionId, std::string remoteAddr, const Config& config)
     : socket_(socket),
@@ -124,7 +124,7 @@ bool Session::performHandshake(std::string& error) {
         error = "не удалось отправить 101";
         return false;
     }
-    AURA_LOG(log::Level::Debug, "session") << sessionId_ << " рукопожатие выполнено, path=" << handshake.path;
+    SELFVOY_LOG(log::Level::Debug, "session") << sessionId_ << " рукопожатие выполнено, path=" << handshake.path;
     return true;
 }
 
@@ -161,7 +161,7 @@ void Session::readLoop(const MessageHandler& handler) {
 
     // Склеенное сообщение не может быть больше лимита одного кадра: иначе
     // клиент шлёт бесконечные фрагменты без FIN и исчерпывает память сервера.
-    // До входа лимит кадра намного меньше (AURA_MAX_PREAUTH_FRAME): анонимный
+    // До входа лимит кадра намного меньше (SELFVOY_MAX_PREAUTH_FRAME): анонимный
     // клиент не должен заставлять сервер разбирать мегабайтные сообщения.
     auto frameLimit = [this]() {
         return authenticated() ? config_.maxFrameBytes
@@ -170,7 +170,7 @@ void Session::readLoop(const MessageHandler& handler) {
     auto fragmentsTooBig = [this, &fragments, &frameLimit]() {
         const std::size_t limit = frameLimit();
         if (fragments.size() <= limit) return false;
-        AURA_LOG(log::Level::Warn, "session")
+        SELFVOY_LOG(log::Level::Warn, "session")
             << sessionId_ << " фрагментированное сообщение больше " << limit << " байт";
         close(1009, "message too big");
         return true;
@@ -180,13 +180,13 @@ void Session::readLoop(const MessageHandler& handler) {
         bool closed = false;
         if (!recvWithTimeout(buffer, 1000, closed)) {
             if (closed) {
-                AURA_LOG(log::Level::Debug, "session") << sessionId_ << " соединение закрыто клиентом";
+                SELFVOY_LOG(log::Level::Debug, "session") << sessionId_ << " соединение закрыто клиентом";
             }
             break;
         }
 
         const auto now = std::chrono::steady_clock::now();
-        // Неавторизованное соединение живёт не дольше AURA_AUTH_TIMEOUT: иначе
+        // Неавторизованное соединение живёт не дольше SELFVOY_AUTH_TIMEOUT: иначе
         // анонимные сокеты, отвечающие на ping, занимают потоки бесконечно.
         if (config_.authTimeoutSec > 0 && !authenticated()) {
             std::chrono::steady_clock::time_point since;
@@ -203,7 +203,7 @@ void Session::readLoop(const MessageHandler& handler) {
                 overdue = nowMs - lastGuestMs_.load() >= kGuestIdleSec * 1000;
             }
             if (overdue) {
-                AURA_LOG(log::Level::Info, "session") << sessionId_ << " не авторизовался вовремя, закрываю";
+                SELFVOY_LOG(log::Level::Info, "session") << sessionId_ << " не авторизовался вовремя, закрываю";
                 close(4408, "authentication timeout");
                 break;
             }
@@ -212,10 +212,10 @@ void Session::readLoop(const MessageHandler& handler) {
             std::chrono::duration_cast<std::chrono::seconds>(now - lastPing).count() >=
                 config_.pingIntervalSec) {
             lastPing = now;
-            sendRaw(ws::encodeFrame(ws::Opcode::Ping, "aura"));
+            sendRaw(ws::encodeFrame(ws::Opcode::Ping, "selfvoy"));
             if (std::chrono::duration_cast<std::chrono::seconds>(now - lastActivity_).count() >
                 config_.socketTimeoutSec) {
-                AURA_LOG(log::Level::Info, "session") << sessionId_ << " неактивен, закрываю";
+                SELFVOY_LOG(log::Level::Info, "session") << sessionId_ << " неактивен, закрываю";
                 close(1001, "idle timeout");
                 break;
             }
@@ -229,7 +229,7 @@ void Session::readLoop(const MessageHandler& handler) {
                 ws::decodeFrame(buffer, frameLimit(), consumed, frame, error);
             if (result == ws::DecodeResult::Incomplete) break;
             if (result == ws::DecodeResult::ProtocolError) {
-                AURA_LOG(log::Level::Warn, "session") << sessionId_ << " " << error;
+                SELFVOY_LOG(log::Level::Warn, "session") << sessionId_ << " " << error;
                 close(1002, error);
                 return;
             }
@@ -296,7 +296,7 @@ bool Session::sendRaw(const std::string& frame) {
     std::lock_guard<std::mutex> lock(sendMutex_);
     if (!alive_.load()) return false;
     if (!net::sendAll(socket_, frame, 5000)) {
-        AURA_LOG(log::Level::Debug, "session") << sessionId_ << " не удалось отправить кадр";
+        SELFVOY_LOG(log::Level::Debug, "session") << sessionId_ << " не удалось отправить кадр";
         alive_.store(false);
         return false;
     }
@@ -372,4 +372,4 @@ Json Session::describe() const {
     return json;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

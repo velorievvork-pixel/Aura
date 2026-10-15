@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 
 /*
   VoicePanel — голосовой ввод: запись с микрофона → распознавание → текст.
@@ -22,7 +22,7 @@ GlassPanel {
     readonly property bool processing: vState === "processing"
     readonly property bool micOk: App ? App.micAvailable : true
 
-    padding: AuraTheme.spaceMd
+    padding: SelfvoyTheme.spaceMd
 
     // Синхронизация поля с расшифровкой из C++ — императивно, без привязки,
     // чтобы правка пользователем не воевала с биндингом (иначе цикл).
@@ -35,12 +35,12 @@ GlassPanel {
 
     ColumnLayout {
         anchors.fill: parent
-        spacing: AuraTheme.spaceSm
+        spacing: SelfvoyTheme.spaceSm
 
         // ------------------------------------------------ индикатор записи
         RowLayout {
             Layout.fillWidth: true
-            spacing: AuraTheme.spaceMd
+            spacing: SelfvoyTheme.spaceMd
             visible: panel.listening || panel.processing
 
             // «Волна» из столбиков, реагирующих на уровень звука.
@@ -55,7 +55,7 @@ GlassPanel {
                         readonly property real lvl: App ? App.voiceLevel : 0
                         width: 4
                         radius: 2
-                        color: AuraTheme.accent
+                        color: SelfvoyTheme.accent
                         x: index * 13
                         anchors.verticalCenter: parent.verticalCenter
                         height: 5 + lvl * (20 - Math.abs(index - 2) * 4)
@@ -73,7 +73,7 @@ GlassPanel {
                 visible: panel.processing
                 color: "transparent"
                 border.width: 2
-                border.color: AuraTheme.accentA(0.3)
+                border.color: SelfvoyTheme.accentA(0.3)
                 Rectangle {
                     anchors.centerIn: parent
                     width: parent.width
@@ -81,12 +81,12 @@ GlassPanel {
                     radius: width / 2
                     color: "transparent"
                     border.width: 2
-                    border.color: AuraTheme.accent
+                    border.color: SelfvoyTheme.accent
                     // Дуга: прозрачная половина, вращаем.
                     Rectangle {
                         anchors.fill: parent
                         radius: width / 2
-                        color: AuraTheme.bgRaised
+                        color: SelfvoyTheme.bgRaised
                         opacity: 0.001
                     }
                 }
@@ -102,9 +102,9 @@ GlassPanel {
             Text {
                 Layout.fillWidth: true
                 text: panel.processing ? "Распознаю речь…" : "Слушаю… говорите"
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontSmall
-                color: AuraTheme.textSecondary
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontSmall
+                color: SelfvoyTheme.textSecondary
             }
 
             GlassButton {
@@ -120,7 +120,7 @@ GlassPanel {
         // --------------------------------------- микрофон + расшифровка + отправка
         RowLayout {
             Layout.fillWidth: true
-            spacing: AuraTheme.spaceSm
+            spacing: SelfvoyTheme.spaceSm
 
             GlassButton {
                 id: micButton
@@ -164,16 +164,16 @@ GlassPanel {
             text: !panel.micOk
                   ? "Микрофон недоступен — сообщение можно ввести текстом."
                   : (App && App.errorMessage ? App.errorMessage : "Не удалось распознать речь")
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontMicro
-            color: AuraTheme.danger
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontMicro
+            color: SelfvoyTheme.danger
             wrapMode: Text.WordWrap
         }
 
         // --------------------------------------------------- автоотправка
         RowLayout {
             Layout.fillWidth: true
-            spacing: AuraTheme.spaceSm
+            spacing: SelfvoyTheme.spaceSm
 
             Item { Layout.fillWidth: true }
 

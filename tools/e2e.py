@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Сквозная проверка Aura: Qt-клиент (здесь — WebSocket-клиент) → C++-сервер → AI-сервис.
+"""Сквозная проверка Selfvoy: Qt-клиент (здесь — WebSocket-клиент) → C++-сервер → AI-сервис.
 
 Поднимать сервисы не нужно: скрипт подключается к уже запущенным
     * C++-серверу  (ws://127.0.0.1:9000)
     * AI-сервису   (http://127.0.0.1:8000)
 
 Проходит путь пользователя:
-    регистрация двух людей → чат → «Аура, хочу встретиться…» →
+    регистрация двух людей → чат → «Selfvoy, хочу встретиться…» →
     переговоры Аур (A2A) → событие chat.message в чате → память и настройки.
 
 Запуск:  python3 tools/e2e.py
@@ -29,7 +29,7 @@ from typing import Any, Dict
 
 import websockets
 
-SERVER_URL = os.environ.get("AURA_E2E_SERVER", "ws://127.0.0.1:9000")
+SERVER_URL = os.environ.get("SELFVOY_E2E_SERVER", "ws://127.0.0.1:9000")
 RUN = uuid.uuid4().hex[:8]
 
 failures: list[str] = []
@@ -39,7 +39,7 @@ checks = 0
 def totp(secret_b32: str, window_offset: int = 0, period: int = 30, digits: int = 6) -> str:
     """TOTP (RFC 6238): HMAC-SHA1, base32-секрет, 6 цифр, 30-секундное окно.
 
-    Совпадает с серверной реализацией aura::totp — позволяет e2e-клиенту
+    Совпадает с серверной реализацией selfvoy::totp — позволяет e2e-клиенту
     генерировать коды как приложение-аутентификатор. window_offset=1 даёт код
     следующего окна (нужно из-за защиты от повторного использования кода).
     """
@@ -119,8 +119,8 @@ class Client:
 class GoogleMock:
     """Mock эндпоинтов Google OAuth/API для e2e (этап 9).
 
-    Поднимается только при AURA_E2E_GOOGLE_MOCK=1; C++-сервер должен быть
-    запущен с AURA_GOOGLE_* на этот порт (net.h не делает TLS — mock по http).
+    Поднимается только при SELFVOY_E2E_GOOGLE_MOCK=1; C++-сервер должен быть
+    запущен с SELFVOY_GOOGLE_* на этот порт (net.h не делает TLS — mock по http).
     Проверяет PKCE: code_challenge из /auth сверяется с SHA256(code_verifier).
     Первый access_token календаря («access-cal-1») на /events отвечает 401 —
     так проверяется авто-refresh по refresh_token.
@@ -258,8 +258,8 @@ class GoogleMock:
 class PushMock:
     """Приёмник push-конвертов (этап 13).
 
-    Поднимается при AURA_E2E_PUSH_MOCK=1; C++-сервер должен быть запущен с
-    AURA_PUSH_DRIVER=webhook и AURA_PUSH_WEBHOOK_URL=http://127.0.0.1:<порт>/push.
+    Поднимается при SELFVOY_E2E_PUSH_MOCK=1; C++-сервер должен быть запущен с
+    SELFVOY_PUSH_DRIVER=webhook и SELFVOY_PUSH_WEBHOOK_URL=http://127.0.0.1:<порт>/push.
     Сохраняет JSON-тела POST /push — так проверяется веерная рассылка
     (apns-конверт с токеном, kind и aps.alert).
     """
@@ -312,19 +312,19 @@ class PushMock:
 
 
 async def main() -> int:
-    print(f"Aura E2E → {SERVER_URL} (прогон {RUN})\n")
+    print(f"Selfvoy E2E → {SERVER_URL} (прогон {RUN})\n")
 
-    # Google mock (этап 9): поднимается только при AURA_E2E_GOOGLE_MOCK=1,
-    # C++-сервер при этом запущен с AURA_GOOGLE_* на 127.0.0.1:<порт mock>.
+    # Google mock (этап 9): поднимается только при SELFVOY_E2E_GOOGLE_MOCK=1,
+    # C++-сервер при этом запущен с SELFVOY_GOOGLE_* на 127.0.0.1:<порт mock>.
     google_mock: GoogleMock | None = None
-    if os.environ.get("AURA_E2E_GOOGLE_MOCK") == "1":
-        google_mock = GoogleMock(int(os.environ.get("AURA_E2E_GOOGLE_MOCK_PORT", "9081")))
+    if os.environ.get("SELFVOY_E2E_GOOGLE_MOCK") == "1":
+        google_mock = GoogleMock(int(os.environ.get("SELFVOY_E2E_GOOGLE_MOCK_PORT", "9081")))
         await google_mock.start()
 
     # Push mock (этап 13): шлюз вебхуков, ловит apns-конверты.
     push_mock: PushMock | None = None
-    if os.environ.get("AURA_E2E_PUSH_MOCK") == "1":
-        push_mock = PushMock(int(os.environ.get("AURA_E2E_PUSH_MOCK_PORT", "9082")))
+    if os.environ.get("SELFVOY_E2E_PUSH_MOCK") == "1":
+        push_mock = PushMock(int(os.environ.get("SELFVOY_E2E_PUSH_MOCK_PORT", "9082")))
         await push_mock.start()
 
     anna = Client("anna")
@@ -339,7 +339,7 @@ async def main() -> int:
         """Полный поток аккаунта: регистрация → код из ответа (mail dev) → вход."""
         registered = await client.call("auth.register", {
             "email": email,
-            "password": "aura1234",
+            "password": "selfvoy1234",
             "display_name": name,
         })
         check(registered.get("type") == "ok", f"регистрация {name}", registered)
@@ -349,7 +349,7 @@ async def main() -> int:
         check(len(code) == 6, f"{name}: выдан шестизначный код", code)
         verified = await client.call("auth.verifyEmail", {"email": email, "code": code})
         check(verified.get("payload", {}).get("verified") is True, f"{name}: email подтверждён")
-        logged = await client.call("auth.login", {"email": email, "password": "aura1234"})
+        logged = await client.call("auth.login", {"email": email, "password": "selfvoy1234"})
         check(logged.get("type") == "ok", f"вход {name}", logged)
         check(logged.get("payload", {}).get("user", {}).get("role") in ("user", "moderator", "admin"),
               f"{name}: в user есть role", logged.get("payload", {}).get("user"))
@@ -373,7 +373,7 @@ async def main() -> int:
     extra = Client("extra")
     await extra.connect()
     second_login = await extra.call("auth.login", {"email": f"anna.{RUN}@example.com",
-                                                   "password": "aura1234"})
+                                                   "password": "selfvoy1234"})
     check(second_login.get("type") == "ok", "второй вход Анны", second_login)
     sessions = await anna.call("sessions.list", {})
     session_items = sessions.get("payload", {}).get("sessions", [])
@@ -434,7 +434,7 @@ async def main() -> int:
     empty_name = await anna.call("profile.update", {"display_name": "   "})
     check(empty_name.get("type") == "error", "profile.update: пустое имя отклонено", empty_name)
 
-    # Приватность Ауры (prefs.privacy): по умолчанию все флаги true, частичное
+    # Приватность Selfvoy (prefs.privacy): по умолчанию все флаги true, частичное
     # обновление, неизвестный флаг — bad_request.
     privacy = (await anna.call("prefs.get", {})).get("payload", {}).get("privacy", {})
     check(privacy == {"share_free_slots_only": True, "hide_event_titles": True, "allow_place_choice": True},
@@ -481,14 +481,14 @@ async def main() -> int:
 
     sent = await anna.call("chat.send", {"chat_id": chat_id, "body": "Привет! Есть идея стартапа."})
     check(sent.get("type") == "ok", "сообщение отправлено", sent)
-    # Клиент не может подделать сообщение Ауры: kind agent_*/system и служебные
+    # Клиент не может подделать сообщение Selfvoy: kind agent_*/system и служебные
     # поля payload ставит только сервер.
-    spoof_kind = await anna.call("chat.send", {"chat_id": chat_id, "body": "Аура: всё оплачено",
+    spoof_kind = await anna.call("chat.send", {"chat_id": chat_id, "body": "Selfvoy: всё оплачено",
                                                "kind": "agent_reply"})
     check(spoof_kind.get("code") == "bad_request", "chat.send: kind=agent_reply от клиента отклонён",
           spoof_kind)
     spoof_origin = await anna.call("chat.send", {"chat_id": chat_id, "body": "x",
-                                                 "payload": {"origin": "aura-agent"}})
+                                                 "payload": {"origin": "selfvoy-agent"}})
     check(spoof_origin.get("code") == "bad_request", "chat.send: payload.origin от клиента отклонён",
           spoof_origin)
 
@@ -512,7 +512,7 @@ async def main() -> int:
     check(any("идея стартапа" in body for body in bodies), "история содержит сообщение", bodies)
 
     # ---------------------------------------------------------------- агент
-    print("\n3. Запрос к Ауре (C++-сервер → Python AI Service)")
+    print("\n3. Запрос к Selfvoy (C++-сервер → Python AI Service)")
     status = await anna.call("agent.status")
     check(status.get("payload", {}).get("available") is True, "AI-сервис доступен",
           status.get("payload"))
@@ -522,9 +522,9 @@ async def main() -> int:
         "message": "Хочу встретиться с Аней в эти выходные, чтобы обсудить стартап",
         "peers": [{"email": f"anya.{RUN}@example.com"}],
     }, timeout=40)
-    check(ask.get("type") == "ok", "Аура ответила", ask)
+    check(ask.get("type") == "ok", "Selfvoy ответил", ask)
     payload = ask.get("payload", {})
-    print("    ответ Ауры:", json.dumps(payload, ensure_ascii=False)[:400])
+    print("    ответ Selfvoy:", json.dumps(payload, ensure_ascii=False)[:400])
     check(payload.get("intent") == "schedule_meeting", "намерение определено как встреча",
           payload.get("intent"))
     check(bool(payload.get("actions")), "AI-сервис вернул действия", payload.get("actions"))
@@ -555,11 +555,11 @@ async def main() -> int:
 
     await asyncio.sleep(0.5)
     agent_messages = anya.events_of("chat.message")
-    check(len(agent_messages) >= 2, "результат Ауры опубликован в чате",
+    check(len(agent_messages) >= 2, "результат Selfvoy опубликован в чате",
           len(agent_messages))
 
     # ------------------------------------- приглашение по ссылке (invite.*)
-    print("\n3a. Приглашение по ссылке: встреча с человеком без Aura")
+    print("\n3a. Приглашение по ссылке: встреча с человеком без Selfvoy")
     created = await anna.call("invite.create", {
         "topic": f"Кофе по стартапу {RUN}",
         "duration_minutes": 45,
@@ -573,7 +573,7 @@ async def main() -> int:
     token = created_payload.get("token", "")
     check(len(token) == 43, "токен ссылки — 43 символа base64url", len(token))
     url = created_payload.get("url", "")
-    check(url == "" or url.endswith("/#/i/" + token), "url ведёт на #/i/<токен> (или пуст без AURA_PUBLIC_URL)", url)
+    check(url == "" or url.endswith("/#/i/" + token), "url ведёт на #/i/<токен> (или пуст без SELFVOY_PUBLIC_URL)", url)
     offered = invite.get("slots", [])
     check(1 <= len(offered) <= 6, "предложено 1–6 слотов", offered)
 
@@ -783,7 +783,7 @@ async def main() -> int:
     await newcomer.connect()
     friend_email = f"friend.{RUN}@example.com"
     friend = await newcomer.call("auth.register", {
-        "email": friend_email, "password": "aura1234", "display_name": "Фёдор",
+        "email": friend_email, "password": "selfvoy1234", "display_name": "Фёдор",
         "ref": ref_code.lower(), "ref_source": "booking",
     })
     check(friend.get("type") == "ok", "регистрация по реферальному коду", friend)
@@ -847,7 +847,7 @@ async def main() -> int:
     # Режим deny: send_email уже переведён в deny — намерение «письмо»
     # отклоняется сразу, без исполнения и без отложенного действия.
     deny_ask = await anna.call("agent.ask", {
-        "message": "Отправь письмо team@aura.io с темой встреча",
+        "message": "Отправь письмо team@selfvoy.io с темой встреча",
     }, timeout=40)
     deny_results = deny_ask.get("payload", {}).get("results", [])
     check(any(r.get("denied") for r in deny_results),
@@ -858,14 +858,14 @@ async def main() -> int:
     await anna.call("permissions.set", {"tool": "send_email", "mode": "ask"})
     # Прямой tool.run тоже проходит барьер: ask → отложенное действие, не исполнение.
     direct = await anna.call("tool.run", {"tool": "send_email",
-                                          "args": {"to": "team@aura.io", "subject": "x", "body": "y"}})
+                                          "args": {"to": "team@selfvoy.io", "subject": "x", "body": "y"}})
     check(direct.get("type") == "ok" and direct.get("payload", {}).get("requires_confirmation") is True
           and direct.get("payload", {}).get("confirmation_id", 0) > 0,
           "tool.run send_email в режиме ask требует подтверждения", direct)
     if direct.get("payload", {}).get("confirmation_id"):
         await anna.call("confirmation.deny", {"id": direct["payload"]["confirmation_id"]})
     ask_again = await anna.call("agent.ask", {
-        "message": "Отправь письмо team@aura.io с темой встреча",
+        "message": "Отправь письмо team@selfvoy.io с темой встреча",
     }, timeout=40)
     ask_results = ask_again.get("payload", {}).get("results", [])
     email_pending = [r for r in ask_results if r.get("requires_confirmation")]
@@ -991,7 +991,7 @@ async def main() -> int:
             check(message.get("token") == "e2e-fcm-device-1"
                   and message.get("notification", {}).get("title") == "Напоминание"
                   and message.get("android", {}).get("notification", {})
-                      .get("channel_id") == "aura"
+                      .get("channel_id") == "selfvoy"
                   and "url" in fcm_envelopes[-1].get("fcm", {}),
                   "fcm-конверт: token, notification, android.channel_id, url",
                   fcm_envelopes[-1])
@@ -1016,7 +1016,7 @@ async def main() -> int:
     stt_payload = stt.get("payload", {})
     check(bool(stt_payload.get("text")), "STT вернул непустой текст", stt_payload)
     check(stt_payload.get("provider") == "mock",
-          "STT-провайдер — mock (без AURA_STT_URL)", stt_payload.get("provider"))
+          "STT-провайдер — mock (без SELFVOY_STT_URL)", stt_payload.get("provider"))
     check(stt_payload.get("language") == "ru", "STT вернул язык запроса",
           stt_payload.get("language"))
 
@@ -1037,7 +1037,7 @@ async def main() -> int:
     # соединение сразу авторизовано (клиент продлевает истёкший токен без переподключения).
     renew = Client("renew")
     await renew.connect()
-    first = await renew.call("auth.login", {"email": vera_email, "password": "aura1234"})
+    first = await renew.call("auth.login", {"email": vera_email, "password": "selfvoy1234"})
     vera_refresh = first.get("payload", {}).get("refresh_token", "")
     await renew.close()
     renew = Client("renew2")
@@ -1093,7 +1093,7 @@ async def main() -> int:
     # Вход без кода (и без доверенного устройства) → requires_2fa.
     gate = Client("vera-gate")
     await gate.connect()
-    blocked = await gate.call("auth.login", {"email": vera_email, "password": "aura1234"})
+    blocked = await gate.call("auth.login", {"email": vera_email, "password": "selfvoy1234"})
     check(blocked.get("code") == "requires_2fa",
           "2FA: вход без кода отклонён (requires_2fa)", blocked)
     await gate.close()
@@ -1103,12 +1103,12 @@ async def main() -> int:
     rc_client = Client("vera-rc")
     await rc_client.connect()
     rc_login = await rc_client.call("auth.login2fa",
-                                    {"email": vera_email, "password": "aura1234", "code": first_code})
+                                    {"email": vera_email, "password": "selfvoy1234", "code": first_code})
     check(rc_login.get("type") == "ok", "2FA: вход по резервному коду", rc_login)
     check(len(rc_login.get("payload", {}).get("token", "").split(".")) == 3,
           "2FA: по резервному коду выдан JWT")
     rc_reuse = await rc_client.call("auth.login2fa",
-                                    {"email": vera_email, "password": "aura1234", "code": first_code})
+                                    {"email": vera_email, "password": "selfvoy1234", "code": first_code})
     check(rc_reuse.get("code") == "unauthorized",
           "2FA: повторное использование резервного кода отклонено", rc_reuse)
     await rc_client.close()
@@ -1122,7 +1122,7 @@ async def main() -> int:
     totp_client = Client("vera-totp")
     await totp_client.connect()
     totp_login = await totp_client.call("auth.login2fa", {
-        "email": vera_email, "password": "aura1234",
+        "email": vera_email, "password": "selfvoy1234",
         "code": totp(secret, window_offset=1),
         "trust_device": True, "device_id": device_id,
     })
@@ -1133,7 +1133,7 @@ async def main() -> int:
     trust_client = Client("vera-trust")
     await trust_client.connect()
     trust_login = await trust_client.call("auth.login",
-                                          {"email": vera_email, "password": "aura1234",
+                                          {"email": vera_email, "password": "selfvoy1234",
                                            "device_id": device_id})
     check(trust_login.get("type") == "ok", "2FA: вход с доверенного устройства без кода",
           trust_login)
@@ -1152,7 +1152,7 @@ async def main() -> int:
     revoked_gate = Client("vera-revoked")
     await revoked_gate.connect()
     revoked_login = await revoked_gate.call("auth.login",
-                                            {"email": vera_email, "password": "aura1234",
+                                            {"email": vera_email, "password": "selfvoy1234",
                                              "device_id": device_id})
     check(revoked_login.get("code") == "requires_2fa",
           "2FA: после отзыва устройства снова нужен код", revoked_login)
@@ -1162,7 +1162,7 @@ async def main() -> int:
     bad_disable = await vera.call("auth.disable2fa", {"password": "wrongpass1"})
     check(bad_disable.get("code") == "unauthorized",
           "2FA: отключение с неверным паролем отклонено", bad_disable)
-    good_disable = await vera.call("auth.disable2fa", {"password": "aura1234"})
+    good_disable = await vera.call("auth.disable2fa", {"password": "selfvoy1234"})
     check(good_disable.get("type") == "ok", "2FA: отключение по паролю", good_disable)
     status_off = await vera.call("auth.status2fa", {})
     check(status_off.get("payload", {}).get("enabled") is False,
@@ -1175,7 +1175,7 @@ async def main() -> int:
     # Выход отзывает и refresh-токен этого устройства.
     leaving = Client("vera-leave")
     await leaving.connect()
-    leave_login = await leaving.call("auth.login", {"email": vera_email, "password": "aura1234"})
+    leave_login = await leaving.call("auth.login", {"email": vera_email, "password": "selfvoy1234"})
     leave_refresh = leave_login.get("payload", {}).get("refresh_token", "")
     await leaving.call("auth.logout", {})
     after_logout = await leaving.call("auth.refresh", {"refresh_token": leave_refresh})
@@ -1187,8 +1187,8 @@ async def main() -> int:
     # соединения пользователя закрываются.
     bystander = Client("vera-other")
     await bystander.connect()
-    await bystander.call("auth.login", {"email": vera_email, "password": "aura1234"})
-    changed = await vera.call("auth.changePassword", {"old_password": "aura1234",
+    await bystander.call("auth.login", {"email": vera_email, "password": "selfvoy1234"})
+    changed = await vera.call("auth.changePassword", {"old_password": "selfvoy1234",
                                                      "new_password": "пароль2026"})
     changed_payload = changed.get("payload", {})
     check(changed.get("type") == "ok" and changed_payload.get("changed") is True
@@ -1295,6 +1295,8 @@ async def main() -> int:
         check(sync.get("type") == "ok", "sync календаря (с авто-обновлением токена)", sync)
         check(sync.get("payload", {}).get("events") == 2,
               "sync: получено 2 события", sync.get("payload"))
+        check(sync.get("payload", {}).get("facts") == 2,
+              "sync: оба события сохранены в память", sync.get("payload"))
         check(google_mock.refreshed == 1,
               "refresh_token: ровно одно обновление", google_mock.refreshed)
 
@@ -1341,11 +1343,11 @@ async def main() -> int:
     check(denied_users.get("code") == "forbidden", "admin.users: обычному пользователю — forbidden",
           denied_users)
 
-    admin_email = os.environ.get("AURA_E2E_ADMIN_EMAIL", "").strip().lower()
-    admin_password = os.environ.get("AURA_E2E_ADMIN_PASSWORD", "")
+    admin_email = os.environ.get("SELFVOY_E2E_ADMIN_EMAIL", "").strip().lower()
+    admin_password = os.environ.get("SELFVOY_E2E_ADMIN_PASSWORD", "")
     if not (admin_email and admin_password):
-        print("  — пропуск сценария администратора: задайте AURA_E2E_ADMIN_EMAIL и "
-              "AURA_E2E_ADMIN_PASSWORD (а серверу — AURA_ADMIN_EMAILS с этим адресом)")
+        print("  — пропуск сценария администратора: задайте SELFVOY_E2E_ADMIN_EMAIL и "
+              "SELFVOY_E2E_ADMIN_PASSWORD (а серверу — SELFVOY_ADMIN_EMAILS с этим адресом)")
     else:
         admin = Client("admin")
         await admin.connect()
@@ -1359,7 +1361,7 @@ async def main() -> int:
             admin_login = await admin.call("auth.login", {"email": admin_email, "password": admin_password})
         admin_user = admin_login.get("payload", {}).get("user", {})
         check(admin_login.get("type") == "ok" and admin_user.get("role") == "admin",
-              "администратор из AURA_ADMIN_EMAILS вошёл с ролью admin", admin_login)
+              "администратор из SELFVOY_ADMIN_EMAILS вошёл с ролью admin", admin_login)
 
         stats = await admin.call("admin.stats")
         stats_payload = stats.get("payload", {})
@@ -1398,12 +1400,12 @@ async def main() -> int:
         await victim.close()
         retry = Client("retry")
         await retry.connect()
-        relogin = await retry.call("auth.login", {"email": victim_email, "password": "aura1234"})
+        relogin = await retry.call("auth.login", {"email": victim_email, "password": "selfvoy1234"})
         check(relogin.get("code") == "forbidden", "заблокированный не может войти", relogin)
         unblocked = await admin.call("admin.setActive", {"user_id": victim_id, "active": True, "reason": ""})
         check(unblocked.get("payload", {}).get("user", {}).get("is_active") is True,
               "admin.setActive(true): разблокирован", unblocked)
-        relogin = await retry.call("auth.login", {"email": victim_email, "password": "aura1234"})
+        relogin = await retry.call("auth.login", {"email": victim_email, "password": "selfvoy1234"})
         check(relogin.get("type") == "ok", "после разблокировки вход работает", relogin)
 
         # Модератор: видит обзор, но не меняет роли, не трогает админов и не читает журнал.
@@ -1475,7 +1477,7 @@ async def main() -> int:
         await anya.call("auth.login", {"email": f"anna.{RUN}@example.com",
                                        "password": "wrong-password"})
     blocked = await anya.call("auth.login", {"email": f"anna.{RUN}@example.com",
-                                             "password": "aura1234"})
+                                             "password": "selfvoy1234"})
     check(blocked.get("code") == "forbidden",
           "вход заблокирован после серии неверных паролей", blocked.get("code"))
 

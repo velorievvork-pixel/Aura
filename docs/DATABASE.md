@@ -1,8 +1,8 @@
-# База данных Aura
+# База данных Selfvoy
 
 PostgreSQL 14+ (прод) или встроенное JSON-хранилище (разработка/тесты,
-`AURA_EMBEDDED_DB`). Оба бэкенда реализуют один интерфейс `IDatabase`
-(`server/include/aura/idatabase.h`); C++-тесты работают на встроенном,
+`SELFVOY_EMBEDDED_DB`). Оба бэкенда реализуют один интерфейс `IDatabase`
+(`server/include/selfvoy/idatabase.h`); C++-тесты работают на встроенном,
 e2e — на реальном PostgreSQL.
 
 Схема: `schema/schema.sql` (идемпотентна, `CREATE … IF NOT EXISTS`);
@@ -47,7 +47,7 @@ e2e — на реальном PostgreSQL.
 | таблица | назначение |
 | --- | --- |
 | `integration_connections` | подключения Google: access/refresh токены **только шифром** (AES-256-GCM), scope, статус |
-| `integration_oauth_states` | одноразовые state + PKCE verifier (TTL `AURA_OAUTH_STATE_TTL`) |
+| `integration_oauth_states` | одноразовые state + PKCE verifier (TTL `SELFVOY_OAUTH_STATE_TTL`) |
 
 ### Уведомления (этап 13)
 | таблица | назначение |
@@ -58,7 +58,7 @@ e2e — на реальном PostgreSQL.
 ### Приглашения по ссылке
 | таблица | назначение |
 | --- | --- |
-| `meeting_invites` | встреча с человеком без Aura (`invite.*`): `owner_id`, `token_hash` UNIQUE (sha256 токена ссылки — сам токен не хранится), тема, заметка, `duration_minutes` CHECK 15–240, `slots` JSONB `[{start,end}]`, `status` CHECK (`open`/`accepted`/`declined`/`cancelled`; `expired` вычисляется по `expires_at`), ответ гостя (`guest_name/email/comment`, `chosen` JSONB), `responded_at`; индекс (owner_id, id DESC). Миграция `2026_10_14_invites.sql` |
+| `meeting_invites` | встреча с человеком без Selfvoy (`invite.*`): `owner_id`, `token_hash` UNIQUE (sha256 токена ссылки — сам токен не хранится), тема, заметка, `duration_minutes` CHECK 15–240, `slots` JSONB `[{start,end}]`, `status` CHECK (`open`/`accepted`/`declined`/`cancelled`; `expired` вычисляется по `expires_at`), ответ гостя (`guest_name/email/comment`, `chosen` JSONB), `responded_at`; индекс (owner_id, id DESC). Миграция `2026_10_14_invites.sql` |
 
 ### Страницы записи и рефералы
 | таблица | назначение |
@@ -78,7 +78,7 @@ e2e — на реальном PostgreSQL.
 Расписание владельца на время «проверить, что свободно → записать встречу»
 (`invite.respond`, `booking.*`) блокируется advisory lock'ом PostgreSQL по id
 владельца — два экземпляра сервера не займут одно время. Сервер держит пул
-соединений (`AURA_DB_POOL_SIZE`, по умолчанию 8) и отдельное соединение для
+соединений (`SELFVOY_DB_POOL_SIZE`, по умолчанию 8) и отдельное соединение для
 advisory lock'ов (их берут и отпускают в одной сессии PostgreSQL).
 
 Миграция `2026_10_15_audit_fixes.sql`: `users.email_verified DEFAULT FALSE`

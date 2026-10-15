@@ -4,7 +4,7 @@
   приглашениями (lib/invite.ts).
 */
 import type { Booking, BookingPage, GuestBooking, Occurrence, PageFields } from '../net/bookingApi';
-import { AuraError, isNetworkError } from '../net/socket';
+import { SelfvoyError, isNetworkError } from '../net/socket';
 import { plural } from './format';
 import { foldIcsLine, icsEscape, icsUtc, isPublicWebOrigin, type LocationLike } from './invite';
 
@@ -15,7 +15,7 @@ export const isPlausibleSlug = (slug: string | undefined): slug is string => Boo
 
 /**
   Публичная ссылка на путь веб-клиента (#/b/<slug>, #/m/<токен>, #/signup?ref=…):
-  готовая от сервера (AURA_PUBLIC_URL) — как есть; иначе адрес этого веб-клиента,
+  готовая от сервера (SELFVOY_PUBLIC_URL) — как есть; иначе адрес этого веб-клиента,
   если он публичный; иначе null (Electron/Capacitor/localhost — ссылку не собрать).
 */
 export function publicLink(path: string, serverUrl: string, loc: LocationLike | null | undefined): string | null {
@@ -32,7 +32,7 @@ export const signupPath = (ref: string, source: 'link' | 'booking' | 'invite' = 
 
 // ------------------------------------------------------------------ рефералы
 
-const REF_KEY = 'aura.ref';
+const REF_KEY = 'selfvoy.ref';
 
 /** Код из адреса регистрации: 8 букв/цифр; иначе null (мусор не отправляем на сервер). */
 export function parseRef(search: URLSearchParams): { code: string; source: 'link' | 'booking' | 'invite' } | null {
@@ -199,7 +199,7 @@ function fnv1a(text: string, seed: number): string {
 */
 export function bookingUid(key: string, index: number): string {
   const base = `${key}\u0000${index}`;
-  return `booking-${fnv1a(base, 0x811c9dc5)}${fnv1a(base, 0x050c5d1f)}-${index}@aura`;
+  return `booking-${fnv1a(base, 0x811c9dc5)}${fnv1a(base, 0x050c5d1f)}-${index}@selfvoy`;
 }
 
 /**
@@ -221,7 +221,7 @@ export function bookingIcs(
   if (events.length === 0) throw new Error('Нет встреч для календаря');
   const left = booking.reschedules_left;
   const sequence = typeof left === 'number' && Number.isFinite(left) ? Math.max(0, MAX_RESCHEDULES - left) : 0;
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Aura//Booking//RU', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH'];
+  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Selfvoy//Booking//RU', 'CALSCALE:GREGORIAN', 'METHOD:PUBLISH'];
   for (const { occurrence: event, index } of events) {
     const start = new Date(event.start);
     const end = new Date(event.end);
@@ -234,7 +234,7 @@ export function bookingIcs(
       `DTSTART:${icsUtc(start)}`,
       `DTEND:${icsUtc(end)}`,
       `SUMMARY:${icsEscape(owner ? `${topic} — ${owner}` : topic)}`,
-      `DESCRIPTION:${icsEscape(owner ? `Запись к ${owner} через Aura` : 'Запись через Aura')}`,
+      `DESCRIPTION:${icsEscape(owner ? `Запись к ${owner} через Selfvoy` : 'Запись через Selfvoy')}`,
       'END:VEVENT',
     );
   }
@@ -248,8 +248,8 @@ const sentence = (text: string) => (text ? text.charAt(0).toUpperCase() + text.s
 
 /** Ошибка booking.page* / list / ownerCancel / referral.get для владельца. */
 export function bookingOwnerErrorText(error: unknown): string {
-  if (!(error instanceof AuraError)) return 'Что-то пошло не так';
+  if (!(error instanceof SelfvoyError)) return 'Что-то пошло не так';
   if (error.code === 'timeout') return 'Сервер не ответил вовремя — попробуйте ещё раз';
-  if (isNetworkError(error)) return 'Нет связи с сервером Aura';
+  if (isNetworkError(error)) return 'Нет связи с сервером Selfvoy';
   return sentence(error.message) || 'Что-то пошло не так';
 }

@@ -15,20 +15,20 @@
 ### Register (`register.png`)
 - Фон: орбитальные эллипсы + blur-градиентные пятна
 - Поля Full Name / Email / Password (глаз) / Timezone (dropdown) /
-  «What should your Aura help you with?»
+  «What should your Selfvoy help you with?»
 - Gradient-кнопка Create account; Sign in with Google; Terms · Privacy
 
 ### Home (`home.png`)
 - Hero-приветствие «Good evening, Alex» + статус «All systems operational»
-- Карточка «Your Aura is active» с фиолетовым свечением
+- Карточка «Your Selfvoy is active» с фиолетовым свечением
 - Строка «Ask your assistant to do something» + круглая фиолетовая кнопка микрофона + кнопка отправки
 - Чипы быстрых действий (Plan a meeting / Check my schedule / Send an email / Create a reminder)
 - Upcoming tasks с цветными точками статусов; Recent AI activity (таймлайн)
 
-### Chat / My Aura (`chat.png`)
-- Шапка: аватар Ауры с фиолетовым градиентом-свечением, «Online · Personal assistant»
-- Пузыри: свои — светлее стекло справа, Аура — фиолетовое стекло слева
-- Индикатор «Aura is thinking…»; чипы быстрых ответов под сообщением Ауры
+### Chat / My Selfvoy (`chat.png`)
+- Шапка: аватар Selfvoy с фиолетовым градиентом-свечением, «Online · Personal assistant»
+- Пузыри: свои — светлее стекло справа, Selfvoy — фиолетовое стекло слева
+- Индикатор «Selfvoy is thinking…»; чипы быстрых ответов под сообщением Selfvoy
 
 ### Tasks (`tasks.png`)
 - Недельная полоса дней (Mon–Sun) с задачами по дням

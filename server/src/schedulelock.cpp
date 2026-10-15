@@ -1,13 +1,13 @@
-// aura/schedulelock.cpp
-#include "aura/schedulelock.h"
+// selfvoy/schedulelock.cpp
+#include "selfvoy/schedulelock.h"
 
 #include <chrono>
 #include <thread>
 
-#include "aura/databasemanager.h"
-#include "aura/log.h"
+#include "selfvoy/databasemanager.h"
+#include "selfvoy/log.h"
 
-namespace aura {
+namespace selfvoy {
 
 ScheduleLock::Guard::Guard(ScheduleLock* owner, long long ownerId) : owner_(owner), ownerId_(ownerId) {}
 
@@ -58,8 +58,8 @@ ScheduleLock::Guard ScheduleLock::acquire(long long ownerId) {
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(25));
     }
-    AURA_LOG(log::Level::Warn, "schedule") << "расписание владельца " << ownerId << " занято другим экземпляром";
+    SELFVOY_LOG(log::Level::Warn, "schedule") << "расписание владельца " << ownerId << " занято другим экземпляром";
     return guard;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

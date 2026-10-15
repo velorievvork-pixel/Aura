@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Проверка настоящей LLM в AI-сервисе Aura: отвечает ли модель и как.
+"""Проверка настоящей LLM в AI-сервисе Selfvoy: отвечает ли модель и как.
 
 Отправляет в /v1/agent/run несколько типичных запросов и печатает для
 каждого: кто ответил (поле ``llm``: имя модели или «…-fallback», если
@@ -7,9 +7,9 @@
 действия и начало ответа. Код выхода 0 — все ответы от настоящей модели.
 
 Только стандартная библиотека: запускается где угодно, в т.ч. внутри
-контейнера AI-сервиса (``deploy/aura.sh llm-check``).
+контейнера AI-сервиса (``deploy/selfvoy.sh llm-check``).
 
-    AURA_AI_TOKEN=... python3 tools/llm_check.py [http://127.0.0.1:8000]
+    SELFVOY_AI_TOKEN=... python3 tools/llm_check.py [http://127.0.0.1:8000]
 """
 from __future__ import annotations
 
@@ -21,8 +21,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-URL = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("AURA_AI_URL", "http://127.0.0.1:8000")).rstrip("/")
-TOKEN = os.environ.get("AURA_AI_TOKEN", "")
+URL = (sys.argv[1] if len(sys.argv) > 1 else os.environ.get("SELFVOY_AI_URL", "http://127.0.0.1:8000")).rstrip("/")
+TOKEN = os.environ.get("SELFVOY_AI_TOKEN", "")
 
 
 def call(method: str, path: str, body: dict | None = None, timeout: float = 60.0) -> tuple[int, dict, float]:
@@ -30,7 +30,7 @@ def call(method: str, path: str, body: dict | None = None, timeout: float = 60.0
     request = urllib.request.Request(URL + path, data=data, method=method)
     request.add_header("Content-Type", "application/json")
     if TOKEN:
-        request.add_header("X-Aura-Token", TOKEN)
+        request.add_header("X-Selfvoy-Token", TOKEN)
     started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -68,7 +68,7 @@ def main() -> int:
     model = health.get("llm", "?")
     print(f"AI-сервис: {URL}, модель: {model}")
     if model == "mock":
-        print("Настоящая LLM не подключена: задайте AURA_LLM_PROVIDER=openai и OPENAI_API_KEY "
+        print("Настоящая LLM не подключена: задайте SELFVOY_LLM_PROVIDER=openai и OPENAI_API_KEY "
               "(для другого провайдера — ещё OPENAI_BASE_URL) и перезапустите AI-сервис.")
         return 3
 
@@ -107,7 +107,7 @@ def main() -> int:
     if failures:
         print(f"Настоящая модель не ответила в {failures} из {len(cases)} запросов. Частые причины: неверный "
               "ключ, нет доступа к API провайдера из сети сервера, исчерпан баланс, неверный OPENAI_BASE_URL "
-              "или имя модели (AURA_LLM_MODEL). Подробности — в логе AI-сервиса.")
+              "или имя модели (SELFVOY_LLM_MODEL). Подробности — в логе AI-сервиса.")
         return 1
     print(f"Все {len(cases)} запросов обработала настоящая модель ({model}).")
     return 0

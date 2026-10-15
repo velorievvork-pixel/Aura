@@ -16,7 +16,7 @@ import type { AuthPayload, User } from '../net/api';
 import type { Tokens } from '../net/secureStore';
 import { isNetworkError } from '../net/socket';
 
-export const REFRESH_LOCK = 'aura.auth.refresh';
+export const REFRESH_LOCK = 'selfvoy.auth.refresh';
 
 type LockManagerLike = { request<T>(name: string, callback: () => Promise<T>): Promise<T> };
 

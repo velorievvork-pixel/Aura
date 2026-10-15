@@ -1,5 +1,5 @@
 /*
-  Настройки: профиль, предпочтения Ауры, приватность ИИ и разрешения,
+  Настройки: профиль, предпочтения Selfvoy, приватность ИИ и разрешения,
   безопасность (пароль, 2FA, доверенные устройства, сессии), сервер и выход.
 */
 import { ChevronRight, Copy, Download, KeyRound, LogOut, Monitor, Share2, Shield, ShieldCheck, Smartphone, Trash2, Upload } from 'lucide-react';
@@ -23,7 +23,7 @@ import { errorText, useSession } from '../state/session';
 
 const SECTIONS = [
   { id: 'profile', label: 'Профиль' },
-  { id: 'aura', label: 'Предпочтения' },
+  { id: 'selfvoy', label: 'Предпочтения' },
   { id: 'privacy', label: 'Приватность ИИ' },
   { id: 'security', label: 'Безопасность' },
   { id: 'referral', label: 'Пригласить друзей' },
@@ -48,7 +48,7 @@ export function Settings() {
         </nav>
         <div className="stack-lg">
           {section === 'profile' && <ProfileSection />}
-          {section === 'aura' && <PrefsSection />}
+          {section === 'selfvoy' && <PrefsSection />}
           {section === 'privacy' && <PrivacySection />}
           {section === 'security' && (
             <>
@@ -138,7 +138,7 @@ function ProfileSection() {
   };
 
   return (
-    <Card title="Профиль" desc="Имя и фото видят люди, с которыми вы общаетесь, и их Ауры.">
+    <Card title="Профиль" desc="Имя и фото видят люди, с которыми вы общаетесь, и их Selfvoy.">
       <div className="row" style={{ gap: 16 }}>
         <Avatar name={user.display_name || user.email} src={user.avatar_url} size={64} />
         <div className="row wrap">
@@ -172,7 +172,7 @@ function ProfileSection() {
         <Field label="Имя" error={error}>
           <input className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} autoComplete="name" />
         </Field>
-        <Field label="О себе" hint={`${[...bio].length}/300 — Аура учитывает это в переговорах`}>
+        <Field label="О себе" hint={`${[...bio].length}/300 — Selfvoy учитывает это в переговорах`}>
           <textarea className="textarea" value={bio} onChange={(e) => setBio(e.target.value.slice(0, 300))} placeholder="Чем занимаетесь, что любите" />
         </Field>
         <Field label="Email">
@@ -223,7 +223,7 @@ function PrefsSection() {
   };
 
   return (
-    <Card title="Предпочтения" desc="Аура учитывает их, когда выбирает место и время встречи.">
+    <Card title="Предпочтения" desc="Selfvoy учитывает их, когда выбирает место и время встречи.">
       <div className="field">
         <span>Питание</span>
         <div className="suggestions">
@@ -256,8 +256,8 @@ function PrefsSection() {
 // ------------------------------------------------------------- Приватность
 
 const PRIVACY: { key: keyof Privacy; label: string; desc: string }[] = [
-  { key: 'share_free_slots_only', label: 'Делиться только свободными слотами', desc: 'Чужая Аура узнаёт, когда вы свободны, но не видит ваших заметок, дня рождения и аллергий.' },
-  { key: 'allow_place_choice', label: 'Разрешить выбор локаций', desc: 'Аура может предлагать место встречи. Если выключено — договаривается только о времени.' },
+  { key: 'share_free_slots_only', label: 'Делиться только свободными слотами', desc: 'Чужой Selfvoy узнаёт, когда вы свободны, но не видит ваших заметок, дня рождения и аллергий.' },
+  { key: 'allow_place_choice', label: 'Разрешить выбор локаций', desc: 'Selfvoy может предлагать место встречи. Если выключено — договаривается только о времени.' },
   { key: 'hide_event_titles', label: 'Скрывать названия других событий', desc: 'В переговорах ваши события видны как «занято», без названий.' },
 ];
 
@@ -271,7 +271,7 @@ function PrivacySection() {
   const { prefs, savePrivacy, permissions, setPermission } = useData();
   return (
     <>
-      <Card title="Приватность ИИ" desc="Чем ваша Аура делится с Аурами других людей. Сервер применяет это при каждых переговорах.">
+      <Card title="Приватность ИИ" desc="Чем ваш Selfvoy делится с Selfvoy других людей. Сервер применяет это при каждых переговорах.">
         {!prefs ? (
           <Spinner />
         ) : (
@@ -288,7 +288,7 @@ function PrivacySection() {
           </div>
         )}
       </Card>
-      <Card title="Что Аура делает сама" desc="Опасные действия по умолчанию — только с вашего подтверждения.">
+      <Card title="Что Selfvoy делает сам" desc="Опасные действия по умолчанию — только с вашего подтверждения.">
         <div>
           {permissions.map((p) => (
             <div key={p.tool} className="setting" style={{ flexWrap: 'wrap' }}>
@@ -495,7 +495,7 @@ function TwoFactorSection() {
             {canDownload() && (
               <button
                 className="btn btn-secondary btn-sm"
-                onClick={() => download('aura-recovery-codes.txt', codes.join('\n')).catch((err) => notify(err instanceof Error && err.message ? err.message : 'Не удалось сохранить файл', 'error'))}
+                onClick={() => download('selfvoy-recovery-codes.txt', codes.join('\n')).catch((err) => notify(err instanceof Error && err.message ? err.message : 'Не удалось сохранить файл', 'error'))}
               >
                 {isNative ? <Share2 size={14} /> : <Download size={14} />} {isNative ? 'Поделиться' : 'Скачать'}
               </button>
@@ -750,7 +750,7 @@ function ReferralSection() {
   const link = info ? publicLink(signupPath(info.code), info.url, typeof location === 'undefined' ? null : location) : null;
 
   return (
-    <Card title="Пригласить друзей" desc="Поделитесь ссылкой: друг заведёт свою Ауру, и ваши Ауры смогут договариваться о встречах напрямую. Регистрации со страниц записи и приглашений тоже засчитываются вам.">
+    <Card title="Пригласить друзей" desc="Поделитесь ссылкой: друг заведёт свой Selfvoy, и ваши Selfvoy смогут договариваться о встречах напрямую. Регистрации со страниц записи и приглашений тоже засчитываются вам.">
       {error && <div className="notice error">{error}</div>}
       {!info && !error && <Spinner small />}
       {info && (
@@ -774,13 +774,13 @@ function ReferralSection() {
                 <Copy size={15} /> {copied ? 'Скопировано' : 'Скопировать'}
               </button>
               {canShare() && (
-                <button type="button" className="btn btn-secondary" onClick={() => navigator.share({ title: 'Aura', text: 'Заведи свою Ауру — личного ИИ-агента', url: link }).catch(() => undefined)}>
+                <button type="button" className="btn btn-secondary" onClick={() => navigator.share({ title: 'Selfvoy', text: 'Заведи свой Selfvoy — личного ИИ-агента', url: link }).catch(() => undefined)}>
                   <Share2 size={15} /> Поделиться
                 </button>
               )}
             </div>
           ) : (
-            <div className="notice warn">Полную ссылку не собрать: задайте на сервере AURA_PUBLIC_URL. Пока друг может ввести код при регистрации по адресу #/signup?ref={info.code}.</div>
+            <div className="notice warn">Полную ссылку не собрать: задайте на сервере SELFVOY_PUBLIC_URL. Пока друг может ввести код при регистрации по адресу #/signup?ref={info.code}.</div>
           )}
           <div className="small muted">
             Зарегистрировались: {info.joined} · подтвердили email: {info.verified}
@@ -796,7 +796,7 @@ function ReferralSection() {
                       {when(r.joined_at)} · {SOURCE_LABEL[r.source] ?? r.source}
                     </div>
                   </div>
-                  <span className={`badge ${r.verified ? 'green' : ''}`}>{r.verified ? 'С Aura' : 'Ждёт подтверждения'}</span>
+                  <span className={`badge ${r.verified ? 'green' : ''}`}>{r.verified ? 'С Selfvoy' : 'Ждёт подтверждения'}</span>
                 </div>
               ))}
             </div>
@@ -819,7 +819,7 @@ function AppSection() {
   useEffect(() => {
     secureStore.encrypted().then(setEncrypted, () => setEncrypted(false));
   }, []);
-  const desktop = typeof window !== 'undefined' && Boolean(window.auraSecure);
+  const desktop = typeof window !== 'undefined' && Boolean(window.selfvoySecure);
   const storage =
     encrypted === null
       ? ''
@@ -843,7 +843,7 @@ function AppSection() {
           <ChevronRight size={16} className="faint" aria-hidden="true" />
         </Link>
       )}
-      <Card title="Сервер" desc="Адрес сервера Aura, к которому подключено приложение.">
+      <Card title="Сервер" desc="Адрес сервера Selfvoy, к которому подключено приложение.">
         <ServerAddress />
       </Card>
       <Card title="Хранение входа" desc={storage}>

@@ -1,10 +1,10 @@
 -- Демонстрационные данные: два пользователя, чат между ними, память и настройки.
 -- Войти под этими аккаунтами нельзя: пароля нет (хэш '!' не совпадает ни с одним
 -- паролем) — в репозитории не должно быть известных паролей. Аккаунты для входа
--- на dev-стеке создаёт tools/demo_seed.py (пароль — из AURA_DEMO_PASSWORD) или
--- «Сбросить пароль» с AURA_MAIL_DRIVER=dev.
+-- на dev-стеке создаёт tools/demo_seed.py (пароль — из SELFVOY_DEMO_PASSWORD) или
+-- «Сбросить пароль» с SELFVOY_MAIL_DRIVER=dev.
 --
--- psql "$AURA_DATABASE_URL" -f schema/seed.sql
+-- psql "$SELFVOY_DATABASE_URL" -f schema/seed.sql
 
 BEGIN;
 
@@ -15,7 +15,7 @@ VALUES
 ON CONFLICT DO NOTHING;
 
 INSERT INTO chats (kind, title, created_by)
-SELECT 'agent', 'Анна ↔ Аня (Ауры)', u.id FROM users u WHERE u.email = 'anna@example.com'
+SELECT 'agent', 'Анна ↔ Аня (Selfvoy)', u.id FROM users u WHERE u.email = 'anna@example.com'
 ON CONFLICT DO NOTHING;
 
 INSERT INTO chat_members (chat_id, user_id, role)

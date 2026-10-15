@@ -1,15 +1,15 @@
 -- ============================================================================
---  Aura — миграция AI-возможностей (этапы 8–9)
+--  Selfvoy — миграция AI-возможностей (этапы 8–9)
 --  Этап 8: разрешения на инструменты, барьер подтверждения, задачи.
 --  Этап 9: интеграции (Google OAuth, токены зашифрованы) + OAuth-состояния.
 --  Применение к существующей БД:
---    psql "$AURA_DATABASE_URL" -f schema/migrations/2026_09_20_ai_features.sql
+--    psql "$SELFVOY_DATABASE_URL" -f schema/migrations/2026_09_20_ai_features.sql
 --  Для свежей БД достаточно schema/schema.sql — миграция идемпотентна.
 -- ============================================================================
 
 BEGIN;
 
--- Разрешения пользователя на инструменты Ауры. mode: allow | ask | deny.
+-- Разрешения пользователя на инструменты Selfvoy. mode: allow | ask | deny.
 -- Если строки нет, режим выводится из опасности инструмента (опасные → ask).
 CREATE TABLE IF NOT EXISTS tool_permissions (
     user_id     BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS tool_permissions (
     PRIMARY KEY (user_id, tool)
 );
 
--- Отложенные действия (барьер подтверждения): Аура создаёт запись вместо
+-- Отложенные действия (барьер подтверждения): Selfvoy создаёт запись вместо
 -- исполнения; выполнение — только после confirmation.approve.
 CREATE TABLE IF NOT EXISTS pending_actions (
     id           BIGSERIAL     PRIMARY KEY,

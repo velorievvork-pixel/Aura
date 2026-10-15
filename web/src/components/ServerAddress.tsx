@@ -14,7 +14,7 @@ export function ServerAddress({ compact }: { compact?: boolean }) {
     e.preventDefault();
     const url = setServer(value);
     if (!url) {
-      setError('Адрес вида ws://192.168.1.10:9000 или wss://aura.example.com');
+      setError('Адрес вида ws://192.168.1.10:9000 или wss://selfvoy.example.com');
       return;
     }
     setError('');
@@ -43,7 +43,7 @@ export function ServerAddress({ compact }: { compact?: boolean }) {
   return (
     <form className="stack" onSubmit={save} style={{ width: '100%', textAlign: 'left' }}>
       <label className="field">
-        <span>Адрес сервера Aura</span>
+        <span>Адрес сервера Selfvoy</span>
         <input
           className={`input mono ${error ? 'invalid' : ''}`}
           value={value}

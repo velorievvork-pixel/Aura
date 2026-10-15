@@ -19,7 +19,7 @@ class QTcpServer;
 class QTextToSpeech;
 QT_END_NAMESPACE
 
-namespace aura {
+namespace selfvoy {
 
 class WebSocketClient;
 
@@ -95,11 +95,11 @@ class AppStore : public QObject {
     Q_PROPERTY(QVariantList notifications READ notifications NOTIFY notificationsChanged)
     Q_PROPERTY(int unreadNotifications READ unreadNotifications NOTIFY notificationsChanged)
     Q_PROPERTY(QVariantList pushDevices READ pushDevices NOTIFY pushDevicesChanged)
-    // v3: Home-дашборд — ответ Ауры без чата; последний результат A2A-переговоров.
+    // v3: Home-дашборд — ответ Selfvoy без чата; последний результат A2A-переговоров.
     Q_PROPERTY(QString homeReply READ homeReply NOTIFY homeReplyChanged)
     Q_PROPERTY(QVariantMap negotiation READ negotiation NOTIFY negotiationChanged)
-    // v3: диалог с Аурой («Моя Аура»): реплики пользователя и ответы с действиями.
-    Q_PROPERTY(QVariantList auraDialog READ auraDialog NOTIFY auraDialogChanged)
+    // v3: диалог с Selfvoy («Мой Selfvoy»): реплики пользователя и ответы с действиями.
+    Q_PROPERTY(QVariantList selfvoyDialog READ selfvoyDialog NOTIFY selfvoyDialogChanged)
     // v3: раунды переговоров за сессию (свежие первыми), бронирование итога.
     Q_PROPERTY(QVariantList negotiationHistory READ negotiationHistory NOTIFY negotiationChanged)
     Q_PROPERTY(bool bookingBusy READ bookingBusy NOTIFY negotiationChanged)
@@ -194,7 +194,7 @@ public:
     // v3
     QString homeReply() const { return homeReply_; }
     QVariantMap negotiation() const { return negotiation_; }
-    QVariantList auraDialog() const { return auraDialog_; }
+    QVariantList selfvoyDialog() const { return selfvoyDialog_; }
     QVariantList negotiationHistory() const { return negotiationHistory_; }
     bool bookingBusy() const { return bookingBusy_; }
     QVariantList userResults() const { return userResults_; }
@@ -230,7 +230,7 @@ public slots:
     void selectChat(qint64 chatId);
     void sendMessage(qint64 chatId, const QString& text);
     void askAgent(qint64 chatId, const QString& message);
-    // v3: запрос к Ауре с Home-дашборда — без привязки к чату (chat_id=0).
+    // v3: запрос к Selfvoy с Home-дашборда — без привязки к чату (chat_id=0).
     void askAgentGlobal(const QString& message);
     // v3: A2A-переговоры (agent.negotiate): цель, тема, длительность и окно в минутах/часах.
     void negotiateAgent(const QString& target, const QString& topic,
@@ -238,8 +238,8 @@ public slots:
     // v3: забронировать место из последних переговоров (book_table) и
     // поставить встречу в задачи. Режим «запретить» для book_table уважается.
     void bookNegotiation();
-    void clearAuraDialog();
-    // Ответ «С чем помогать?» из регистрации: сохраняется в память Ауры
+    void clearSelfvoyDialog();
+    // Ответ «С чем помогать?» из регистрации: сохраняется в память Selfvoy
     // (memory.add) при первом входе — до подтверждения email сессии ещё нет.
     void setPendingFocus(const QString& text);
     void searchUsers(const QString& query);
@@ -355,7 +355,7 @@ signals:
     // v3: Home и переговоры
     void homeReplyChanged();
     void negotiationChanged();
-    void auraDialogChanged();
+    void selfvoyDialogChanged();
     void userResultsChanged();
 
 private:
@@ -412,7 +412,7 @@ private:
     QString errorMessage_;
     // auth v3
     QString pendingEmail_;   // email, ожидающий подтверждения/сброса
-    QString devEmailCode_;   // код подтверждения (сервер в режиме AURA_MAIL_DRIVER=dev)
+    QString devEmailCode_;   // код подтверждения (сервер в режиме SELFVOY_MAIL_DRIVER=dev)
     QString devResetCode_;   // код сброса пароля (dev)
     QVariantList sessions_;
     // 2FA (TOTP)
@@ -468,9 +468,9 @@ private:
     int unreadNotifications_ = 0;        // счётчик непрочитанных (бейдж)
     QVariantList pushDevices_;           // зарегистрированные push-устройства
     // v3: Home-дашборд и A2A-переговоры
-    QString homeReply_;                  // последний ответ Ауры с Home (chat_id=0)
+    QString homeReply_;                  // последний ответ Selfvoy с Home (chat_id=0)
     QVariantMap negotiation_;            // последний результат agent.negotiate
-    QVariantList auraDialog_;            // «Моя Аура»: реплики и ответы за сессию
+    QVariantList selfvoyDialog_;            // «Мой Selfvoy»: реплики и ответы за сессию
     QVariantList negotiationHistory_;    // раунды agent.negotiate, свежие первыми
     bool bookingBusy_ = false;
     QVariantList userResults_;           // результаты users.search
@@ -479,4 +479,4 @@ private:
     QString toolMode(const QString& tool) const;
 };
 
-}  // namespace aura
+}  // namespace selfvoy

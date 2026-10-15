@@ -1,11 +1,19 @@
 # Changelog
 
-Все значимые изменения проекта Aura документируются в этом файле.
+Все значимые изменения проекта Selfvoy документируются в этом файле.
 
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/),
 версионирование следует [Semantic Versioning](https://semver.org/lang/ru/).
 
 ## [Unreleased]
+
+### Changed
+- Продукт переименован: Aura → **Selfvoy**. Переменные окружения `SELFVOY_*`
+  (старые `AURA_*` сервер и AI-сервис читают ещё один релиз, с предупреждением),
+  пакет `selfvoy_ai`, цели CMake `selfvoy-*`, deep links `selfvoy://`, Android
+  `app.selfvoy`, iOS `ios/Selfvoy`, база `selfvoy` и роли `selfvoy_app`/`selfvoy_ai`.
+  Установка прежней версии переводится на новые имена повторным запуском
+  `deploy/install.sh` (см. docs/DEPLOY.md).
 
 ### В планах
 - Mobile push через webhook-gateway (документация готова)
@@ -44,8 +52,8 @@
 
 #### Клиентские приложения
 - **Desktop (Qt6/QML):** Windows/macOS/Linux, glassmorphism UI, WebSocket + HTTP/2
-- **iOS (SwiftUI):** on-device распознавание голоса, deep links (aura://)
-- **Android (Kotlin + Compose):** два модуля (aurakit — чистый JVM, app — UI)
+- **iOS (SwiftUI):** on-device распознавание голоса, deep links (selfvoy://)
+- **Android (Kotlin + Compose):** два модуля (selfvoykit — чистый JVM, app — UI)
 - Гибридный голос: on-device (iOS) + серверный STT fallback
 - Локальное шифрование токенов интеграций (AES-256-GCM)
 
@@ -77,8 +85,8 @@
 - TOTP secret 160 бит (32 символа base32)
 
 ### Changed
-- AI-сервис: `AURA_AI_TOKEN` теперь обязателен в production (warning в dev)
-- CORS: вместо `["*"]` используется `AURA_CORS_ORIGINS` из env
+- AI-сервис: `SELFVOY_AI_TOKEN` теперь обязателен в production (warning в dev)
+- CORS: вместо `["*"]` используется `SELFVOY_CORS_ORIGINS` из env
 - Протокол: поле `body` (не `text`) для сообщений чата — единообразие
 
 ### Fixed
@@ -90,5 +98,5 @@
 
 ## Ссылки
 
-- [Unreleased]: https://github.com/USER/aura-main/compare/v1.0.0...HEAD
-- [1.0.0]: https://github.com/USER/aura-main/releases/tag/v1.0.0
+- [Unreleased]: https://github.com/USER/selfvoy-main/compare/v1.0.0...HEAD
+- [1.0.0]: https://github.com/USER/selfvoy-main/releases/tag/v1.0.0

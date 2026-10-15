@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 
 /*
   DesktopShell — оболочка после входа (макет Home): стеклянный сайдбар слева
@@ -14,12 +14,12 @@ Item {
     id: shell
 
     property string current: "home"
-    readonly property bool wide: width >= AuraTheme.breakpointWide
+    readonly property bool wide: width >= SelfvoyTheme.breakpointWide
     readonly property Item backdropRef: shell.Window.window ? shell.Window.window.contentItem : null
 
     readonly property var sections: [
         { key: "home",          label: "Главная",    icon: "house" },
-        { key: "aura",          label: "Моя Аура",   icon: "message-circle" },
+        { key: "selfvoy",          label: "Мой Selfvoy",   icon: "message-circle" },
         { key: "negotiations",  label: "Переговоры", icon: "handshake" },
         { key: "booking",       label: "Запись",     icon: "calendar-clock" },
         { key: "tasks",         label: "Задачи",     icon: "square-check" },
@@ -44,7 +44,7 @@ Item {
         property string label: ""
         property string icon: ""
         property int badge: 0
-        property color badgeColor: AuraTheme.accent
+        property color badgeColor: SelfvoyTheme.accent
         readonly property bool active: shell.current === key
 
         Layout.fillWidth: true
@@ -52,12 +52,12 @@ Item {
 
         Rectangle {
             anchors.fill: parent
-            radius: AuraTheme.radiusSmall
-            color: item.active ? AuraTheme.accentA(0.16)
+            radius: SelfvoyTheme.radiusSmall
+            color: item.active ? SelfvoyTheme.accentA(0.16)
                                : (area.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent")
             border.width: item.active ? 1 : 0
-            border.color: AuraTheme.lilacA(0.28)
-            Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
+            border.color: SelfvoyTheme.lilacA(0.28)
+            Behavior on color { ColorAnimation { duration: SelfvoyTheme.pressMs } }
         }
 
         RowLayout {
@@ -70,17 +70,17 @@ Item {
             Icon {
                 name: item.icon
                 size: 19
-                color: item.active ? AuraTheme.textPrimary
-                       : (area.containsMouse ? AuraTheme.textPrimary : AuraTheme.textSecondary)
+                color: item.active ? SelfvoyTheme.textPrimary
+                       : (area.containsMouse ? SelfvoyTheme.textPrimary : SelfvoyTheme.textSecondary)
             }
             Text {
                 visible: shell.wide
                 Layout.fillWidth: true
                 text: item.label
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: item.badge > 0 ? AuraTheme.fontBody - 1 : AuraTheme.fontBody
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: item.badge > 0 ? SelfvoyTheme.fontBody - 1 : SelfvoyTheme.fontBody
                 font.weight: item.active ? Font.Bold : Font.Medium
-                color: item.active || area.containsMouse ? AuraTheme.textPrimary : AuraTheme.textSecondary
+                color: item.active || area.containsMouse ? SelfvoyTheme.textPrimary : SelfvoyTheme.textSecondary
                 elide: Text.ElideRight
             }
             Rectangle {
@@ -93,10 +93,10 @@ Item {
                     id: badgeText
                     anchors.centerIn: parent
                     text: item.badge
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontMicro
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontMicro
                     font.weight: Font.Bold
-                    color: item.badgeColor === AuraTheme.warning ? "#1A1400" : "#FFFFFF"
+                    color: item.badgeColor === SelfvoyTheme.warning ? "#1A1400" : "#FFFFFF"
                 }
             }
             Item { Layout.fillWidth: !shell.wide }
@@ -128,12 +128,12 @@ Item {
     // ------------------------------------------------------------- раскладка
     RowLayout {
         anchors.fill: parent
-        anchors.margins: AuraTheme.spaceLg
+        anchors.margins: SelfvoyTheme.spaceLg
         spacing: 18
 
         GlassPanel {
             id: sidebar
-            Layout.preferredWidth: shell.wide ? AuraTheme.sidebarWidth : 84
+            Layout.preferredWidth: shell.wide ? SelfvoyTheme.sidebarWidth : 84
             Layout.fillHeight: true
             radius: 30
             padding: shell.wide ? 18 : 12
@@ -154,16 +154,16 @@ Item {
                         implicitWidth: 26; implicitHeight: 26; radius: 13
                         color: "transparent"
                         border.width: 3.5
-                        border.color: AuraTheme.textPrimary
-                        Rectangle { anchors.centerIn: parent; width: 9; height: 9; radius: 4.5; color: AuraTheme.textPrimary }
+                        border.color: SelfvoyTheme.textPrimary
+                        Rectangle { anchors.centerIn: parent; width: 9; height: 9; radius: 4.5; color: SelfvoyTheme.textPrimary }
                     }
                     Text {
                         visible: shell.wide
-                        text: "Aura"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontTitle
+                        text: "Selfvoy"
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontTitle
                         font.weight: Font.Bold
-                        color: AuraTheme.textPrimary
+                        color: SelfvoyTheme.textPrimary
                     }
                     Item { Layout.fillWidth: true }
                 }
@@ -191,7 +191,7 @@ Item {
                     label: "Подтверждения"
                     icon: "triangle-alert"
                     badge: App ? App.confirmations.length : 0
-                    badgeColor: AuraTheme.warning
+                    badgeColor: SelfvoyTheme.warning
                 }
                 NavItem {
                     key: "notifications"
@@ -209,7 +209,7 @@ Item {
 
                     Rectangle {
                         anchors.fill: parent
-                        radius: AuraTheme.radiusField
+                        radius: SelfvoyTheme.radiusField
                         color: meArea.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent"
                     }
                     RowLayout {
@@ -217,7 +217,7 @@ Item {
                         anchors.leftMargin: shell.wide ? 8 : 0
                         spacing: 10
                         Item { Layout.fillWidth: !shell.wide }
-                        AuraAvatar {
+                        SelfvoyAvatar {
                             name: App ? App.userName : ""
                             size: 36
                             online: App ? App.connected : false
@@ -229,18 +229,18 @@ Item {
                             Text {
                                 Layout.fillWidth: true
                                 text: App ? App.userName : ""
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontSmall + 1
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall + 1
                                 font.weight: Font.DemiBold
-                                color: AuraTheme.textPrimary
+                                color: SelfvoyTheme.textPrimary
                                 elide: Text.ElideRight
                             }
                             Text {
                                 Layout.fillWidth: true
                                 text: App && App.connected ? (App.userEmail || "") : "нет связи с сервером"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontMicro
-                                color: App && App.connected ? AuraTheme.textMuted : AuraTheme.warning
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontMicro
+                                color: App && App.connected ? SelfvoyTheme.textMuted : SelfvoyTheme.warning
                                 elide: Text.ElideRight
                             }
                         }
@@ -270,7 +270,7 @@ Item {
                 anchors.fill: parent
                 sourceComponent: {
                     switch (shell.current) {
-                    case "aura": return auraPage
+                    case "selfvoy": return selfvoyPage
                     case "negotiations": return negotiationsPage
                     case "tasks": return tasksPage
                     case "contacts": return contactsPage
@@ -282,7 +282,7 @@ Item {
                     }
                 }
                 onLoaded: fade.restart()
-                NumberAnimation { id: fade; target: page.item; property: "opacity"; from: 0; to: 1; duration: AuraTheme.moveMs }
+                NumberAnimation { id: fade; target: page.item; property: "opacity"; from: 0; to: 1; duration: SelfvoyTheme.moveMs }
             }
 
             Connections {
@@ -294,7 +294,7 @@ Item {
     }
 
     Component { id: homePage; HomePage {} }
-    Component { id: auraPage; MyAuraPage {} }
+    Component { id: selfvoyPage; MySelfvoyPage {} }
     Component { id: negotiationsPage; NegotiationsPage {} }
     Component { id: tasksPage; TasksPage {} }
     Component { id: contactsPage; ContactsPage {} }

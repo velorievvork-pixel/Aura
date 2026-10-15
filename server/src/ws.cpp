@@ -1,14 +1,14 @@
-// aura/ws.cpp
-#include "aura/ws.h"
+// selfvoy/ws.cpp
+#include "selfvoy/ws.h"
 
 #include <algorithm>
 #include <cctype>
 #include <sstream>
 #include <vector>
 
-#include "aura/crypto.h"
+#include "selfvoy/crypto.h"
 
-namespace aura::ws {
+namespace selfvoy::ws {
 
 namespace {
 
@@ -207,4 +207,4 @@ DecodeResult decodeFrame(const std::string& buffer,
     return DecodeResult::Complete;
 }
 
-}  // namespace aura::ws
+}  // namespace selfvoy::ws

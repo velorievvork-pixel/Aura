@@ -1,13 +1,13 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 import "../Format.js" as F
 
 /*
   ConfirmationPanel — барьер подтверждения опасных операций (этап 8).
 
-  Аура не исполняет send_message/send_email/book_table без явного разрешения:
+  Selfvoy не исполняет send_message/send_email/book_table без явного разрешения:
   сервер создаёт отложенное действие, панель показывает его и предлагает
   «Подтвердить» (confirmation.approve → сервер исполняет) или «Отклонить»
   (confirmation.deny). Пуста — не занимает места.
@@ -20,31 +20,31 @@ GlassPanel {
 
     visible: hasItems
     implicitHeight: visible ? holderColumn.implicitHeight + padding * 2 : 0
-    padding: AuraTheme.spaceMd
+    padding: SelfvoyTheme.spaceMd
     fill: 0.10
 
     ColumnLayout {
         id: holderColumn
         anchors.fill: parent
-        spacing: AuraTheme.spaceSm
+        spacing: SelfvoyTheme.spaceSm
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: AuraTheme.spaceSm
+            spacing: SelfvoyTheme.spaceSm
 
             Rectangle {
                 Layout.preferredWidth: 10
                 Layout.preferredHeight: 10
                 radius: 5
-                color: AuraTheme.warning
+                color: SelfvoyTheme.warning
             }
             Text {
                 Layout.fillWidth: true
                 text: "Требуется подтверждение · " + (panel.items ? panel.items.length : 0)
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontSmall
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontSmall
                 font.weight: Font.DemiBold
-                color: AuraTheme.warning
+                color: SelfvoyTheme.warning
             }
         }
 
@@ -54,7 +54,7 @@ GlassPanel {
             delegate: RowLayout {
                 required property var modelData
                 Layout.fillWidth: true
-                spacing: AuraTheme.spaceSm
+                spacing: SelfvoyTheme.spaceSm
 
                 ColumnLayout {
                     Layout.fillWidth: true
@@ -64,15 +64,15 @@ GlassPanel {
                         text: modelData.summary && modelData.summary.length > 0
                               ? modelData.summary : F.toolDescription(modelData.tool, modelData.tool)
                         elide: Text.ElideRight
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textPrimary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textPrimary
                     }
                     Text {
                         text: F.toolTitle(modelData.tool) + (modelData.created_at ? " · " + F.stamp(modelData.created_at) : "")
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textMuted
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textMuted
                     }
                 }
 

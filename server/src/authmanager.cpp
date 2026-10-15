@@ -1,5 +1,5 @@
-// aura/authmanager.cpp
-#include "aura/authmanager.h"
+// selfvoy/authmanager.cpp
+#include "selfvoy/authmanager.h"
 
 #include <algorithm>
 #include <cctype>
@@ -7,14 +7,14 @@
 #include <cstdint>
 #include <iterator>
 
-#include "aura/crypto.h"
-#include "aura/jwt.h"
-#include "aura/log.h"
-#include "aura/protocol.h"
-#include "aura/session.h"
-#include "aura/totp.h"
+#include "selfvoy/crypto.h"
+#include "selfvoy/jwt.h"
+#include "selfvoy/log.h"
+#include "selfvoy/protocol.h"
+#include "selfvoy/session.h"
+#include "selfvoy/totp.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -170,7 +170,7 @@ std::string AuthManager::issueToken(long long userId, const std::string& email, 
     claims.set("sub", Json(userId));
     claims.set("email", Json(email));
     claims.set("jti", Json(jwtId));
-    claims.set("iss", Json("aura"));
+    claims.set("iss", Json("selfvoy"));
     return jwt::sign(claims, config_.jwtSecret, config_.tokenTtlSeconds);
 }
 
@@ -178,7 +178,7 @@ void AuthManager::audit(long long userId, const std::string& kind, const Json& d
                         const std::string& remoteAddr) {
     const DatabaseError stored = database_.db().insertAudit(userId, kind, detail, remoteAddr);
     if (!stored.ok) {
-        AURA_LOG(log::Level::Warn, "auth") << "audit(" << kind << "): " << stored.message;
+        SELFVOY_LOG(log::Level::Warn, "auth") << "audit(" << kind << "): " << stored.message;
     }
 }
 
@@ -202,7 +202,7 @@ std::string AuthManager::issueAuthCode(const UserRecord& user, const std::string
                                                        : config_.resetTtlSeconds);
     const DatabaseError stored = database_.db().createAuthToken(record);
     if (!stored.ok) {
-        AURA_LOG(log::Level::Error, "auth") << "не удалось сохранить код " << purpose << ": "
+        SELFVOY_LOG(log::Level::Error, "auth") << "не удалось сохранить код " << purpose << ": "
                                             << stored.message;
         return "";
     }
@@ -211,7 +211,7 @@ std::string AuthManager::issueAuthCode(const UserRecord& user, const std::string
                           ? mail_->sendVerificationCode(user.email, code)
                           : mail_->sendPasswordReset(user.email, code);
     if (!sent) {
-        AURA_LOG(log::Level::Error, "auth") << "письмо " << purpose << " не отправлено " << user.email;
+        SELFVOY_LOG(log::Level::Error, "auth") << "письмо " << purpose << " не отправлено " << user.email;
     }
     audit(user.id, purpose == "email_verify" ? "verification_sent" : "password_reset_requested",
           Json::object(), remoteAddr);
@@ -234,7 +234,7 @@ AuthManager::Result AuthManager::issueAccess(const UserRecord& user,
     session.expiresAt = isoIn(config_.tokenTtlSeconds);
     const DatabaseError stored = database_.db().createSession(session);
     if (!stored.ok) {
-        AURA_LOG(log::Level::Warn, "auth") << "не удалось сохранить сессию: " << stored.message;
+        SELFVOY_LOG(log::Level::Warn, "auth") << "не удалось сохранить сессию: " << stored.message;
     }
     database_.db().touchUser(user.id);
 
@@ -271,7 +271,7 @@ AuthManager::Result AuthManager::issue(const UserRecord& user,
     record.expiresAt = isoIn(config_.refreshTtlSeconds);
     const DatabaseError stored = database_.db().createRefreshToken(record);
     if (!stored.ok) {
-        AURA_LOG(log::Level::Warn, "auth") << "refresh-токен не сохранён: " << stored.message;
+        SELFVOY_LOG(log::Level::Warn, "auth") << "refresh-токен не сохранён: " << stored.message;
     } else {
         result.payload.set("refresh_token", Json(token));
         result.payload.set("refresh_expires_in", Json(static_cast<long long>(config_.refreshTtlSeconds)));
@@ -370,7 +370,7 @@ void AuthManager::codeFailure(long long userId, const std::string& purpose, cons
         // нужен новый (resendCode / forgotPassword).
         database_.db().deleteAuthTokens(userId, purpose);
         clearKey(key);
-        AURA_LOG(log::Level::Warn, "auth") << "код " << purpose << " user=" << userId
+        SELFVOY_LOG(log::Level::Warn, "auth") << "код " << purpose << " user=" << userId
                                            << " аннулирован после серии неверных попыток";
         audit(userId, purpose == "email_verify" ? "email_code_burned" : "reset_code_burned", Json::object(), "");
     }
@@ -422,7 +422,7 @@ AuthManager::Result AuthManager::registerUser(const std::string& email,
         return Result::failure(protocol::code::kInternal, "не удалось выпустить код подтверждения");
     }
 
-    AURA_LOG(log::Level::Info, "auth") << "регистрация " << normalized << " (id=" << userId
+    SELFVOY_LOG(log::Level::Info, "auth") << "регистрация " << normalized << " (id=" << userId
                                        << "), ждём подтверждения email";
     audit(userId, "register", Json::object(), remoteAddr);
 
@@ -473,7 +473,7 @@ AuthManager::Result AuthManager::verifyEmail(const std::string& email, const std
     clearKey("code:email_verify:" + std::to_string(user->id));
     audit(user->id, "email_verified", Json::object(), remoteAddr);
 
-    AURA_LOG(log::Level::Info, "auth") << "email подтверждён: " << normalized;
+    SELFVOY_LOG(log::Level::Info, "auth") << "email подтверждён: " << normalized;
     result.ok = true;
     result.userId = user->id;
     result.payload.set("verified", Json(true));
@@ -499,7 +499,7 @@ AuthManager::Result AuthManager::resendVerification(const std::string& email,
         // с скольких бы IP ни приходили запросы (ответ при этом тот же).
         const std::string mailKey = "mail:" + normalized;
         if (overLimit(mailKey, config_.mailPerEmailPerHour)) {
-            AURA_LOG(log::Level::Warn, "auth") << "resendCode: лимит писем для " << normalized;
+            SELFVOY_LOG(log::Level::Warn, "auth") << "resendCode: лимит писем для " << normalized;
             return result;
         }
         hit(mailKey, 3600);
@@ -518,7 +518,7 @@ AuthManager::Result AuthManager::login(const std::string& email,
     const std::string ip = ipKey(remoteAddr);
     const std::string loginKey = "login:" + normalized;
     if (overLimit(ip, config_.maxIpAttempts) || overLimit(loginKey, config_.maxLoginAttempts)) {
-        AURA_LOG(log::Level::Warn, "auth") << "вход заблокирован по частоте: " << remoteAddr;
+        SELFVOY_LOG(log::Level::Warn, "auth") << "вход заблокирован по частоте: " << remoteAddr;
         audit(0, "login_blocked", Json::object(), remoteAddr);
         return Result::failure(protocol::code::kForbidden, "слишком много попыток, попробуйте позже");
     }
@@ -534,7 +534,7 @@ AuthManager::Result AuthManager::login(const std::string& email,
     if (!crypto::verifyPassword(password, user->passwordHash)) {
         hit(ip, config_.loginWindowSec);
         hit(loginKey, config_.loginWindowSec);
-        AURA_LOG(log::Level::Warn, "auth") << "неудачный вход " << normalized << " из " << remoteAddr;
+        SELFVOY_LOG(log::Level::Warn, "auth") << "неудачный вход " << normalized << " из " << remoteAddr;
         audit(user->id, "login_failed", Json::object(), remoteAddr);
         return Result::failure(protocol::code::kUnauthorized, "неверный email или пароль");
     }
@@ -550,7 +550,7 @@ AuthManager::Result AuthManager::login(const std::string& email,
     if (crypto::passwordNeedsRehash(user->passwordHash)) {
         const std::string upgraded = crypto::hashPassword(password);
         if (!upgraded.empty() && database_.db().updatePasswordHash(user->id, upgraded).ok) {
-            AURA_LOG(log::Level::Info, "auth") << "хэш пароля " << normalized << " мигрирован на Argon2id";
+            SELFVOY_LOG(log::Level::Info, "auth") << "хэш пароля " << normalized << " мигрирован на Argon2id";
             audit(user->id, "password_rehashed", Json::object(), remoteAddr);
         }
     }
@@ -579,7 +579,7 @@ AuthManager::Result AuthManager::login(const std::string& email,
         audit(user->id, "login_trusted_device", Json::object(), remoteAddr);
     }
 
-    AURA_LOG(log::Level::Info, "auth") << "вход " << normalized << " из " << remoteAddr;
+    SELFVOY_LOG(log::Level::Info, "auth") << "вход " << normalized << " из " << remoteAddr;
     Result result = issue(*user, device, remoteAddr);
     audit(user->id, "login_ok", Json::object(), remoteAddr);
     return result;
@@ -599,7 +599,7 @@ AuthManager::Result AuthManager::refresh(const std::string& refreshToken,
     // Повторное использование отозванного токена = вероятная кража:
     // отозвать всё семейство и все сессии пользователя.
     auto reuseDetected = [&]() {
-        AURA_LOG(log::Level::Warn, "auth")
+        SELFVOY_LOG(log::Level::Warn, "auth")
             << "повторное использование refresh-токена (user=" << record->userId
             << ") — семейство и сессии отозваны";
         database_.db().revokeRefreshFamily(record->familyId);
@@ -672,7 +672,7 @@ AuthManager::Result AuthManager::verifyToken(const std::string& token) {
     // Сессия принадлежит тому, кому выдана: подменённый sub при чужом/своём
     // jti больше не превращает токен в доступ к другому аккаунту.
     if (session->userId != subject) {
-        AURA_LOG(log::Level::Warn, "auth") << "токен: sub не совпадает с владельцем сессии";
+        SELFVOY_LOG(log::Level::Warn, "auth") << "токен: sub не совпадает с владельцем сессии";
         return Result::failure(protocol::code::kUnauthorized, "токен недействителен");
     }
 
@@ -749,7 +749,7 @@ AuthManager::Result AuthManager::changePassword(long long userId,
     database_.db().revokeAllSessions(userId, "");
     database_.db().revokeAllUserRefreshTokens(userId);
     audit(userId, "password_changed", Json::object(), remoteAddr);
-    AURA_LOG(log::Level::Info, "auth") << "смена пароля user=" << userId;
+    SELFVOY_LOG(log::Level::Info, "auth") << "смена пароля user=" << userId;
 
     Result result = issue(*user, device, remoteAddr);
     result.sessionsRevoked = true;
@@ -773,7 +773,7 @@ AuthManager::Result AuthManager::forgotPassword(const std::string& email,
     if (user) {
         const std::string mailKey = "mail:" + normalized;
         if (overLimit(mailKey, config_.mailPerEmailPerHour)) {
-            AURA_LOG(log::Level::Warn, "auth") << "forgotPassword: лимит писем для " << normalized;
+            SELFVOY_LOG(log::Level::Warn, "auth") << "forgotPassword: лимит писем для " << normalized;
             return result;
         }
         hit(mailKey, 3600);
@@ -827,7 +827,7 @@ AuthManager::Result AuthManager::resetPassword(const std::string& email,
     database_.db().revokeAllSessions(user->id, "");
     database_.db().revokeAllUserRefreshTokens(user->id);
     audit(user->id, "password_reset", Json::object(), remoteAddr);
-    AURA_LOG(log::Level::Info, "auth") << "сброс пароля " << normalized;
+    SELFVOY_LOG(log::Level::Info, "auth") << "сброс пароля " << normalized;
 
     Result result;
     result.ok = true;
@@ -897,8 +897,11 @@ AuthManager::Result AuthManager::revokeAllSessions(long long userId, const std::
 
 // --- Двухфакторная аутентификация (TOTP) ------------------------------------
 
+// AAD TOTP-секретов: старое значение сохранено для совместимости с уже сохранёнными в БД данными.
+constexpr const char* kTwoFactorAad = "aura-2fa-secret";
+
 std::string AuthManager::twoFactorKeyBytes() const {
-    // В продакшене — отдельный ключ AURA_2FA_KEY; в демо/тестах выводим из
+    // В продакшене — отдельный ключ SELFVOY_2FA_KEY; в демо/тестах выводим из
     // jwtSecret, чтобы функция работала без отдельной настройки. SHA-256 даёт
     // ровно 32 байта — ключ AES-256.
     const std::string base = config_.twoFactorKey.empty() ? config_.jwtSecret : config_.twoFactorKey;
@@ -908,7 +911,7 @@ std::string AuthManager::twoFactorKeyBytes() const {
 bool AuthManager::decryptTwoFactorSecret(const TwoFactorRecord& record, std::string& outRaw) const {
     std::string blob;
     if (!crypto::base64Decode(record.secretEncrypted, blob)) return false;
-    return crypto::aes256GcmDecrypt(twoFactorKeyBytes(), blob, "aura-2fa-secret", outRaw);
+    return crypto::aes256GcmDecrypt(twoFactorKeyBytes(), blob, kTwoFactorAad, outRaw);
 }
 
 std::vector<std::string> AuthManager::generateRecoveryCodes(long long userId) {
@@ -951,7 +954,7 @@ AuthManager::Result AuthManager::setup2fa(long long userId, const std::string& r
         return Result::failure(protocol::code::kInternal, "не удалось сгенерировать секрет");
     }
     std::string blob;
-    if (!crypto::aes256GcmEncrypt(twoFactorKeyBytes(), secretRaw, "aura-2fa-secret", blob)) {
+    if (!crypto::aes256GcmEncrypt(twoFactorKeyBytes(), secretRaw, kTwoFactorAad, blob)) {
         return Result::failure(protocol::code::kInternal, "не удалось зашифровать секрет");
     }
     TwoFactorRecord record;
@@ -969,8 +972,8 @@ AuthManager::Result AuthManager::setup2fa(long long userId, const std::string& r
     result.ok = true;
     result.userId = userId;
     result.payload.set("secret", Json(secretB32));
-    result.payload.set("otpauth_uri", Json(totp::otpauthUri(secretB32, account, "Aura")));
-    result.payload.set("issuer", Json("Aura"));
+    result.payload.set("otpauth_uri", Json(totp::otpauthUri(secretB32, account, "Selfvoy")));
+    result.payload.set("issuer", Json("Selfvoy"));
     result.payload.set("algorithm", Json("SHA1"));
     result.payload.set("digits", Json(6));
     result.payload.set("period", Json(30));
@@ -1123,7 +1126,7 @@ AuthManager::Result AuthManager::login2fa(const std::string& email, const std::s
         td.expiresAt = isoIn(90LL * 24 * 3600);  // 90 дней
         database_.db().addTrustedDevice(td);
     }
-    AURA_LOG(log::Level::Info, "auth") << "вход (2FA) " << normalized << " из " << remoteAddr;
+    SELFVOY_LOG(log::Level::Info, "auth") << "вход (2FA) " << normalized << " из " << remoteAddr;
     Result result = issue(*user, device, remoteAddr);
     audit(user->id, "login_ok", Json::object(), remoteAddr);
     return result;
@@ -1168,4 +1171,4 @@ AuthManager::Result AuthManager::revokeAllTrustedDevices(long long userId, const
     return result;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

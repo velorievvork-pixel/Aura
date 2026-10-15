@@ -1,7 +1,7 @@
-# Дизайн-система Aura (v3)
+# Дизайн-система Selfvoy (v3)
 
 Токены одни на все клиенты; описание дизайна — [DESIGN.md](DESIGN.md).
-Эталон — `client/qml/theme/AuraTheme.qml`; Android — `ui/theme/Theme.kt`,
+Эталон — `client/qml/theme/SelfvoyTheme.qml`; Android — `ui/theme/Theme.kt`,
 iOS — `Support/Theme.swift`, веб — `preview/styles.css`.
 
 ## Цвета
@@ -18,7 +18,7 @@ iOS — `Support/Theme.swift`, веб — `preview/styles.css`.
 | `glassHighlight` | 0,14 | верхний блик |
 | `glassEdge` | `#D9B8FF` | сиреневый блик по краю |
 | `accent` | `#8B5CF6` | акцент |
-| `accentSoft` | `#A78BFA` | Аура, подсветка |
+| `accentSoft` | `#A78BFA` | Selfvoy, подсветка |
 | `accentDeep` | `#6D28D9` | нажатое состояние |
 | `accentGlow` | `#738B5CF6` | свечение (45 %) |
 | `gradStart` / `gradMid` / `gradEnd` | `#E6B3FF` / `#A77BFF` / `#7346F5` | CTA |
@@ -54,14 +54,14 @@ Bold, ExtraBold. Размеры: `fontMicro` 11, `fontSmall` 13, `fontBody` 15,
 
 | QML (`client/qml/components`) | Compose (`ui/theme/Components.kt`) | SwiftUI (`Views/Components.swift`) |
 | --- | --- | --- |
-| `AuraBackground` | `AuraBackground` | `AuraBackground` |
+| `SelfvoyBackground` | `SelfvoyBackground` | `SelfvoyBackground` |
 | `GlassSurface`, `GlassPanel` | `GlassCard` | `glassCard()` |
 | `GlassButton` (accent / glass / quiet / danger) | `GradientButton`, `GlassButton`, `RoundIconButton` | `GradientButton`, `GlassButton`, `RoundIconButton` |
-| `GlassField`, `GlassComboBox` | `AuraField` | `AuraField` |
-| `Chip` | `AuraChip` | `AuraChip` |
+| `GlassField`, `GlassComboBox` | `SelfvoyField` | `SelfvoyField` |
+| `Chip` | `SelfvoyChip` | `SelfvoyChip` |
 | `Bubble`, `ChatBubble` | `Bubble` | `Bubble` |
-| `AuraAvatar`, `AgentCard` | `AuraAvatar` | `AuraAvatar`, `AgentCard` |
-| `AuraEmblem`, `AuraOrb` | `AuraEmblem`, `AuraOrb` | `AuraEmblem`, `AuraOrb` |
+| `SelfvoyAvatar`, `AgentCard` | `SelfvoyAvatar` | `SelfvoyAvatar`, `AgentCard` |
+| `SelfvoyEmblem`, `SelfvoyOrb` | `SelfvoyEmblem`, `SelfvoyOrb` | `SelfvoyEmblem`, `SelfvoyOrb` |
 | `Icon` (Lucide, ISC) | Material Icons | SF Symbols |
 | `LinkText` | `Link` | `LinkButton` |
 | `ConfirmationPanel`, `NotificationsPanel`, `VoicePanel` | экраны подтверждений, уведомлений, `VoiceSheet` | `ConfirmationsView`, `NotificationsView`, `VoiceOverlay` |

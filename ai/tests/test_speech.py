@@ -5,13 +5,13 @@ import base64
 import pytest
 from fastapi.testclient import TestClient
 
-from aura_ai import app as app_module
-from aura_ai import speech
-from aura_ai.agent import AuraAgent
-from aura_ai.config import Settings, reset_settings
-from aura_ai.llm import MockLLM
-from aura_ai.speech import MockSTT, WhisperSTT, build_stt, normalize_language
-from aura_ai.tools import ToolManager
+from selfvoy_ai import app as app_module
+from selfvoy_ai import speech
+from selfvoy_ai.agent import SelfvoyAgent
+from selfvoy_ai.config import Settings, reset_settings
+from selfvoy_ai.llm import MockLLM
+from selfvoy_ai.speech import MockSTT, WhisperSTT, build_stt, normalize_language
+from selfvoy_ai.tools import ToolManager
 
 # Небольшие «аудио»-байты (содержимое не важно — mock не распознаёт по-настоящему).
 AUDIO = b"\x1aE\xdf\xa3fake-webm-bytes" * 8
@@ -19,16 +19,16 @@ AUDIO = b"\x1aE\xdf\xa3fake-webm-bytes" * 8
 
 @pytest.fixture()
 def client(monkeypatch):
-    monkeypatch.setenv("AURA_MEMORY_BACKEND", "memory://")
-    monkeypatch.delenv("AURA_AI_TOKEN", raising=False)
-    monkeypatch.setenv("AURA_AI_INSECURE_DEV", "1")  # без токена сервис закрыт (503)
-    monkeypatch.delenv("AURA_STT_URL", raising=False)
-    monkeypatch.delenv("AURA_STT_API_KEY", raising=False)
-    monkeypatch.setenv("AURA_STT_PROVIDER", "mock")
+    monkeypatch.setenv("SELFVOY_MEMORY_BACKEND", "memory://")
+    monkeypatch.delenv("SELFVOY_AI_TOKEN", raising=False)
+    monkeypatch.setenv("SELFVOY_AI_INSECURE_DEV", "1")  # без токена сервис закрыт (503)
+    monkeypatch.delenv("SELFVOY_STT_URL", raising=False)
+    monkeypatch.delenv("SELFVOY_STT_API_KEY", raising=False)
+    monkeypatch.setenv("SELFVOY_STT_PROVIDER", "mock")
     reset_settings()
     settings = Settings()
     settings.memory_backend = "memory://"
-    app_module.set_agent(AuraAgent(settings=settings, llm=MockLLM(), tools=ToolManager()))
+    app_module.set_agent(SelfvoyAgent(settings=settings, llm=MockLLM(), tools=ToolManager()))
     app_module.set_stt(MockSTT())
     with TestClient(app_module.app) as test_client:
         yield test_client
@@ -117,7 +117,7 @@ def test_transcribe_invalid_base64_rejected(client):
 
 
 def test_transcribe_too_large_rejected(client, monkeypatch):
-    monkeypatch.setenv("AURA_STT_MAX_BYTES", "16")
+    monkeypatch.setenv("SELFVOY_STT_MAX_BYTES", "16")
     reset_settings()
     app_module.set_stt(MockSTT())
     big = base64.b64encode(b"x" * 64).decode()
@@ -130,17 +130,17 @@ def test_transcribe_too_large_rejected(client, monkeypatch):
 
 
 def test_transcribe_token_enforced(monkeypatch):
-    monkeypatch.setenv("AURA_AI_TOKEN", "secret")
-    monkeypatch.setenv("AURA_STT_PROVIDER", "mock")
+    monkeypatch.setenv("SELFVOY_AI_TOKEN", "secret")
+    monkeypatch.setenv("SELFVOY_STT_PROVIDER", "mock")
     reset_settings()
-    app_module.set_agent(AuraAgent(settings=Settings(), llm=MockLLM(), tools=ToolManager()))
+    app_module.set_agent(SelfvoyAgent(settings=Settings(), llm=MockLLM(), tools=ToolManager()))
     app_module.set_stt(MockSTT())
     try:
         with TestClient(app_module.app) as test_client:
             payload = {"audio": base64.b64encode(AUDIO).decode()}
             assert test_client.post("/v1/speech/transcribe", json=payload).status_code == 401
             ok = test_client.post(
-                "/v1/speech/transcribe", json=payload, headers={"X-Aura-Token": "secret"}
+                "/v1/speech/transcribe", json=payload, headers={"X-Selfvoy-Token": "secret"}
             )
             assert ok.status_code == 200
     finally:

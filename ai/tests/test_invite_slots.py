@@ -5,20 +5,20 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from aura_ai import app as app_module
-from aura_ai import memory as memory_module
-from aura_ai import planner
-from aura_ai.agent import AuraAgent
-from aura_ai.config import Settings, reset_settings
-from aura_ai.llm import MockLLM
-from aura_ai.models import (
+from selfvoy_ai import app as app_module
+from selfvoy_ai import memory as memory_module
+from selfvoy_ai import planner
+from selfvoy_ai.agent import SelfvoyAgent
+from selfvoy_ai.config import Settings, reset_settings
+from selfvoy_ai.llm import MockLLM
+from selfvoy_ai.models import (
     OFFER_MAX_PER_DAY,
     OFFER_MAX_SLOTS,
     OFFER_MAX_WINDOW_HOURS,
     CalendarEvent,
     Preferences,
 )
-from aura_ai.tools import ToolManager
+from selfvoy_ai.tools import ToolManager
 
 MONDAY = datetime(2026, 9, 14, 0, 0, tzinfo=timezone.utc)  # понедельник, 03:00 по Москве
 WORK = list(range(9, 19))  # 9..18 → встреча с 09:00 до 19:00
@@ -190,17 +190,17 @@ def test_window_outside_work_hours_gives_nothing():
 
 
 # ------------------------------------------------------------------ HTTP API
-def _agent() -> AuraAgent:
+def _agent() -> SelfvoyAgent:
     settings = Settings()
     settings.memory_backend = "memory://"
-    return AuraAgent(settings=settings, llm=MockLLM(), store=memory_module.InMemoryStore(), tools=ToolManager())
+    return SelfvoyAgent(settings=settings, llm=MockLLM(), store=memory_module.InMemoryStore(), tools=ToolManager())
 
 
 @pytest.fixture()
 def env(monkeypatch):
-    monkeypatch.setenv("AURA_MEMORY_BACKEND", "memory://")
-    monkeypatch.delenv("AURA_AI_TOKEN", raising=False)
-    monkeypatch.delenv("AURA_AI_INSECURE_DEV", raising=False)
+    monkeypatch.setenv("SELFVOY_MEMORY_BACKEND", "memory://")
+    monkeypatch.delenv("SELFVOY_AI_TOKEN", raising=False)
+    monkeypatch.delenv("SELFVOY_AI_INSECURE_DEV", raising=False)
     reset_settings()
     app_module.set_agent(_agent())
     yield monkeypatch
@@ -210,7 +210,7 @@ def env(monkeypatch):
 
 @pytest.fixture()
 def client(env):
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
     reset_settings()
     with TestClient(app_module.app, raise_server_exceptions=False) as test_client:
         yield test_client
@@ -316,13 +316,13 @@ def test_slots_endpoint_auth_like_negotiate(env):
         assert test_client.post("/v1/agent/negotiate", json=negotiate).status_code == 503
         assert test_client.post("/v1/agent/slots", json=slots).status_code == 503
     # токен задан: без него/с чужим — 401, с верным — 200
-    env.setenv("AURA_AI_TOKEN", "secret")
+    env.setenv("SELFVOY_AI_TOKEN", "secret")
     reset_settings()
     with TestClient(app_module.app) as test_client:
         for path, body in (("/v1/agent/negotiate", negotiate), ("/v1/agent/slots", slots)):
             assert test_client.post(path, json=body).status_code == 401
-            assert test_client.post(path, json=body, headers={"X-Aura-Token": "wrong"}).status_code == 401
-            assert test_client.post(path, json=body, headers={"X-Aura-Token": "secret"}).status_code == 200
+            assert test_client.post(path, json=body, headers={"X-Selfvoy-Token": "wrong"}).status_code == 401
+            assert test_client.post(path, json=body, headers={"X-Selfvoy-Token": "secret"}).status_code == 200
 
 
 # ------------------------------------------------- страница записи: per_day, lead, weekends, day

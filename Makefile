@@ -7,26 +7,26 @@ check: ai-test server-test protocol-check
 ai-test:
 	cd ai && PYTHONPATH=. python3 -m pytest -q
 
-# Python AI-сервис: запуск (dev). Слушает 127.0.0.1:8000. Без AURA_AI_TOKEN
+# Python AI-сервис: запуск (dev). Слушает 127.0.0.1:8000. Без SELFVOY_AI_TOKEN
 # сервис закрыт (503), поэтому для локальной разработки включаем
-# AURA_AI_INSECURE_DEV=1; если токен задан — он проверяется всегда.
-# В production AURA_AI_INSECURE_DEV не задавать.
+# SELFVOY_AI_INSECURE_DEV=1; если токен задан — он проверяется всегда.
+# В production SELFVOY_AI_INSECURE_DEV не задавать.
 ai-run:
-	cd ai && AURA_AI_INSECURE_DEV=$${AURA_AI_INSECURE_DEV:-1} PYTHONPATH=. python -m aura_ai.app
+	cd ai && SELFVOY_AI_INSECURE_DEV=$${SELFVOY_AI_INSECURE_DEV:-1} PYTHONPATH=. python -m selfvoy_ai.app
 
 # C++ сервер: сборка
 server-build:
-	cmake -S server -B build/server -G Ninja -DAURA_BUILD_TESTS=ON
+	cmake -S server -B build/server -G Ninja -DSELFVOY_BUILD_TESTS=ON
 	cmake --build build/server
 
 # C++ сервер: тесты (ctest)
 server-test: server-build
 	cd build/server && ctest --output-on-failure
 
-# C++ сервер: запуск (dev). AURA_DEV_MODE=1 разрешает dev-почту и запуск без
+# C++ сервер: запуск (dev). SELFVOY_DEV_MODE=1 разрешает dev-почту и запуск без
 # секретов; в продакшене не задавать (см. docs/SETUP.md).
 server-run:
-	AURA_DEV_MODE=$${AURA_DEV_MODE:-1} ./build/server/aura-server
+	SELFVOY_DEV_MODE=$${SELFVOY_DEV_MODE:-1} ./build/server/selfvoy-server
 
 # Проверка протокола (iOS + Android vs сервер)
 protocol-check:
@@ -35,16 +35,16 @@ protocol-check:
 
 # E2E-сценарий (268 проверок со всеми моками): нужны запущенные AI :8000 и сервер :9000
 e2e:
-	AURA_E2E_GOOGLE_MOCK=1 AURA_E2E_PUSH_MOCK=1 python3 tools/e2e.py
+	SELFVOY_E2E_GOOGLE_MOCK=1 SELFVOY_E2E_PUSH_MOCK=1 python3 tools/e2e.py
 
-# Отвечает ли настоящая LLM (OPENAI_API_KEY, AURA_LLM_PROVIDER=openai): поднимает
+# Отвечает ли настоящая LLM (OPENAI_API_KEY, SELFVOY_LLM_PROVIDER=openai): поднимает
 # AI-сервис на :8077 с ключом из окружения и прогоняет tools/llm_check.py.
 llm-check:
 	@test -n "$$OPENAI_API_KEY" || { echo "OPENAI_API_KEY не задан (см. docs/DEPLOY.md)"; exit 1; }
-	@cd ai && AURA_AI_TOKEN=llm-check-local-token-0123456789 AURA_LLM_PROVIDER=$${AURA_LLM_PROVIDER:-openai} \
-		PYTHONPATH=. python3 -c "import uvicorn; from aura_ai.app import app; uvicorn.run(app, host='127.0.0.1', port=8077, log_level='warning')" & \
+	@cd ai && SELFVOY_AI_TOKEN=llm-check-local-token-0123456789 SELFVOY_LLM_PROVIDER=$${SELFVOY_LLM_PROVIDER:-openai} \
+		PYTHONPATH=. python3 -c "import uvicorn; from selfvoy_ai.app import app; uvicorn.run(app, host='127.0.0.1', port=8077, log_level='warning')" & \
 		pid=$$!; sleep 4; \
-		AURA_AI_TOKEN=llm-check-local-token-0123456789 python3 tools/llm_check.py http://127.0.0.1:8077; rc=$$?; \
+		SELFVOY_AI_TOKEN=llm-check-local-token-0123456789 python3 tools/llm_check.py http://127.0.0.1:8077; rc=$$?; \
 		kill $$pid; exit $$rc
 
 # Применить схему БД + seed-данные

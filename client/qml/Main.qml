@@ -2,12 +2,12 @@ import QtQuick
 import QtQuick.Window
 import QtQuick.Controls
 import QtCore
-import Aura
+import Selfvoy
 
 /*
-  Главное окно Qt-клиента Aura (v3).
+  Главное окно Qt-клиента Selfvoy (v3).
 
-  Фон — AuraBackground (тёмный фиолет с орбитами); он же backdrop для
+  Фон — SelfvoyBackground (тёмный фиолет с орбитами); он же backdrop для
   стеклянных панелей. Маршрут: вход → онбординг-анкета → оболочка с
   сайдбаром (DesktopShell сама сворачивает сайдбар в рельс в узком окне).
 */
@@ -19,9 +19,9 @@ ApplicationWindow {
     minimumWidth: 760
     minimumHeight: 600
     visible: true
-    color: AuraTheme.bgDeep
-    title: App && App.authenticated ? "Aura — " + App.userName : "Aura"
-    font.family: AuraTheme.fontFamily
+    color: SelfvoyTheme.bgDeep
+    title: App && App.authenticated ? "Selfvoy — " + App.userName : "Selfvoy"
+    font.family: SelfvoyTheme.fontFamily
 
     // Окно не должно быть больше экрана (ноутбуки 1366×768, сохранённая
     // геометрия с большого монитора): ужимаем и возвращаем в видимую область.
@@ -44,7 +44,7 @@ ApplicationWindow {
         property alias winHeight: window.height
     }
 
-    AuraBackground {
+    SelfvoyBackground {
         id: backdrop
         anchors.fill: parent
     }
@@ -78,31 +78,31 @@ ApplicationWindow {
         id: toast
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.bottom: parent.bottom
-        anchors.bottomMargin: AuraTheme.spaceXl
-        width: Math.min(parent.width - AuraTheme.spaceXl * 2, toastText.implicitWidth + AuraTheme.spaceLg * 2)
+        anchors.bottomMargin: SelfvoyTheme.spaceXl
+        width: Math.min(parent.width - SelfvoyTheme.spaceXl * 2, toastText.implicitWidth + SelfvoyTheme.spaceLg * 2)
         height: 46
-        radius: AuraTheme.radiusPill
+        radius: SelfvoyTheme.radiusPill
         color: Qt.rgba(0.11, 0.09, 0.16, 0.96)
         border.width: 1
-        border.color: toast.isError ? Qt.alpha(AuraTheme.danger, 0.5) : AuraTheme.lilacA(0.35)
+        border.color: toast.isError ? Qt.alpha(SelfvoyTheme.danger, 0.5) : SelfvoyTheme.lilacA(0.35)
         opacity: 0
         visible: opacity > 0
         z: 100
 
         property bool isError: false
 
-        Behavior on opacity { NumberAnimation { duration: AuraTheme.moveMs } }
+        Behavior on opacity { NumberAnimation { duration: SelfvoyTheme.moveMs } }
 
         Text {
             id: toastText
             anchors.centerIn: parent
-            width: Math.min(implicitWidth, parent.width - AuraTheme.spaceLg * 2)
+            width: Math.min(implicitWidth, parent.width - SelfvoyTheme.spaceLg * 2)
             elide: Text.ElideRight
             horizontalAlignment: Text.AlignHCenter
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontSmall
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontSmall
             font.weight: Font.Medium
-            color: toast.isError ? AuraTheme.danger : AuraTheme.textPrimary
+            color: toast.isError ? SelfvoyTheme.danger : SelfvoyTheme.textPrimary
             text: toast.isError ? (App ? App.errorMessage : "") : (App ? App.statusMessage : "")
         }
     }

@@ -8,14 +8,14 @@
   reschedule / cancel (по токену ссылки управления — сервер отдаёт его один раз,
   в ответе booking.book; в БД хранится только хэш).
 */
-import type { AuraSocket } from './socket';
+import type { SelfvoySocket } from './socket';
 import type { InviteSlot } from './inviteApi';
 
 export type BookingPageStatus = 'active' | 'paused' | 'archived';
 export type BookingStatus = 'active' | 'cancelled';
 export type OccurrenceStatus = 'active' | 'cancelled';
 
-/** Страница записи глазами владельца. `url` пуст, если на сервере не задан AURA_PUBLIC_URL. */
+/** Страница записи глазами владельца. `url` пуст, если на сервере не задан SELFVOY_PUBLIC_URL. */
 export interface BookingPage {
   id: number;
   slug: string;
@@ -75,7 +75,7 @@ export interface GuestPage {
   slots: GuestSlot[];
   /** Сервер не смог подобрать время (AI-сервис недоступен) — показать «попробуйте позже». */
   slots_unavailable: boolean;
-  /** Реферальный код владельца — для ссылки «Заведите свою Ауру». */
+  /** Реферальный код владельца — для ссылки «Заведите свой Selfvoy». */
   ref: string;
 }
 
@@ -131,7 +131,7 @@ export interface Booked {
   booking: GuestBooking;
   /** 43 символа base64url; показывается только сейчас. */
   token: string;
-  /** Готовая ссылка управления или "" — если на сервере не задан AURA_PUBLIC_URL. */
+  /** Готовая ссылка управления или "" — если на сервере не задан SELFVOY_PUBLIC_URL. */
   url: string;
 }
 
@@ -146,7 +146,7 @@ export interface ReferralInfo {
 /** Подбор свободного времени идёт через ИИ-сервис — гостевым запросам даём больше времени. */
 const SLOTS_TIMEOUT_MS = 60_000;
 
-export function makeBookingApi(socket: AuraSocket) {
+export function makeBookingApi(socket: SelfvoySocket) {
   const call = <T,>(type: string, payload: Record<string, unknown> = {}, timeout?: number) =>
     timeout === undefined ? socket.request<T>(type, payload) : socket.request<T>(type, payload, timeout);
   return {

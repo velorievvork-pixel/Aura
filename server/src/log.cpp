@@ -1,12 +1,12 @@
-// aura/log.cpp
-#include "aura/log.h"
+// selfvoy/log.cpp
+#include "selfvoy/log.h"
 
 #include <chrono>
 #include <cstdio>
 #include <ctime>
 #include <mutex>
 
-namespace aura::log {
+namespace selfvoy::log {
 
 namespace {
 Level g_level = Level::Info;
@@ -62,4 +62,4 @@ void write(Level level, const std::string& component, const std::string& message
     std::fflush(stderr);
 }
 
-}  // namespace aura::log
+}  // namespace selfvoy::log

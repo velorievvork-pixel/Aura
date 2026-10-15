@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 import "../Format.js" as F
 
 /*
@@ -18,25 +18,25 @@ GlassPanel {
     property var devices: App ? App.pushDevices : []
 
     implicitHeight: holderColumn.implicitHeight + padding * 2
-    padding: AuraTheme.spaceMd
+    padding: SelfvoyTheme.spaceMd
     fill: 0.10
 
     ColumnLayout {
         id: holderColumn
         anchors.fill: parent
-        spacing: AuraTheme.spaceSm
+        spacing: SelfvoyTheme.spaceSm
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: AuraTheme.spaceSm
+            spacing: SelfvoyTheme.spaceSm
 
             Text {
                 Layout.fillWidth: true
                 text: "Уведомления · непрочитанных: " + (App ? App.unreadNotifications : 0)
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontSmall
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontSmall
                 font.weight: Font.DemiBold
-                color: AuraTheme.textPrimary
+                color: SelfvoyTheme.textPrimary
             }
 
             GlassButton {
@@ -54,9 +54,9 @@ GlassPanel {
             text: "Пока тихо. Сюда приходят напоминания о задачах, запросы "
                   + "подтверждения, предложения других агентов и уведомления "
                   + "безопасности (новый вход, 2FA)."
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontSmall
-            color: AuraTheme.textMuted
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontSmall
+            color: SelfvoyTheme.textMuted
             wrapMode: Text.WordWrap
         }
 
@@ -66,25 +66,25 @@ GlassPanel {
             delegate: Rectangle {
                 required property var modelData
                 Layout.fillWidth: true
-                implicitHeight: rowContent.implicitHeight + AuraTheme.spaceSm
-                radius: AuraTheme.radiusField
-                color: modelData.read ? "transparent" : AuraTheme.accentA(0.08)
+                implicitHeight: rowContent.implicitHeight + SelfvoyTheme.spaceSm
+                radius: SelfvoyTheme.radiusField
+                color: modelData.read ? "transparent" : SelfvoyTheme.accentA(0.08)
                 border.width: 1
-                border.color: modelData.read ? Qt.rgba(1, 1, 1, AuraTheme.glassBorder)
-                                             : AuraTheme.accentA(0.3)
+                border.color: modelData.read ? Qt.rgba(1, 1, 1, SelfvoyTheme.glassBorder)
+                                             : SelfvoyTheme.accentA(0.3)
 
                 RowLayout {
                     id: rowContent
                     anchors.fill: parent
-                    anchors.margins: AuraTheme.spaceSm
-                    spacing: AuraTheme.spaceSm
+                    anchors.margins: SelfvoyTheme.spaceSm
+                    spacing: SelfvoyTheme.spaceSm
 
                     Text {
                         Layout.preferredWidth: 20
                         horizontalAlignment: Text.AlignHCenter
                         text: panel.glyphFor(modelData.kind)
                         font.pixelSize: 16
-                        color: modelData.read ? AuraTheme.textMuted : AuraTheme.accent
+                        color: modelData.read ? SelfvoyTheme.textMuted : SelfvoyTheme.accent
                     }
 
                     ColumnLayout {
@@ -94,25 +94,25 @@ GlassPanel {
                             Layout.fillWidth: true
                             text: modelData.title
                             elide: Text.ElideRight
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
                             font.weight: modelData.read ? Font.Normal : Font.DemiBold
-                            color: AuraTheme.textPrimary
+                            color: SelfvoyTheme.textPrimary
                         }
                         Text {
                             Layout.fillWidth: true
                             visible: text.length > 0
                             text: F.notificationDetail(modelData)
                             elide: Text.ElideRight
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
+                            color: SelfvoyTheme.textSecondary
                         }
                         Text {
                             text: F.stamp(modelData.created_at)
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textMuted
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
+                            color: SelfvoyTheme.textMuted
                         }
                     }
 
@@ -137,17 +137,17 @@ GlassPanel {
         // -------------------------------------------------- push-устройства
         Rectangle {
             Layout.fillWidth: true
-            Layout.topMargin: AuraTheme.spaceXs
+            Layout.topMargin: SelfvoyTheme.spaceXs
             height: 1
-            color: Qt.rgba(1, 1, 1, AuraTheme.glassBorder)
+            color: Qt.rgba(1, 1, 1, SelfvoyTheme.glassBorder)
         }
 
         Text {
             text: "Push-устройства"
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontSmall
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontSmall
             font.weight: Font.DemiBold
-            color: AuraTheme.textPrimary
+            color: SelfvoyTheme.textPrimary
         }
 
         Text {
@@ -155,9 +155,9 @@ GlassPanel {
             visible: !panel.devices || panel.devices.length === 0
             text: "Устройств с push-доставкой нет. iOS регистрирует токен APNs "
                   + "автоматически после разрешения на уведомления."
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontMicro
-            color: AuraTheme.textMuted
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontMicro
+            color: SelfvoyTheme.textMuted
             wrapMode: Text.WordWrap
         }
 
@@ -167,22 +167,22 @@ GlassPanel {
             delegate: RowLayout {
                 required property var modelData
                 Layout.fillWidth: true
-                spacing: AuraTheme.spaceSm
+                spacing: SelfvoyTheme.spaceSm
 
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 2
                     Text {
                         text: modelData.platform
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textPrimary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textPrimary
                     }
                     Text {
                         text: "зарегистрировано: " + F.stamp(modelData.created_at)
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textMuted
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textMuted
                     }
                 }
 

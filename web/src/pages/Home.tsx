@@ -4,7 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { CommandBar } from '../components/CommandBar';
 import { Avatar, Empty } from '../components/ui';
 import { firstName, shortWhen, toolTitle } from '../lib/format';
-import { auraOf } from '../lib/negotiationSteps';
+import { selfvoyOf } from '../lib/negotiationSteps';
 import { greeting } from '../lib/time';
 import { useData } from '../state/data';
 import { useSession } from '../state/session';
@@ -18,7 +18,7 @@ export function Home() {
 
   const run = useCallback(
     (text: string) => {
-      navigate('/aura');
+      navigate('/selfvoy');
       ask(text);
     },
     [navigate, ask],
@@ -87,7 +87,7 @@ export function Home() {
             </Link>
           </div>
           <div className="card flush list">
-            {upcoming.length === 0 && <Empty>Задач нет. Скажите Ауре, о чём напомнить.</Empty>}
+            {upcoming.length === 0 && <Empty>Задач нет. Скажите Selfvoy, о чём напомнить.</Empty>}
             {upcoming.map((t) => (
               <div key={t.id} className="list-row">
                 <button className="check" onClick={() => toggleTask(t)} aria-label={`Выполнено: ${t.title}`}>
@@ -108,12 +108,12 @@ export function Home() {
             </Link>
           </div>
           <div className="card flush list">
-            {negotiations.length === 0 && <Empty>Попросите Ауру договориться о встрече — переговоры появятся здесь.</Empty>}
+            {negotiations.length === 0 && <Empty>Попросите Selfvoy договориться о встрече — переговоры появятся здесь.</Empty>}
             {negotiations.slice(0, 3).map((n) => (
               <Link key={n.id} to={`/negotiations/${n.id}`} className="list-row">
                 <Handshake size={16} className="faint" />
                 <div className="body">
-                  <div className="ellipsis">{auraOf(n.targetName)}</div>
+                  <div className="ellipsis">{selfvoyOf(n.targetName)}</div>
                   <div className="small muted ellipsis">{n.result.accepted && n.result.slot ? `${shortWhen(n.result.slot.start)}${n.result.place?.name ? ` · ${n.result.place.name}` : ''}` : 'Общего времени не нашлось'}</div>
                 </div>
                 <NegotiationBadge accepted={n.result.accepted} booked={n.booked} />

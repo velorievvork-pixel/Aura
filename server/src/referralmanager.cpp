@@ -1,17 +1,17 @@
-// aura/referralmanager.cpp
-#include "aura/referralmanager.h"
+// selfvoy/referralmanager.cpp
+#include "selfvoy/referralmanager.h"
 
 #include <algorithm>
 #include <cctype>
 
-#include "aura/config.h"
-#include "aura/crypto.h"
-#include "aura/databasemanager.h"
-#include "aura/log.h"
-#include "aura/protocol.h"
+#include "selfvoy/config.h"
+#include "selfvoy/crypto.h"
+#include "selfvoy/databasemanager.h"
+#include "selfvoy/log.h"
+#include "selfvoy/protocol.h"
 #include "notificationsmanager.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -51,7 +51,7 @@ std::string ReferralManager::codeFor(long long userId) {
     }
     // Параллельный запрос мог успеть первым — берём то, что в БД.
     code = database_.db().referralCode(userId);
-    if (code.empty()) AURA_LOG(log::Level::Warn, "referral") << "не удалось выдать код пользователю " << userId;
+    if (code.empty()) SELFVOY_LOG(log::Level::Warn, "referral") << "не удалось выдать код пользователю " << userId;
     return code;
 }
 
@@ -96,7 +96,7 @@ void ReferralManager::attach(long long referredId, const std::string& rawCode, c
     if (referrerId <= 0 || referrerId == referredId) return;
     const std::string source = rawSource == "booking" || rawSource == "invite" ? rawSource : "link";
     const DatabaseError saved = database_.db().createReferral(referrerId, referredId, source);
-    if (!saved.ok) AURA_LOG(log::Level::Info, "referral") << "реферал не записан: " << saved.message;
+    if (!saved.ok) SELFVOY_LOG(log::Level::Info, "referral") << "реферал не записан: " << saved.message;
 }
 
 void ReferralManager::verified(long long userId) {
@@ -108,8 +108,8 @@ void ReferralManager::verified(long long userId) {
     }
     Json notify = Json::object();
     notify.set("display_name", Json(name));
-    notifications_->create(referrerId, "referral.joined", name + " теперь с Aura", "по вашей ссылке-приглашению",
+    notifications_->create(referrerId, "referral.joined", name + " теперь с Selfvoy", "по вашей ссылке-приглашению",
                            notify);
 }
 
-}  // namespace aura
+}  // namespace selfvoy

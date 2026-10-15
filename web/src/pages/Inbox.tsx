@@ -20,7 +20,7 @@ export function Inbox() {
       <header className="page-head">
         <div>
           <h1 className="title-xl">Входящие</h1>
-          <div className="sub">Решения, которых ждёт Аура, и уведомления.</div>
+          <div className="sub">Решения, которых ждёт Selfvoy, и уведомления.</div>
         </div>
         {unread > 0 && (
           <button className="btn btn-ghost" onClick={readAll}>
@@ -32,7 +32,7 @@ export function Inbox() {
         <section>
           <h2 className="title-sm section-title">Ждут решения · {confirmations.length}</h2>
           <div className="card flush list">
-            {confirmations.length === 0 && <Empty>Аура ничего не ждёт. Опасные действия — письма, сообщения, бронь — появятся здесь до выполнения.</Empty>}
+            {confirmations.length === 0 && <Empty>Selfvoy ничего не ждёт. Опасные действия — письма, сообщения, бронь — появятся здесь до выполнения.</Empty>}
             {confirmations.map((c) => (
               <div key={c.id} className="list-row" style={{ flexWrap: 'wrap' }}>
                 <ShieldAlert size={16} style={{ color: 'var(--warning)' }} />

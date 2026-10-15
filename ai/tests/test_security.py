@@ -11,22 +11,22 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from aura_ai import app as app_module
-from aura_ai import memory as memory_module
-from aura_ai.agent import AuraAgent
-from aura_ai.config import Settings, reset_settings
-from aura_ai.llm import BaseLLM, MockLLM, normalize_actions, sanitize_payload
-from aura_ai.models import AgentContext, AgentRequest, CalendarEvent, MemoryEntry
-from aura_ai.speech import BaseSTT
-from aura_ai.tools import ToolBackends, ToolError, ToolManager
+from selfvoy_ai import app as app_module
+from selfvoy_ai import memory as memory_module
+from selfvoy_ai.agent import SelfvoyAgent
+from selfvoy_ai.config import Settings, reset_settings
+from selfvoy_ai.llm import BaseLLM, MockLLM, normalize_actions, sanitize_payload
+from selfvoy_ai.models import AgentContext, AgentRequest, CalendarEvent, MemoryEntry
+from selfvoy_ai.speech import BaseSTT
+from selfvoy_ai.tools import ToolBackends, ToolError, ToolManager
 
 NOW = datetime(2026, 9, 17, 14, 0, tzinfo=timezone.utc)
 
 
-def _agent(llm=None, store=None) -> AuraAgent:
+def _agent(llm=None, store=None) -> SelfvoyAgent:
     settings = Settings()
     settings.memory_backend = "memory://"
-    return AuraAgent(
+    return SelfvoyAgent(
         settings=settings,
         llm=llm or MockLLM(),
         store=store or memory_module.InMemoryStore(),
@@ -37,10 +37,10 @@ def _agent(llm=None, store=None) -> AuraAgent:
 @pytest.fixture()
 def env(monkeypatch):
     """Чистое окружение: без токена и без режима разработки."""
-    monkeypatch.setenv("AURA_MEMORY_BACKEND", "memory://")
-    monkeypatch.delenv("AURA_AI_TOKEN", raising=False)
-    monkeypatch.delenv("AURA_AI_INSECURE_DEV", raising=False)
-    monkeypatch.setenv("AURA_STT_PROVIDER", "mock")
+    monkeypatch.setenv("SELFVOY_MEMORY_BACKEND", "memory://")
+    monkeypatch.delenv("SELFVOY_AI_TOKEN", raising=False)
+    monkeypatch.delenv("SELFVOY_AI_INSECURE_DEV", raising=False)
+    monkeypatch.setenv("SELFVOY_STT_PROVIDER", "mock")
     reset_settings()
     yield monkeypatch
     app_module.set_agent(None)
@@ -56,7 +56,7 @@ def _client(agent=None, raise_server_exceptions=True) -> TestClient:
 
 @pytest.fixture()
 def dev_client(env):
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
     with _client() as client:
         yield client
 
@@ -82,34 +82,34 @@ def test_without_token_service_fails_closed(env):
 
 
 def test_insecure_dev_flag_opens_service_without_token(env):
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
     with _client() as client:
         assert client.get("/v1/tools").status_code == 200
 
 
 def test_token_required_even_with_insecure_flag_when_token_set(env):
-    env.setenv("AURA_AI_TOKEN", "s3cret")
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_TOKEN", "s3cret")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
     with _client() as client:
         assert client.get("/v1/tools").status_code == 401
-        assert client.get("/v1/tools", headers={"X-Aura-Token": "s3cret"}).status_code == 200
+        assert client.get("/v1/tools", headers={"X-Selfvoy-Token": "s3cret"}).status_code == 200
 
 
 def test_non_ascii_token_is_401_not_500(env):
-    env.setenv("AURA_AI_TOKEN", "s3cret")
+    env.setenv("SELFVOY_AI_TOKEN", "s3cret")
     with _client(raise_server_exceptions=False) as client:
-        response = client.get("/v1/tools", headers={"X-Aura-Token": "\xe9".encode("latin-1")})
+        response = client.get("/v1/tools", headers={"X-Selfvoy-Token": "\xe9".encode("latin-1")})
         assert response.status_code == 401
 
 
 def test_default_bind_host_is_loopback(env):
-    env.delenv("AURA_AI_HOST", raising=False)
+    env.delenv("SELFVOY_AI_HOST", raising=False)
     assert Settings().host == "127.0.0.1"
 
 
 # ------------------------------------------------------- A5: /healthz
 def test_healthz_does_not_leak_dsn(env):
-    env.setenv("AURA_MEMORY_BACKEND", "postgresql://aura:hunter2@db/aura")
+    env.setenv("SELFVOY_MEMORY_BACKEND", "postgresql://selfvoy:hunter2@db/selfvoy")
     with _client() as client:
         body = client.get("/healthz").json()
     assert body["memory_backend"] == "postgres"
@@ -122,9 +122,9 @@ def test_internal_error_does_not_leak_exception_text(env):
         name = "boom"
 
         def complete_json(self, context, understanding, history=None):
-            raise RuntimeError("postgresql://aura:hunter2@db/aura")
+            raise RuntimeError("postgresql://selfvoy:hunter2@db/selfvoy")
 
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
     with _client(_agent(ExplodingLLM()), raise_server_exceptions=False) as client:
         response = client.post("/v1/agent/run", json={"context": {"message": "привет"}})
     assert response.status_code == 500
@@ -265,7 +265,7 @@ def test_slots_naive_window_is_utc(dev_client):
     ],
 )
 def test_slots_bad_input_is_4xx(env, payload):
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
     with _client(raise_server_exceptions=False) as client:
         response = client.post("/v1/planner/slots", json=payload)
     assert response.status_code == 422, response.text
@@ -273,7 +273,7 @@ def test_slots_bad_input_is_4xx(env, payload):
 
 @pytest.mark.parametrize("payload", [{"window_hours": 10**12}, {"window_hours": 0}, {"duration_minutes": 10**9}])
 def test_negotiate_bounds(env, payload):
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
     with _client(raise_server_exceptions=False) as client:
         body = {"initiator": {}, "responder": {}, **payload}
         assert client.post("/v1/agent/negotiate", json=body).status_code == 422
@@ -335,12 +335,12 @@ def test_internal_validation_error_is_422_without_details(env):
         name = "bad"
 
         def complete_json(self, context, understanding, history=None):
-            from aura_ai.models import Slot
+            from selfvoy_ai.models import Slot
 
             Slot(start="not a date", end="nope")  # ValidationError внутри обработчика
             return {}
 
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
     with _client(_agent(BadSlotLLM()), raise_server_exceptions=False) as client:
         response = client.post("/v1/agent/run", json={"context": {"message": "hi"}})
     assert response.status_code == 422
@@ -359,8 +359,8 @@ def test_speech_rejects_non_file_field(dev_client):
 
 
 def test_speech_declared_length_checked_before_reading(env):
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
-    env.setenv("AURA_STT_MAX_BYTES", "16")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_STT_MAX_BYTES", "16")
     with _client() as client:
         response = client.post(
             "/v1/speech/transcribe",
@@ -371,8 +371,8 @@ def test_speech_declared_length_checked_before_reading(env):
 
 
 def test_speech_streamed_body_is_cut_at_limit(env):
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
-    env.setenv("AURA_STT_MAX_BYTES", "16")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_STT_MAX_BYTES", "16")
 
     def chunks():
         for _ in range(100):
@@ -417,21 +417,21 @@ def test_build_store_variants(tmp_path, monkeypatch):
     assert file_store.path == memory_module.DEFAULT_FILE_PATH
     custom = memory_module.build_store(f"file://{tmp_path}/m.json")
     assert custom.path == f"{tmp_path}/m.json"
-    pg = memory_module.build_store("postgres", "postgresql://u:p@db/aura")
-    assert isinstance(pg, memory_module.PostgresMemoryStore) and pg.dsn == "postgresql://u:p@db/aura"
+    pg = memory_module.build_store("postgres", "postgresql://u:p@db/selfvoy")
+    assert isinstance(pg, memory_module.PostgresMemoryStore) and pg.dsn == "postgresql://u:p@db/selfvoy"
     # «postgres» без DSN — не пытаемся подключиться к строке «postgres».
     assert not isinstance(memory_module.build_store("postgres", ""), memory_module.PostgresMemoryStore)
-    direct = memory_module.build_store("postgresql://u:p@db/aura")
-    assert direct.dsn == "postgresql://u:p@db/aura"
+    direct = memory_module.build_store("postgresql://u:p@db/selfvoy")
+    assert direct.dsn == "postgresql://u:p@db/selfvoy"
 
 
 def test_agent_uses_database_url_for_postgres_backend():
     settings = Settings()
     settings.memory_backend = "postgres"
-    settings.database_url = "postgresql://u:p@db/aura"
-    agent = AuraAgent(settings=settings, llm=MockLLM(), tools=ToolManager())
+    settings.database_url = "postgresql://u:p@db/selfvoy"
+    agent = SelfvoyAgent(settings=settings, llm=MockLLM(), tools=ToolManager())
     assert isinstance(agent.store, memory_module.PostgresMemoryStore)
-    assert agent.store.dsn == "postgresql://u:p@db/aura"
+    assert agent.store.dsn == "postgresql://u:p@db/selfvoy"
 
 
 class _FakeCursor:
@@ -472,7 +472,7 @@ class _FakeConn:
 
 def test_postgres_store_uses_numeric_id_and_text_array(monkeypatch):
     log = []
-    store = memory_module.PostgresMemoryStore("postgresql://u:p@db/aura")
+    store = memory_module.PostgresMemoryStore("postgresql://u:p@db/selfvoy")
     monkeypatch.setattr(store, "_connect", lambda: _FakeConn(log, []))
     store.save(
         "42",
@@ -493,7 +493,7 @@ def test_postgres_store_uses_numeric_id_and_text_array(monkeypatch):
 
 def test_postgres_store_email_key(monkeypatch):
     log = []
-    store = memory_module.PostgresMemoryStore("postgresql://u:p@db/aura")
+    store = memory_module.PostgresMemoryStore("postgresql://u:p@db/selfvoy")
     rows = [("fact", "люблю чай", 1.0, ["diet"], NOW)]
     monkeypatch.setattr(store, "_connect", lambda: _FakeConn(log, rows))
     entries = store.load("Anna@Example.com")
@@ -580,8 +580,8 @@ def test_suggest_time_clamps_huge_values():
 # ------------------------------------------- аудит: режим разработки и /docs
 @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "::"])
 def test_insecure_dev_refused_on_non_loopback_host(env, host):
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
-    env.setenv("AURA_AI_HOST", host)
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_HOST", host)
     with _client() as client:
         assert client.get("/v1/tools").status_code == 503
         assert client.post("/v1/agent/run", json={"context": {"message": "привет"}}).status_code == 503
@@ -589,37 +589,37 @@ def test_insecure_dev_refused_on_non_loopback_host(env, host):
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
 def test_insecure_dev_allowed_on_loopback_host(env, host):
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
-    env.setenv("AURA_AI_HOST", host)
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_HOST", host)
     with _client() as client:
         assert client.get("/v1/tools").status_code == 200
 
 
 def test_insecure_dev_refused_when_uvicorn_binds_all_interfaces(env):
-    # uvicorn aura_ai.app:app --host 0.0.0.0 — AURA_AI_HOST по умолчанию 127.0.0.1.
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
-    env.setattr("sys.argv", ["uvicorn", "aura_ai.app:app", "--host", "0.0.0.0", "--port", "8000"])
+    # uvicorn selfvoy_ai.app:app --host 0.0.0.0 — SELFVOY_AI_HOST по умолчанию 127.0.0.1.
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
+    env.setattr("sys.argv", ["uvicorn", "selfvoy_ai.app:app", "--host", "0.0.0.0", "--port", "8000"])
     with _client() as client:
         assert client.get("/v1/tools").status_code == 503
-    env.setattr("sys.argv", ["uvicorn", "aura_ai.app:app", "--host=0.0.0.0"])
+    env.setattr("sys.argv", ["uvicorn", "selfvoy_ai.app:app", "--host=0.0.0.0"])
     assert not app_module.insecure_dev_allowed(Settings())
-    env.setattr("sys.argv", ["uvicorn", "aura_ai.app:app"])
+    env.setattr("sys.argv", ["uvicorn", "selfvoy_ai.app:app"])
     env.setenv("UVICORN_HOST", "0.0.0.0")
     assert not app_module.insecure_dev_allowed(Settings())
 
 
 def test_api_docs_disabled_outside_dev(env):
     assert app_module.docs_options(Settings()) == {"docs_url": None, "redoc_url": None, "openapi_url": None}
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
-    env.setenv("AURA_AI_HOST", "0.0.0.0")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_HOST", "0.0.0.0")
     assert app_module.docs_options(Settings())["openapi_url"] is None
-    env.setenv("AURA_AI_HOST", "127.0.0.1")
+    env.setenv("SELFVOY_AI_HOST", "127.0.0.1")
     assert app_module.docs_options(Settings())["openapi_url"] == "/openapi.json"
 
 
 def test_api_docs_not_served_without_dev_flag():
     if app_module.app.openapi_url is not None:
-        pytest.skip("тесты запущены с AURA_AI_INSECURE_DEV=1 — /docs включены намеренно")
+        pytest.skip("тесты запущены с SELFVOY_AI_INSECURE_DEV=1 — /docs включены намеренно")
     with TestClient(app_module.app) as client:
         assert client.get("/docs").status_code == 404
         assert client.get("/redoc").status_code == 404
@@ -639,7 +639,7 @@ def test_agent_run_huge_relative_time_is_not_500(dev_client):
 
 
 def test_agent_run_time_out_of_range_is_422(env):
-    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("SELFVOY_AI_INSECURE_DEV", "1")
     with _client(raise_server_exceptions=False) as client:
         response = client.post(
             "/v1/agent/run",
@@ -658,7 +658,7 @@ def _events(count: int):
 
 
 def test_calendar_limit_enforced(dev_client):
-    from aura_ai.models import MAX_CALENDAR_EVENTS
+    from selfvoy_ai.models import MAX_CALENDAR_EVENTS
 
     ok = dev_client.post("/v1/agent/slots", json={"context": {"calendar": _events(MAX_CALENDAR_EVENTS)}})
     assert ok.status_code == 200, ok.text
@@ -671,7 +671,7 @@ def test_calendar_limit_enforced(dev_client):
 
 
 def test_context_list_and_message_limits_enforced(dev_client):
-    from aura_ai.models import MAX_HISTORY_ITEMS, MAX_MEMORY_ENTRIES, MAX_MESSAGE_CHARS, MAX_PEERS
+    from selfvoy_ai.models import MAX_HISTORY_ITEMS, MAX_MEMORY_ENTRIES, MAX_MESSAGE_CHARS, MAX_PEERS
 
     def run(context, **extra):
         return dev_client.post("/v1/agent/run", json={"context": context, **extra}).status_code

@@ -8,7 +8,7 @@
   Токен приглашения сервер отдаёт один раз — в ответе invite.create; в БД хранится
   только его хэш, в invite.list токена нет.
 */
-import type { AuraSocket } from './socket';
+import type { SelfvoySocket } from './socket';
 
 export type InviteStatus = 'open' | 'accepted' | 'declined' | 'cancelled' | 'expired';
 
@@ -62,7 +62,7 @@ export interface CreatedInvite {
   invite: Invite;
   /** 43 символа base64url; показывается только сейчас. */
   token: string;
-  /** Готовая ссылка или "" — если на сервере не задан AURA_PUBLIC_URL. */
+  /** Готовая ссылка или "" — если на сервере не задан SELFVOY_PUBLIC_URL. */
   url: string;
 }
 
@@ -78,7 +78,7 @@ export interface InviteAnswer {
 /** Подбор слотов идёт через ИИ-сервис — ждём дольше обычного, как agent.negotiate. */
 const CREATE_TIMEOUT_MS = 90_000;
 
-export function makeInviteApi(socket: AuraSocket) {
+export function makeInviteApi(socket: SelfvoySocket) {
   const call = <T,>(type: string, payload: Record<string, unknown> = {}, timeout?: number) =>
     timeout === undefined ? socket.request<T>(type, payload) : socket.request<T>(type, payload, timeout);
   return {

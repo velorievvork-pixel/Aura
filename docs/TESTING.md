@@ -1,4 +1,4 @@
-# Тестирование Aura (этап 14)
+# Тестирование Selfvoy (этап 14)
 
 Три автоматических слоя + ручные чек-листы для мобильных платформ.
 
@@ -8,9 +8,9 @@
 
 ```bash
 cmake -S . -B build/server -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DAURA_WITH_CLIENT=OFF -DAURA_BUILD_TESTS=ON
+      -DSELFVOY_WITH_CLIENT=OFF -DSELFVOY_BUILD_TESTS=ON
 cmake --build build/server -j4
-cd build/server/server && ctest          # или ./aura-tests [фильтр]
+cd build/server/server && ctest          # или ./selfvoy-tests [фильтр]
 ```
 
 Встроенное хранилище (без PostgreSQL), AI-сервис не нужен. Покрытие:
@@ -42,21 +42,21 @@ psql "$DATABASE_URL" -f schema/migrations/2026_09_20_notifications.sql
 psql "$DATABASE_URL" -f schema/migrations/2026_09_20_push_fcm.sql
 
 # 2) AI-сервис (общий с сервером токен; без него AI отвечает 503):
-export AURA_AI_TOKEN="$(openssl rand -hex 32)"
-cd ai && PYTHONPATH=. uvicorn aura_ai.app:app --host 127.0.0.1 --port 8000 &
+export SELFVOY_AI_TOKEN="$(openssl rand -hex 32)"
+cd ai && PYTHONPATH=. uvicorn selfvoy_ai.app:app --host 127.0.0.1 --port 8000 &
 
 # 3) C++-сервер (webhook-драйвер push + mock-адреса Google):
-AURA_PORT=9000 AURA_DATABASE_URL="$DATABASE_URL" AURA_AI_URL=http://127.0.0.1:8000 AURA_AI_TOKEN="$AURA_AI_TOKEN" \
-AURA_2FA_KEY=... AURA_JWT_SECRET=... AURA_MAIL_DRIVER=dev \
-AURA_PUSH_DRIVER=webhook AURA_PUSH_WEBHOOK_URL=http://127.0.0.1:9082/push \
-AURA_GOOGLE_*=http://127.0.0.1:9081/... build/server/server/aura-server &
+SELFVOY_PORT=9000 SELFVOY_DATABASE_URL="$DATABASE_URL" SELFVOY_AI_URL=http://127.0.0.1:8000 SELFVOY_AI_TOKEN="$SELFVOY_AI_TOKEN" \
+SELFVOY_2FA_KEY=... SELFVOY_JWT_SECRET=... SELFVOY_MAIL_DRIVER=dev \
+SELFVOY_PUSH_DRIVER=webhook SELFVOY_PUSH_WEBHOOK_URL=http://127.0.0.1:9082/push \
+SELFVOY_GOOGLE_*=http://127.0.0.1:9081/... build/server/server/selfvoy-server &
 
 # 4) прогон (mock-серверы Google и push поднимаются сами):
-AURA_E2E_GOOGLE_MOCK=1 AURA_E2E_PUSH_MOCK=1 python3 tools/e2e.py
+SELFVOY_E2E_GOOGLE_MOCK=1 SELFVOY_E2E_PUSH_MOCK=1 python3 tools/e2e.py
 
-# сценарий админ-панели (§5a) — только если сервер запущен с AURA_ADMIN_EMAILS,
+# сценарий админ-панели (§5a) — только если сервер запущен с SELFVOY_ADMIN_EMAILS,
 # содержащим этот адрес; без переменных секция печатает «пропуск»:
-AURA_E2E_ADMIN_EMAIL=root@example.com AURA_E2E_ADMIN_PASSWORD=... python3 tools/e2e.py
+SELFVOY_E2E_ADMIN_EMAIL=root@example.com SELFVOY_E2E_ADMIN_PASSWORD=... python3 tools/e2e.py
 ```
 
 Покрытие: регистрация → email-код → вход → JWT → сессии; чат между
@@ -75,13 +75,13 @@ qmlcachegen ...                           # синтаксис QML (рецепт
 python3 -m py_compile tools/e2e.py        # синтаксис e2e
 ```
 
-### 5. Android: JVM-тесты AuraKit (без эмулятора)
+### 5. Android: JVM-тесты SelfvoyKit (без эмулятора)
 
-Общий слой `:aurakit` — чистый Kotlin/JVM (протокол, deep links), поэтому
+Общий слой `:selfvoykit` — чистый Kotlin/JVM (протокол, deep links), поэтому
 его тесты работают где угодно, где есть JDK 17:
 
 ```bash
-cd android && ./gradlew :aurakit:test
+cd android && ./gradlew :selfvoykit:test
 ```
 
 CI делает то же самое (job `android`). Полная сборка APK требует Android
@@ -97,7 +97,7 @@ Swift-сборка и Qt-сборка требуют macOS/Xcode и Qt 6 — в 
 | SQL-инъекции (память, задачи, поиск, login) | C++ `security_injection_payloads_are_literal`; e2e §5b против реального PostgreSQL | текст хранится буквально (параметризованные запросы), таблицы живы, поиск пуст |
 | XSS в сообщениях | C++ `security_xss_message_roundtrip_is_literal` | `<script>` round-trip как текст; клиенты (QML Text, SwiftUI Text) HTML не рендерят |
 | CSRF | протокол: авторизация токеном в WS-кадре, не cookie | неприменим; неаутентифицированные кадры отклоняются (`server_unknown_type_and_auth_guard`) |
-| Брутфорс пароля | C++ `security_brute_force_throttle`; e2e §5b | после `AURA_MAX_LOGIN_ATTEMPTS` (8) провалов вход/регистрация → `forbidden` до конца окна (`AURA_LOGIN_WINDOW`, 300 с) |
+| Брутфорс пароля | C++ `security_brute_force_throttle`; e2e §5b | после `SELFVOY_MAX_LOGIN_ATTEMPTS` (8) провалов вход/регистрация → `forbidden` до конца окна (`SELFVOY_LOGIN_WINDOW`, 300 с) |
 | Утечка токенов | C++ `security_sessions_list_hides_secrets`, `integrations_list_hides_secret`, `server_push_devices`; e2e §5b | sessions.list/integrations.list/devices.push.list без токенов и хэшей |
 | Повторное использование refresh | C++ `server_refresh_rotation_and_reuse` | ротация при каждом обмене, старый refresh отклоняется |
 | Обход подтверждения | C++ `ai_permissions_ws_and_confirmation_barrier` | опасный инструмент без `confirmation.approve` не исполняется |
@@ -125,24 +125,24 @@ Swift-сборка и Qt-сборка требуют macOS/Xcode и Qt 6 — в 
 - [ ] отзыв устройства в списке прекращает push на него;
 - [ ] тап по push открывает приложение (бейдж обновляется).
 
-### Deep links (`aura://`)
-- [ ] `aura://chats/<id>` открывает чат;
-- [ ] `aura://voice` открывает голосовой оверлей;
-- [ ] `aura://ask?text=...` отправляет запрос Ауре;
-- [ ] `aura://oauth?...` завершает подключение Google;
+### Deep links (`selfvoy://`)
+- [ ] `selfvoy://chats/<id>` открывает чат;
+- [ ] `selfvoy://voice` открывает голосовой оверлей;
+- [ ] `selfvoy://ask?text=...` отправляет запрос в Selfvoy;
+- [ ] `selfvoy://oauth?...` завершает подключение Google;
 - [ ] неизвестный путь — игнорируется без краша.
 
 ### Siri и Команды (iOS)
-- [ ] «Спросить Ауру …» через Siri → ответ Ауры;
+- [ ] «Спросить Selfvoy …» через Siri → ответ Selfvoy;
 - [ ] «Создать задачу …» → задача появляется в списке;
 - [ ] Команды без разблокировки требуют аутентификацию (donate-предложения видны в приложении Команды).
 
 ### Android: шорткаты и FCM
-- [ ] долгое нажатие на иконке → шорткаты «Спросить Ауру», «Голосом», «Новая задача» работают;
+- [ ] долгое нажатие на иконке → шорткаты «Спросить Selfvoy», «Голосом», «Новая задача» работают;
 - [ ] первый вход: запрос POST_NOTIFICATIONS (Android 13+);
 - [ ] токен FCM зарегистрирован («Входящая» → Push-устройства, платформа `fcm`);
-- [ ] напоминание приходит push-ом при закрытом приложении (канал «aura»);
-- [ ] тап по push открывает «входящую» (`aura://notifications`);
+- [ ] напоминание приходит push-ом при закрытом приложении (канал «selfvoy»);
+- [ ] тап по push открывает «входящую» (`selfvoy://notifications`);
 - [ ] без `google-services.json` настройки честно показывают «Push не настроен», крашей нет.
 
 ### Поворот и адаптивность
@@ -164,7 +164,7 @@ Swift-сборка и Qt-сборка требуют macOS/Xcode и Qt 6 — в 
 3. e2e на чистом кластере PostgreSQL (схема + миграции) — 0 ошибок;
 4. `check_ios_protocol.py` и `check_android_protocol.py` — OK;
 5. qmlcachegen по всем QML — 0 ошибок;
-6. на Mac: `swift test` (AuraKit), сборка Xcode, прогон мобильных
+6. на Mac: `swift test` (SelfvoyKit), сборка Xcode, прогон мобильных
    чек-листов на симуляторе и устройстве;
-7. `./gradlew :aurakit:test` (JDK 17) и, при наличии Android SDK,
+7. `./gradlew :selfvoykit:test` (JDK 17) и, при наличии Android SDK,
    `./gradlew :app:assembleDebug` + чек-листы «Android: шорткаты и FCM».

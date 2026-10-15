@@ -1,7 +1,7 @@
 import { Eye, EyeOff } from 'lucide-react';
 import { useState, type InputHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 
-/** Знак Aura: тонкое кольцо без свечения. */
+/** Знак Selfvoy: тонкое кольцо без свечения. */
 export function Logo({ size = 22 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">

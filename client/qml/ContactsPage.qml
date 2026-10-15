@@ -1,15 +1,15 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 import "Format.js" as F
 
 /*
-  ContactsPage — люди и их Ауры (макет Contacts).
+  ContactsPage — люди и их Selfvoy (макет Contacts).
 
   Слева — поиск, фильтры и список собеседников (из чатов; новые находятся
   через users.search и добавляются chat.open). Справа — карточка человека:
-  последнее сообщение, что вашей Ауре разрешено делать, «Начать переговоры»
+  последнее сообщение, что вашему Selfvoy разрешено делать, «Начать переговоры»
   (agent.negotiate) и «Открыть чат» — переписка открывается в этой же колонке.
 */
 Item {
@@ -36,7 +36,7 @@ Item {
         const item = (App ? App.toolPermissions : []).find(p => p.tool === tool)
         return item ? item.mode : ""
     }
-    readonly property var modeLabel: ({ allow: "сама", ask: "с вашего подтверждения", deny: "запрещено" })
+    readonly property var modeLabel: ({ allow: "сам", ask: "с вашего подтверждения", deny: "запрещено" })
 
     onContactsChanged: if (!selected && contacts.length) selected = contacts[0]
     Component.onCompleted: if (App) App.loadPermissions()
@@ -71,10 +71,10 @@ Item {
 
             Text {
                 text: "Контакты"
-                font.family: AuraTheme.fontFamily
+                font.family: SelfvoyTheme.fontFamily
                 font.pixelSize: 38
                 font.weight: Font.Bold
-                color: AuraTheme.textPrimary
+                color: SelfvoyTheme.textPrimary
             }
 
             // Поиск — подчёркнутая строка
@@ -89,11 +89,11 @@ Item {
                         id: search
                         Layout.fillWidth: true
                         background: null
-                        placeholderText: "Искать людей или Ауры"
-                        placeholderTextColor: AuraTheme.textMuted
-                        color: AuraTheme.textPrimary
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontLead
+                        placeholderText: "Искать людей или Selfvoy"
+                        placeholderTextColor: SelfvoyTheme.textMuted
+                        color: SelfvoyTheme.textPrimary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontLead
                         onTextChanged: { page.query = text; searchDelay.restart() }
                     }
                 }
@@ -127,20 +127,20 @@ Item {
                     required property var modelData
                     readonly property bool active: page.selected && page.selected.id === modelData.id
                     readonly property bool inline: width >= 460
-                    readonly property string preview: modelData.lastMessage ? modelData.lastMessage : "Аура доступна"
+                    readonly property string preview: modelData.lastMessage ? modelData.lastMessage : "Selfvoy доступен"
                     width: list.width
                     height: 70
                     radius: 16
-                    color: active ? AuraTheme.accentA(0.12) : (rowArea.containsMouse ? Qt.rgba(1, 1, 1, 0.04) : "transparent")
+                    color: active ? SelfvoyTheme.accentA(0.12) : (rowArea.containsMouse ? Qt.rgba(1, 1, 1, 0.04) : "transparent")
                     border.width: active ? 1 : 0
-                    border.color: AuraTheme.lilacA(0.3)
+                    border.color: SelfvoyTheme.lilacA(0.3)
 
                     RowLayout {
                         anchors.fill: parent
                         anchors.leftMargin: 14
                         anchors.rightMargin: 18
                         spacing: 16
-                        AuraAvatar { name: row.modelData.name; size: 46 }
+                        SelfvoyAvatar { name: row.modelData.name; size: 46 }
                         // В узкой колонке превью уходит под имя: в одну строку
                         // оно сжималось в ноль и оставалась одна черта-разделитель.
                         ColumnLayout {
@@ -150,34 +150,34 @@ Item {
                                 Layout.fillWidth: true
                                 text: row.modelData.name
                                 elide: Text.ElideRight
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontBody
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontBody
                                 font.weight: Font.Bold
-                                color: AuraTheme.textPrimary
+                                color: SelfvoyTheme.textPrimary
                             }
                             Text {
                                 visible: !row.inline
                                 Layout.fillWidth: true
                                 text: row.preview
                                 elide: Text.ElideRight
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontSmall
-                                color: AuraTheme.textSecondary
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                color: SelfvoyTheme.textSecondary
                             }
                         }
-                        Rectangle { visible: row.inline; implicitWidth: 50; implicitHeight: 1; color: AuraTheme.textMuted }
+                        Rectangle { visible: row.inline; implicitWidth: 50; implicitHeight: 1; color: SelfvoyTheme.textMuted }
                         Text {
                             visible: row.inline
                             Layout.fillWidth: true
                             text: row.preview
                             elide: Text.ElideRight
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                         }
                         Rectangle {
                             implicitWidth: 10; implicitHeight: 10; radius: 5
-                            color: AuraTheme.accentSoft  // «Аура доступна»; онлайн-статус виден в чате
+                            color: SelfvoyTheme.accentSoft  // «Selfvoy доступен»; онлайн-статус виден в чате
                         }
                     }
                     MouseArea {
@@ -196,18 +196,18 @@ Item {
                         visible: page.visibleContacts.length === 0 && page.found.length === 0
                         Layout.topMargin: 10
                         text: page.query ? "Никого не нашли" : "Пока нет собеседников. Найдите человека по имени или email."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textMuted
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textMuted
                     }
                     Text {
                         visible: page.found.length > 0
                         Layout.topMargin: 14
-                        text: "Найдено в Aura"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
+                        text: "Найдено в Selfvoy"
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
                         font.weight: Font.Bold
-                        color: AuraTheme.textSecondary
+                        color: SelfvoyTheme.textSecondary
                     }
                     Repeater {
                         model: page.found
@@ -216,13 +216,13 @@ Item {
                             Layout.fillWidth: true
                             Layout.leftMargin: 14
                             spacing: 14
-                            AuraAvatar { name: modelData.display_name || "?"; size: 38 }
+                            SelfvoyAvatar { name: modelData.display_name || "?"; size: 38 }
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 0
-                                Text { text: modelData.display_name || ""; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontBody; font.weight: Font.DemiBold; color: AuraTheme.textPrimary }
+                                Text { text: modelData.display_name || ""; font.family: SelfvoyTheme.fontFamily; font.pixelSize: SelfvoyTheme.fontBody; font.weight: Font.DemiBold; color: SelfvoyTheme.textPrimary }
                                 // users.search не отдаёт email — только имя и «в сети».
-                                Text { text: modelData.online ? "в сети" : "есть Аура"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontMicro; color: AuraTheme.textMuted }
+                                Text { text: modelData.online ? "в сети" : "есть Selfvoy"; font.family: SelfvoyTheme.fontFamily; font.pixelSize: SelfvoyTheme.fontMicro; color: SelfvoyTheme.textMuted }
                             }
                             GlassButton {
                                 text: "Добавить"
@@ -237,13 +237,13 @@ Item {
             }
 
             GlassButton {
-                text: "Пригласить в Aura"
+                text: "Пригласить в Selfvoy"
                 symbol: "user-plus"
                 implicitHeight: 50
                 leftPadding: 30
                 rightPadding: 30
                 ToolTip.visible: hovered
-                ToolTip.text: "Найдите человека по email — если у него есть Аура, он появится в списке"
+                ToolTip.text: "Найдите человека по email — если у него есть Selfvoy, он появится в списке"
                 onClicked: search.forceActiveFocus()
             }
         }
@@ -297,7 +297,7 @@ Item {
                         ColumnLayout {
                             Layout.alignment: Qt.AlignHCenter
                             spacing: 4
-                            AuraAvatar {
+                            SelfvoyAvatar {
                                 Layout.alignment: Qt.AlignHCenter
                                 name: page.selected ? page.selected.name : ""
                                 size: 100
@@ -307,17 +307,17 @@ Item {
                                 Layout.alignment: Qt.AlignHCenter
                                 Layout.topMargin: 12
                                 text: page.selected ? page.selected.name : ""
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontTitle
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontTitle
                                 font.weight: Font.Bold
-                                color: AuraTheme.textPrimary
+                                color: SelfvoyTheme.textPrimary
                             }
                             Text {
                                 Layout.alignment: Qt.AlignHCenter
-                                text: "Аура доступна · " + (page.selected ? page.selected.email : "")
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontSmall
-                                color: AuraTheme.textSecondary
+                                text: "Selfvoy доступен · " + (page.selected ? page.selected.email : "")
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                color: SelfvoyTheme.textSecondary
                             }
                         }
 
@@ -332,15 +332,15 @@ Item {
                                 spacing: 10
                                 Rectangle {
                                     implicitWidth: 28; implicitHeight: 28; radius: 14
-                                    color: AuraTheme.accent
+                                    color: SelfvoyTheme.accent
                                     Icon { anchors.centerIn: parent; name: block.icon; size: 14; color: "#FFFFFF" }
                                 }
                                 Text {
                                     text: block.title
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontBody
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontBody
                                     font.weight: Font.Bold
-                                    color: AuraTheme.textPrimary
+                                    color: SelfvoyTheme.textPrimary
                                 }
                             }
                             Repeater {
@@ -351,10 +351,10 @@ Item {
                                     Layout.fillWidth: true
                                     wrapMode: Text.WordWrap
                                     text: modelData
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontSmall + 1
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontSmall + 1
                                     font.weight: Font.DemiBold
-                                    color: AuraTheme.textPrimary
+                                    color: SelfvoyTheme.textPrimary
                                 }
                             }
                         }
@@ -368,7 +368,7 @@ Item {
                         }
                         InfoBlock {
                             icon: "lock"
-                            title: "Что может ваша Аура"
+                            title: "Что может ваш Selfvoy"
                             lines: [
                                 "Писать: " + (page.modeLabel[page.permission("send_message")] || "—"),
                                 "Бронировать: " + (page.modeLabel[page.permission("book_table")] || "—"),

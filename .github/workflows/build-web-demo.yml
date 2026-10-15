@@ -1,10 +1,10 @@
-# Клиент Aura из web/ (React + Capacitor + Electron) — работает с настоящим
-# сервером Aura по WebSocket. Собирает APK и установщик Windows.
+# Клиент Selfvoy из web/ (React + Capacitor + Electron) — работает с настоящим
+# сервером Selfvoy по WebSocket. Собирает APK и установщик Windows.
 #
 # Адрес сервера вшивается при сборке из переменных репозитория
 # (Settings → Secrets and variables → Actions → Variables):
-#   AURA_SERVER_URL   — основной, wss://… (продакшн за TLS);
-#   AURA_FALLBACK_URL — запасной, клиент переключается на него сам.
+#   SELFVOY_SERVER_URL   — основной, wss://… (продакшн за TLS);
+#   SELFVOY_FALLBACK_URL — запасной, клиент переключается на него сам.
 # Без них: Android-эмулятор → ws://10.0.2.2:9000, Windows → ws://127.0.0.1:9000;
 # адрес всегда можно поменять в приложении («Адрес сервера» на экране входа).
 #
@@ -29,8 +29,8 @@ defaults:
     working-directory: web
 
 env:
-  VITE_AURA_SERVER_URL: ${{ vars.AURA_SERVER_URL }}
-  VITE_AURA_FALLBACK_URL: ${{ vars.AURA_FALLBACK_URL }}
+  VITE_SELFVOY_SERVER_URL: ${{ vars.SELFVOY_SERVER_URL }}
+  VITE_SELFVOY_FALLBACK_URL: ${{ vars.SELFVOY_FALLBACK_URL }}
 
 jobs:
   android:
@@ -53,7 +53,7 @@ jobs:
           npm run build && npx cap sync android
           cd android && ./gradlew assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
-        with: { name: aura-web-android, path: web/android/app/build/outputs/apk/debug/*.apk }
+        with: { name: selfvoy-web-android, path: web/android/app/build/outputs/apk/debug/*.apk }
 
   windows:
     name: Веб-клиент — Windows
@@ -73,7 +73,7 @@ jobs:
           npm ci
           npm run dist:win
       - uses: actions/upload-artifact@v4
-        with: { name: aura-web-windows, path: web/release/*.exe }
+        with: { name: selfvoy-web-windows, path: web/release/*.exe }
 
   # Публикация: релиз «builds» и ветки builds/web-*. Только push в main;
   # код из репозитория здесь не исполняется — только скачанные артефакты.
@@ -89,30 +89,31 @@ jobs:
         working-directory: .
     steps:
       - uses: actions/download-artifact@v4
-        with: { name: aura-web-android, path: apk }
+        with: { name: selfvoy-web-android, path: apk }
 
-      # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
+      # Страница Releases → «Сборки Selfvoy»: файлы можно скачать прямо оттуда.
       - name: Публикация в релиз «builds» (APK)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           R="$GITHUB_REPOSITORY"
-          NOTES="Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — нативные клиенты (Compose, Qt). Aura-web.apk и Aura-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Aura."
+          NOTES="Автоматические сборки из main. Selfvoy-debug.apk и Selfvoy-Setup.exe — нативные клиенты (Compose, Qt). Selfvoy-web.apk и Selfvoy-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Selfvoy."
           gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
-            --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" --notes "$NOTES" || true
+            --prerelease --target "$GITHUB_SHA" --title "Сборки Selfvoy (последние)" --notes "$NOTES" || true
           gh release edit builds -R "$R" --notes "$NOTES" || true
-          mkdir -p pubrel && cp apk/app-debug.apk pubrel/Aura-web.apk
-          gh release upload builds pubrel/Aura-web.apk -R "$R" --clobber
-          gh release delete-asset builds Aura-demo.apk -R "$R" -y || true
+          mkdir -p pubrel && cp apk/app-debug.apk pubrel/Selfvoy-web.apk
+          gh release upload builds pubrel/Selfvoy-web.apk -R "$R" --clobber
+          # Файлы со старыми именами (до переименования продукта в Selfvoy).
+          for old in Aura-demo.apk Aura-web.apk; do gh release delete-asset builds "$old" -R "$R" -y || true; done
 
       - name: Публикация в ветку builds/web-android
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          mkdir pub && cp apk/app-debug.apk pub/Aura-web.apk
+          mkdir pub && cp apk/app-debug.apk pub/Selfvoy-web.apk
           cd pub && git init -q -b builds/web-android
-          git config user.name aura-ci && git config user.email ci@aura.local
+          git config user.name selfvoy-ci && git config user.email ci@selfvoy.local
           git add -A && git commit -qm "web apk ${{ github.sha }} [skip ci]"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/web-android
 
@@ -128,20 +129,21 @@ jobs:
         working-directory: .
     steps:
       - uses: actions/download-artifact@v4
-        with: { name: aura-web-windows, path: exe }
+        with: { name: selfvoy-web-windows, path: exe }
 
-      # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
+      # Страница Releases → «Сборки Selfvoy»: файлы можно скачать прямо оттуда.
       - name: Публикация в релиз «builds» (Windows)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           R="$GITHUB_REPOSITORY"
-          mkdir -p pubrel && for f in exe/*.exe; do cp "$f" pubrel/Aura-web-Setup.exe; break; done
+          mkdir -p pubrel && for f in exe/*.exe; do cp "$f" pubrel/Selfvoy-web-Setup.exe; break; done
           gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
-            --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
-            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — нативные клиенты (Compose, Qt). Aura-web.apk и Aura-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Aura." || true
-          gh release upload builds pubrel/Aura-web-Setup.exe -R "$R" --clobber
-          gh release delete-asset builds Aura-demo-Setup.exe -R "$R" -y || true
+            --prerelease --target "$GITHUB_SHA" --title "Сборки Selfvoy (последние)" \
+            --notes "Автоматические сборки из main. Selfvoy-debug.apk и Selfvoy-Setup.exe — нативные клиенты (Compose, Qt). Selfvoy-web.apk и Selfvoy-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Selfvoy." || true
+          gh release upload builds pubrel/Selfvoy-web-Setup.exe -R "$R" --clobber
+          # Файлы со старыми именами (до переименования продукта в Selfvoy).
+          for old in Aura-demo-Setup.exe Aura-web-Setup.exe; do gh release delete-asset builds "$old" -R "$R" -y || true; done
 
       - name: Публикация в ветку builds/web-windows
         env:
@@ -149,12 +151,12 @@ jobs:
         run: |
           set -e
           mkdir pub
-          for f in exe/*.exe; do cp "$f" pub/Aura-web-Setup.exe; break; done
+          for f in exe/*.exe; do cp "$f" pub/Selfvoy-web-Setup.exe; break; done
           cd pub
           for f in *; do
             if [ "$(wc -c < "$f")" -gt 94000000 ]; then split -b 90m -d "$f" "$f.part"; rm "$f"; fi
           done
           git init -q -b builds/web-windows
-          git config user.name aura-ci && git config user.email ci@aura.local
+          git config user.name selfvoy-ci && git config user.email ci@selfvoy.local
           git add -A && git commit -qm "web windows ${{ github.sha }} [skip ci]"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/web-windows

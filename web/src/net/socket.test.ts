@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuraError, AuraSocket, isNetworkError } from './socket';
+import { SelfvoyError, SelfvoySocket, isNetworkError } from './socket';
 
 /** Поддельный WebSocket: тест сам открывает, закрывает и отвечает. */
 class FakeWs {
@@ -35,8 +35,8 @@ class FakeWs {
 
 const latest = () => FakeWs.all[FakeWs.all.length - 1];
 
-function make(candidates = ['ws://a', 'ws://b'], onOpen?: (s: AuraSocket) => Promise<void>) {
-  return new AuraSocket({
+function make(candidates = ['ws://a', 'ws://b'], onOpen?: (s: SelfvoySocket) => Promise<void>) {
+  return new SelfvoySocket({
     candidates: () => candidates,
     onOpen,
     connectTimeoutMs: 1000,
@@ -52,7 +52,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
-describe('AuraSocket', () => {
+describe('SelfvoySocket', () => {
   it('запрос до открытия ждёт соединения; ответ сопоставляется по id', async () => {
     const socket = make();
     socket.start();
@@ -65,7 +65,7 @@ describe('AuraSocket', () => {
     await expect(answer).resolves.toEqual({ user: 'alex' });
   });
 
-  it('ошибка сервера — AuraError с кодом', async () => {
+  it('ошибка сервера — SelfvoyError с кодом', async () => {
     const socket = make();
     socket.start();
     latest().open();
@@ -73,7 +73,7 @@ describe('AuraSocket', () => {
     const answer = socket.request('auth.login', { email: 'x' });
     latest().reply({ id: latest().last().id, type: 'error', code: 'requires_2fa', message: 'Нужен код' });
     const error = await answer.catch((e) => e);
-    expect(error).toBeInstanceOf(AuraError);
+    expect(error).toBeInstanceOf(SelfvoyError);
     expect(error.code).toBe('requires_2fa');
     expect(isNetworkError(error)).toBe(false);
   });
@@ -184,7 +184,7 @@ describe('AuraSocket', () => {
 
   it('прочая ошибка onOpen не мешает соединению', async () => {
     const socket = make(['ws://a'], async () => {
-      throw new AuraError('unauthorized', 'нет');
+      throw new SelfvoyError('unauthorized', 'нет');
     });
     socket.start();
     latest().open();

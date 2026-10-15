@@ -20,13 +20,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Типы-сообщения выглядят как "слово.слово" (auth.login, tasks.create, ...).
-# Ровно одна точка: отличает их от обратных идентификаторов ("ai.aura.app").
+# Ровно одна точка: отличает их от обратных идентификаторов ("app.selfvoy.kit").
 TYPE_RE = re.compile(r'"([a-z][a-z0-9]*\.[a-z0-9]+)"')
 
 # Легитимные строки с одной точкой, не являющиеся типами запросов.
-# (Идентификаторы с двумя точками — "ai.aura.app", "com.google.firebase..." —
+# (Идентификаторы с двумя точками — "app.selfvoy.kit", "com.google.firebase..." —
 # регулярное выражение не матчит: в них больше одной точки.)
-ALLOWED: set[str] = set()
+ALLOWED: set[str] = {
+    # applicationId / пакет приложения — одна точка, но не тип запроса
+    "app.selfvoy",
+}
 
 # Серверные события: их клиент не отправляет, только принимает.
 EVENTS = {"chat.message", "task.due", "notification.new", "session.revoked"}

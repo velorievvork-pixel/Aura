@@ -6,7 +6,7 @@
   в часовом поясе браузера. После записи гость получает ссылку управления (сервер
   отдаёт токен один раз) — по ней можно перенести ближайшую встречу или отменить
   одну/все встречи серии (отмена работает и когда страница на паузе). Если готовую
-  ссылку не собрать (нет AURA_PUBLIC_URL, Electron/localhost), гостя сразу переводим
+  ссылку не собрать (нет SELFVOY_PUBLIC_URL, Electron/localhost), гостя сразу переводим
   на #/m/<токен> — именно её он сохранит в закладки. Файл .ics собирается здесь же,
   в браузере.
 */
@@ -50,7 +50,7 @@ import { makeBookingApi, type GuestBooking, type GuestPage } from '../net/bookin
 import type { InviteSlot } from '../net/inviteApi';
 import { useSession } from '../state/session';
 import { copyText } from '../lib/clipboard';
-import { GuestLayout, Message, OwnAura } from './InviteGuest';
+import { GuestLayout, Message, OwnSelfvoy } from './InviteGuest';
 
 const here = () => (typeof location === 'undefined' ? null : location);
 
@@ -64,7 +64,7 @@ function downloadBookingIcs(booking: IcsBooking, icsKey: string): boolean {
     const first = sortedOccurrences(booking.occurrences).find((o) => o.status === 'active');
     const a = document.createElement('a');
     a.href = url;
-    a.download = first ? `aura-booking-${icsUtc(new Date(first.start)).slice(0, 8)}.ics` : 'aura-booking.ics';
+    a.download = first ? `selfvoy-booking-${icsUtc(new Date(first.start)).slice(0, 8)}.ics` : 'selfvoy-booking.ics';
     a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
@@ -153,7 +153,7 @@ function guestScreens(conn: string, connError: unknown, retry: () => void) {
           <div className="stack">
             <div className="row">
               <WifiOff size={16} className="faint" />
-              <h1 className="title-md">Нет связи с сервером Aura</h1>
+              <h1 className="title-md">Нет связи с сервером Selfvoy</h1>
             </div>
             <p className="lead" style={{ margin: 0 }}>
               Проверьте интернет — мы пробуем подключиться снова автоматически.
@@ -345,7 +345,7 @@ export function BookingGuest() {
           </div>
           <CalendarButton booking={done.booking} icsKey={done.token} />
           <ManageLink token={done.token} url={done.url} />
-          <OwnAura refCode={done.booking.ref} source="booking" />
+          <OwnSelfvoy refCode={done.booking.ref} source="booking" />
         </div>
       </GuestLayout>
     );
@@ -362,7 +362,7 @@ export function BookingGuest() {
             <p className="lead" style={{ margin: 0 }}>{`${page.owner_name || 'Организатор'} пока не принимает новые записи. Загляните позже.`}</p>
           </div>
           {slug && <LostLink api={api} slug={slug} />}
-          <OwnAura refCode={page.ref} source="booking" />
+          <OwnSelfvoy refCode={page.ref} source="booking" />
         </GuestLayout>
       );
     }
@@ -379,7 +379,7 @@ export function BookingGuest() {
           </div>
         </div>
         {page.description && <div className="notice invite-note">{page.description}</div>}
-        {conn !== 'open' && <div className="notice warn">Нет связи с сервером Aura — переподключаемся…</div>}
+        {conn !== 'open' && <div className="notice warn">Нет связи с сервером Selfvoy — переподключаемся…</div>}
 
         {page.slots_unavailable ? (
           <div className="stack">
@@ -438,7 +438,7 @@ export function BookingGuest() {
           </form>
         )}
         {slug && <LostLink api={api} slug={slug} />}
-        <OwnAura refCode={page.ref} source="booking" />
+        <OwnSelfvoy refCode={page.ref} source="booking" />
       </GuestLayout>
     );
   }
@@ -594,7 +594,7 @@ export function BookingManage() {
               <OccurrenceList booking={booking} zone={zone} />
             </div>
             {againLink}
-            <OwnAura refCode={booking.ref} source="booking" />
+            <OwnSelfvoy refCode={booking.ref} source="booking" />
           </div>
         </GuestLayout>
       );
@@ -616,7 +616,7 @@ export function BookingManage() {
             )}
           </div>
         </div>
-        {conn !== 'open' && <div className="notice warn">Нет связи с сервером Aura — переподключаемся…</div>}
+        {conn !== 'open' && <div className="notice warn">Нет связи с сервером Selfvoy — переподключаемся…</div>}
         {justBooked && !notice && (
           <div className="notice">
             <Check size={15} /> Вы записаны — {booking.owner_name ? `${booking.owner_name} получил(а) уведомление` : 'организатор получил уведомление'}. Сохраните
@@ -735,7 +735,7 @@ export function BookingManage() {
             </div>
           </div>
         )}
-        <OwnAura refCode={booking.ref} source="booking" />
+        <OwnSelfvoy refCode={booking.ref} source="booking" />
       </GuestLayout>
     );
   }

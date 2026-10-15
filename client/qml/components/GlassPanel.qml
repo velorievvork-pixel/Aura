@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Effects
-import Aura
+import Selfvoy
 
 /*
   GlassPanel — стеклянная карточка (списки, формы, диалоги) поверх GlassSurface:
@@ -13,13 +13,13 @@ Item {
     property alias radius: surface.radius
     property alias edge: surface.edge
     property alias base: surface.base
-    property real fill: AuraTheme.glassFill
+    property real fill: SelfvoyTheme.glassFill
     property alias tint: surface.tint
     property bool hovered: false
-    property int padding: AuraTheme.spaceLg
-    // Фиолетовое свечение вокруг панели (карточка «Аура активна» и т.п.)
+    property int padding: SelfvoyTheme.spaceLg
+    // Фиолетовое свечение вокруг панели (карточка «Selfvoy активен» и т.п.)
     property bool glow: false
-    property color glowColor: AuraTheme.accent
+    property color glowColor: SelfvoyTheme.accent
     property bool shadow: true
     // data, а не children: внутрь панели кладут и невизуальные объекты
     // (Connections, Timer) — список children принимает только Item.
@@ -55,13 +55,13 @@ Item {
             blur: 1.0
         }
         transform: Translate { y: root.glow ? 0 : 14 }
-        Behavior on opacity { NumberAnimation { duration: AuraTheme.slowMs } }
+        Behavior on opacity { NumberAnimation { duration: SelfvoyTheme.slowMs } }
     }
 
     GlassSurface {
         id: surface
         anchors.fill: parent
-        radius: AuraTheme.radiusCard
+        radius: SelfvoyTheme.radiusCard
         fill: root.fill
         hovered: root.hovered
 

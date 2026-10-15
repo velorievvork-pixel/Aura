@@ -1,8 +1,8 @@
-# Aura для iOS (Swift/SwiftUI)
+# Selfvoy для iOS (Swift/SwiftUI)
 
-Нативный клиент Aura: тот же WS-протокол, что у Qt-клиента и e2e
+Нативный клиент Selfvoy: тот же WS-протокол, что у Qt-клиента и e2e
 (`{id, type, payload}` ↔ `ok`/`error`, события `type=event`). Общий слой —
-Swift-пакет **AuraKit** (транспорт, протокол, модели, Keychain, deep links).
+Swift-пакет **SelfvoyKit** (транспорт, протокол, модели, Keychain, deep links).
 
 ## Сборка
 
@@ -12,16 +12,16 @@ Swift-пакет **AuraKit** (транспорт, протокол, модели
 brew install xcodegen
 cd ios
 xcodegen generate
-open Aura.xcodeproj     # схема Aura, iOS 17+
+open Selfvoy.xcodeproj     # схема Selfvoy, iOS 17+
 ```
 
 Тесты общего слоя (без симулятора, прямо на Mac):
 
 ```bash
-cd ios/AuraKit && swift test
+cd ios/SelfvoyKit && swift test
 ```
 
-В Xcode: схема **AuraTests** (смоук UI-слоя) и тесты AuraKit.
+В Xcode: схема **SelfvoyTests** (смоук UI-слоя) и тесты SelfvoyKit.
 
 ## Первый запуск
 
@@ -32,29 +32,29 @@ cd ios/AuraKit && swift test
 
 ## Возможности
 
-- Чаты, сообщения, «Спросить Ауру» (agent.ask), события chat.message.
+- Чаты, сообщения, «Спросить Selfvoy» (agent.ask), события chat.message.
 - Задачи и напоминания (task.due озвучивается), экспорт в напоминания iOS
   (EventKit, разрешение — только по кнопке).
 - Барьер подтверждения опасных операций, разрешения инструментов.
-- Интеграции Google (OAuth в Safari → возврат по `aura://oauth`).
+- Интеграции Google (OAuth в Safari → возврат по `selfvoy://oauth`).
 - Голос: SFSpeechRecognizer on-device, fallback — серверный STT
   (`speech.transcribe`); озвучка — AVSpeechSynthesizer.
-- Siri/Команды: «Спросить Ауру», «Создать задачу» (App Intents).
+- Siri/Команды: «Спросить Selfvoy», «Создать задачу» (App Intents).
 
-## Deep links (схема `aura://`)
+## Deep links (схема `selfvoy://`)
 
 | ссылка | действие |
 | --- | --- |
-| `aura://chats/{id}` | открыть чат |
-| `aura://voice` | голосовой запрос (удобно для Back Tap) |
-| `aura://ask?text=...` | сразу спросить Ауру |
-| `aura://tasks` | список задач |
-| `aura://settings` | настройки |
-| `aura://oauth?provider=&code=&state=` | возврат из Google OAuth |
+| `selfvoy://chats/{id}` | открыть чат |
+| `selfvoy://voice` | голосовой запрос (удобно для Back Tap) |
+| `selfvoy://ask?text=...` | сразу спросить Selfvoy |
+| `selfvoy://tasks` | список задач |
+| `selfvoy://settings` | настройки |
+| `selfvoy://oauth?provider=&code=&state=` | возврат из Google OAuth |
 
 ## Back Tap — только официально
 
 Back Tap — системный жест iOS, сторонним приложениям недоступен. Приложение
 его **не имитирует**: жест назначается пользователем в «Универсальный доступ
-→ Касание → Касание сзади» на команду «Спросить Ауру» (App Intent).
+→ Касание → Касание сзади» на команду «Спросить Selfvoy» (App Intent).
 Инструкция — в приложении (Настройки → Quick Actions).

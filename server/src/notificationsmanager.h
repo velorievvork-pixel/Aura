@@ -1,4 +1,4 @@
-// aura/notificationsmanager.h — in-app уведомления и push-доставка (этап 13).
+// selfvoy/notificationsmanager.h — in-app уведомления и push-доставка (этап 13).
 //
 // Единая «входящая»: напоминания, подтверждения, A2A-предложения, новые входы,
 // изменения 2FA. In-app — таблица notifications + WS-событие notification.new;
@@ -10,13 +10,13 @@
 
 #include <string>
 
-#include "aura/config.h"
-#include "aura/connectionmanager.h"
-#include "aura/databasemanager.h"
-#include "aura/idatabase.h"
-#include "aura/json.h"
+#include "selfvoy/config.h"
+#include "selfvoy/connectionmanager.h"
+#include "selfvoy/databasemanager.h"
+#include "selfvoy/idatabase.h"
+#include "selfvoy/json.h"
 
-namespace aura {
+namespace selfvoy {
 
 class NotificationsManager {
 public:
@@ -66,4 +66,4 @@ private:
     const Config& config_;
 };
 
-}  // namespace aura
+}  // namespace selfvoy

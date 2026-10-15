@@ -1,5 +1,5 @@
-# CI Aura: C++-ядро (сборка + unit), Python AI Service, сверка протокола
-# iOS/Android, JVM-тесты AuraKit (Android). Qt-клиент и iOS здесь не
+# CI Selfvoy: C++-ядро (сборка + unit), Python AI Service, сверка протокола
+# iOS/Android, JVM-тесты SelfvoyKit (Android). Qt-клиент и iOS здесь не
 # собираются (нужны Qt 6 / macOS), APK — нужен Android SDK (Android Studio);
 # локальные проверки: qmlcachegen и tools/check_*_protocol.py (docs/TESTING.md).
 
@@ -32,7 +32,7 @@ jobs:
       - name: Конфигурация
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          -DAURA_WITH_LIBPQ=ON -DAURA_WITH_CLIENT=OFF -DAURA_BUILD_TESTS=ON
+          -DSELFVOY_WITH_LIBPQ=ON -DSELFVOY_WITH_CLIENT=OFF -DSELFVOY_BUILD_TESTS=ON
 
       - name: Сборка
         run: cmake --build build -j"$(nproc)"
@@ -81,7 +81,7 @@ jobs:
         run: python3 -m py_compile tools/e2e.py
 
   android:
-    name: Android — JVM-тесты AuraKit (протокол без SDK)
+    name: Android — JVM-тесты SelfvoyKit (протокол без SDK)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -95,7 +95,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Модуль :aurakit — чистый Kotlin/JVM (протокол, deep links), поэтому
+      # Модуль :selfvoykit — чистый Kotlin/JVM (протокол, deep links), поэтому
       # его тесты идут в CI без Android SDK. Gradle нужен только чтобы
       # сгенерировать wrapper нужной версии (в репозитории wrapper не лежит).
       - name: Gradle wrapper
@@ -105,25 +105,25 @@ jobs:
           sudo apt-get install -y --no-install-recommends gradle
           gradle wrapper --gradle-version 8.7
 
-      - name: Тесты AuraKit
+      - name: Тесты SelfvoyKit
         working-directory: android
         run: |
-          ./gradlew :aurakit:test --no-daemon --stacktrace 2>&1 | tee ../aurakit-test.log
+          ./gradlew :selfvoykit:test --no-daemon --stacktrace 2>&1 | tee ../selfvoykit-test.log
           exit ${PIPESTATUS[0]}
 
-      - name: Лог тестов AuraKit (для отладки)
+      - name: Лог тестов SelfvoyKit (для отладки)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: aurakit-test-log
-          path: aurakit-test.log
+          name: selfvoykit-test-log
+          path: selfvoykit-test.log
 
       - name: Ошибки в аннотации прогона
         if: always()
         run: |
-          if [ -f aurakit-test.log ]; then
-            grep -E "^e: |error:|FAILED" aurakit-test.log | tail -20 | while IFS= read -r line; do
-              printf '::error title=aurakit::%s\n' "$(printf '%s' "$line" | tr -d '\r' | cut -c1-400)"
+          if [ -f selfvoykit-test.log ]; then
+            grep -E "^e: |error:|FAILED" selfvoykit-test.log | tail -20 | while IFS= read -r line; do
+              printf '::error title=selfvoykit::%s\n' "$(printf '%s' "$line" | tr -d '\r' | cut -c1-400)"
             done
           fi
           exit 0
@@ -132,18 +132,18 @@ jobs:
   # Отдельный job: токен с правом записи не попадает туда, где исполняется
   # код из репозитория (Gradle-сборка). Только push-события (не PR).
   android-log:
-    name: Лог AuraKit → arena/build-logs
+    name: Лог SelfvoyKit → arena/build-logs
     needs: android
     if: always() && github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Лог тестов AuraKit
+      - name: Лог тестов SelfvoyKit
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: aurakit-test-log
+          name: selfvoykit-test-log
 
       - name: Публикация лога
         env:
@@ -152,7 +152,7 @@ jobs:
           # Шаг вспомогательный: git-ошибки не должны ронять job.
           set +e
           rm -f push-diag.log
-          echo "run ${{ github.run_id }} job aurakit" > push-diag.log
+          echo "run ${{ github.run_id }} job selfvoykit" > push-diag.log
           for i in 1 2 3; do
             rm -rf logpub
             {
@@ -172,16 +172,16 @@ jobs:
                 git checkout -q -B arena/build-logs FETCH_HEAD
               ) >> push-diag.log 2>&1
             fi
-            [ -f aurakit-test.log ] && cp aurakit-test.log logpub/aurakit-test.log
+            [ -f selfvoykit-test.log ] && cp selfvoykit-test.log logpub/selfvoykit-test.log
             (
               cd logpub
-              git config user.name "aura-ci"
-              git config user.email "ci@aura.local"
+              git config user.name "selfvoy-ci"
+              git config user.email "ci@selfvoy.local"
               git add -A 2>&1
-              git commit -m "aurakit log ${{ github.sha }} [skip ci]" 2>&1
+              git commit -m "selfvoykit log ${{ github.sha }} [skip ci]" 2>&1
               git -c http.extraHeader="Authorization: token $GH_TOKEN" push origin HEAD:arena/build-logs 2>&1
             ) >> push-diag.log 2>&1 && echo "push ok" >> push-diag.log && break
             sleep 10
           done
-          printf '::error title=aurakit-publish::%s\n' "$(tail -14 push-diag.log | tr '\r' ' ' | tr '\n' '~' | cut -c1-1500)"
+          printf '::error title=selfvoykit-publish::%s\n' "$(tail -14 push-diag.log | tr '\r' ' ' | tr '\n' '~' | cut -c1-1500)"
           exit 0

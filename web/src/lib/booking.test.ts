@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuraError } from '../net/socket';
+import { SelfvoyError } from '../net/socket';
 import type { Occurrence } from '../net/bookingApi';
 import {
   bookingIcs,
@@ -40,7 +40,7 @@ describe('ссылки', () => {
   });
 
   it('публичная ссылка: от сервера, иначе публичный адрес клиента, иначе null', () => {
-    expect(publicLink('/b/abc123def4', 'https://aura.example.com/#/b/abc123def4', loc('http://localhost:5173/'))).toBe('https://aura.example.com/#/b/abc123def4');
+    expect(publicLink('/b/abc123def4', 'https://selfvoy.example.com/#/b/abc123def4', loc('http://localhost:5173/'))).toBe('https://selfvoy.example.com/#/b/abc123def4');
     expect(publicLink('/b/abc123def4', '', loc('https://app.example/web/'))).toBe('https://app.example/web/#/b/abc123def4');
     expect(publicLink('/m/tok', '', loc('http://localhost:5173/'))).toBeNull();
     expect(publicLink('/m/tok', 'javascript:alert(1)', null)).toBeNull();
@@ -171,7 +171,7 @@ describe('bookingIcs', () => {
 
   it('UID: без времени и токена, разный у разных записей и встреч', () => {
     const uid = bookingUid(TOKEN, 0);
-    expect(uid).toMatch(/^booking-[0-9a-f]{16}-0@aura$/);
+    expect(uid).toMatch(/^booking-[0-9a-f]{16}-0@selfvoy$/);
     expect(uid).not.toContain(TOKEN);
     expect(bookingUid(TOKEN, 0)).toBe(uid);
     expect(bookingUid(TOKEN, 1)).not.toBe(uid);
@@ -202,8 +202,8 @@ describe('guestActions', () => {
 
 describe('ошибки владельца', () => {
   it('сеть и таймаут — своими словами, остальное — текст сервера', () => {
-    expect(bookingOwnerErrorText(new AuraError('timeout', ''))).toMatch(/не ответил/);
-    expect(bookingOwnerErrorText(new AuraError('forbidden', 'не больше 10 страниц записи'))).toBe('Не больше 10 страниц записи');
+    expect(bookingOwnerErrorText(new SelfvoyError('timeout', ''))).toMatch(/не ответил/);
+    expect(bookingOwnerErrorText(new SelfvoyError('forbidden', 'не больше 10 страниц записи'))).toBe('Не больше 10 страниц записи');
     expect(bookingOwnerErrorText(new Error('x'))).toBe('Что-то пошло не так');
   });
 });

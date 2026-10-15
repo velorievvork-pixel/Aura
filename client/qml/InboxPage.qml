@@ -1,10 +1,10 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 
 /*
-  InboxPage — «Подтверждения» (опасные действия Ауры ждут решения) и
+  InboxPage — «Подтверждения» (опасные действия Selfvoy ждут решения) и
   «Уведомления» (входящая + push-устройства). Содержимое — готовые панели
   ConfirmationPanel/NotificationsPanel, страница даёт заголовок и прокрутку.
 */
@@ -29,20 +29,20 @@ Item {
 
             Text {
                 text: page.mode === "confirmations" ? "Подтверждения" : "Уведомления"
-                font.family: AuraTheme.fontFamily
+                font.family: SelfvoyTheme.fontFamily
                 font.pixelSize: 38
                 font.weight: Font.Bold
-                color: AuraTheme.textPrimary
+                color: SelfvoyTheme.textPrimary
             }
             Text {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
                 text: page.mode === "confirmations"
-                      ? "Письма, сообщения и брони Аура не выполняет сама: каждое такое действие ждёт здесь вашего решения."
+                      ? "Письма, сообщения и брони Selfvoy не выполняет сам: каждое такое действие ждёт здесь вашего решения."
                       : "Напоминания, переговоры, новые входы и изменения безопасности."
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontBody
-                color: AuraTheme.textSecondary
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontBody
+                color: SelfvoyTheme.textSecondary
             }
             Loader {
                 Layout.fillWidth: true

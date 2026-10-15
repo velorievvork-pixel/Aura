@@ -1,4 +1,4 @@
-// Renders the Aura swirl into the source images that `capacitor-assets` turns into every
+// Renders the Selfvoy swirl into the source images that `capacitor-assets` turns into every
 // iOS/Android icon and splash size, plus build/icon.png for the desktop installers.
 import { mkdirSync } from 'node:fs';
 import sharp from 'sharp';
@@ -6,7 +6,7 @@ import sharp from 'sharp';
 const DASHES = 12;
 
 function swirl(cx, cy, r, stroke) {
-  // Same geometry as AuraMark in src/components/ui.tsx, scaled from its 100×100 box.
+  // Same geometry as SelfvoyMark in src/components/ui.tsx, scaled from its 100×100 box.
   const k = r / 41;
   const p = (x, y) => `${cx + (x - 50) * k} ${cy + (y - 50) * k}`;
   return Array.from({ length: DASHES }, (_, i) => `<path d="M${p(50, 9)} Q ${p(60, 9.5)} ${p(66, 19)}" transform="rotate(${(360 / DASHES) * i} ${cx} ${cy})"/>`)

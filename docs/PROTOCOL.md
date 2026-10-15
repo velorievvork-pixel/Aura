@@ -1,4 +1,4 @@
-# Протокол Aura
+# Протокол Selfvoy
 
 Транспорт — WebSocket (RFC 6455) поверх TCP. Все сообщения — JSON в текстовых
 фреймах. Один TCP-сокет = одна `Session` на сервере.
@@ -30,10 +30,10 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
    считает сессию авторизованной и шлёт событие `session.ready`;
 2. сообщение `auth.login` / `auth.token` уже после подключения.
 
-Ограничения соединения: до входа кадр не больше 64 КБ (`AURA_MAX_PREAUTH_FRAME`,
+Ограничения соединения: до входа кадр не больше 64 КБ (`SELFVOY_MAX_PREAUTH_FRAME`,
 больше — закрытие 1009/1002); соединение без входа закрывается через 30 с
-(`AURA_AUTH_TIMEOUT`, код закрытия 4408); с одного IP — не больше 20 соединений
-(`AURA_MAX_CONNECTIONS_PER_IP`, лишнее получает HTTP 429 на рукопожатии). В JSON-объекте
+(`SELFVOY_AUTH_TIMEOUT`, код закрытия 4408); с одного IP — не больше 20 соединений
+(`SELFVOY_MAX_CONNECTIONS_PER_IP`, лишнее получает HTTP 429 на рукопожатии). В JSON-объекте
 не больше 1000 ключей.
 
 Открытое соединение не переживает свою сессию: при отзыве сессии
@@ -41,7 +41,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 смене/сбросе пароля, повторном использовании refresh-токена или блокировке
 аккаунта сервер шлёт событие `session.revoked` (`{reason}`) и закрывает сокет с
 кодом 4401. Кроме того, сессия соединения сверяется с БД не реже чем раз в 15 с
-(`AURA_AUTH_RECHECK`): отозванная/истёкшая → `unauthorized` «сессия истекла или
+(`SELFVOY_AUTH_RECHECK`): отозванная/истёкшая → `unauthorized` «сессия истекла или
 отозвана — войдите снова», соединение разлогинивается.
 
 Все типы, кроме `auth.register`, `auth.login`, `auth.login2fa`, `auth.verifyEmail`,
@@ -74,7 +74,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `auth.register` | `display_name`, `email`, `password`, `ref?` (реферальный код, 8 букв/цифр, регистр не важен), `ref_source?` (`link`/`booking`/`invite`) | `requires_verification`, `user`, `email_code` (только `AURA_MAIL_DRIVER=dev` + `AURA_DEV_MODE=1`); занятый email → `conflict`; больше 10 регистраций с IP в час → `forbidden`. Неверный `ref` молча игнорируется |
+| `auth.register` | `display_name`, `email`, `password`, `ref?` (реферальный код, 8 букв/цифр, регистр не важен), `ref_source?` (`link`/`booking`/`invite`) | `requires_verification`, `user`, `email_code` (только `SELFVOY_MAIL_DRIVER=dev` + `SELFVOY_DEV_MODE=1`); занятый email → `conflict`; больше 10 регистраций с IP в час → `forbidden`. Неверный `ref` молча игнорируется |
 | `auth.verifyEmail` | `email`, `code` (6 цифр) | `verified`, `user` (повтор для уже подтверждённого адреса — только `verified`, без данных пользователя); после 5 неверных кодов код сгорает (нужен `auth.resendCode`) |
 | `auth.resendCode` | `email` | `message` (+`email_code` в dev); ответ не раскрывает существование email; не больше 3 писем на адрес в час (сверх лимита ответ тот же, письмо не уходит) |
 | `auth.login` | `email`, `password`, `device?`, `device_id?` | `token`, `token_type`, `expires_in`, `refresh_token`, `refresh_expires_in`, `session_id`, `user`; до подтверждения email — `email_not_verified`; при включённой 2FA и недоверенном `device_id` — `requires_2fa`; отключённый аккаунт — `forbidden` «аккаунт отключён» (только при верном пароле) |
@@ -99,7 +99,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 ### Двухфакторная аутентификация (TOTP)
 
 Порядок входа: пароль → TOTP → сессия. Секрет TOTP хранится зашифрованным
-(AES-256-GCM, ключ — `AURA_2FA_KEY`). Настройка: `auth.setup2fa` выдаёт секрет
+(AES-256-GCM, ключ — `SELFVOY_2FA_KEY`). Настройка: `auth.setup2fa` выдаёт секрет
 (base32) и `otpauth://`-URI для приложения-аутентификатора (Google Authenticator,
 1Password и др.); `auth.confirm2fa` проверяет одноразовый код, включает 2FA и
 возвращает 10 резервных кодов (показываются один раз). RFC 6238: 6 цифр, период
@@ -154,7 +154,7 @@ SHA-256 (с привязкой к пользователю) в `auth_tokens` с�
 События: `chat.message` (всем участникам, включая другие устройства отправителя),
 `chat.created` (приглашённому).
 
-### Аура
+### Selfvoy
 
 | тип | payload | ответ |
 | --- | --- | --- |
@@ -182,9 +182,9 @@ Framework) клиент распознаёт на устройстве; на д�
 (16 кГц, моно, 16 бит → WAV), кодирует в base64 и шлёт `speech.transcribe`.
 C++-сервер форвардит аудио в Python AI Service `POST /v1/speech/transcribe`
 (Whisper-совместимый). Провайдер STT выбирается на AI-сервисе: без
-`AURA_STT_URL`/`AURA_STT_API_KEY` работает детерминированный `mock`
+`SELFVOY_STT_URL`/`SELFVOY_STT_API_KEY` работает детерминированный `mock`
 (для разработки), иначе — реальный Whisper-бэкенд. Пустое аудио → `bad_request`,
-превышение `AURA_STT_MAX_BYTES` → ошибка, недоступность бэкенда → `upstream_error`.
+превышение `SELFVOY_STT_MAX_BYTES` → ошибка, недоступность бэкенда → `upstream_error`.
 
 Озвучка (TTS) выполняется платформенно на клиенте (Qt TextToSpeech /
 AVSpeechSynthesizer), отдельного сетевого метода не требует.
@@ -211,7 +211,7 @@ AVSpeechSynthesizer), отдельного сетевого метода не т
 `birthday` (`YYYY-MM-DD`), `allergies[]`, `onboarded` (bool),
 `budget_limit`, `city`, `lat`, `lon`, `theme`, `notifications{}`, `privacy{}`.
 
-`privacy` — что Аура раскрывает чужой Ауре в переговорах (`agent.negotiate`,
+`privacy` — что Selfvoy раскрывает чужому Selfvoy в переговорах (`agent.negotiate`,
 A2A из `agent.ask`); все флаги по умолчанию `true`, `prefs.get` всегда отдаёт
 все три, `prefs.set` принимает любую их часть (неизвестный ключ или не bool →
 `bad_request`):
@@ -227,18 +227,18 @@ A2A из `agent.ask`); все флаги по умолчанию `true`, `prefs.
 | тип | payload | ответ |
 | --- | --- | --- |
 | `tool.list` | — | `tools[]`, `mode` |
-| `tool.run` | `tool`, `args{}`, `chat_id?` | результат инструмента; проходит тот же барьер `tool_permissions`, что и действия Ауры: `deny` → `forbidden`, `ask` (по умолчанию для опасных) → `{requires_confirmation: true, confirmation_id, summary, tool, status: "pending"}` без исполнения (дальше `confirmation.approve`/`deny`) |
+| `tool.run` | `tool`, `args{}`, `chat_id?` | результат инструмента; проходит тот же барьер `tool_permissions`, что и действия Selfvoy: `deny` → `forbidden`, `ask` (по умолчанию для опасных) → `{requires_confirmation: true, confirmation_id, summary, tool, status: "pending"}` без исполнения (дальше `confirmation.approve`/`deny`) |
 
 Инструменты: `send_message`, `create_note`, `create_reminder`, `send_email`,
 `find_cafe`, `book_table`, `check_calendar`, `suggest_time`. В режиме
-`AURA_TOOLS_MODE=sandbox` внешние API заменяются детерминированными ответами
-(тот же контракт, что в `ai/aura_ai/tools.py`). `tool.list` возвращает для
+`SELFVOY_TOOLS_MODE=sandbox` внешние API заменяются детерминированными ответами
+(тот же контракт, что в `ai/selfvoy_ai/tools.py`). `tool.list` возвращает для
 каждого инструмента флаг `dangerous` и `default_mode`.
 
 ### Разрешения и подтверждения (этап 8)
 
 Ядро безопасности v3: **LLM лишь формирует намерение, исполняет сервер и только
-после проверки прав.** Каждое действие Ауры проходит барьер:
+после проверки прав.** Каждое действие Selfvoy проходит барьер:
 
 1. сервер вычисляет эффективный режим инструмента — явное разрешение
    пользователя из `tool_permissions` или режим по умолчанию
@@ -266,7 +266,7 @@ A2A из `agent.ask`); все флаги по умолчанию `true`, `prefs.
 действия — в `pending_actions(id, user_id, chat_id, tool, args, summary, status,
 result, …)` со статусами `pending`/`approved`/`denied`/`executed`/`failed`/
 `expired`. Успешное подтверждённое действие с `chat_id` публикуется в чат
-сообщением `kind: agent_action` (`origin: aura-agent`, `confirmed: true`).
+сообщением `kind: agent_action` (`origin: selfvoy-agent`, `confirmed: true`).
 Изменения разрешений и подтверждения пишутся в `audit_logs`
 (`tool_permission`, `action_approved`, `action_denied`).
 
@@ -275,7 +275,7 @@ result, …)` со статусами `pending`/`approved`/`denied`/`executed`/`
 Задачи хранятся в `tasks(id, user_id, chat_id, title, notes, status, priority,
 due_at, remind_at, reminded_at, …)`; статусы `pending`/`done`/`cancelled`.
 Напоминание — задача с `remind_at`: фоновый планировщик сервера
-(`AURA_SCHEDULER_INTERVAL_MS`, по умолчанию 30 с) находит задачи с наступившим
+(`SELFVOY_SCHEDULER_INTERVAL_MS`, по умолчанию 30 с) находит задачи с наступившим
 `remind_at`, помечает их отправленными (`reminded_at`, одноразово) и шлёт
 владельцу push-событие `task.due`. Инструмент `create_reminder` тоже создаёт
 задачу (возвращает `task_id`).
@@ -301,7 +301,7 @@ Google → Google редиректит на `redirect_uri` с `code` + `state` �
 шлёт `integrations.callback`. Сервер обменивает код на токены (PKCE
 `code_verifier`, метод S256), шифрует их AES-256-GCM и сохраняет в
 `integration_connections`; `state`/`verifier` одноразовые
-(`integration_oauth_states`, TTL `AURA_OAUTH_STATE_TTL`, по умолчанию 600 с).
+(`integration_oauth_states`, TTL `SELFVOY_OAUTH_STATE_TTL`, по умолчанию 600 с).
 **Токены клиенту не отдаются никогда.**
 
 | тип | payload | ответ |
@@ -319,11 +319,11 @@ Access-токен автоматически обновляется по `refres
 возвращает реальные события (`source=google_calendar`), иначе память
 (`source=memory`).
 
-Переменные окружения: `AURA_GOOGLE_CLIENT_ID`, `AURA_GOOGLE_CLIENT_SECRET`,
-`AURA_GOOGLE_AUTH_URL`, `AURA_GOOGLE_TOKEN_URL`, `AURA_GOOGLE_REVOKE_URL`,
-`AURA_GOOGLE_CALENDAR_URL`, `AURA_GOOGLE_GMAIL_URL`, `AURA_OAUTH_STATE_TTL`.
+Переменные окружения: `SELFVOY_GOOGLE_CLIENT_ID`, `SELFVOY_GOOGLE_CLIENT_SECRET`,
+`SELFVOY_GOOGLE_AUTH_URL`, `SELFVOY_GOOGLE_TOKEN_URL`, `SELFVOY_GOOGLE_REVOKE_URL`,
+`SELFVOY_GOOGLE_CALENDAR_URL`, `SELFVOY_GOOGLE_GMAIL_URL`, `SELFVOY_OAUTH_STATE_TTL`.
 По умолчанию URL — реальные эндпоинты Google (прод — за TLS-терминирующим
-прокси); e2e подменяет их локальным mock-сервером (`AURA_E2E_GOOGLE_MOCK=1`).
+прокси); e2e подменяет их локальным mock-сервером (`SELFVOY_E2E_GOOGLE_MOCK=1`).
 
 ### Уведомления и push (этап 13)
 
@@ -338,8 +338,8 @@ Access-токен автоматически обновляется по `refres
 странице записи), `referral.joined` (приглашённый по реферальной ссылке
 подтвердил email). Push-доставка — через устройства в `push_devices`
 (платформы `apns` | `fcm` | `webhook` | `dev`); платформенный конверт
-уходит во внешний шлюз (`AURA_PUSH_DRIVER=webhook`,
-`AURA_PUSH_WEBHOOK_URL`), который подписывает ключи провайдера (JWT для
+уходит во внешний шлюз (`SELFVOY_PUSH_DRIVER=webhook`,
+`SELFVOY_PUSH_WEBHOOK_URL`), который подписывает ключи провайдера (JWT для
 APNs, OAuth2 сервисного аккаунта для FCM) и форвардит запрос — сам
 C++-сервер TLS/HTTP2 не делает и ключи провайдеров не хранит.
 Тихие часы и отключённые виды читаются из настроек пользователя:
@@ -363,26 +363,26 @@ Push-конверт для шлюза: `{platform, token, notification_id, kind,
   `apns: {url, headers: {apns-topic, apns-push-type}, payload: {aps:
   {alert, badge, sound}, kind, data}}`;
 - `fcm` (Android, этап 11): `fcm: {url, message: {token, notification:
-  {title, body}, android: {priority, notification: {channel_id: "aura",
+  {title, body}, android: {priority, notification: {channel_id: "selfvoy",
   sound}}, data: {kind, notification_id, data}}}` — тело готово к
   `POST {fcm.url}` (FCM HTTP v1) с заголовком `Authorization: Bearer
   <OAuth2-токен сервисного аккаунта>`; значения `data` — строки
   (требование FCM), полезная нагрузка уведомления сериализуется в
   `data.data`.
 
-Переменные окружения: `AURA_PUSH_DRIVER` (`dev`|`webhook`),
-`AURA_PUSH_WEBHOOK_URL`, `AURA_APNS_TOPIC` (`ai.aura.app`), `AURA_APNS_URL`
-(`https://api.push.apple.com`), `AURA_FCM_URL`
-(`https://fcm.googleapis.com/v1/projects/aura/messages:send` — замените
-`aura` на id вашего проекта Firebase).
+Переменные окружения: `SELFVOY_PUSH_DRIVER` (`dev`|`webhook`),
+`SELFVOY_PUSH_WEBHOOK_URL`, `SELFVOY_APNS_TOPIC` (`app.selfvoy`), `SELFVOY_APNS_URL`
+(`https://api.push.apple.com`), `SELFVOY_FCM_URL`
+(`https://fcm.googleapis.com/v1/projects/selfvoy/messages:send` — замените
+`selfvoy` на id вашего проекта Firebase).
 
-### Приглашения по ссылке (встреча с человеком без Aura)
+### Приглашения по ссылке (встреча с человеком без Selfvoy)
 
-Владелец договаривается о встрече с человеком, у которого нет Aura: сервер
+Владелец договаривается о встрече с человеком, у которого нет Selfvoy: сервер
 подбирает свободные слоты владельца (AI-сервис, `POST /v1/agent/slots` — только
 рабочие часы в часовом поясе владельца, не раньше чем через час, до 2 слотов в
 день, не больше 6) и выдаёт ссылку. Гость открывает её в веб-клиенте
-(`<AURA_PUBLIC_URL>/#/i/<токен>`) без регистрации, выбирает время или
+(`<SELFVOY_PUBLIC_URL>/#/i/<токен>`) без регистрации, выбирает время или
 отказывается. Сервер не доверяет ответу AI: проверяет длительность, окно,
 будущее время, занятость и пересечения. Токен — 32 случайных байта
 (base64url, 43 символа); в БД только его sha256, поэтому ссылка показывается
@@ -392,7 +392,7 @@ Push-конверт для шлюза: `{platform, token, notification_id, kind,
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `invite.create` | `{topic (1–120 символов, одна строка), duration_minutes? (15–240, 60), window_hours? (1–336, 168), note? (≤ 500), guest_name? (≤ 80)}` | `{invite, token, url}` — `url` пуст, если не задан `AURA_PUBLIC_URL` (клиент строит ссылку сам) |
+| `invite.create` | `{topic (1–120 символов, одна строка), duration_minutes? (15–240, 60), window_hours? (1–336, 168), note? (≤ 500), guest_name? (≤ 80)}` | `{invite, token, url}` — `url` пуст, если не задан `SELFVOY_PUBLIC_URL` (клиент строит ссылку сам) |
 | `invite.list` | `{limit? (1–100, 50)}` | `{invites: [invite]}` — новые сверху |
 | `invite.cancel` | `{invite_id}` | `{invite}` — только своё и открытое |
 
@@ -427,9 +427,9 @@ slots, guest_name, chosen, expires_at, ref}` (`ref` — реферальный �
 task_id}`). `decline` — уведомление `invite.declined` (`payload: {invite_id,
 guest_name, comment}`).
 
-### Страницы записи (постоянная ссылка для людей без Aura)
+### Страницы записи (постоянная ссылка для людей без Selfvoy)
 
-Владелец заводит постоянную публичную ссылку `<AURA_PUBLIC_URL>/#/b/<slug>`
+Владелец заводит постоянную публичную ссылку `<SELFVOY_PUBLIC_URL>/#/b/<slug>`
 (`slug` — 10 символов `[a-z0-9]`). Гость без регистрации видит свободное время
 владельца и записывается сам — на одну встречу или на еженедельную серию.
 Свободное время подбирает AI-сервис (`POST /v1/agent/slots` с `per_day`,
@@ -453,28 +453,28 @@ guest_name, comment}`).
 
 `page`: `{id, slug, url, title, description, duration_minutes, days_ahead,
 max_per_day, notice_hours, max_series, weekends, status (active | paused),
-upcoming, created_at, updated_at}`; `url` пуст без `AURA_PUBLIC_URL`.
+upcoming, created_at, updated_at}`; `url` пуст без `SELFVOY_PUBLIC_URL`.
 `booking` (вид владельца): `{id, page_id, page_title, guest_name, guest_email,
 guest_comment, status (active | cancelled), cancelled_by ("" | guest | owner),
 reschedules, occurrences: [{start, end, local, status (active | cancelled)}],
 created_at, updated_at}`.
 
 Методы гостя (публичные, без входа). Соединение без входа сервер закрывает
-через `AURA_AUTH_TIMEOUT` (30 с), но если по нему успешно вызывались гостевые
+через `SELFVOY_AUTH_TIMEOUT` (30 с), но если по нему успешно вызывались гостевые
 методы `invite.*` / `booking.*` — через 10 минут после последнего такого вызова:
 гость успевает выбрать время, а ошибочные запросы срок не продлевают.
 
 | тип | payload | ответ |
 | --- | --- | --- |
 | `booking.get` | `{slug}` | `{page}` — вид гостя |
-| `booking.book` | `{slug, start (start свободного слота), guest_name (1–80), guest_email? (≤ 254), comment? (≤ 500), count? (1–max_series, 1)}` | `{booking, token, url}` — токен ссылки управления (43 символа base64url) показывается **один раз**; `url` — `<AURA_PUBLIC_URL>/#/m/<токен>` или пусто |
+| `booking.book` | `{slug, start (start свободного слота), guest_name (1–80), guest_email? (≤ 254), comment? (≤ 500), count? (1–max_series, 1)}` | `{booking, token, url}` — токен ссылки управления (43 символа base64url) показывается **один раз**; `url` — `<SELFVOY_PUBLIC_URL>/#/m/<токен>` или пусто |
 | `booking.manage` | `{token}` | `{booking}` — вид гостя по ссылке управления |
 | `booking.reschedule` | `{token, start, occurrence? (start переносимой встречи; по умолчанию ближайшая)}` | `{booking}`; не больше 3 переносов на запись |
 | `booking.cancel` | `{token, occurrence?, reason? (≤ 500)}` | `{booking}`; без `occurrence` — все предстоящие встречи |
 | `booking.resendLink` | `{slug, email}` | `{sent: true}` — всегда одинаково (нельзя узнать, есть ли запись); если на странице есть активная запись с этим email, ссылка управления перевыпускается (прежняя перестаёт работать) и уходит письмом |
 
 Письма гостю (если при записи указан email; драйвер почты — как у кодов
-подтверждения, `AURA_MAIL_DRIVER`): подтверждение записи со ссылкой управления,
+подтверждения, `SELFVOY_MAIL_DRIVER`): подтверждение записи со ссылкой управления,
 перенос, отмена гостем и отмена владельцем (со ссылкой «Выбрать другое время»),
 новая ссылка по `booking.resendLink`. Время — местное время владельца с
 поясом. В письмах только текст сервера и владельца (название страницы, имя
@@ -486,7 +486,7 @@ max_series, owner_name, owner_timezone, status, slots: [{start, end, day}],
 slots_unavailable, ref}` — без email владельца и чужих записей; `day` —
 местная дата владельца; `slots_unavailable: true` — AI-сервис недоступен
 (страница видна, время не подобрано); `ref` — реферальный код владельца для
-ссылки «Заведите свою Ауру». Вид записи для гостя: `{page_title, page_slug
+ссылки «Заведите свой Selfvoy». Вид записи для гостя: `{page_title, page_slug
 ("" — запись на странице закрыта), owner_name, owner_timezone,
 duration_minutes, guest_name, status, cancelled_by, occurrences, can_cancel,
 can_reschedule, can_change, reschedules_left, slots (свободное время для
@@ -523,7 +523,7 @@ AI-сервис недоступен при записи/переносе; `forb
 | `referral.get` | `{limit? (1–100, 50)}` | `{code, url, joined, verified, referrals: [{display_name, source, joined_at, verified}]}` |
 
 У пользователя один код из 8 символов `[A-Z0-9]` (выдаётся при первом
-запросе); `url` — `<AURA_PUBLIC_URL>/#/signup?ref=<код>` или пусто. Код
+запросе); `url` — `<SELFVOY_PUBLIC_URL>/#/signup?ref=<код>` или пусто. Код
 передаётся в `auth.register` (`ref`, `ref_source`); приглашённый
 засчитывается (`verified`) после `auth.verifyEmail`, тогда пригласившему
 приходит уведомление `referral.joined` (`{display_name}`). Email и id
@@ -544,7 +544,7 @@ AI-сервис недоступен при записи/переносе; `forb
 | `admin.setActive`, `admin.revokeSessions` | только над `role=user` | над любым, кроме себя |
 | `admin.setRole`, `admin.audit` | нет (`forbidden`) | да |
 
-Первые администраторы — env **`AURA_ADMIN_EMAILS`** (адреса через запятую,
+Первые администраторы — env **`SELFVOY_ADMIN_EMAILS`** (адреса через запятую,
 `;` или пробел, без учёта регистра): пользователь с адресом из списка
 получает `admin` при старте сервера и при успешных `auth.login` /
 `auth.login2fa` / `auth.verifyEmail` — **только если email подтверждён**
@@ -580,7 +580,7 @@ AI-сервис недоступен при записи/переносе; `forb
 
 | метод | путь | назначение |
 | --- | --- | --- |
-| `POST` | `/v1/agent/run` | главный запрос Ауры |
+| `POST` | `/v1/agent/run` | главный запрос к Selfvoy |
 | `POST` | `/v1/agent/negotiate` | Agent-to-Agent переговоры |
 | `POST` | `/v1/agent/slots` | слоты владельца для приглашения по ссылке: `{context, duration_minutes (15–240), window_hours, max_slots (1–12)}` → `{slots: [{start, end, score, reason}]}` |
 | `POST` | `/v1/speech/transcribe` | распознавание речи (Whisper-совместимое, ru/en/auto) |
@@ -591,9 +591,9 @@ AI-сервис недоступен при записи/переносе; `forb
 | `GET` | `/v1/tools` | список инструментов |
 | `GET` | `/healthz` | состояние (провайдер LLM, провайдер STT, бэкенды) |
 
-Все запросы, кроме `/healthz`, требуют заголовок `X-Aura-Token` со значением
-`AURA_AI_TOKEN`. Без настроенного токена сервис отвечает `503` (fail closed),
-кроме локальной разработки с `AURA_AI_INSECURE_DEV=1`. `/healthz` отдаёт
+Все запросы, кроме `/healthz`, требуют заголовок `X-Selfvoy-Token` со значением
+`SELFVOY_AI_TOKEN`. Без настроенного токена сервис отвечает `503` (fail closed),
+кроме локальной разработки с `SELFVOY_AI_INSECURE_DEV=1`. `/healthz` отдаёт
 только типы бэкендов (без DSN и путей). `POST /v1/agent/run`: `execute`
 по умолчанию `false` — AI только планирует; даже при `execute: true`
 действия с внешним эффектом (`send_email`, `send_message`, `book_table`) не
@@ -615,11 +615,11 @@ Swagger — `/docs`.
 * **graceful degrade**: если эмбеддинги не настроены или недоступны (ошибка
   сети/формата), ранжирование остаётся лексическим и не падает.
 
-Настройки AI-сервиса: `AURA_RAG_MODE` (`lexical` | `hybrid` | `auto`, по
-умолчанию `auto` — семантика включается при заданном `AURA_EMBEDDINGS_URL`),
-`AURA_EMBEDDINGS_URL` (OpenAI-совместимый `POST /embeddings`),
-`AURA_EMBEDDINGS_MODEL` (по умолч. `text-embedding-3-small`),
-`AURA_EMBEDDINGS_API_KEY`, `AURA_EMBEDDINGS_TIMEOUT`. Без `AURA_EMBEDDINGS_URL`
+Настройки AI-сервиса: `SELFVOY_RAG_MODE` (`lexical` | `hybrid` | `auto`, по
+умолчанию `auto` — семантика включается при заданном `SELFVOY_EMBEDDINGS_URL`),
+`SELFVOY_EMBEDDINGS_URL` (OpenAI-совместимый `POST /embeddings`),
+`SELFVOY_EMBEDDINGS_MODEL` (по умолч. `text-embedding-3-small`),
+`SELFVOY_EMBEDDINGS_API_KEY`, `SELFVOY_EMBEDDINGS_TIMEOUT`. Без `SELFVOY_EMBEDDINGS_URL`
 гибрид выключен — используется чистый BM25.
 
 ## Как выглядит A2A-ответ

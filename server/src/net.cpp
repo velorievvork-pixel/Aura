@@ -1,5 +1,5 @@
-// aura/net.cpp
-#include "aura/net.h"
+// selfvoy/net.cpp
+#include "selfvoy/net.h"
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -16,7 +16,7 @@
 #include <cstring>
 #include <sstream>
 
-#include "aura/log.h"
+#include "selfvoy/log.h"
 
 // macOS: MSG_NOSIGNAL может отсутствовать; SIGPIPE там всё равно игнорируется
 // процессом (main.cpp: signal(SIGPIPE, SIG_IGN)), поэтому флаг можно опустить.
@@ -24,7 +24,7 @@
 #define MSG_NOSIGNAL 0
 #endif
 
-namespace aura::net {
+namespace selfvoy::net {
 
 namespace {
 
@@ -162,7 +162,7 @@ HttpResponse httpRequest(const std::string& method,
             << "Host: " << parsed.host << ':' << parsed.port << "\r\n"
             << "Connection: close\r\n"
             << "Accept: application/json\r\n"
-            << "User-Agent: aura-server/0.1\r\n"
+            << "User-Agent: selfvoy-server/0.1\r\n"
             << "Content-Length: " << body.size() << "\r\n";
     for (const auto& header : headers) request << header.first << ": " << header.second << "\r\n";
     request << "\r\n" << body;
@@ -292,4 +292,4 @@ std::string HttpResponse::header(const std::string& name) const {
     return it == headers.end() ? std::string() : it->second;
 }
 
-}  // namespace aura::net
+}  // namespace selfvoy::net

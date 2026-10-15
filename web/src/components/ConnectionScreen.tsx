@@ -18,7 +18,7 @@ export function ConnectionScreen() {
         </span>
         <div className="row" style={{ justifyContent: 'center' }}>
           {searching ? <Spinner small /> : <WifiOff size={16} className="faint" />}
-          <h1 className="title-md">{searching ? 'Поиск соединения с сервером Aura…' : 'Сервер Aura не отвечает'}</h1>
+          <h1 className="title-md">{searching ? 'Поиск соединения с сервером Selfvoy…' : 'Сервер Selfvoy не отвечает'}</h1>
         </div>
         <p className="muted small" style={{ margin: 0 }}>
           {searching
@@ -41,7 +41,7 @@ export function OfflineBanner() {
   return (
     <div className="banner" role="status">
       {conn === 'connecting' ? <Spinner small /> : <WifiOff size={14} />}
-      <span>{conn === 'connecting' ? 'Переподключаемся к серверу Aura…' : 'Нет связи с сервером — показываем последние данные'}</span>
+      <span>{conn === 'connecting' ? 'Переподключаемся к серверу Selfvoy…' : 'Нет связи с сервером — показываем последние данные'}</span>
       {conn !== 'connecting' && (
         <button className="link small" onClick={retry}>
           Повторить

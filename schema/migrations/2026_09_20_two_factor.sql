@@ -1,14 +1,14 @@
 -- ============================================================================
---  Aura — миграция 2FA (этап 6)
+--  Selfvoy — миграция 2FA (этап 6)
 --  Применение к существующей БД:
---    psql "$AURA_DATABASE_URL" -f schema/migrations/2026_09_20_two_factor.sql
+--    psql "$SELFVOY_DATABASE_URL" -f schema/migrations/2026_09_20_two_factor.sql
 --  Для свежей БД достаточно schema/schema.sql — миграция идемпотентна.
 -- ============================================================================
 
 BEGIN;
 
 -- Настройка TOTP 2FA: секрет хранится зашифрованным (AES-256-GCM, ключ — env
--- AURA_2FA_KEY); enabled=true только после подтверждения одноразовым кодом.
+-- SELFVOY_2FA_KEY); enabled=true только после подтверждения одноразовым кодом.
 CREATE TABLE IF NOT EXISTS two_factor_settings (
     user_id           BIGINT        PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     secret_encrypted  TEXT          NOT NULL,

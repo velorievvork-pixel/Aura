@@ -20,12 +20,15 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Типы-сообщения выглядят как "слово.слово" (auth.login, tasks.create, ...).
 # Ровно одна точка: отличает их от SF Symbols ("arrow.up.circle.fill") и
-# обратных идентификаторов ("ai.aura.app").
+# обратных идентификаторов ("app.selfvoy.tests"); bundle id "app.selfvoy" —
+# с одной точкой, поэтому он в ALLOWED.
 TYPE_RE = re.compile(r'"([a-z][a-z0-9]*\.[a-z0-9]+)"')
 
 # Легитимные строки с одной точкой, не являющиеся типами запросов.
 # SF Symbols (иконки) в Swift-коде клиента.
 ALLOWED: set[str] = {
+    # bundle id приложения (сервис Keychain и т.п.), не тип запроса
+    "app.selfvoy",
     "exclamationmark.shield",
     "lock.shield",
     "person.2",
@@ -84,7 +87,7 @@ def swift_candidates() -> dict[str, list[str]]:
     for path in sorted((ROOT / "ios").rglob("*.swift")):
         relative = str(path.relative_to(ROOT))
         # UI-тесты (XCUITest) не говорят с сервером: в них только подписи и id элементов.
-        if "AuraUITests" in path.parts:
+        if "SelfvoyUITests" in path.parts:
             continue
         for line in path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()

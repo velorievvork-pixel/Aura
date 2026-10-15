@@ -1,15 +1,15 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 import "Format.js" as F
 
 /*
   HomePage — главный экран после входа (макет Home).
 
   Слева: приветствие, строка «Что нужно сделать?» с микрофоном (agent.ask без
-  чата → ответ в «Моей Ауре»), быстрые действия и ближайшие задачи.
-  Справа: статус системы, карточка «Ваша Аура активна» со свечением,
+  чата → ответ в «Моём Selfvoy»), быстрые действия и ближайшие задачи.
+  Справа: статус системы, карточка «Ваш Selfvoy активен» со свечением,
   ожидающие подтверждения и лента последних действий (уведомления).
 */
 Item {
@@ -37,7 +37,7 @@ Item {
         if (!t || !App) return
         App.askAgentGlobal(t)
         command.text = ""
-        page.navigate("aura")
+        page.navigate("selfvoy")
     }
 
     // Голос: распознанный текст ложится в строку команды.
@@ -71,14 +71,14 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     Layout.topMargin: 24
-                    text: AuraTheme.greeting(page.now) + ",\n" + F.firstName(App ? App.userName : "")
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontDisplay
+                    text: SelfvoyTheme.greeting(page.now) + ",\n" + F.firstName(App ? App.userName : "")
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontDisplay
                     font.weight: Font.DemiBold
                     font.letterSpacing: -1.2
                     lineHeightMode: Text.FixedHeight
-                    lineHeight: AuraTheme.fontDisplay * 1.08
-                    color: AuraTheme.textPrimary
+                    lineHeight: SelfvoyTheme.fontDisplay * 1.08
+                    color: SelfvoyTheme.textPrimary
                     wrapMode: Text.WordWrap
                 }
 
@@ -93,7 +93,7 @@ Item {
                         GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.03) }
                     }
                     border.width: 1
-                    border.color: command.activeFocus ? AuraTheme.accentA(0.7) : Qt.rgba(1, 1, 1, 0.18)
+                    border.color: command.activeFocus ? SelfvoyTheme.accentA(0.7) : Qt.rgba(1, 1, 1, 0.18)
 
                     RowLayout {
                         anchors.fill: parent
@@ -106,12 +106,12 @@ Item {
                             Layout.fillWidth: true
                             background: null
                             placeholderText: "Что нужно сделать?"
-                            placeholderTextColor: AuraTheme.textPrimary
-                            color: AuraTheme.textPrimary
-                            font.family: AuraTheme.fontFamily
+                            placeholderTextColor: SelfvoyTheme.textPrimary
+                            color: SelfvoyTheme.textPrimary
+                            font.family: SelfvoyTheme.fontFamily
                             font.pixelSize: 21
                             font.weight: Font.Medium
-                            selectionColor: AuraTheme.accentA(0.5)
+                            selectionColor: SelfvoyTheme.accentA(0.5)
                             onAccepted: page.ask(text)
                         }
 
@@ -125,7 +125,7 @@ Item {
                             busy: App ? (App.busy || App.voiceState === "processing") : false
                             ToolTip.visible: hovered
                             ToolTip.delay: 500
-                            ToolTip.text: command.text.trim().length > 0 ? "Отправить Ауре"
+                            ToolTip.text: command.text.trim().length > 0 ? "Отправить Selfvoy"
                                           : (App && !App.micAvailable ? "Микрофон не найден" : "Сказать голосом")
                             onClicked: {
                                 if (command.text.trim().length > 0) page.ask(command.text)
@@ -180,20 +180,20 @@ Item {
                         Text {
                             Layout.fillWidth: true
                             text: "Ближайшие задачи"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontLead
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontLead
                             font.weight: Font.Bold
-                            color: AuraTheme.textPrimary
+                            color: SelfvoyTheme.textPrimary
                         }
                         LinkText { text: "Все задачи"; onClicked: page.navigate("tasks") }
                     }
 
                     Text {
                         visible: page.openTasks.length === 0
-                        text: "Задач нет — можно попросить Ауру что-нибудь запланировать."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textMuted
+                        text: "Задач нет — можно попросить Selfvoy что-нибудь запланировать."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textMuted
                     }
 
                     Repeater {
@@ -206,7 +206,7 @@ Item {
 
                             Rectangle {
                                 anchors.fill: parent
-                                radius: AuraTheme.radiusSmall
+                                radius: SelfvoyTheme.radiusSmall
                                 color: rowArea.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent"
                             }
                             RowLayout {
@@ -228,10 +228,10 @@ Item {
                                 Text {
                                     Layout.fillWidth: true
                                     text: modelData.title
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontBody
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontBody
                                     font.weight: Font.DemiBold
-                                    color: AuraTheme.textPrimary
+                                    color: SelfvoyTheme.textPrimary
                                     elide: Text.ElideRight
                                 }
                                 Text {
@@ -241,9 +241,9 @@ Item {
                                         const d = F.parse(when)
                                         return F.sameDay(d, page.now) ? F.time(when) : F.dayPhrase(when) + ", " + F.time(when)
                                     }
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontSmall
-                                    color: AuraTheme.textMuted
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontSmall
+                                    color: SelfvoyTheme.textMuted
                                 }
                             }
                             MouseArea {
@@ -270,22 +270,22 @@ Item {
                     spacing: 8
                     Rectangle {
                         implicitWidth: 7; implicitHeight: 7; radius: 3.5
-                        color: App && App.connected ? AuraTheme.success : AuraTheme.warning
+                        color: App && App.connected ? SelfvoyTheme.success : SelfvoyTheme.warning
                     }
                     Text {
                         text: App && App.connected ? "Все системы работают" : "Нет связи с сервером"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall - 1
-                        color: AuraTheme.textSecondary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall - 1
+                        color: SelfvoyTheme.textSecondary
                     }
                 }
 
-                // «Ваша Аура активна»
+                // «Ваш Selfvoy активен»
                 GlassPanel {
                     Layout.fillWidth: true
                     radius: 26
                     glow: true
-                    glowColor: AuraTheme.gradMid
+                    glowColor: SelfvoyTheme.gradMid
                     tint: "#B4AAFF"
                     fill: 0.26
                     padding: 26
@@ -296,17 +296,17 @@ Item {
                         anchors.right: parent.right
                         spacing: 6
                         Text {
-                            text: App && App.connected ? "Ваша Аура активна" : "Аура не на связи"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontTitle
+                            text: App && App.connected ? "Ваш Selfvoy активен" : "Selfvoy не на связи"
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontTitle
                             font.weight: Font.DemiBold
-                            color: AuraTheme.textPrimary
+                            color: SelfvoyTheme.textPrimary
                         }
                         Text {
                             text: page.doneToday + " " + F.plural(page.doneToday, "задача выполнена", "задачи выполнены", "задач выполнено") + " сегодня"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                         }
                         RowLayout {
                             Layout.topMargin: 12
@@ -320,8 +320,8 @@ Item {
                             GlassButton {
                                 implicitWidth: 38; implicitHeight: 38
                                 symbol: "message-square"
-                                ToolTip.visible: hovered; ToolTip.text: "Моя Аура"
-                                onClicked: page.navigate("aura")
+                                ToolTip.visible: hovered; ToolTip.text: "Мой Selfvoy"
+                                onClicked: page.navigate("selfvoy")
                             }
                         }
                     }
@@ -364,20 +364,20 @@ Item {
                     spacing: 15
 
                     Text {
-                        text: "Недавние действия Ауры"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontLead
+                        text: "Недавние действия Selfvoy"
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontLead
                         font.weight: Font.Bold
-                        color: AuraTheme.textPrimary
+                        color: SelfvoyTheme.textPrimary
                     }
                     Text {
                         visible: !App || App.notifications.length === 0
-                        text: "Здесь появятся действия Ауры: напоминания, переговоры, подтверждения."
+                        text: "Здесь появятся действия Selfvoy: напоминания, переговоры, подтверждения."
                         wrapMode: Text.WordWrap
                         Layout.fillWidth: true
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textMuted
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textMuted
                     }
                     Repeater {
                         model: App ? App.notifications.slice(0, 7) : []
@@ -386,18 +386,18 @@ Item {
                             Layout.fillWidth: true
                             wrapMode: Text.WordWrap
                             textFormat: Text.StyledText
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                             readonly property string detail: F.notificationDetail(modelData)
-                            text: "<font color='" + AuraTheme.textMuted + "'>" + F.time(modelData.created_at) + "</font>&nbsp; "
-                                  + F.escape(modelData.title) + (detail ? ": <b><font color='" + AuraTheme.textPrimary + "'>"
+                            text: "<font color='" + SelfvoyTheme.textMuted + "'>" + F.time(modelData.created_at) + "</font>&nbsp; "
+                                  + F.escape(modelData.title) + (detail ? ": <b><font color='" + SelfvoyTheme.textPrimary + "'>"
                                   + F.escape(detail) + "</font></b>" : "")
                         }
                     }
                     LinkText {
-                        text: "Открыть диалог с Аурой  →"
-                        onClicked: page.navigate("aura")
+                        text: "Открыть диалог с Selfvoy  →"
+                        onClicked: page.navigate("selfvoy")
                     }
                 }
             }

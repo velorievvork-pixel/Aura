@@ -1,6 +1,6 @@
-# Push Gateway для Aura
+# Push Gateway для Selfvoy
 
-C++-сервер не умеет TLS/HTTP2/ES256-подпись (нужную для APNs) — поэтому push-уведомления форвардятся через внешний шлюз. Шлюз принимает готовый payload от сервера Aura, подписывает JWT (для APNs) или добавляет OAuth-токен (для FCM) и отправляет в Apple/Google.
+C++-сервер не умеет TLS/HTTP2/ES256-подпись (нужную для APNs) — поэтому push-уведомления форвардятся через внешний шлюз. Шлюз принимает готовый payload от сервера Selfvoy, подписывает JWT (для APNs) или добавляет OAuth-токен (для FCM) и отправляет в Apple/Google.
 
 ## Архитектура
 
@@ -12,13 +12,13 @@ C++ сервер  --(HTTP POST /push)-->  Push Gateway  --(HTTP2 + JWT)-->  APNs
 Сервер включает webhook-драйвер через env:
 
 ```bash
-AURA_PUSH_DRIVER=webhook
-AURA_PUSH_WEBHOOK_URL=https://push-gateway.internal/push
+SELFVOY_PUSH_DRIVER=webhook
+SELFVOY_PUSH_WEBHOOK_URL=https://push-gateway.internal/push
 ```
 
 ## Контракт
 
-### Запрос от сервера Aura
+### Запрос от сервера Selfvoy
 
 ```http
 POST /push HTTP/1.1
@@ -31,7 +31,7 @@ Content-Type: application/json
   "apns": {
     "url": "https://api.push.apple.com/3/device/<token>",
     "headers": {
-      "apns-topic": "ai.aura.app",
+      "apns-topic": "app.selfvoy",
       "apns-push-type": "alert",
       "apns-priority": "10"
     },
@@ -41,7 +41,7 @@ Content-Type: application/json
         "sound": "default",
         "badge": 1
       },
-      "aura": { "deep_link": "aura://tasks" }
+      "selfvoy": { "deep_link": "selfvoy://tasks" }
     }
   }
 }
@@ -58,7 +58,7 @@ Content-Type: application/json
     "message": {
       "token": "fcm-registration-token",
       "notification": { "title": "Задача", "body": "Через 15 минут: созвон" },
-      "data": { "deep_link": "aura://tasks" }
+      "data": { "deep_link": "selfvoy://tasks" }
     }
   }
 }
@@ -159,11 +159,11 @@ async def push(request: Request):
 
 ## Deployment
 
-- Разверните шлюз во внутренней сети (не публичный) — сервер Aura обращается к нему по `AURA_PUSH_WEBHOOK_URL`.
+- Разверните шлюз во внутренней сети (не публичный) — сервер Selfvoy обращается к нему по `SELFVOY_PUSH_WEBHOOK_URL`.
 - Секреты (APNs `.p8`, FCM service account JSON) монтируйте через volume/secrets, **не в образ**.
 - Рекомендуется mTLS или сетевая изоляция между сервером и шлюзом.
 - Для масштабирования: шлюз stateless (кроме кэша JWT), можно горизонтально масштабировать за load balancer.
 
 ## Тестирование (mock)
 
-Для E2E-тестов используется `AURA_E2E_PUSH_MOCK=1` — сервер не обращается к реальному шлюзу, а логирует payload. См. `tools/e2e.py`.
+Для E2E-тестов используется `SELFVOY_E2E_PUSH_MOCK=1` — сервер не обращается к реальному шлюзу, а логирует payload. См. `tools/e2e.py`.

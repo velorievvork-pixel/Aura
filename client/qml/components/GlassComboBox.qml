@@ -1,27 +1,27 @@
 import QtQuick
 import QtQuick.Controls
-import Aura
+import Selfvoy
 
 // GlassComboBox — выпадающий список в стиле полей v3 (тёмное стекло, сиреневый фокус).
 ComboBox {
     id: control
     implicitHeight: 44
     implicitWidth: 180
-    font.family: AuraTheme.fontFamily
-    font.pixelSize: AuraTheme.fontSmall + 1
+    font.family: SelfvoyTheme.fontFamily
+    font.pixelSize: SelfvoyTheme.fontSmall + 1
 
     background: Rectangle {
-        radius: AuraTheme.radiusField
+        radius: SelfvoyTheme.radiusField
         color: Qt.rgba(0.04, 0.03, 0.07, control.pressed ? 0.6 : 0.45)
         border.width: 1
-        border.color: control.visualFocus || control.popup.visible ? AuraTheme.accentA(0.8) : Qt.rgba(1, 1, 1, 0.16)
+        border.color: control.visualFocus || control.popup.visible ? SelfvoyTheme.accentA(0.8) : Qt.rgba(1, 1, 1, 0.16)
     }
     contentItem: Text {
         leftPadding: 14
         rightPadding: 34
         text: control.displayText
         font: control.font
-        color: AuraTheme.textPrimary
+        color: SelfvoyTheme.textPrimary
         verticalAlignment: Text.AlignVCenter
         elide: Text.ElideRight
     }
@@ -42,13 +42,13 @@ ComboBox {
             text: control.textRole ? (Array.isArray(control.model) ? option.modelData[control.textRole] : option.modelData)
                                    : option.modelData
             font: control.font
-            color: AuraTheme.textPrimary
+            color: SelfvoyTheme.textPrimary
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
         }
         background: Rectangle {
             radius: 10
-            color: option.highlighted ? AuraTheme.accentA(0.25) : "transparent"
+            color: option.highlighted ? SelfvoyTheme.accentA(0.25) : "transparent"
         }
     }
     popup: Popup {
@@ -63,10 +63,10 @@ ComboBox {
             currentIndex: control.highlightedIndex
         }
         background: Rectangle {
-            radius: AuraTheme.radiusField
-            color: AuraTheme.bgElevated
+            radius: SelfvoyTheme.radiusField
+            color: SelfvoyTheme.bgElevated
             border.width: 1
-            border.color: AuraTheme.lilacA(0.3)
+            border.color: SelfvoyTheme.lilacA(0.3)
         }
     }
 }

@@ -1,0 +1,78 @@
+// NotificationsView.swift — входящие уведомления (notifications.list/read)
+// и устройства, на которые приходят push (devices.push.*).
+import SwiftUI
+
+struct NotificationsView: View {
+
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // «Прочитать все» — в строке «назад»: рядом с заголовком 38 pt ему не хватает места.
+            SubscreenBar {
+                if store.notices.contains(where: { !$0.read }) {
+                    GlassButton(title: "Прочитать все", height: 38, fullWidth: false) {
+                        store.markNotificationsRead()
+                    }
+                }
+            }
+            list
+        }
+        .onAppear { store.loadPushDevices() }
+    }
+
+    private var list: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                ScreenHeader("Уведомления")
+                if store.notices.isEmpty {
+                    Muted("Пока пусто.")
+                }
+                ForEach(store.notices) { notice in
+                    Button {
+                        if !notice.read { store.markNotificationsRead(id: notice.id) }
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            Circle()
+                                .fill(notice.read ? SelfvoyColor.textSecondary.opacity(0.3) : SelfvoyColor.status(notice.kind))
+                                .frame(width: 9, height: 9)
+                                .padding(.top, 5)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(notice.title).font(SelfvoyFont.titleSmall).foregroundStyle(SelfvoyColor.textPrimary)
+                                // У login.new в body сетевой адрес — пользователю он ни о чём не говорит.
+                                if !notice.body.isEmpty && notice.kind != "login.new" {
+                                    Text(notice.body).font(SelfvoyFont.small).foregroundStyle(SelfvoyColor.textSecondary)
+                                }
+                                Muted("\(Format.dayPhrase(notice.createdAt)), \(Format.timeOf(notice.createdAt))")
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .glassCard(padding: 16)
+                    }
+                    .buttonStyle(PressStyle())
+                }
+                SectionTitle(text: "Push-устройства").padding(.top, 12)
+                if store.pushDevices.isEmpty {
+                    Muted("Push на этом устройстве ещё не зарегистрирован: разрешите уведомления в настройках iOS.")
+                }
+                ForEach(store.pushDevices) { device in
+                    HStack {
+                        Text("\(device.platform.uppercased()) · \(device.enabled ? "включено" : "выключено")")
+                            .font(SelfvoyFont.small)
+                            .foregroundStyle(SelfvoyColor.textPrimary)
+                        Spacer()
+                        GlassButton(title: "Отозвать", quiet: true, height: 36, fullWidth: false) {
+                            store.revokePushDevice(id: device.id)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 6)
+            .padding(.bottom, 20)
+        }
+        .refreshable { await store.loadNotifications() }
+    }
+}

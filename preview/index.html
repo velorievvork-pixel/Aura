@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Aura — дизайн-превью Qt-клиента</title>
+<title>Selfvoy — дизайн-превью Qt-клиента</title>
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -19,7 +19,7 @@
     <div class="rail-brand">
       <div class="logo"><span></span></div>
       <div>
-        <div class="rail-title">Aura</div>
+        <div class="rail-title">Selfvoy</div>
         <div class="rail-sub">AI agent network</div>
       </div>
     </div>
@@ -27,7 +27,7 @@
       <button class="rail-btn" data-screen="login">Вход</button>
       <button class="rail-btn" data-screen="register">Регистрация</button>
       <button class="rail-btn is-active" data-screen="home">Home</button>
-      <button class="rail-btn" data-screen="chat">My Aura</button>
+      <button class="rail-btn" data-screen="chat">My Selfvoy</button>
       <button class="rail-btn" data-screen="negotiation">Negotiations</button>
       <button class="rail-btn" data-screen="tasks">Tasks</button>
       <button class="rail-btn" data-screen="contacts">Contacts</button>
@@ -36,8 +36,8 @@
     </nav>
     <div class="rail-note">
       Токены идентичны QML-клиенту
-      (<code>client/qml/theme/AuraTheme.qml</code>).
-      «Спросить Ауру» шлёт настоящий запрос в AI-сервис.
+      (<code>client/qml/theme/SelfvoyTheme.qml</code>).
+      «Спросить Selfvoy» шлёт настоящий запрос в AI-сервис.
     </div>
   </aside>
 
@@ -47,12 +47,12 @@
     <section class="screen" id="screen-login">
       <div class="glass panel narrow center">
         <div class="logo logo--lg"><span></span></div>
-        <h1 class="hero">Welcome to Aura</h1>
+        <h1 class="hero">Welcome to Selfvoy</h1>
         <p class="muted center">Your personal AI agent network</p>
         <label class="field" style="text-align:left"><span class="field-label">Email</span>
           <input type="email" placeholder="Enter your email" value="anna@example.com" /></label>
         <label class="field" style="text-align:left"><span class="field-label">Пароль</span>
-          <input type="password" placeholder="••••••••" value="aura1234" /></label>
+          <input type="password" placeholder="••••••••" value="selfvoy1234" /></label>
         <button class="btn btn--accent" style="width:100%" id="login-btn">Sign in</button>
         <button class="btn" style="width:100%;margin-top:10px"><span class="glyph">G</span> Continue with Google</button>
         <div class="hint">Forgot password? · Create account</div>
@@ -62,13 +62,13 @@
     <!-- ================= REGISTER ================= -->
     <section class="screen" id="screen-register">
       <div class="glass panel narrow">
-        <div class="row"><div class="logo"><span></span></div><div class="title">Aura</div></div>
-        <h1 class="title--lg" style="margin:14px 0 4px">Create your Aura</h1>
+        <div class="row"><div class="logo"><span></span></div><div class="title">Selfvoy</div></div>
+        <h1 class="title--lg" style="margin:14px 0 4px">Create your Selfvoy</h1>
         <label class="field"><span class="field-label">Full Name</span><input placeholder="Enter your full name" /></label>
         <label class="field"><span class="field-label">Email</span><input placeholder="Enter your email address" /></label>
         <label class="field"><span class="field-label">Password</span><input type="password" placeholder="Enter your password" /></label>
         <label class="field"><span class="field-label">Timezone</span><input value="UTC +3:00" /></label>
-        <label class="field"><span class="field-label">What should your Aura help you with?</span>
+        <label class="field"><span class="field-label">What should your Selfvoy help you with?</span>
           <input placeholder="e.g., coding, productivity, etc." /></label>
         <button class="btn btn--accent" style="width:100%">Create account</button>
         <div class="hint center">Terms · Privacy · Already have an account?</div>
@@ -83,7 +83,7 @@
       </div>
 
       <div class="glass panel panel--glow">
-        <div class="title">Your Aura is active</div>
+        <div class="title">Your Selfvoy is active</div>
         <div class="muted small">3 tasks completed today</div>
       </div>
 
@@ -112,9 +112,9 @@
 
       <div class="glass panel">
         <div class="title small">Recent AI activity</div>
-        <div class="memory"><i></i>18:27 Aura initiated task: Draft Q3 marketing report</div>
-        <div class="memory"><i class="alt"></i>18:25 Aura sent reminder: Team meeting at 9 AM</div>
-        <div class="memory"><i></i>18:16 Aura scheduled meeting: Client call at 10 AM</div>
+        <div class="memory"><i></i>18:27 Selfvoy initiated task: Draft Q3 marketing report</div>
+        <div class="memory"><i class="alt"></i>18:25 Selfvoy sent reminder: Team meeting at 9 AM</div>
+        <div class="memory"><i></i>18:16 Selfvoy scheduled meeting: Client call at 10 AM</div>
       </div>
     </section>
 
@@ -123,7 +123,7 @@
       <div class="glass panel row">
         <div class="avatar avatar--agent">✦</div>
         <div class="grow">
-          <div class="title">Aura</div>
+          <div class="title">Selfvoy</div>
           <div class="muted--sm online">Online · Personal assistant</div>
         </div>
         <button class="btn btn--sm" data-goto="settings">View memory</button>
@@ -135,9 +135,9 @@
           <div class="meta-line">Анна · 21:04</div>
         </div>
         <div class="bubble-wrap agent">
-          <div class="agent-badge"><i></i>Аура</div>
-          <div class="bubble">Я проверю ваши расписания и свяжусь с Аурой Димы. Бюджет до 1000 ₽?</div>
-          <div class="meta-line">Аура · 21:05</div>
+          <div class="agent-badge"><i></i>Selfvoy</div>
+          <div class="bubble">Я проверю ваши расписания и свяжусь с Selfvoy Димы. Бюджет до 1000 ₽?</div>
+          <div class="meta-line">Selfvoy · 21:05</div>
         </div>
         <div class="row wrap">
           <button class="chip is-on">Да, учитывать</button>
@@ -158,7 +158,7 @@
           <div class="agent-dot">✦</div>
           <input class="field-inline grow" id="agent-input"
                  placeholder="Хочу встретиться с Аней в эти выходные, чтобы обсудить стартап" />
-          <button class="btn btn--accent" id="agent-btn">Спросить Ауру</button>
+          <button class="btn btn--accent" id="agent-btn">Спросить Selfvoy</button>
         </div>
         <div class="hint" id="agent-status">POST /v1/agent/run — ответ настоящий.</div>
       </div>
@@ -175,22 +175,22 @@
         <div class="glass panel grow center">
           <div class="avatar avatar--lg" style="margin:0 auto">АН</div>
           <div class="title" style="margin-top:8px">Анна</div>
-          <div class="muted--sm">Анна's Aura</div>
+          <div class="muted--sm">Анна's Selfvoy</div>
         </div>
         <div class="agent-dot" style="width:44px;height:44px;font-size:18px">✦</div>
         <div class="glass panel grow center">
           <div class="avatar avatar--lg avatar--agent" style="margin:0 auto">АН</div>
           <div class="title" style="margin-top:8px">Аня</div>
-          <div class="muted--sm">Аня's Aura</div>
+          <div class="muted--sm">Аня's Selfvoy</div>
         </div>
       </div>
 
       <div class="glass panel grow">
         <div class="title small">Negotiation timeline</div>
         <div class="timeline" id="neg-timeline">
-          <div class="tl-item"><div class="tl-dot is-done">1</div><div class="tl-card">Аура Анны предложила субботу 14:00</div></div>
-          <div class="tl-item"><div class="tl-dot is-done">2</div><div class="tl-card">Аура Ани проверила календарь</div></div>
-          <div class="tl-item"><div class="tl-dot is-done">3</div><div class="tl-card">Аура Ани предложила кофейню без глютена</div></div>
+          <div class="tl-item"><div class="tl-dot is-done">1</div><div class="tl-card">Selfvoy Анны предложил субботу 14:00</div></div>
+          <div class="tl-item"><div class="tl-dot is-done">2</div><div class="tl-card">Selfvoy Ани проверил календарь</div></div>
+          <div class="tl-item"><div class="tl-dot is-done">3</div><div class="tl-card">Selfvoy Ани предложил кофейню без глютена</div></div>
           <div class="tl-item"><div class="tl-dot">4</div><div class="tl-card">Ожидание подтверждения…</div></div>
         </div>
       </div>
@@ -230,7 +230,7 @@
         </div>
       </div>
       <div class="glass panel">
-        <div class="title small">Aura suggestions</div>
+        <div class="title small">Selfvoy suggestions</div>
         <div class="muted small">You have 45 minutes free before your meeting</div>
         <div class="progress" style="margin-top:10px"><i></i></div>
         <div class="muted--xs" style="margin-top:6px">Time until next event</div>
@@ -240,22 +240,22 @@
     <!-- ================= CONTACTS ================= -->
     <section class="screen" id="screen-contacts">
       <div class="title--lg">Contacts</div>
-      <div class="muted">Search people or Aura agents</div>
+      <div class="muted">Search people or Selfvoy agents</div>
       <input class="field-inline" placeholder="Поиск…" />
       <div class="row"><button class="chip is-on">All</button><button class="chip">Favorites</button><button class="chip">Recent</button></div>
       <div class="row grow">
         <div class="glass panel grow">
           <div class="list">
-            <button class="list-row"><div class="avatar avatar--agent">AM</div><div class="grow">Alex Morgan</div><span class="muted--sm">Aura active</span><div class="task-dot p"></div></button>
+            <button class="list-row"><div class="avatar avatar--agent">AM</div><div class="grow">Alex Morgan</div><span class="muted--sm">Selfvoy active</span><div class="task-dot p"></div></button>
             <button class="list-row"><div class="avatar">DV</div><div class="grow">Dima Volkov</div><span class="muted--sm">Available</span><div class="task-dot g"></div></button>
             <button class="list-row"><div class="avatar is-away">MC</div><div class="grow">Maria Chen</div><span class="muted--sm">Away</span><div class="task-dot w"></div></button>
           </div>
-          <button class="btn" style="margin-top:14px">Invite to Aura</button>
+          <button class="btn" style="margin-top:14px">Invite to Selfvoy</button>
         </div>
         <div class="glass panel grow center">
           <div class="avatar avatar--lg avatar--agent" style="margin:0 auto">AM</div>
           <div class="title" style="margin-top:8px">Alex Morgan</div>
-          <div class="muted--sm">Aura available</div>
+          <div class="muted--sm">Selfvoy available</div>
           <div class="label">Shared meetings</div>
           <div class="muted--sm">AI Strategy Workshop · Product Design Sprint</div>
           <div class="label">Permissions</div>
@@ -276,7 +276,7 @@
 
       <div class="glass panel">
         <div class="center">
-          <div class="title">Your Aura always asks before performing sensitive actions</div>
+          <div class="title">Your Selfvoy always asks before performing sensitive actions</div>
           <div class="row" style="justify-content:center;margin-top:14px">
             <button class="btn btn--sm">Export my data</button>
             <button class="btn btn--sm btn--danger">Delete account</button>
@@ -289,24 +289,24 @@
         <div class="row wrap">
           <div class="glass glass--sm panel grow">
             <div class="title small">Calendar</div><div class="muted--sm">Allowed</div>
-            <div class="muted--xs" style="margin-top:6px">Aura can create events and add them to your calendar</div>
+            <div class="muted--xs" style="margin-top:6px">Selfvoy can create events and add them to your calendar</div>
             <div class="switch is-on" style="margin-top:10px"></div>
           </div>
           <div class="glass glass--sm panel grow">
             <div class="title small">Email</div><div class="muted--sm">Approval required</div>
-            <div class="muted--xs" style="margin-top:6px">Aura can send emails from your calendar</div>
+            <div class="muted--xs" style="margin-top:6px">Selfvoy can send emails from your calendar</div>
             <div class="switch" style="margin-top:10px"></div>
           </div>
           <div class="glass glass--sm panel grow">
             <div class="title small">Booking</div><div class="muted--sm">Allowed up to 1000 ₽</div>
-            <div class="muted--xs" style="margin-top:6px">Aura cannot make appointments above the limit</div>
+            <div class="muted--xs" style="margin-top:6px">Selfvoy cannot make appointments above the limit</div>
             <div class="switch is-on" style="margin-top:10px"></div>
           </div>
         </div>
       </div>
 
       <div class="glass panel">
-        <div class="title small">Что знает ваша Аура</div>
+        <div class="title small">Что знает ваш Selfvoy</div>
         <div class="row gap">
           <label class="field grow"><span class="field-label">Город</span><input value="Керкраде" /></label>
           <label class="field grow"><span class="field-label">Бюджет, €</span><input value="3" /></label>
@@ -337,7 +337,7 @@
         <div class="title small">Пузыри сообщений</div>
         <div class="bubble-wrap"><div class="bubble">Чужое сообщение</div></div>
         <div class="bubble-wrap mine"><div class="bubble">Своё сообщение</div></div>
-        <div class="bubble-wrap agent"><div class="agent-badge"><i></i>Аура</div><div class="bubble">Сообщение агента</div></div>
+        <div class="bubble-wrap agent"><div class="agent-badge"><i></i>Selfvoy</div><div class="bubble">Сообщение агента</div></div>
       </div>
       <div class="glass panel">
         <div class="title small">Палитра</div>

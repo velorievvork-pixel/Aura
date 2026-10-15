@@ -46,7 +46,7 @@ export function GuestLayout({ children }: { children: ReactNode }) {
           <Logo />
         </span>
         {children}
-        <div className="auth-foot small faint">Aura — личный ИИ-агент, который договаривается о встречах.</div>
+        <div className="auth-foot small faint">Selfvoy — личный ИИ-агент, который договаривается о встречах.</div>
       </div>
     </div>
   );
@@ -65,18 +65,18 @@ export function Message({ title, children, action }: { title: string; children?:
 }
 
 /**
-  «Заведите свою Ауру» — или «Открыть Aura», если человек уже вошёл. refCode —
+  «Заведите свой Selfvoy» — или «Открыть Selfvoy», если человек уже вошёл. refCode —
   реферальный код владельца: регистрация по ссылке засчитается ему (referral.*).
 */
-export function OwnAura({ refCode = '', source = 'invite' }: { refCode?: string; source?: 'invite' | 'booking' }) {
+export function OwnSelfvoy({ refCode = '', source = 'invite' }: { refCode?: string; source?: 'invite' | 'booking' }) {
   const { status } = useSession();
   if (status === 'signedIn') {
     return (
       <div className="notice">
         <span>
-          У вас уже есть Аура —{' '}
+          У вас уже есть Selfvoy —{' '}
           <Link className="link" to="/">
-            открыть Aura
+            открыть Selfvoy
           </Link>
           .
         </span>
@@ -88,7 +88,7 @@ export function OwnAura({ refCode = '', source = 'invite' }: { refCode?: string;
       <span>
         Хотите, чтобы встречи согласовывались сами?{' '}
         <Link className="link" to={signupPath(refCode, source)}>
-          Заведите свою Ауру
+          Заведите свой Selfvoy
         </Link>
         .
       </span>
@@ -241,7 +241,7 @@ export function InviteGuest() {
   if (outcome && invite) {
     if (outcome.action === 'decline') {
       return (
-        <Message title="Ответ отправлен" action={<OwnAura refCode={invite.ref} />}>
+        <Message title="Ответ отправлен" action={<OwnSelfvoy refCode={invite.ref} />}>
           {invite.owner_name ? `${invite.owner_name} узнает, что в этот раз не получится.` : 'Организатор узнает, что в этот раз не получится.'}
         </Message>
       );
@@ -266,7 +266,7 @@ export function InviteGuest() {
               <CalendarButton invite={invite} slot={outcome.slot} />
             </>
           )}
-          <OwnAura refCode={invite.ref} />
+          <OwnSelfvoy refCode={invite.ref} />
         </div>
       </GuestLayout>
     );
@@ -275,7 +275,7 @@ export function InviteGuest() {
   if (invite) {
     const status = inviteStatus(invite);
     const owner = invite.owner_name || 'Организатор';
-    // «у Ивана» / «у организатора» — родительный падеж (простые правила, как «Аура Димы»).
+    // «у Ивана» / «у организатора» — родительный падеж (простые правила, как «Selfvoy Димы»).
     const ofOwner = invite.owner_name ? genitive(invite.owner_name) : 'организатора';
     if (status === 'accepted') {
       const chosen = chosenSlot(invite);
@@ -319,7 +319,7 @@ export function InviteGuest() {
           </div>
         </div>
         {invite.note && <div className="notice invite-note">{invite.note}</div>}
-        {conn !== 'open' && <div className="notice warn">Нет связи с сервером Aura — переподключаемся…</div>}
+        {conn !== 'open' && <div className="notice warn">Нет связи с сервером Selfvoy — переподключаемся…</div>}
 
         {groups.length === 0 ? (
           <div className="notice">Свободного времени не осталось — напишите {invite.owner_name ? `организатору (${invite.owner_name})` : 'организатору'} напрямую.</div>
@@ -426,7 +426,7 @@ export function InviteGuest() {
         <div className="stack">
           <div className="row">
             <WifiOff size={16} className="faint" />
-            <h1 className="title-md">Нет связи с сервером Aura</h1>
+            <h1 className="title-md">Нет связи с сервером Selfvoy</h1>
           </div>
           <p className="lead" style={{ margin: 0 }}>
             Проверьте интернет — мы пробуем подключиться снова автоматически.

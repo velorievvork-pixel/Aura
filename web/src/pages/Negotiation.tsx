@@ -3,7 +3,7 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Avatar, Empty, Segmented, Spinner } from '../components/ui';
 import { placeTags, shortWhen, when, WINDOWS } from '../lib/format';
-import { auraOf, negotiationSteps } from '../lib/negotiationSteps';
+import { selfvoyOf, negotiationSteps } from '../lib/negotiationSteps';
 import { emailError } from '../lib/validate';
 import { useData } from '../state/data';
 import { useSession } from '../state/session';
@@ -26,7 +26,7 @@ export function Negotiations() {
       <header className="page-head">
         <div>
           <h1 className="title-xl">Переговоры</h1>
-          <div className="sub">Ваша Аура договаривается с Аурами других людей о времени и месте.</div>
+          <div className="sub">Ваш Selfvoy договаривается с Selfvoy других людей о времени и месте.</div>
         </div>
         {!open && (
           <button className="btn btn-primary" onClick={() => setOpen(true)}>
@@ -39,13 +39,13 @@ export function Negotiations() {
         <section>
           <h2 className="title-sm section-title">История</h2>
           <div className="card flush list">
-            {negotiations.length === 0 && <Empty>Здесь появятся переговоры вашей Ауры.</Empty>}
+            {negotiations.length === 0 && <Empty>Здесь появятся переговоры вашего Selfvoy.</Empty>}
             {negotiations.map((n) => (
               <Link key={n.id} to={`/negotiations/${n.id}`} className="list-row">
                 <Avatar name={n.targetName} size={30} />
                 <div className="body">
                   <div className="ellipsis">
-                    {auraOf(n.targetName)}
+                    {selfvoyOf(n.targetName)}
                     {n.topic ? <span className="muted"> · {n.topic}</span> : null}
                   </div>
                   <div className="small muted ellipsis">{n.result.accepted && n.result.slot ? when(n.result.slot.start) : `Запуск ${shortWhen(n.at)}`}</div>
@@ -86,7 +86,7 @@ function NewNegotiation({ onCancel }: { onCancel?: () => void }) {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     const typed = email.trim().toLowerCase();
-    // Введён email знакомого — берём его имя; иначе — часть до «@» («Аура dima»).
+    // Введён email знакомого — берём его имя; иначе — часть до «@» («Selfvoy dima»).
     const known = contacts.find((c) => c.email.toLowerCase() === typed);
     const who = typed ? { email: typed, name: known?.name ?? typed.split('@')[0] } : target;
     if (!who) return setError('Выберите человека или введите email');
@@ -148,7 +148,7 @@ function NewNegotiation({ onCancel }: { onCancel?: () => void }) {
         <button className="btn btn-primary" type="submit" disabled={busy}>
           {busy ? (
             <>
-              <Spinner small /> Ауры договариваются…
+              <Spinner small /> Selfvoy договариваются…
             </>
           ) : (
             <>
@@ -156,7 +156,7 @@ function NewNegotiation({ onCancel }: { onCancel?: () => void }) {
             </>
           )}
         </button>
-        <span className="hint">Ауры сверят свободное время; место — с учётом питания обоих. Бронь — только после вашего подтверждения.</span>
+        <span className="hint">Selfvoy обеих сторон сверят свободное время; место — с учётом питания обоих. Бронь — только после вашего подтверждения.</span>
       </div>
     </form>
   );
@@ -203,7 +203,7 @@ export function NegotiationView() {
             </span>
           </span>
           <div>
-            <h1 className="title-lg">Ваша Аура ↔ {auraOf(n.targetName)}</h1>
+            <h1 className="title-lg">Ваш Selfvoy ↔ {selfvoyOf(n.targetName)}</h1>
             <div className="sub">{n.topic || 'Встреча'} · {n.durationMinutes} мин</div>
           </div>
         </div>
@@ -256,7 +256,7 @@ export function NegotiationView() {
                     {busy ? <Spinner small /> : <CalendarCheck size={16} />}
                     {r.place?.name ? 'Забронировать и добавить в задачи' : 'Добавить в задачи'}
                   </button>
-                  <span className="hint">Бронирование — опасное действие: Аура делает его только по вашей кнопке.</span>
+                  <span className="hint">Бронирование — опасное действие: Selfvoy делает его только по вашей кнопке.</span>
                 </div>
               )}
             </>

@@ -1,5 +1,5 @@
-// aura/json.cpp — реализация JSON-парсера.
-#include "aura/json.h"
+// selfvoy/json.cpp — реализация JSON-парсера.
+#include "selfvoy/json.h"
 
 #include <cmath>
 #include <cstdio>
@@ -7,7 +7,7 @@
 #include <sstream>
 #include <unordered_map>
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -525,4 +525,4 @@ Json Json::at(std::size_t index) && {
     return std::move(array_[index]);
 }
 
-}  // namespace aura
+}  // namespace selfvoy

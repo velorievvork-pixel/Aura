@@ -1,14 +1,14 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(aura-server VERSION 0.1.0 LANGUAGES C CXX)
+project(selfvoy-server VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-option(AURA_WITH_LIBPQ "Собирать DatabaseManager поверх PostgreSQL (libpq)" ON)
-option(AURA_BUILD_TESTS "Собирать юнит-тесты" ON)
+option(SELFVOY_WITH_LIBPQ "Собирать DatabaseManager поверх PostgreSQL (libpq)" ON)
+option(SELFVOY_BUILD_TESTS "Собирать юнит-тесты" ON)
 
 find_package(Threads REQUIRED)
 
@@ -27,7 +27,7 @@ add_library(argon2 STATIC
 target_include_directories(argon2 PUBLIC ${ARGON2_DIR}/include ${ARGON2_DIR}/src)
 target_compile_options(argon2 PRIVATE -w)
 
-set(AURA_SOURCES
+set(SELFVOY_SOURCES
     src/adminmanager.cpp
     src/invitemanager.cpp
     src/bookingmanager.cpp
@@ -62,71 +62,71 @@ set(AURA_SOURCES
     src/ws.cpp
 )
 
-set(AURA_HEADERS
-    include/aura/adminmanager.h
-    include/aura/invitemanager.h
-    include/aura/bookingmanager.h
-    include/aura/referralmanager.h
-    include/aura/schedulelock.h
-    include/aura/agentmanager.h
-    include/aura/authmanager.h
-    include/aura/chatmanager.h
-    include/aura/config.h
-    include/aura/connectionmanager.h
-    include/aura/crypto.h
-    include/aura/databasemanager.h
-    include/aura/idatabase.h
-    include/aura/json.h
-    include/aura/jwt.h
-    include/aura/listener.h
-    include/aura/log.h
-    include/aura/memorymanager.h
-    include/aura/net.h
-    include/aura/protocol.h
-    include/aura/server.h
-    include/aura/session.h
-    include/aura/taskmanager.h
-    include/aura/toolmanager.h
-    include/aura/ws.h
+set(SELFVOY_HEADERS
+    include/selfvoy/adminmanager.h
+    include/selfvoy/invitemanager.h
+    include/selfvoy/bookingmanager.h
+    include/selfvoy/referralmanager.h
+    include/selfvoy/schedulelock.h
+    include/selfvoy/agentmanager.h
+    include/selfvoy/authmanager.h
+    include/selfvoy/chatmanager.h
+    include/selfvoy/config.h
+    include/selfvoy/connectionmanager.h
+    include/selfvoy/crypto.h
+    include/selfvoy/databasemanager.h
+    include/selfvoy/idatabase.h
+    include/selfvoy/json.h
+    include/selfvoy/jwt.h
+    include/selfvoy/listener.h
+    include/selfvoy/log.h
+    include/selfvoy/memorymanager.h
+    include/selfvoy/net.h
+    include/selfvoy/protocol.h
+    include/selfvoy/server.h
+    include/selfvoy/session.h
+    include/selfvoy/taskmanager.h
+    include/selfvoy/toolmanager.h
+    include/selfvoy/ws.h
 )
 
-add_library(aura-core STATIC ${AURA_SOURCES} ${AURA_HEADERS})
-target_include_directories(aura-core PUBLIC include)
-target_link_libraries(aura-core PUBLIC Threads::Threads argon2)
-target_compile_options(aura-core PRIVATE -Wall -Wextra)
+add_library(selfvoy-core STATIC ${SELFVOY_SOURCES} ${SELFVOY_HEADERS})
+target_include_directories(selfvoy-core PUBLIC include)
+target_link_libraries(selfvoy-core PUBLIC Threads::Threads argon2)
+target_compile_options(selfvoy-core PRIVATE -Wall -Wextra)
 
 # PostgreSQL: без libpq сервер собирается и работает на встроенном хранилище.
-if(AURA_WITH_LIBPQ)
+if(SELFVOY_WITH_LIBPQ)
     find_package(PostgreSQL)
     if(PostgreSQL_FOUND)
-        target_compile_definitions(aura-core PUBLIC AURA_WITH_LIBPQ)
-        target_include_directories(aura-core PUBLIC ${PostgreSQL_INCLUDE_DIRS})
-        target_link_libraries(aura-core PUBLIC PostgreSQL::PostgreSQL)
-        message(STATUS "aura-server: PostgreSQL поддержан (${PostgreSQL_VERSION_STRING})")
+        target_compile_definitions(selfvoy-core PUBLIC SELFVOY_WITH_LIBPQ)
+        target_include_directories(selfvoy-core PUBLIC ${PostgreSQL_INCLUDE_DIRS})
+        target_link_libraries(selfvoy-core PUBLIC PostgreSQL::PostgreSQL)
+        message(STATUS "selfvoy-server: PostgreSQL поддержан (${PostgreSQL_VERSION_STRING})")
     else()
-        message(WARNING "aura-server: libpq не найден — собираюсь без PostgreSQL")
+        message(WARNING "selfvoy-server: libpq не найден — собираюсь без PostgreSQL")
     endif()
 endif()
 
-# OpenSSL: TLS для SMTP (AURA_MAIL_DRIVER=smtp). Без него сервер собирается,
-# но письма можно слать только через локальный ретранслятор (AURA_SMTP_TLS=none).
+# OpenSSL: TLS для SMTP (SELFVOY_MAIL_DRIVER=smtp). Без него сервер собирается,
+# но письма можно слать только через локальный ретранслятор (SELFVOY_SMTP_TLS=none).
 find_package(OpenSSL)
 if(OpenSSL_FOUND)
-    target_compile_definitions(aura-core PUBLIC AURA_HAVE_OPENSSL)
-    target_link_libraries(aura-core PUBLIC OpenSSL::SSL OpenSSL::Crypto)
-    message(STATUS "aura-server: TLS для SMTP — OpenSSL ${OPENSSL_VERSION}")
+    target_compile_definitions(selfvoy-core PUBLIC SELFVOY_HAVE_OPENSSL)
+    target_link_libraries(selfvoy-core PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+    message(STATUS "selfvoy-server: TLS для SMTP — OpenSSL ${OPENSSL_VERSION}")
 else()
-    message(WARNING "aura-server: OpenSSL не найден — SMTP только без TLS")
+    message(WARNING "selfvoy-server: OpenSSL не найден — SMTP только без TLS")
 endif()
 
-add_executable(aura-server src/main.cpp)
-target_link_libraries(aura-server PRIVATE aura-core)
+add_executable(selfvoy-server src/main.cpp)
+target_link_libraries(selfvoy-server PRIVATE selfvoy-core)
 
-if(AURA_BUILD_TESTS)
+if(SELFVOY_BUILD_TESTS)
     enable_testing()
-    add_executable(aura-tests tests/test_main.cpp)
-    target_link_libraries(aura-tests PRIVATE aura-core)
-    add_test(NAME aura-tests COMMAND aura-tests)
+    add_executable(selfvoy-tests tests/test_main.cpp)
+    target_link_libraries(selfvoy-tests PRIVATE selfvoy-core)
+    add_test(NAME selfvoy-tests COMMAND selfvoy-tests)
 endif()
 
-install(TARGETS aura-server RUNTIME DESTINATION bin)
+install(TARGETS selfvoy-server RUNTIME DESTINATION bin)

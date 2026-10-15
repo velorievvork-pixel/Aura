@@ -61,7 +61,7 @@ export function Contacts() {
       <header className="page-head">
         <div>
           <h1 className="title-xl">Контакты</h1>
-          <div className="sub">Люди, с Аурами которых ваша Аура может договариваться.</div>
+          <div className="sub">Люди, с чьими Selfvoy может договариваться ваш Selfvoy.</div>
         </div>
       </header>
       <div className="stack-lg">
@@ -89,7 +89,7 @@ export function Contacts() {
 
         {found.length > 0 && (
           <section>
-            <h2 className="title-sm section-title">Найдено в Aura</h2>
+            <h2 className="title-sm section-title">Найдено в Selfvoy</h2>
             <div className="card flush list">
               {found.map((u) => (
                 <div key={u.id} className="list-row">
@@ -189,7 +189,7 @@ export function ContactChat() {
               <div key={m.id} style={{ display: 'contents' }}>
                 <div className={`msg ${mine ? 'mine' : 'theirs'}`}>{m.body}</div>
                 <div className={`msg-meta ${mine ? 'mine' : ''}`}>
-                  {agent ? 'Аура · ' : ''}
+                  {agent ? 'Selfvoy · ' : ''}
                   {shortWhen(m.created_at)}
                 </div>
               </div>

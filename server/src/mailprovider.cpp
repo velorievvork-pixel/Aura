@@ -1,22 +1,22 @@
-// aura/mailprovider.cpp — драйверы отправки писем.
-#include "aura/mailprovider.h"
+// selfvoy/mailprovider.cpp — драйверы отправки писем.
+#include "selfvoy/mailprovider.h"
 
 #include <algorithm>
 #include <deque>
 #include <mutex>
 
-#include "aura/config.h"
-#include "aura/log.h"
-#include "aura/smtp.h"
+#include "selfvoy/config.h"
+#include "selfvoy/log.h"
+#include "selfvoy/smtp.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
 std::mutex outboxMutex;
 std::deque<MailNotice> outbox;
 
-// dev (AURA_DEV_MODE=1): код пишется в лог и возвращается в ответе API.
+// dev (SELFVOY_DEV_MODE=1): код пишется в лог и возвращается в ответе API.
 // log: в лог попадает только факт выдачи кода — сам код не раскрывается
 // (стенд без почты: код получить нельзя, нужен SMTP).
 class LogMailProvider : public MailProvider {
@@ -28,9 +28,9 @@ public:
 
     bool sendVerificationCode(const std::string& to, const std::string& code) override {
         if (expose_) {
-            AURA_LOG(log::Level::Info, "mail") << "[dev] КОД ПОДТВЕРЖДЕНИЯ для " << to << ": " << code;
+            SELFVOY_LOG(log::Level::Info, "mail") << "[dev] КОД ПОДТВЕРЖДЕНИЯ для " << to << ": " << code;
         } else {
-            AURA_LOG(log::Level::Info, "mail") << "выдан код подтверждения email для " << to
+            SELFVOY_LOG(log::Level::Info, "mail") << "выдан код подтверждения email для " << to
                                                << " (драйвер log: письмо не отправляется)";
         }
         return true;
@@ -38,9 +38,9 @@ public:
 
     bool sendPasswordReset(const std::string& to, const std::string& code) override {
         if (expose_) {
-            AURA_LOG(log::Level::Info, "mail") << "[dev] КОД СБРОСА ПАРОЛЯ для " << to << ": " << code;
+            SELFVOY_LOG(log::Level::Info, "mail") << "[dev] КОД СБРОСА ПАРОЛЯ для " << to << ": " << code;
         } else {
-            AURA_LOG(log::Level::Info, "mail") << "выдан код сброса пароля для " << to
+            SELFVOY_LOG(log::Level::Info, "mail") << "выдан код сброса пароля для " << to
                                                << " (драйвер log: письмо не отправляется)";
         }
         return true;
@@ -48,14 +48,14 @@ public:
 
     bool sendNotice(const MailNotice& notice) override {
         if (expose_) {
-            AURA_LOG(log::Level::Info, "mail") << "[dev] письмо (" << notice.kind << ") для " << notice.to << ": "
+            SELFVOY_LOG(log::Level::Info, "mail") << "[dev] письмо (" << notice.kind << ") для " << notice.to << ": "
                                                << notice.subject << (notice.linkUrl.empty() ? "" : " — ")
                                                << notice.linkUrl;
             std::lock_guard<std::mutex> lock(outboxMutex);
             outbox.push_back(notice);
             if (outbox.size() > 50) outbox.pop_front();
         } else {
-            AURA_LOG(log::Level::Info, "mail") << "письмо (" << notice.kind << ") для " << notice.to
+            SELFVOY_LOG(log::Level::Info, "mail") << "письмо (" << notice.kind << ") для " << notice.to
                                                << " (драйвер log: письмо не отправляется)";
         }
         return true;
@@ -83,7 +83,7 @@ std::string htmlEscape(const std::string& text) {
     return out;
 }
 
-// Только http(s)-ссылки попадают в href (адрес собирает сервер из AURA_PUBLIC_URL).
+// Только http(s)-ссылки попадают в href (адрес собирает сервер из SELFVOY_PUBLIC_URL).
 bool safeLink(const std::string& url) {
     return url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0;
 }
@@ -105,7 +105,7 @@ std::string htmlNotice(const MailNotice& notice) {
            "font-family:-apple-system,Segoe UI,Inter,Roboto,sans-serif;color:#e8e9ee\">"
            "<div style=\"max-width:440px;margin:0 auto;background:#12141c;border:1px solid rgba(255,255,255,.08);"
            "border-radius:16px;padding:28px\">"
-           "<div style=\"font-weight:700;font-size:18px;margin-bottom:20px\">Aura</div>"
+           "<div style=\"font-weight:700;font-size:18px;margin-bottom:20px\">Selfvoy</div>"
            "<h1 style=\"font-size:20px;margin:0 0 8px\">" + htmlEscape(notice.title) + "</h1>"
            "<p style=\"color:#a1a4ae;line-height:1.5;margin:0 0 16px\">" + htmlEscape(notice.lead) + "</p>" +
            lines + button +
@@ -137,7 +137,7 @@ std::string htmlLetter(const std::string& title, const std::string& lead, const 
            "font-family:-apple-system,Segoe UI,Inter,Roboto,sans-serif;color:#e8e9ee\">"
            "<div style=\"max-width:440px;margin:0 auto;background:#12141c;border:1px solid rgba(255,255,255,.08);"
            "border-radius:16px;padding:28px\">"
-           "<div style=\"font-weight:700;font-size:18px;margin-bottom:20px\">Aura</div>"
+           "<div style=\"font-weight:700;font-size:18px;margin-bottom:20px\">Selfvoy</div>"
            "<h1 style=\"font-size:20px;margin:0 0 8px\">" + title + "</h1>"
            "<p style=\"color:#a1a4ae;line-height:1.5;margin:0 0 20px\">" + lead + "</p>"
            "<div style=\"font-family:SFMono-Regular,Consolas,monospace;font-size:28px;letter-spacing:4px;"
@@ -166,25 +166,25 @@ public:
     bool sendVerificationCode(const std::string& to, const std::string& code) override {
         smtp::Message message;
         message.to = to;
-        message.subject = "Код подтверждения Aura: " + code;
+        message.subject = "Код подтверждения Selfvoy: " + code;
         const std::string ttl = ttlText(verifyTtl_);
-        message.text = "Здравствуйте!\r\n\r\nВаш код подтверждения email в Aura: " + code +
+        message.text = "Здравствуйте!\r\n\r\nВаш код подтверждения email в Selfvoy: " + code +
                        "\r\n\r\nКод действует " + ttl +
-                       ". Если вы не регистрировались в Aura, просто проигнорируйте это письмо.\r\n";
-        message.html = htmlLetter("Подтвердите email", "Введите этот код в приложении Aura:", code,
-                                  "Код действует " + ttl + ". Если вы не регистрировались в Aura, просто проигнорируйте письмо.");
+                       ". Если вы не регистрировались в Selfvoy, просто проигнорируйте это письмо.\r\n";
+        message.html = htmlLetter("Подтвердите email", "Введите этот код в приложении Selfvoy:", code,
+                                  "Код действует " + ttl + ". Если вы не регистрировались в Selfvoy, просто проигнорируйте письмо.");
         return deliver(message, "подтверждение");
     }
 
     bool sendPasswordReset(const std::string& to, const std::string& code) override {
         smtp::Message message;
         message.to = to;
-        message.subject = "Сброс пароля Aura";
+        message.subject = "Сброс пароля Selfvoy";
         const std::string ttl = ttlText(resetTtl_);
-        message.text = "Здравствуйте!\r\n\r\nКто-то запросил сброс пароля для вашего аккаунта Aura.\r\nКод сброса: " +
+        message.text = "Здравствуйте!\r\n\r\nКто-то запросил сброс пароля для вашего аккаунта Selfvoy.\r\nКод сброса: " +
                        code + "\r\n\r\nКод действует " + ttl +
                        ". Если это были не вы — ничего не делайте, пароль останется прежним.\r\n";
-        message.html = htmlLetter("Сброс пароля", "Введите этот код в приложении Aura, чтобы задать новый пароль:", code,
+        message.html = htmlLetter("Сброс пароля", "Введите этот код в приложении Selfvoy, чтобы задать новый пароль:", code,
                                   "Код действует " + ttl + ". Если это были не вы — ничего не делайте, пароль останется прежним.");
         return deliver(message, "сброс пароля");
     }
@@ -208,10 +208,10 @@ private:
     bool deliver(const smtp::Message& message, const char* kind) {
         std::string error;
         if (smtp::send(settings_, message, error)) {
-            AURA_LOG(log::Level::Info, "mail") << "письмо (" << kind << ") отправлено " << message.to;
+            SELFVOY_LOG(log::Level::Info, "mail") << "письмо (" << kind << ") отправлено " << message.to;
             return true;
         }
-        AURA_LOG(log::Level::Error, "mail") << "письмо (" << kind << ") не отправлено " << message.to << ": " << error;
+        SELFVOY_LOG(log::Level::Error, "mail") << "письмо (" << kind << ") не отправлено " << message.to << ": " << error;
         return false;
     }
 
@@ -230,10 +230,10 @@ std::vector<MailNotice> devOutbox() {
 std::unique_ptr<MailProvider> makeMailProvider(const Config& config) {
     if (config.mailDriver == "smtp") return std::make_unique<SmtpMailProvider>(config);
     // dev раскрывает коды — только в режиме разработки (Config::validate не
-    // даст запустить сервер с dev без AURA_DEV_MODE; здесь — вторая линия).
+    // даст запустить сервер с dev без SELFVOY_DEV_MODE; здесь — вторая линия).
     if (config.mailDriver == "dev" && config.devMode) return std::make_unique<LogMailProvider>(true);
     // "log" и неизвестные значения — безопасный режим без раскрытия кодов.
     return std::make_unique<LogMailProvider>(false);
 }
 
-}  // namespace aura
+}  // namespace selfvoy

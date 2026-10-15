@@ -1,6 +1,6 @@
-// aura/database_pg.cpp — реализация IDatabase поверх libpq (PostgreSQL).
+// selfvoy/database_pg.cpp — реализация IDatabase поверх libpq (PostgreSQL).
 //
-// Компилируется только при AURA_WITH_LIBPQ (CMake находит libpq автоматически).
+// Компилируется только при SELFVOY_WITH_LIBPQ (CMake находит libpq автоматически).
 // Без него makePostgresDatabase() возвращает nullptr, и DatabaseManager
 // переключается на встроенное хранилище с предупреждением в лог.
 #include <algorithm>
@@ -14,17 +14,18 @@
 #include <thread>
 #include <vector>
 
-#include "aura/idatabase.h"
-#include "aura/json.h"
-#include "aura/log.h"
+#include "selfvoy/config.h"
+#include "selfvoy/idatabase.h"
+#include "selfvoy/json.h"
+#include "selfvoy/log.h"
 
-#ifdef AURA_WITH_LIBPQ
+#ifdef SELFVOY_WITH_LIBPQ
 #include <libpq-fe.h>
 #endif
 
-namespace aura {
+namespace selfvoy {
 
-#ifdef AURA_WITH_LIBPQ
+#ifdef SELFVOY_WITH_LIBPQ
 
 namespace {
 
@@ -149,8 +150,7 @@ private:
 };
 
 std::size_t poolSizeFromEnv() {
-    const char* raw = std::getenv("AURA_DB_POOL_SIZE");
-    const long value = raw != nullptr ? std::strtol(raw, nullptr, 10) : 0;
+    const long value = std::strtol(envOr("SELFVOY_DB_POOL_SIZE", "0").c_str(), nullptr, 10);
     return static_cast<std::size_t>(value >= 1 && value <= 64 ? value : 8);
 }
 
@@ -174,7 +174,7 @@ public:
             conn.pg = nullptr;
             return false;
         }
-        AURA_LOG(log::Level::Info, "db") << "PostgreSQL: пул до " << pool_.size() << " соединений";
+        SELFVOY_LOG(log::Level::Info, "db") << "PostgreSQL: пул до " << pool_.size() << " соединений";
         return prepareSession();
     }
 
@@ -1936,7 +1936,8 @@ private:
         execute("DELETE FROM rate_limits WHERE key = $1", {key}, nullptr);
     }
 
-    // Advisory lock на соединении сервера: ключ — пространство Aura (старшие биты) + id владельца.
+    // Advisory lock на соединении сервера: ключ — пространство Selfvoy (старшие биты) + id владельца.
+    // Константу 0x4155 при переименовании не меняем: иначе старый и новый сервер не увидят чужие блокировки.
     static std::string scheduleLockKey(long long ownerId) {
         return std::to_string((0x4155LL << 40) | (ownerId & ((1LL << 40) - 1)));
     }
@@ -2465,14 +2466,14 @@ private:
         } else if (PQstatus(connection) == CONNECTION_OK) {
             return true;
         } else {
-            AURA_LOG(log::Level::Warn, "db") << "соединение с PostgreSQL потеряно, переподключаюсь";
+            SELFVOY_LOG(log::Level::Warn, "db") << "соединение с PostgreSQL потеряно, переподключаюсь";
             PQreset(connection);
         }
         if (PQstatus(connection) != CONNECTION_OK) {
-            AURA_LOG(log::Level::Error, "db") << "PostgreSQL недоступен: " << PQerrorMessage(connection);
+            SELFVOY_LOG(log::Level::Error, "db") << "PostgreSQL недоступен: " << PQerrorMessage(connection);
             return false;
         }
-        AURA_LOG(log::Level::Info, "db") << "соединение с PostgreSQL восстановлено";
+        SELFVOY_LOG(log::Level::Info, "db") << "соединение с PostgreSQL восстановлено";
         return prepareSession();
     }
 
@@ -2511,7 +2512,7 @@ private:
                 return true;
             }
             const char* sqlState = result ? PQresultErrorField(result, PG_DIAG_SQLSTATE) : nullptr;
-            AURA_LOG(log::Level::Error, "db") << "SQL ошибка: " << PQresultErrorMessage(result);
+            SELFVOY_LOG(log::Level::Error, "db") << "SQL ошибка: " << PQresultErrorMessage(result);
             lastError_ = publicError(sqlState);
             PQclear(result);
             // Обрыв соединения посреди запроса: один повтор после переподключения.
@@ -2535,15 +2536,15 @@ std::unique_ptr<IDatabase> makePostgresDatabase(const std::string& url) {
     return std::make_unique<PostgresDatabase>(url);
 }
 
-#else  // !AURA_WITH_LIBPQ
+#else  // !SELFVOY_WITH_LIBPQ
 
 std::unique_ptr<IDatabase> makePostgresDatabase(const std::string& url) {
     (void)url;
-    AURA_LOG(log::Level::Warn, "db")
-        << "сервер собран без libpq (нужен -DAURA_WITH_LIBPQ=ON), PostgreSQL недоступен";
+    SELFVOY_LOG(log::Level::Warn, "db")
+        << "сервер собран без libpq (нужен -DSELFVOY_WITH_LIBPQ=ON), PostgreSQL недоступен";
     return nullptr;
 }
 
-#endif  // AURA_WITH_LIBPQ
+#endif  // SELFVOY_WITH_LIBPQ
 
-}  // namespace aura
+}  // namespace selfvoy

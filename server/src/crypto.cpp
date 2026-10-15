@@ -1,5 +1,5 @@
-// aura/crypto.cpp — реализация хэш-функций и кодирования.
-#include "aura/crypto.h"
+// selfvoy/crypto.cpp — реализация хэш-функций и кодирования.
+#include "selfvoy/crypto.h"
 
 #include <argon2.h>
 
@@ -12,7 +12,7 @@
 #include <sstream>
 #include <thread>
 
-namespace aura::crypto {
+namespace selfvoy::crypto {
 
 namespace {
 
@@ -810,4 +810,4 @@ bool constantTimeEquals(const std::string& left, const std::string& right) {
     return diff == 0;
 }
 
-}  // namespace aura::crypto
+}  // namespace selfvoy::crypto

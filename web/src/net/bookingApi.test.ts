@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { makeBookingApi } from './bookingApi';
-import type { AuraSocket } from './socket';
+import type { SelfvoySocket } from './socket';
 
 const PAGE = { title: 'Консультация', description: '', duration_minutes: 30, days_ahead: 14, max_per_day: 4, notice_hours: 2, max_series: 1, weekends: false };
 
 describe('makeBookingApi', () => {
   it('шлёт booking.* и referral.get с полями ровно как в протоколе', async () => {
     const request = vi.fn().mockResolvedValue({});
-    const api = makeBookingApi({ request } as unknown as AuraSocket);
+    const api = makeBookingApi({ request } as unknown as SelfvoySocket);
     await api.createPage(PAGE);
     await api.listPages();
     await api.updatePage(3, { status: 'paused' });

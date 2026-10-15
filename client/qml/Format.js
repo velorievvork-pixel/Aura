@@ -110,7 +110,7 @@ function notificationDetail(n) {
     return n.body || ""
 }
 
-// Родительный падеж имени для «Аура Алекса», «Аура Марии» — простые правила для частых имён.
+// Родительный падеж имени для «Selfvoy Алекса», «Selfvoy Марии» — простые правила для частых имён.
 function genitive(name) {
     var n = (name || "").trim()
     if (!n) return ""
@@ -167,7 +167,7 @@ function placeTags(tags) {
 function toolDescription(tool, fallback) {
     var known = {
         send_message: "Писать сообщения вашим контактам",
-        create_note: "Сохранять заметки в память Ауры",
+        create_note: "Сохранять заметки в память Selfvoy",
         create_reminder: "Ставить напоминания",
         send_email: "Отправлять письма от вашего имени",
         find_cafe: "Подбирать место под питание, бюджет и дорогу обоих",

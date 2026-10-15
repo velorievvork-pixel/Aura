@@ -1,8 +1,8 @@
-// aura/database_embedded.cpp — файловое хранилище для режима без PostgreSQL.
+// selfvoy/database_embedded.cpp — файловое хранилище для режима без PostgreSQL.
 //
 // Повторяет семантику схемы (те же таблицы, те же ограничения) и используется:
 //   * в юнит-тестах сервера;
-//   * в демо-режиме (AURA_DATABASE_URL не задан).
+//   * в демо-режиме (SELFVOY_DATABASE_URL не задан).
 // Данные держатся в памяти и сбрасываются в JSON-файл после каждой записи.
 #include <algorithm>
 #include <cctype>
@@ -19,12 +19,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "aura/idatabase.h"
-#include "aura/json.h"
-#include "aura/log.h"
-#include "aura/memorymanager.h"  // isoUtc
+#include "selfvoy/idatabase.h"
+#include "selfvoy/json.h"
+#include "selfvoy/log.h"
+#include "selfvoy/memorymanager.h"  // isoUtc
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -2109,7 +2109,7 @@ private:
         const std::string data = state_.dump(2);
         const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
         if (fd < 0) {
-            AURA_LOG(log::Level::Warn, "db") << "не удалось сохранить " << temporary << ": " << std::strerror(errno);
+            SELFVOY_LOG(log::Level::Warn, "db") << "не удалось сохранить " << temporary << ": " << std::strerror(errno);
             return;
         }
         ::fchmod(fd, 0600);  // файл мог остаться от старой версии с другими правами
@@ -2118,7 +2118,7 @@ private:
             const ssize_t chunk = ::write(fd, data.data() + written, data.size() - written);
             if (chunk < 0) {
                 if (errno == EINTR) continue;
-                AURA_LOG(log::Level::Warn, "db") << "ошибка записи " << temporary << ": " << std::strerror(errno);
+                SELFVOY_LOG(log::Level::Warn, "db") << "ошибка записи " << temporary << ": " << std::strerror(errno);
                 ::close(fd);
                 return;
             }
@@ -2126,7 +2126,7 @@ private:
         }
         ::close(fd);
         if (std::rename(temporary.c_str(), path_.c_str()) != 0) {
-            AURA_LOG(log::Level::Warn, "db")
+            SELFVOY_LOG(log::Level::Warn, "db")
                 << "не удалось заменить " << path_ << ": " << std::strerror(errno);
         }
     }
@@ -2284,4 +2284,4 @@ std::unique_ptr<IDatabase> makeEmbeddedDatabase(const std::string& path) {
     return std::make_unique<EmbeddedDatabase>(path);
 }
 
-}  // namespace aura
+}  // namespace selfvoy

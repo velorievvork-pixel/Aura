@@ -20,12 +20,12 @@ describe('clearUserCaches', () => {
       [dialogKey(5)]: '[]',
       [dialogKey(7)]: '[]',
       [negotiationsKey(5)]: '[]',
-      'aura.server': 'ws://x',
-      'aura.secure.device': 'id',
-      'aura.secure.access': 'token',
+      'selfvoy.server': 'ws://x',
+      'selfvoy.secure.device': 'id',
+      'selfvoy.secure.access': 'token',
     });
     clearUserCaches(s);
-    expect([...s.data.keys()].sort()).toEqual(['aura.secure.access', 'aura.secure.device', 'aura.server']);
+    expect([...s.data.keys()].sort()).toEqual(['selfvoy.secure.access', 'selfvoy.secure.device', 'selfvoy.server']);
   });
 
   it('без хранилища — ничего не делает и не бросает', () => {

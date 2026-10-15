@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from aura_ai import planner
-from aura_ai.models import CalendarEvent, Preferences
+from selfvoy_ai import planner
+from selfvoy_ai.models import CalendarEvent, Preferences
 
 NOW = datetime(2026, 9, 17, 14, 0, tzinfo=timezone.utc)  # четверг
 

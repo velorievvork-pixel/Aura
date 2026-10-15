@@ -1,15 +1,15 @@
 import QtQuick
-import Aura
+import Selfvoy
 
 // LinkText — текстовая ссылка («Все задачи», «Создать аккаунт»).
 Text {
     id: root
     signal clicked()
-    property color normalColor: AuraTheme.textSecondary
-    font.family: AuraTheme.fontFamily
-    font.pixelSize: AuraTheme.fontSmall
+    property color normalColor: SelfvoyTheme.textSecondary
+    font.family: SelfvoyTheme.fontFamily
+    font.pixelSize: SelfvoyTheme.fontSmall
     font.weight: Font.Medium
-    color: area.containsMouse ? AuraTheme.textPrimary : normalColor
+    color: area.containsMouse ? SelfvoyTheme.textPrimary : normalColor
     MouseArea {
         id: area
         anchors.fill: parent

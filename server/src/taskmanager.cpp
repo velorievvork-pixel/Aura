@@ -1,10 +1,10 @@
-// aura/taskmanager.cpp
-#include "aura/taskmanager.h"
+// selfvoy/taskmanager.cpp
+#include "selfvoy/taskmanager.h"
 
-#include "aura/log.h"
-#include "aura/protocol.h"
+#include "selfvoy/log.h"
+#include "selfvoy/protocol.h"
 
-namespace aura {
+namespace selfvoy {
 
 TaskManager::TaskManager(DatabaseManager& database, ConnectionManager& connections)
     : database_(database), connections_(connections) {}
@@ -85,9 +85,9 @@ std::vector<TaskRecord> TaskManager::dueTick(int limit, long long userId) {
         due.push_back(task);
     }
     if (!due.empty()) {
-        AURA_LOG(log::Level::Info, "scheduler") << "напоминаний отправлено: " << due.size();
+        SELFVOY_LOG(log::Level::Info, "scheduler") << "напоминаний отправлено: " << due.size();
     }
     return due;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

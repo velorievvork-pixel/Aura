@@ -1,10 +1,10 @@
-// aura/databasemanager.cpp
-#include "aura/databasemanager.h"
+// selfvoy/databasemanager.cpp
+#include "selfvoy/databasemanager.h"
 
-#include "aura/config.h"
-#include "aura/log.h"
+#include "selfvoy/config.h"
+#include "selfvoy/log.h"
 
-namespace aura {
+namespace selfvoy {
 
 DatabaseManager::DatabaseManager(std::unique_ptr<IDatabase> database)
     : database_(std::move(database)) {}
@@ -13,20 +13,20 @@ std::unique_ptr<DatabaseManager> DatabaseManager::fromConfig(const Config& confi
     if (!config.databaseUrl.empty()) {
         auto postgres = makePostgresDatabase(config.databaseUrl);
         if (postgres && postgres->connect(error)) {
-            AURA_LOG(log::Level::Info, "db") << "PostgreSQL подключён";
+            SELFVOY_LOG(log::Level::Info, "db") << "PostgreSQL подключён";
             return std::make_unique<DatabaseManager>(std::move(postgres));
         }
-        AURA_LOG(log::Level::Warn, "db")
+        SELFVOY_LOG(log::Level::Warn, "db")
             << "PostgreSQL недоступен (" << error << ") — переключаюсь на встроенное хранилище";
         error.clear();
     }
 
     auto embedded = makeEmbeddedDatabase(config.embeddedDbPath);
     if (!embedded->connect(error)) {
-        AURA_LOG(log::Level::Error, "db") << "не удалось инициализировать хранилище: " << error;
+        SELFVOY_LOG(log::Level::Error, "db") << "не удалось инициализировать хранилище: " << error;
         return nullptr;
     }
-    AURA_LOG(log::Level::Info, "db") << "встроенное хранилище: " << config.embeddedDbPath;
+    SELFVOY_LOG(log::Level::Info, "db") << "встроенное хранилище: " << config.embeddedDbPath;
     return std::make_unique<DatabaseManager>(std::move(embedded));
 }
 
@@ -51,4 +51,4 @@ std::vector<std::string> DatabaseManager::recentOperations(std::size_t limit) co
     return std::vector<std::string>(recent_.end() - static_cast<std::ptrdiff_t>(limit), recent_.end());
 }
 
-}  // namespace aura
+}  // namespace selfvoy

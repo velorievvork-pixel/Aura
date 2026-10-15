@@ -1,6 +1,6 @@
 -- Страницы записи (booking.*) и рефералы (referral.*). См. docs/PROTOCOL.md и docs/DATABASE.md.
 -- Страницы записи (booking.*): постоянная публичная ссылка владельца (#/b/<slug>),
--- гости без Aura сами записываются на свободное время. См. docs/PROTOCOL.md.
+-- гости без Selfvoy сами записываются на свободное время. См. docs/PROTOCOL.md.
 CREATE TABLE IF NOT EXISTS booking_pages (
     id               BIGSERIAL     PRIMARY KEY,
     owner_id         BIGINT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,

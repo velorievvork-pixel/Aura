@@ -1,6 +1,6 @@
-// aura/server/tests/test_main.cpp — юнит-тесты сервера без внешних зависимостей.
+// selfvoy/server/tests/test_main.cpp — юнит-тесты сервера без внешних зависимостей.
 //
-// Запуск: make test  (или ./aura-tests)
+// Запуск: make test  (или ./selfvoy-tests)
 //
 // Проверяются: JSON, криптография (эталонные векторы), JWT, кодек WebSocket,
 // протокол и сквозные сценарии через Server::handleMessage на встроенной БД.
@@ -26,26 +26,26 @@
 #include <thread>
 #include <vector>
 
-#include "aura/authmanager.h"
-#include "aura/crypto.h"
-#include "aura/databasemanager.h"
-#include "aura/idatabase.h"
-#include "aura/invitemanager.h"
-#include "aura/mailprovider.h"
-#include "aura/json.h"
-#include "aura/jwt.h"
-#include "aura/mailprovider.h"
-#include "aura/memorymanager.h"
-#include "aura/net.h"
-#include "aura/protocol.h"
-#include "aura/schedulelock.h"
-#include "aura/server.h"
-#include "aura/smtp.h"
-#include "aura/toolmanager.h"
-#include "aura/totp.h"
-#include "aura/ws.h"
+#include "selfvoy/authmanager.h"
+#include "selfvoy/crypto.h"
+#include "selfvoy/databasemanager.h"
+#include "selfvoy/idatabase.h"
+#include "selfvoy/invitemanager.h"
+#include "selfvoy/mailprovider.h"
+#include "selfvoy/json.h"
+#include "selfvoy/jwt.h"
+#include "selfvoy/mailprovider.h"
+#include "selfvoy/memorymanager.h"
+#include "selfvoy/net.h"
+#include "selfvoy/protocol.h"
+#include "selfvoy/schedulelock.h"
+#include "selfvoy/server.h"
+#include "selfvoy/smtp.h"
+#include "selfvoy/toolmanager.h"
+#include "selfvoy/totp.h"
+#include "selfvoy/ws.h"
 
-#ifdef AURA_WITH_LIBPQ
+#ifdef SELFVOY_WITH_LIBPQ
 #include <libpq-fe.h>
 #endif
 
@@ -102,7 +102,7 @@ struct Registrar {
         }                                                                                    \
     } while (0)
 
-using aura::Json;
+using selfvoy::Json;
 
 // --------------------------------------------------------------------- JSON
 TEST(json_parse_and_dump) {
@@ -157,62 +157,62 @@ TEST(json_errors_and_defaults) {
 
 // ------------------------------------------------------------------ crypto
 TEST(crypto_known_vectors) {
-    CHECK_EQ(aura::crypto::toHex(aura::crypto::sha256("abc")),
+    CHECK_EQ(selfvoy::crypto::toHex(selfvoy::crypto::sha256("abc")),
              std::string("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
-    CHECK_EQ(aura::crypto::toHex(aura::crypto::sha256("")),
+    CHECK_EQ(selfvoy::crypto::toHex(selfvoy::crypto::sha256("")),
              std::string("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
-    CHECK_EQ(aura::crypto::toHex(aura::crypto::sha1("abc")),
+    CHECK_EQ(selfvoy::crypto::toHex(selfvoy::crypto::sha1("abc")),
              std::string("a9993e364706816aba3e25717850c26c9cd0d89d"));
 
     // RFC 4231, тест-кейс 1
     const std::string key(20, '\x0b');
-    CHECK_EQ(aura::crypto::toHex(aura::crypto::hmacSha256(key, "Hi There")),
+    CHECK_EQ(selfvoy::crypto::toHex(selfvoy::crypto::hmacSha256(key, "Hi There")),
              std::string("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"));
 
     // RFC 6070-подобный вектор для PBKDF2-HMAC-SHA256: password/salt/1 итерация
-    CHECK_EQ(aura::crypto::toHex(aura::crypto::pbkdf2Sha256("password", "salt", 1, 32)),
+    CHECK_EQ(selfvoy::crypto::toHex(selfvoy::crypto::pbkdf2Sha256("password", "salt", 1, 32)),
              std::string("120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"));
 }
 
 TEST(crypto_base64) {
-    CHECK_EQ(aura::crypto::base64Encode("Man"), std::string("TWFu"));
-    CHECK_EQ(aura::crypto::base64Encode("Ma"), std::string("TWE="));
-    CHECK_EQ(aura::crypto::base64Encode("M"), std::string("TQ=="));
+    CHECK_EQ(selfvoy::crypto::base64Encode("Man"), std::string("TWFu"));
+    CHECK_EQ(selfvoy::crypto::base64Encode("Ma"), std::string("TWE="));
+    CHECK_EQ(selfvoy::crypto::base64Encode("M"), std::string("TQ=="));
     // UTF-8 «привет» → 0L/RgNC40LLQtdGC (проверено python3 -c base64)
-    CHECK_EQ(aura::crypto::base64Encode("привет"), std::string("0L/RgNC40LLQtdGC"));
+    CHECK_EQ(selfvoy::crypto::base64Encode("привет"), std::string("0L/RgNC40LLQtdGC"));
     std::string decoded;
-    CHECK(aura::crypto::base64Decode("0L/RgNC40LLQtdGC", decoded));
+    CHECK(selfvoy::crypto::base64Decode("0L/RgNC40LLQtdGC", decoded));
     CHECK_EQ(decoded, std::string("привет"));
-    CHECK_EQ(aura::crypto::base64UrlEncode(std::string("\xfb\xff", 2)).find('='), std::string::npos);
+    CHECK_EQ(selfvoy::crypto::base64UrlEncode(std::string("\xfb\xff", 2)).find('='), std::string::npos);
 }
 
 TEST(smtp_message_format) {
-    aura::smtp::Settings settings;
-    settings.from = "Аура <no-reply@aura.example>";
-    aura::smtp::Message message;
+    selfvoy::smtp::Settings settings;
+    settings.from = "Сервис Selfvoy <no-reply@selfvoy.example>";
+    selfvoy::smtp::Message message;
     message.to = "anna@example.com";
-    message.subject = "Код подтверждения Aura: 123456";
+    message.subject = "Код подтверждения Selfvoy: 123456";
     message.text = "Код: 123456";
     message.html = "<b>123456</b>";
     const std::string mail =
-        aura::smtp::buildMessage(settings, message, "Tue, 13 Oct 2026 12:00:00 +0000", "<id@aura.example>");
+        selfvoy::smtp::buildMessage(settings, message, "Tue, 13 Oct 2026 12:00:00 +0000", "<id@selfvoy.example>");
     CHECK(mail.find("To: <anna@example.com>\r\n") != std::string::npos);
     CHECK(mail.find("Subject: =?UTF-8?B?") != std::string::npos);
     CHECK(mail.find("From: =?UTF-8?B?") != std::string::npos);
-    CHECK(mail.find("<no-reply@aura.example>") != std::string::npos);
+    CHECK(mail.find("<no-reply@selfvoy.example>") != std::string::npos);
     CHECK(mail.find("multipart/alternative") != std::string::npos);
-    CHECK(mail.find("Message-ID: <id@aura.example>") != std::string::npos);
+    CHECK(mail.find("Message-ID: <id@selfvoy.example>") != std::string::npos);
     // Только CRLF, без одиночных LF, и тело в base64 (не-ASCII не уходит «как есть»).
     for (std::size_t i = 0; i < mail.size(); ++i) {
         if (mail[i] == '\n') CHECK(i > 0 && mail[i - 1] == '\r');
     }
     std::string decoded;
-    CHECK(aura::crypto::base64Decode(aura::crypto::base64Encode("Код: 123456"), decoded));
-    CHECK(mail.find(aura::crypto::base64Encode("Код: 123456")) != std::string::npos);
+    CHECK(selfvoy::crypto::base64Decode(selfvoy::crypto::base64Encode("Код: 123456"), decoded));
+    CHECK(mail.find(selfvoy::crypto::base64Encode("Код: 123456")) != std::string::npos);
 
-    CHECK(!aura::smtp::safeHeaderValue("x\r\nBcc: evil@example.com"));
-    CHECK_EQ(aura::smtp::addressOf("Aura <no-reply@aura.example>"), std::string("no-reply@aura.example"));
-    CHECK_EQ(aura::smtp::addressOf(" a@b.c "), std::string("a@b.c"));
+    CHECK(!selfvoy::smtp::safeHeaderValue("x\r\nBcc: evil@example.com"));
+    CHECK_EQ(selfvoy::smtp::addressOf("Selfvoy <no-reply@selfvoy.example>"), std::string("no-reply@selfvoy.example"));
+    CHECK_EQ(selfvoy::smtp::addressOf(" a@b.c "), std::string("a@b.c"));
 }
 
 TEST(smtp_dialogue_with_fake_server) {
@@ -269,49 +269,49 @@ TEST(smtp_dialogue_with_fake_server) {
         ::close(fd);
     });
 
-    aura::smtp::Settings settings;
+    selfvoy::smtp::Settings settings;
     settings.host = "127.0.0.1";
     settings.port = port;
     settings.tls = "none";  // localhost: AUTH без TLS разрешён только для ретранслятора на этой машине
     settings.user = "mailer";
     settings.password = "secret-pass";
-    settings.from = "Aura <no-reply@aura.example>";
+    settings.from = "Selfvoy <no-reply@selfvoy.example>";
     settings.timeoutMs = 5000;
-    aura::smtp::Message message;
+    selfvoy::smtp::Message message;
     message.to = "anna@example.com";
-    message.subject = "Код подтверждения Aura: 654321";
+    message.subject = "Код подтверждения Selfvoy: 654321";
     message.text = "Ваш код: 654321";
     std::string error;
-    const bool sent = aura::smtp::send(settings, message, error);
+    const bool sent = selfvoy::smtp::send(settings, message, error);
     fake.join();
     ::close(listener);
 
     CHECK(sent);
     CHECK_EQ(error, std::string());
     CHECK(commands.size() >= 6);
-    CHECK_EQ(commands[0], std::string("EHLO aura.example"));
+    CHECK_EQ(commands[0], std::string("EHLO selfvoy.example"));
     CHECK_EQ(commands[1], std::string("AUTH PLAIN ") +
-                              aura::crypto::base64Encode(std::string("\0mailer\0secret-pass", 19)));
-    CHECK_EQ(commands[2], std::string("MAIL FROM:<no-reply@aura.example>"));
+                              selfvoy::crypto::base64Encode(std::string("\0mailer\0secret-pass", 19)));
+    CHECK_EQ(commands[2], std::string("MAIL FROM:<no-reply@selfvoy.example>"));
     CHECK_EQ(commands[3], std::string("RCPT TO:<anna@example.com>"));
-    CHECK(data.find(aura::crypto::base64Encode("Ваш код: 654321")) != std::string::npos);
+    CHECK(data.find(selfvoy::crypto::base64Encode("Ваш код: 654321")) != std::string::npos);
 
     // Подстановка заголовка в адресе отклоняется до соединения.
     message.to = "anna@example.com\r\nBcc: evil@example.com";
-    CHECK(!aura::smtp::send(settings, message, error));
+    CHECK(!selfvoy::smtp::send(settings, message, error));
     CHECK(error.find("недопустимый") != std::string::npos);
 }
 
 TEST(crypto_password_hash) {
     // Новый пароль хэшируется в Argon2id.
-    const std::string hash = aura::crypto::hashPassword("aura1234");
+    const std::string hash = selfvoy::crypto::hashPassword("selfvoy1234");
     CHECK(hash.rfind("argon2id$v=19$m=", 0) == 0);
-    CHECK(aura::crypto::verifyPassword("aura1234", hash));
-    CHECK(!aura::crypto::verifyPassword("aura1235", hash));
-    CHECK(!aura::crypto::verifyPassword("aura1234", "argon2id$v=19$m=65536,t=3,p=4$bad"));
-    CHECK(!aura::crypto::passwordNeedsRehash(hash));
-    CHECK(aura::crypto::constantTimeEquals("secret", "secret"));
-    CHECK(!aura::crypto::constantTimeEquals("secret", "secrets"));
+    CHECK(selfvoy::crypto::verifyPassword("selfvoy1234", hash));
+    CHECK(!selfvoy::crypto::verifyPassword("selfvoy1235", hash));
+    CHECK(!selfvoy::crypto::verifyPassword("selfvoy1234", "argon2id$v=19$m=65536,t=3,p=4$bad"));
+    CHECK(!selfvoy::crypto::passwordNeedsRehash(hash));
+    CHECK(selfvoy::crypto::constantTimeEquals("secret", "secret"));
+    CHECK(!selfvoy::crypto::constantTimeEquals("secret", "secrets"));
 }
 
 TEST(crypto_argon2id_vector) {
@@ -324,7 +324,7 @@ TEST(crypto_argon2id_vector) {
     const int rc = argon2id_hash_raw(3, 64, 2, password.data(), password.size(),
                                      saltRaw.data(), saltRaw.size(), tag.data(), tag.size());
     CHECK_EQ(rc, ARGON2_OK);
-    const std::string tagHex = aura::crypto::toHex(tag);
+    const std::string tagHex = selfvoy::crypto::toHex(tag);
     // Known-answer: тег сверен с независимой реализацией (argon2-cffi, Python)
     // для этих же параметров. Совпадение подтверждает корректность libargon2.
     CHECK_EQ(tagHex,
@@ -333,28 +333,28 @@ TEST(crypto_argon2id_vector) {
     std::string tag2(32, '\0');
     argon2id_hash_raw(3, 64, 2, password.data(), password.size(),
                       saltRaw.data(), saltRaw.size(), tag2.data(), tag2.size());
-    CHECK_EQ(tagHex, aura::crypto::toHex(tag2));
+    CHECK_EQ(tagHex, selfvoy::crypto::toHex(tag2));
     // Неверный пароль меняет тег.
     std::string tagBad(32, '\0');
     argon2id_hash_raw(3, 64, 2, "Password", 8, saltRaw.data(), saltRaw.size(),
                       tagBad.data(), tagBad.size());
-    CHECK(tagHex != aura::crypto::toHex(tagBad));
+    CHECK(tagHex != selfvoy::crypto::toHex(tagBad));
 
     // Тот же тег проверяется через argon2idVerify (собираем encoded-строку).
     const std::string encoded = "argon2id$v=19$m=64,t=3,p=2$" +
-                                aura::crypto::toHex(saltRaw) + "$" + tagHex;
-    CHECK(aura::crypto::argon2idVerify("password", encoded));
-    CHECK(!aura::crypto::argon2idVerify("password2", encoded));
+                                selfvoy::crypto::toHex(saltRaw) + "$" + tagHex;
+    CHECK(selfvoy::crypto::argon2idVerify("password", encoded));
+    CHECK(!selfvoy::crypto::argon2idVerify("password2", encoded));
 }
 
 TEST(crypto_password_migration) {
     // Старый PBKDF2-хэш остаётся проверяемым (прозрачная миграция на входе).
     const std::string salt = "aabbccddeeff0011";
     const std::string legacyHash = "pbkdf2$1000$" + salt + "$" +
-        aura::crypto::toHex(aura::crypto::pbkdf2Sha256("aura1234", salt, 1000, 32));
-    CHECK(aura::crypto::verifyPassword("aura1234", legacyHash));
-    CHECK(!aura::crypto::verifyPassword("aura1235", legacyHash));
-    CHECK(aura::crypto::passwordNeedsRehash(legacyHash));
+        selfvoy::crypto::toHex(selfvoy::crypto::pbkdf2Sha256("selfvoy1234", salt, 1000, 32));
+    CHECK(selfvoy::crypto::verifyPassword("selfvoy1234", legacyHash));
+    CHECK(!selfvoy::crypto::verifyPassword("selfvoy1235", legacyHash));
+    CHECK(selfvoy::crypto::passwordNeedsRehash(legacyHash));
 }
 
 namespace {
@@ -377,128 +377,129 @@ std::string unhex(const std::string& hex) {
 TEST(crypto_hmac_sha1_rfc2202) {
     // RFC 2202, case 1: ключ 20×0x0b, данные "Hi There".
     const std::string key(20, '\x0b');
-    CHECK_EQ(aura::crypto::toHex(aura::crypto::hmacSha1(key, "Hi There")),
+    CHECK_EQ(selfvoy::crypto::toHex(selfvoy::crypto::hmacSha1(key, "Hi There")),
              std::string("b617318655057264e28bc0b6fb378c8ef146be00"));
     // RFC 2202, case 2.
-    CHECK_EQ(aura::crypto::toHex(aura::crypto::hmacSha1("Jefe", "what do ya want for nothing?")),
+    CHECK_EQ(selfvoy::crypto::toHex(selfvoy::crypto::hmacSha1("Jefe", "what do ya want for nothing?")),
              std::string("effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"));
 }
 
 TEST(crypto_base32_rfc4648) {
-    CHECK_EQ(aura::crypto::base32Encode(""), std::string(""));
-    CHECK_EQ(aura::crypto::base32Encode("f"), std::string("MY======"));
-    CHECK_EQ(aura::crypto::base32Encode("fo"), std::string("MZXQ===="));
-    CHECK_EQ(aura::crypto::base32Encode("foo"), std::string("MZXW6==="));
-    CHECK_EQ(aura::crypto::base32Encode("foob"), std::string("MZXW6YQ="));
-    CHECK_EQ(aura::crypto::base32Encode("fooba"), std::string("MZXW6YTB"));
-    CHECK_EQ(aura::crypto::base32Encode("foobar"), std::string("MZXW6YTBOI======"));
+    CHECK_EQ(selfvoy::crypto::base32Encode(""), std::string(""));
+    CHECK_EQ(selfvoy::crypto::base32Encode("f"), std::string("MY======"));
+    CHECK_EQ(selfvoy::crypto::base32Encode("fo"), std::string("MZXQ===="));
+    CHECK_EQ(selfvoy::crypto::base32Encode("foo"), std::string("MZXW6==="));
+    CHECK_EQ(selfvoy::crypto::base32Encode("foob"), std::string("MZXW6YQ="));
+    CHECK_EQ(selfvoy::crypto::base32Encode("fooba"), std::string("MZXW6YTB"));
+    CHECK_EQ(selfvoy::crypto::base32Encode("foobar"), std::string("MZXW6YTBOI======"));
 }
 
 TEST(crypto_aes256_gcm) {
     const std::string key = unhex("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f");
 
     // Known-answer: вектор вычислен независимой библиотекой
-    // (Python cryptography/OpenSSL) для nonce=000102…0b, aad="aura-2fa-secret".
+    // (Python cryptography/OpenSSL) для nonce=000102…0b, aad="aura-2fa-secret"
+    // (исторический AAD TOTP-секретов, при переименовании в Selfvoy не меняется).
     const std::string blob =
         unhex("000102030405060708090a0b0d40854c9cd6864bc809c7c082b9203d8ce94805d58e969523c40d978a79c599");
     const std::string aad = "aura-2fa-secret";
     std::string plain;
-    CHECK(aura::crypto::aes256GcmDecrypt(key, blob, aad, plain));
+    CHECK(selfvoy::crypto::aes256GcmDecrypt(key, blob, aad, plain));
     CHECK_EQ(plain, std::string("JBSWY3DPEHPK3PXP"));
 
     // Подмены отклоняются: другой AAD, другой ключ, испорченный байт.
-    CHECK(!aura::crypto::aes256GcmDecrypt(key, blob, "wrong-aad", plain));
+    CHECK(!selfvoy::crypto::aes256GcmDecrypt(key, blob, "wrong-aad", plain));
     std::string badKey = key;
     badKey[0] = '\x01';
-    CHECK(!aura::crypto::aes256GcmDecrypt(badKey, blob, aad, plain));
+    CHECK(!selfvoy::crypto::aes256GcmDecrypt(badKey, blob, aad, plain));
     std::string tampered = blob;
     tampered[13] = static_cast<char>(tampered[13] ^ 0x01);
-    CHECK(!aura::crypto::aes256GcmDecrypt(key, tampered, aad, plain));
+    CHECK(!selfvoy::crypto::aes256GcmDecrypt(key, tampered, aad, plain));
 
     // Roundtrip: шифрование → расшифровка, включая длинный текст.
     std::string blob2;
-    CHECK(aura::crypto::aes256GcmEncrypt(key, "some longer secret value 12345", aad, blob2));
+    CHECK(selfvoy::crypto::aes256GcmEncrypt(key, "some longer secret value 12345", aad, blob2));
     std::string back;
-    CHECK(aura::crypto::aes256GcmDecrypt(key, blob2, aad, back));
+    CHECK(selfvoy::crypto::aes256GcmDecrypt(key, blob2, aad, back));
     CHECK_EQ(back, std::string("some longer secret value 12345"));
 
     // Второй known-answer: пустой AAD, короткий текст.
     const std::string blob3 = unhex("00000000000000000000000066d51ec39250ea9203b6e1e6789b7a0f3082");
-    CHECK(aura::crypto::aes256GcmDecrypt(key, blob3, "", back));
+    CHECK(selfvoy::crypto::aes256GcmDecrypt(key, blob3, "", back));
     CHECK_EQ(back, std::string("hi"));
 
     // Ключ неверной длины отклоняется.
-    CHECK(!aura::crypto::aes256GcmEncrypt("short", "x", "", blob2));
-    CHECK(!aura::crypto::aes256GcmDecrypt("short", blob, aad, plain));
+    CHECK(!selfvoy::crypto::aes256GcmEncrypt("short", "x", "", blob2));
+    CHECK(!selfvoy::crypto::aes256GcmDecrypt("short", blob, aad, plain));
 }
 
 TEST(totp_rfc6238_vectors) {
     // RFC 6238, приложение B (SHA-1, секрет — ASCII "12345678901234567890").
-    // В таблице RFC коды 8-значные; Aura использует 6 цифр — сверяем последние 6.
+    // В таблице RFC коды 8-значные; Selfvoy использует 6 цифр — сверяем последние 6.
     const std::string secret = "12345678901234567890";
-    CHECK_EQ(aura::totp::codeAt(secret, 59), std::string("287082"));
-    CHECK_EQ(aura::totp::codeAt(secret, 1111111109), std::string("081804"));
-    CHECK_EQ(aura::totp::codeAt(secret, 1111111111), std::string("050471"));
-    CHECK_EQ(aura::totp::codeAt(secret, 1234567890), std::string("005924"));
-    CHECK_EQ(aura::totp::codeAt(secret, 2000000000), std::string("279037"));  // RFC: 69279037
-    CHECK_EQ(aura::totp::codeAt(secret, 20000000000), std::string("353130"));
+    CHECK_EQ(selfvoy::totp::codeAt(secret, 59), std::string("287082"));
+    CHECK_EQ(selfvoy::totp::codeAt(secret, 1111111109), std::string("081804"));
+    CHECK_EQ(selfvoy::totp::codeAt(secret, 1111111111), std::string("050471"));
+    CHECK_EQ(selfvoy::totp::codeAt(secret, 1234567890), std::string("005924"));
+    CHECK_EQ(selfvoy::totp::codeAt(secret, 2000000000), std::string("279037"));  // RFC: 69279037
+    CHECK_EQ(selfvoy::totp::codeAt(secret, 20000000000), std::string("353130"));
     // 8-значный режим даёт ровно значения из таблицы RFC.
-    CHECK_EQ(aura::totp::codeAt(secret, 59, 8), std::string("94287082"));
-    CHECK_EQ(aura::totp::codeAt(secret, 2000000000, 8), std::string("69279037"));
-    CHECK_EQ(aura::totp::codeAt(secret, 20000000000, 8), std::string("65353130"));
+    CHECK_EQ(selfvoy::totp::codeAt(secret, 59, 8), std::string("94287082"));
+    CHECK_EQ(selfvoy::totp::codeAt(secret, 2000000000, 8), std::string("69279037"));
+    CHECK_EQ(selfvoy::totp::codeAt(secret, 20000000000, 8), std::string("65353130"));
 }
 
 TEST(totp_verify_window_and_reuse) {
-    const std::string secretB32 = aura::totp::generateSecretBase32();
+    const std::string secretB32 = selfvoy::totp::generateSecretBase32();
     std::string raw;
-    CHECK(aura::totp::decodeSecretBase32(secretB32, raw));
+    CHECK(selfvoy::totp::decodeSecretBase32(secretB32, raw));
     CHECK_EQ(raw.size(), std::size_t(20));
 
     const std::int64_t now = 900;  // счётчик 30
-    const std::string currentCode = aura::totp::codeAt(raw, now);
+    const std::string currentCode = selfvoy::totp::codeAt(raw, now);
     std::int64_t matched = -1;
-    CHECK(aura::totp::verifyAt(raw, currentCode, now, 0, matched));
+    CHECK(selfvoy::totp::verifyAt(raw, currentCode, now, 0, matched));
     CHECK_EQ(matched, std::int64_t(30));
 
     // Одноразовость: тот же код с lastUsedCounter=30 отклоняется.
-    CHECK(!aura::totp::verifyAt(raw, currentCode, now, 30, matched));
+    CHECK(!selfvoy::totp::verifyAt(raw, currentCode, now, 30, matched));
 
     // Окно ±1 период: коды соседних счётчиков принимаются.
-    const std::string prev = aura::totp::codeAt(raw, 29 * 30);
-    CHECK(aura::totp::verifyAt(raw, prev, now, 0, matched));
+    const std::string prev = selfvoy::totp::codeAt(raw, 29 * 30);
+    CHECK(selfvoy::totp::verifyAt(raw, prev, now, 0, matched));
     CHECK_EQ(matched, std::int64_t(29));
-    const std::string next = aura::totp::codeAt(raw, 31 * 30);
-    CHECK(aura::totp::verifyAt(raw, next, now, 0, matched));
+    const std::string next = selfvoy::totp::codeAt(raw, 31 * 30);
+    CHECK(selfvoy::totp::verifyAt(raw, next, now, 0, matched));
     CHECK_EQ(matched, std::int64_t(31));
 
     // Два периода назад — уже вне окна.
-    const std::string old = aura::totp::codeAt(raw, 28 * 30);
-    CHECK(!aura::totp::verifyAt(raw, old, now, 0, matched));
+    const std::string old = selfvoy::totp::codeAt(raw, 28 * 30);
+    CHECK(!selfvoy::totp::verifyAt(raw, old, now, 0, matched));
 
     // Неверный код, нецифровой ввод, короткая строка.
     std::string wrong = currentCode;
     wrong[0] = (wrong[0] == '9') ? '0' : static_cast<char>(wrong[0] + 1);
-    CHECK(!aura::totp::verifyAt(raw, wrong, now, 0, matched));
-    CHECK(!aura::totp::verifyAt(raw, "abcdef", now, 0, matched));
-    CHECK(!aura::totp::verifyAt(raw, "12345", now, 0, matched));
+    CHECK(!selfvoy::totp::verifyAt(raw, wrong, now, 0, matched));
+    CHECK(!selfvoy::totp::verifyAt(raw, "abcdef", now, 0, matched));
+    CHECK(!selfvoy::totp::verifyAt(raw, "12345", now, 0, matched));
 }
 
 TEST(totp_secret_decode_and_uri) {
     // Канонический тестовый секрет: "JBSWY3DPEHPK3PXP" = "Hello!" + deadbeef.
     std::string raw;
-    CHECK(aura::totp::decodeSecretBase32("JBSWY3DPEHPK3PXP", raw));
-    CHECK_EQ(aura::crypto::toHex(raw), std::string("48656c6c6f21deadbeef"));
+    CHECK(selfvoy::totp::decodeSecretBase32("JBSWY3DPEHPK3PXP", raw));
+    CHECK_EQ(selfvoy::crypto::toHex(raw), std::string("48656c6c6f21deadbeef"));
     // Строчные буквы, пробелы, дефисы — допустимы.
-    CHECK(aura::totp::decodeSecretBase32("jbsw y3dp-ehpk3pxp", raw));
-    CHECK_EQ(aura::crypto::toHex(raw), std::string("48656c6c6f21deadbeef"));
+    CHECK(selfvoy::totp::decodeSecretBase32("jbsw y3dp-ehpk3pxp", raw));
+    CHECK_EQ(selfvoy::crypto::toHex(raw), std::string("48656c6c6f21deadbeef"));
     // Недопустимый символ и слишком короткий секрет.
-    CHECK(!aura::totp::decodeSecretBase32("JBSWY3DPEHPK3PX!", raw));
-    CHECK(!aura::totp::decodeSecretBase32("MY======", raw));
+    CHECK(!selfvoy::totp::decodeSecretBase32("JBSWY3DPEHPK3PX!", raw));
+    CHECK(!selfvoy::totp::decodeSecretBase32("MY======", raw));
 
-    const std::string uri = aura::totp::otpauthUri("JBSWY3DPEHPK3PXP", "anna@aura.app", "Aura");
-    CHECK(uri.rfind("otpauth://totp/Aura:anna%40aura.app?", 0) == 0);
+    const std::string uri = selfvoy::totp::otpauthUri("JBSWY3DPEHPK3PXP", "anna@selfvoy.app", "Selfvoy");
+    CHECK(uri.rfind("otpauth://totp/Selfvoy:anna%40selfvoy.app?", 0) == 0);
     CHECK(uri.find("secret=JBSWY3DPEHPK3PXP") != std::string::npos);
-    CHECK(uri.find("issuer=Aura") != std::string::npos);
+    CHECK(uri.find("issuer=Selfvoy") != std::string::npos);
     CHECK(uri.find("algorithm=SHA1") != std::string::npos);
     CHECK(uri.find("digits=6") != std::string::npos);
     CHECK(uri.find("period=30") != std::string::npos);
@@ -509,24 +510,24 @@ TEST(jwt_sign_and_verify) {
     Json claims = Json::object();
     claims.set("sub", Json(42));
     claims.set("email", Json("anna@example.com"));
-    const std::string token = aura::jwt::sign(claims, "test-secret", 60);
+    const std::string token = selfvoy::jwt::sign(claims, "test-secret", 60);
     CHECK_EQ(std::count(token.begin(), token.end(), '.'), 2);
 
-    const aura::jwt::Token verified = aura::jwt::verify(token, "test-secret");
+    const selfvoy::jwt::Token verified = selfvoy::jwt::verify(token, "test-secret");
     CHECK(verified.valid);
     CHECK_EQ(verified.claims.getInt("sub"), 42);
     CHECK_EQ(verified.claims.getString("email"), std::string("anna@example.com"));
 
-    CHECK(!aura::jwt::verify(token, "other-secret").valid);
-    const aura::jwt::Token expired = aura::jwt::verify(token, "test-secret", aura::jwt::nowEpoch() + 3600);
+    CHECK(!selfvoy::jwt::verify(token, "other-secret").valid);
+    const selfvoy::jwt::Token expired = selfvoy::jwt::verify(token, "test-secret", selfvoy::jwt::nowEpoch() + 3600);
     CHECK(!expired.valid);
-    CHECK(!aura::jwt::verify("not.a.token", "test-secret").valid);
+    CHECK(!selfvoy::jwt::verify("not.a.token", "test-secret").valid);
 }
 
 // --------------------------------------------------------------- WebSocket
 TEST(ws_accept_token_rfc6455) {
     // Пример из RFC 6455, раздел 1.3
-    CHECK_EQ(aura::ws::acceptToken("dGhlIHNhbXBsZSBub25jZQ=="),
+    CHECK_EQ(selfvoy::ws::acceptToken("dGhlIHNhbXBsZSBub25jZQ=="),
              std::string("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
 }
 
@@ -540,22 +541,22 @@ TEST(ws_handshake_parse) {
         "Sec-WebSocket-Version: 13\r\n"
         "Authorization: Bearer abc.def.ghi\r\n"
         "Origin: http://localhost\r\n\r\n";
-    const aura::ws::Handshake handshake = aura::ws::parseHandshake(request);
+    const selfvoy::ws::Handshake handshake = selfvoy::ws::parseHandshake(request);
     CHECK(handshake.valid);
     CHECK_EQ(handshake.path, std::string("/ws"));
     CHECK_EQ(handshake.key, std::string("dGhlIHNhbXBsZSBub25jZQ=="));
     CHECK_EQ(handshake.authorization, std::string("Bearer abc.def.ghi"));
     CHECK_EQ(handshake.origin, std::string("http://localhost"));
 
-    CHECK(!aura::ws::parseHandshake("POST / HTTP/1.1\r\n\r\n").valid);
-    CHECK(!aura::ws::parseHandshake("GET / HTTP/1.1\r\nHost: x\r\n\r\n").valid);
-    CHECK(aura::ws::handshakeResponse("dGhlIHNhbXBsZSBub25jZQ==").find("101 Switching Protocols") !=
+    CHECK(!selfvoy::ws::parseHandshake("POST / HTTP/1.1\r\n\r\n").valid);
+    CHECK(!selfvoy::ws::parseHandshake("GET / HTTP/1.1\r\nHost: x\r\n\r\n").valid);
+    CHECK(selfvoy::ws::handshakeResponse("dGhlIHNhbXBsZSBub25jZQ==").find("101 Switching Protocols") !=
           std::string::npos);
 }
 
 TEST(ws_frame_roundtrip) {
     const std::string payload = R"({"type":"ping","payload":{"n":1}})";
-    const std::string frame = aura::ws::encodeFrame(aura::ws::Opcode::Text, payload);
+    const std::string frame = selfvoy::ws::encodeFrame(selfvoy::ws::Opcode::Text, payload);
     CHECK_EQ(static_cast<int>(static_cast<unsigned char>(frame[0])), 0x81);
 
     // Имитируем клиентский кадр с маской
@@ -569,30 +570,30 @@ TEST(ws_frame_roundtrip) {
     }
 
     std::size_t consumed = 0;
-    aura::ws::Frame decoded;
+    selfvoy::ws::Frame decoded;
     std::string error;
-    const auto result = aura::ws::decodeFrame(masked, 1024 * 1024, consumed, decoded, error);
-    CHECK(result == aura::ws::DecodeResult::Complete);
+    const auto result = selfvoy::ws::decodeFrame(masked, 1024 * 1024, consumed, decoded, error);
+    CHECK(result == selfvoy::ws::DecodeResult::Complete);
     CHECK_EQ(consumed, masked.size());
     CHECK_EQ(decoded.payload, payload);
-    CHECK(decoded.opcode == aura::ws::Opcode::Text);
+    CHECK(decoded.opcode == selfvoy::ws::Opcode::Text);
 
     // Неполный кадр
     std::size_t consumedPartial = 0;
-    aura::ws::Frame partial;
-    CHECK(aura::ws::decodeFrame(masked.substr(0, 3), 1024, consumedPartial, partial, error) ==
-          aura::ws::DecodeResult::Incomplete);
+    selfvoy::ws::Frame partial;
+    CHECK(selfvoy::ws::decodeFrame(masked.substr(0, 3), 1024, consumedPartial, partial, error) ==
+          selfvoy::ws::DecodeResult::Incomplete);
 
     // Превышение лимита
     std::size_t consumedBig = 0;
-    aura::ws::Frame big;
-    CHECK(aura::ws::decodeFrame(masked, 10, consumedBig, big, error) ==
-          aura::ws::DecodeResult::ProtocolError);
+    selfvoy::ws::Frame big;
+    CHECK(selfvoy::ws::decodeFrame(masked, 10, consumedBig, big, error) ==
+          selfvoy::ws::DecodeResult::ProtocolError);
 }
 
 // ---------------------------------------------------------------- protocol
 TEST(protocol_envelope) {
-    const Json okMessage = aura::protocol::ok("req-1", [] {
+    const Json okMessage = selfvoy::protocol::ok("req-1", [] {
         Json payload = Json::object();
         payload.set("value", Json(1));
         return payload;
@@ -601,66 +602,66 @@ TEST(protocol_envelope) {
     CHECK_EQ(okMessage.getString("id"), std::string("req-1"));
     CHECK_EQ(okMessage.get("payload").getInt("value"), 1);
 
-    const Json errorMessage = aura::protocol::error("req-2", aura::protocol::code::kUnauthorized, "нужен вход");
+    const Json errorMessage = selfvoy::protocol::error("req-2", selfvoy::protocol::code::kUnauthorized, "нужен вход");
     CHECK_EQ(errorMessage.getString("code"), std::string("unauthorized"));
 
-    const Json eventMessage = aura::protocol::event("chat.message");
+    const Json eventMessage = selfvoy::protocol::event("chat.message");
     CHECK_EQ(eventMessage.getString("event"), std::string("chat.message"));
 
-    aura::protocol::Request request;
+    selfvoy::protocol::Request request;
     std::string error;
-    CHECK(!aura::protocol::parse(Json::array(), request, error));
-    CHECK(aura::protocol::isPublicType("auth.login"));
-    CHECK(!aura::protocol::isPublicType("chat.send"));
+    CHECK(!selfvoy::protocol::parse(Json::array(), request, error));
+    CHECK(selfvoy::protocol::isPublicType("auth.login"));
+    CHECK(!selfvoy::protocol::isPublicType("chat.send"));
 }
 
 // --------------------------------------------------------------------- net
 TEST(net_url_parsing) {
-    aura::net::Url url;
+    selfvoy::net::Url url;
     std::string error;
-    CHECK(aura::net::parseUrl("http://127.0.0.1:8000/v1/agent/run", url, error));
+    CHECK(selfvoy::net::parseUrl("http://127.0.0.1:8000/v1/agent/run", url, error));
     CHECK_EQ(url.host, std::string("127.0.0.1"));
     CHECK_EQ(url.port, 8000);
     CHECK_EQ(url.path, std::string("/v1/agent/run"));
 
-    CHECK(aura::net::parseUrl("http://ai-service/healthz", url, error));
+    CHECK(selfvoy::net::parseUrl("http://ai-service/healthz", url, error));
     CHECK_EQ(url.port, 80);
     CHECK_EQ(url.path, std::string("/healthz"));
 
-    CHECK(!aura::net::parseUrl("https://example.com", url, error));
+    CHECK(!selfvoy::net::parseUrl("https://example.com", url, error));
     CHECK(!error.empty());
 
     // Разбор chunked-ответа
     const std::string chunked = "5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n";
-    aura::net::HttpResponse response;
-    CHECK(aura::net::parseResponseHead("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n", response));
+    selfvoy::net::HttpResponse response;
+    CHECK(selfvoy::net::parseResponseHead("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n", response));
     CHECK_EQ(response.status, 200);
     CHECK_EQ(response.header("transfer-encoding"), std::string("chunked"));
-    CHECK_EQ(aura::net::decodeChunked(chunked), std::string("Hello World"));
+    CHECK_EQ(selfvoy::net::decodeChunked(chunked), std::string("Hello World"));
 }
 
 // -------------------------------------------------------------------- auth
 TEST(auth_validation_rules) {
-    CHECK_EQ(aura::AuthManager::normalizeEmail("  Anna@Example.COM "), std::string("anna@example.com"));
-    CHECK(!aura::AuthManager::passwordError("short1").empty());
-    CHECK(!aura::AuthManager::passwordError("onlyletters").empty());
-    CHECK(!aura::AuthManager::passwordError("12345678").empty());
-    CHECK(aura::AuthManager::passwordError("aura1234").empty());
+    CHECK_EQ(selfvoy::AuthManager::normalizeEmail("  Anna@Example.COM "), std::string("anna@example.com"));
+    CHECK(!selfvoy::AuthManager::passwordError("short1").empty());
+    CHECK(!selfvoy::AuthManager::passwordError("onlyletters").empty());
+    CHECK(!selfvoy::AuthManager::passwordError("12345678").empty());
+    CHECK(selfvoy::AuthManager::passwordError("selfvoy1234").empty());
 }
 
 // ------------------------------------------------------------- интеграция
 namespace integration {
 
 struct Fixture {
-    aura::Config config;
+    selfvoy::Config config;
     std::string dbPath;
-    std::unique_ptr<aura::Server> server;
+    std::unique_ptr<selfvoy::Server> server;
     int observerFd = -1;
 
     Fixture() {
-        dbPath = "/tmp/aura-test-" + std::to_string(::getpid()) + ".json";
+        dbPath = "/tmp/selfvoy-test-" + std::to_string(::getpid()) + ".json";
         std::remove(dbPath.c_str());
-        config = aura::Config::fromEnv();
+        config = selfvoy::Config::fromEnv();
         config.databaseUrl.clear();  // встроенное хранилище
         config.embeddedDbPath = dbPath;
         config.port = 0;             // свободный порт
@@ -671,7 +672,7 @@ struct Fixture {
         config.aiServiceUrl = "http://127.0.0.1:1";  // гарантированно недоступен
         config.aiTimeoutMs = 500;
         config.schedulerIntervalMs = 0;  // фоновый поток не нужен: tick зовём вручную
-        server = std::make_unique<aura::Server>(config);
+        server = std::make_unique<selfvoy::Server>(config);
         std::string error;
         if (!server->start(error)) {
             std::cout << "  не удалось поднять сервер: " << error << "\n";
@@ -687,7 +688,7 @@ struct Fixture {
     }
 
     // Сессия поверх socketpair: второй конец отдаём наблюдателю.
-    std::shared_ptr<aura::Session> makeSession(const std::string& id = "test") {
+    std::shared_ptr<selfvoy::Session> makeSession(const std::string& id = "test") {
         int fds[2] = {-1, -1};
         if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
             std::cout << "  socketpair failed\n";
@@ -696,10 +697,10 @@ struct Fixture {
         }
         if (observerFd >= 0) ::close(observerFd);
         observerFd = fds[0];
-        return std::make_shared<aura::Session>(fds[1], id, "127.0.0.1:0", config);
+        return std::make_shared<selfvoy::Session>(fds[1], id, "127.0.0.1:0", config);
     }
 
-    Json call(const std::shared_ptr<aura::Session>& session,
+    Json call(const std::shared_ptr<selfvoy::Session>& session,
               const std::string& type,
               const Json& payload = Json::object()) {
         Json message = Json::object();
@@ -709,12 +710,12 @@ struct Fixture {
         return server->handleMessage(session, message);
     }
 
-    Json registerUser(const std::shared_ptr<aura::Session>& session,
+    Json registerUser(const std::shared_ptr<selfvoy::Session>& session,
                       const std::string& email,
                       const std::string& name) {
         Json payload = Json::object();
         payload.set("email", Json(email));
-        payload.set("password", Json("aura1234"));
+        payload.set("password", Json("selfvoy1234"));
         payload.set("display_name", Json(name));
         const Json registered = call(session, "auth.register", payload);
         if (registered.getString("type") != "ok") return registered;
@@ -730,7 +731,7 @@ struct Fixture {
         // Вход: выдаёт access+refresh и аутентифицирует соединение.
         Json login = Json::object();
         login.set("email", Json(email));
-        login.set("password", Json("aura1234"));
+        login.set("password", Json("selfvoy1234"));
         return call(session, "auth.login", login);
     }
 };
@@ -775,7 +776,7 @@ TEST(server_register_login_flow) {
     // 1) Регистрация: сессия НЕ выдаётся, ждём подтверждения email.
     Json regPayload = Json::object();
     regPayload.set("email", Json("anna@example.com"));
-    regPayload.set("password", Json("aura1234"));
+    regPayload.set("password", Json("selfvoy1234"));
     regPayload.set("display_name", Json("Анна"));
     const Json registered = fixture.call(session, "auth.register", regPayload);
     CHECK_EQ(registered.getString("type"), std::string("ok"));
@@ -789,7 +790,7 @@ TEST(server_register_login_flow) {
     auto earlySession = fixture.makeSession("early");
     Json login = Json::object();
     login.set("email", Json("anna@example.com"));
-    login.set("password", Json("aura1234"));
+    login.set("password", Json("selfvoy1234"));
     CHECK_EQ(fixture.call(earlySession, "auth.login", login).getString("code"),
              std::string("email_not_verified"));
 
@@ -941,7 +942,7 @@ TEST(server_password_reset_flow) {
     // Вход со старым паролем не проходит, с новым — проходит.
     Json login = Json::object();
     login.set("email", Json("oleg@example.com"));
-    login.set("password", Json("aura1234"));
+    login.set("password", Json("selfvoy1234"));
     auto oldSession = fixture.makeSession("old");
     CHECK_EQ(fixture.call(oldSession, "auth.login", login).getString("code"),
              std::string("unauthorized"));
@@ -957,7 +958,7 @@ TEST(server_sessions_management) {
     auto second = fixture.makeSession("second");
     Json login = Json::object();
     login.set("email", Json("mia@example.com"));
-    login.set("password", Json("aura1234"));
+    login.set("password", Json("selfvoy1234"));
     const Json secondLogin = fixture.call(second, "auth.login", login);
     CHECK_EQ(secondLogin.getString("type"), std::string("ok"));
 
@@ -996,7 +997,7 @@ TEST(server_password_migration_to_argon2id) {
     // Создаём пользователя со старым PBKDF2-хэшем напрямую в БД.
     const std::string salt = "0123456789abcdef";
     const std::string legacy = "pbkdf2$1000$" + salt + "$" +
-        aura::crypto::toHex(aura::crypto::pbkdf2Sha256("aura1234", salt, 1000, 32));
+        selfvoy::crypto::toHex(selfvoy::crypto::pbkdf2Sha256("selfvoy1234", salt, 1000, 32));
     long long userId = 0;
     CHECK(fixture.server->database().db()
               .createUser("legacy@example.com", legacy, "Леги", userId)
@@ -1006,14 +1007,14 @@ TEST(server_password_migration_to_argon2id) {
     auto session = fixture.makeSession();
     Json login = Json::object();
     login.set("email", Json("legacy@example.com"));
-    login.set("password", Json("aura1234"));
+    login.set("password", Json("selfvoy1234"));
     CHECK_EQ(fixture.call(session, "auth.login", login).getString("type"), std::string("ok"));
 
     // После входа хэш пересчитан в Argon2id.
     const auto user = fixture.server->database().db().findUserByEmail("legacy@example.com");
     CHECK(user.has_value());
     CHECK(user->passwordHash.rfind("argon2id$", 0) == 0);
-    CHECK(aura::crypto::verifyPassword("aura1234", user->passwordHash));
+    CHECK(selfvoy::crypto::verifyPassword("selfvoy1234", user->passwordHash));
 }
 
 TEST(server_change_password) {
@@ -1030,12 +1031,12 @@ TEST(server_change_password) {
              std::string("forbidden"));
 
     // Верная смена: доступ сохраняется, старый пароль больше не работает.
-    change.set("old_password", Json("aura1234"));
+    change.set("old_password", Json("selfvoy1234"));
     CHECK(fixture.call(session, "auth.changePassword", change).get("payload").getBool("changed"));
     auto fresh = fixture.makeSession("fresh");
     Json login = Json::object();
     login.set("email", Json("kai@example.com"));
-    login.set("password", Json("aura1234"));
+    login.set("password", Json("selfvoy1234"));
     CHECK_EQ(fixture.call(fresh, "auth.login", login).getString("code"), std::string("unauthorized"));
     login.set("password", Json("brandnew1"));
     CHECK_EQ(fixture.call(fresh, "auth.login", login).getString("type"), std::string("ok"));
@@ -1135,11 +1136,11 @@ TEST(server_session_delivers_frames_over_socket) {
 
     Json payload = Json::object();
     payload.set("hello", Json("мир"));
-    session->send(aura::protocol::event("test.event", payload));
+    session->send(selfvoy::protocol::event("test.event", payload));
 
     // Читаем кадры из второго конца socketpair, пока не встретим test.event.
     // Вход (внутри registerUser) теперь порождает событие notification.new
-    // («Новый вход в Aura», этап 13) — проверяем, что оно приходит первым.
+    // («Новый вход в Selfvoy», этап 13) — проверяем, что оно приходит первым.
     // Кадр пришёл от сервера, поэтому маска в нём запрещена (requireMask=false).
     std::string raw;
     bool sawNotification = false;
@@ -1151,12 +1152,12 @@ TEST(server_session_delivers_frames_over_socket) {
         CHECK(received > 0);
         raw.append(buffer, static_cast<std::size_t>(received));
         while (true) {
-            aura::ws::Frame frame;
+            selfvoy::ws::Frame frame;
             std::string error;
             std::size_t consumed = 0;
             const auto result =
-                aura::ws::decodeFrame(raw, raw.size(), consumed, frame, error, false);
-            if (result != aura::ws::DecodeResult::Complete) break;
+                selfvoy::ws::decodeFrame(raw, raw.size(), consumed, frame, error, false);
+            if (result != selfvoy::ws::DecodeResult::Complete) break;
             raw.erase(0, consumed);
             const Json decoded = Json::parse(frame.payload);
             if (decoded.getString("event") == std::string("notification.new")) {
@@ -1272,7 +1273,7 @@ TEST(server_tools_execution) {
     allow.set("mode", Json("allow"));
     CHECK_EQ(fixture.call(session, "permissions.set", allow).getString("type"), std::string("ok"));
     const Json booked = fixture.call(session, "tool.run", book);
-    CHECK(integration::payloadOf(booked).getString("confirmation").rfind("AURA-", 0) == 0);
+    CHECK(integration::payloadOf(booked).getString("confirmation").rfind("SELFVOY-", 0) == 0);
     // deny блокирует и прямой вызов.
     allow.set("tool", Json("create_note"));
     allow.set("mode", Json("deny"));
@@ -1366,9 +1367,9 @@ TEST(server_two_factor_full_flow) {
 
     // 4) Подтверждение одноразовым кодом (считаем из секрета по RFC 6238).
     std::string rawSecret;
-    CHECK(aura::totp::decodeSecretBase32(secretB32, rawSecret));
+    CHECK(selfvoy::totp::decodeSecretBase32(secretB32, rawSecret));
     Json confirm = Json::object();
-    confirm.set("code", Json(aura::totp::codeNow(rawSecret)));
+    confirm.set("code", Json(selfvoy::totp::codeNow(rawSecret)));
     const Json confirmed = fixture.call(setupSession, "auth.confirm2fa", confirm);
     CHECK_EQ(confirmed.getString("type"), std::string("ok"));
     // Держим Json в именованной переменной: get() возвращает по значению,
@@ -1389,7 +1390,7 @@ TEST(server_two_factor_full_flow) {
     auto loginSession = fixture.makeSession("2fa-login");
     Json login = Json::object();
     login.set("email", Json("vera@example.com"));
-    login.set("password", Json("aura1234"));
+    login.set("password", Json("selfvoy1234"));
     const Json needsCode = fixture.call(loginSession, "auth.login", login);
     CHECK_EQ(needsCode.getString("type"), std::string("error"));
     CHECK_EQ(needsCode.getString("code"), std::string("requires_2fa"));
@@ -1405,9 +1406,9 @@ TEST(server_two_factor_full_flow) {
     // 8) Верный TOTP-код → сессия. Текущий код уже использован при confirm2fa
     // (одноразовость), поэтому берём код следующего окна — сервер принимает его
     // (окно ±1 период) и проверка одноразовости проходит.
-    const std::int64_t nextWindow = (std::time(nullptr) / aura::totp::kPeriod + 1) * aura::totp::kPeriod;
+    const std::int64_t nextWindow = (std::time(nullptr) / selfvoy::totp::kPeriod + 1) * selfvoy::totp::kPeriod;
     Json goodLogin = login;
-    goodLogin.set("code", Json(aura::totp::codeAt(rawSecret, nextWindow)));
+    goodLogin.set("code", Json(selfvoy::totp::codeAt(rawSecret, nextWindow)));
     goodLogin.set("device_id", Json("device-vera-1"));
     goodLogin.set("trust_device", Json(true));
     const Json loggedIn = fixture.call(loginSession, "auth.login2fa", goodLogin);
@@ -1467,7 +1468,7 @@ TEST(server_two_factor_full_flow) {
     CHECK_EQ(fixture.call(recoverySession, "auth.disable2fa", disableBad).getString("code"),
              std::string("unauthorized"));
     Json disableOk = Json::object();
-    disableOk.set("password", Json("aura1234"));
+    disableOk.set("password", Json("selfvoy1234"));
     CHECK_EQ(fixture.call(recoverySession, "auth.disable2fa", disableOk).getString("type"), std::string("ok"));
     CHECK_EQ(fixture.call(recoverySession, "auth.status2fa").get("payload").getBool("enabled"), false);
 
@@ -1475,14 +1476,14 @@ TEST(server_two_factor_full_flow) {
     auto plainSession = fixture.makeSession("2fa-plain");
     Json plainLogin = Json::object();
     plainLogin.set("email", Json("vera@example.com"));
-    plainLogin.set("password", Json("aura1234"));
+    plainLogin.set("password", Json("selfvoy1234"));
     CHECK_EQ(fixture.call(plainSession, "auth.login", plainLogin).getString("type"), std::string("ok"));
     CHECK(plainSession->authenticated());
 }
 
 // ------------------------------------------- этап 8: разрешения и подтверждения
 TEST(tool_danger_classification) {
-    using aura::ToolManager;
+    using selfvoy::ToolManager;
     // Опасные: внешние побочные эффекты.
     CHECK(ToolManager::isDangerous("send_message"));
     CHECK(ToolManager::isDangerous("send_email"));
@@ -1501,7 +1502,7 @@ TEST(tool_danger_classification) {
 }
 
 TEST(ai_tool_permissions_and_pending_actions_db) {
-    auto db = aura::makeEmbeddedDatabase("");  // in-memory (без файла)
+    auto db = selfvoy::makeEmbeddedDatabase("");  // in-memory (без файла)
     long long userId = 0;
     CHECK(db->createUser("perm@example.com", "argon2id$x", "Перм", userId).ok);
     CHECK(userId > 0);
@@ -1520,7 +1521,7 @@ TEST(ai_tool_permissions_and_pending_actions_db) {
     CHECK_EQ(perms.size(), static_cast<std::size_t>(2));
 
     // Отложенное действие: создание → поиск → список → разрешение.
-    aura::PendingActionRecord pending;
+    selfvoy::PendingActionRecord pending;
     pending.userId = userId;
     pending.tool = "send_email";
     pending.args = Json::object();
@@ -1581,7 +1582,7 @@ TEST(ai_permissions_ws_and_confirmation_barrier) {
 
     // Барьер подтверждения: создаём отложенное опасное действие (как это
     // сделал бы агент) и подтверждаем — сервер исполняет инструмент.
-    aura::PendingActionRecord pending;
+    selfvoy::PendingActionRecord pending;
     pending.userId = userId;
     pending.tool = "send_email";
     pending.args = Json::object();
@@ -1605,7 +1606,7 @@ TEST(ai_permissions_ws_and_confirmation_barrier) {
              std::string("bad_request"));
 
     // Отклонение: действие помечается denied, не исполняется.
-    aura::PendingActionRecord second;
+    selfvoy::PendingActionRecord second;
     second.userId = userId;
     second.tool = "book_table";
     second.summary = "Забронировать столик";
@@ -1677,7 +1678,7 @@ TEST(ai_task_scheduler_tick) {
     auto& db = fixture.server->database().db();
 
     // Задача с напоминанием, срок которого уже наступил (remind_at в прошлом).
-    aura::TaskRecord task;
+    selfvoy::TaskRecord task;
     task.userId = session->userId();
     task.title = "Позвонить клиенту";
     task.remindAt = "2020-01-01T00:00:00.000Z";  // заведомо <= now
@@ -1693,7 +1694,7 @@ TEST(ai_task_scheduler_tick) {
     CHECK_EQ(fixture.server->runSchedulerTick(10), static_cast<std::size_t>(0));
 
     // Задача без remind_at не становится due.
-    aura::TaskRecord noRemind;
+    selfvoy::TaskRecord noRemind;
     noRemind.userId = session->userId();
     noRemind.title = "Без напоминания";
     long long id2 = 0;
@@ -1761,14 +1762,14 @@ TEST(ai_create_reminder_makes_task) {
 TEST(integrations_pkce_s256_known_vector) {
     // RFC 7636, Приложение B: эталонная пара verifier → challenge.
     const std::string verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-    const std::string challenge = aura::crypto::base64UrlEncode(aura::crypto::sha256(verifier));
+    const std::string challenge = selfvoy::crypto::base64UrlEncode(selfvoy::crypto::sha256(verifier));
     CHECK_EQ(challenge, std::string("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"));
 }
 
 TEST(integrations_begin_and_state_rules) {
-    ::setenv("AURA_GOOGLE_CLIENT_ID", "test-client-id", 1);
-    ::setenv("AURA_GOOGLE_CLIENT_SECRET", "test-client-secret", 1);
-    ::setenv("AURA_GOOGLE_TOKEN_URL", "http://127.0.0.1:1/token", 1);  // недоступен
+    ::setenv("SELFVOY_GOOGLE_CLIENT_ID", "test-client-id", 1);
+    ::setenv("SELFVOY_GOOGLE_CLIENT_SECRET", "test-client-secret", 1);
+    ::setenv("SELFVOY_GOOGLE_TOKEN_URL", "http://127.0.0.1:1/token", 1);  // недоступен
     Fixture fixture;
     auto anna = fixture.makeSession("anna");
     auto oleg = fixture.makeSession("oleg");
@@ -1816,15 +1817,15 @@ TEST(integrations_begin_and_state_rules) {
     CHECK_EQ(fixture.call(anna, "integrations.callback", callback).getString("code"),
              std::string("bad_request"));
 
-    ::unsetenv("AURA_GOOGLE_CLIENT_ID");
-    ::unsetenv("AURA_GOOGLE_CLIENT_SECRET");
-    ::unsetenv("AURA_GOOGLE_TOKEN_URL");
+    ::unsetenv("SELFVOY_GOOGLE_CLIENT_ID");
+    ::unsetenv("SELFVOY_GOOGLE_CLIENT_SECRET");
+    ::unsetenv("SELFVOY_GOOGLE_TOKEN_URL");
 }
 
 TEST(integrations_state_expires) {
-    ::setenv("AURA_GOOGLE_CLIENT_ID", "test-client-id", 1);
-    ::setenv("AURA_GOOGLE_CLIENT_SECRET", "test-client-secret", 1);
-    ::setenv("AURA_OAUTH_STATE_TTL", "-5", 1);  // мгновенно истёкший state
+    ::setenv("SELFVOY_GOOGLE_CLIENT_ID", "test-client-id", 1);
+    ::setenv("SELFVOY_GOOGLE_CLIENT_SECRET", "test-client-secret", 1);
+    ::setenv("SELFVOY_OAUTH_STATE_TTL", "-5", 1);  // мгновенно истёкший state
     Fixture fixture;
     auto anna = fixture.makeSession("anna");
     fixture.registerUser(anna, "anna@example.com", "Анна");
@@ -1842,16 +1843,16 @@ TEST(integrations_state_expires) {
     const Json expired = fixture.call(anna, "integrations.callback", callback);
     CHECK_EQ(expired.getString("code"), std::string("bad_request"));
 
-    ::unsetenv("AURA_GOOGLE_CLIENT_ID");
-    ::unsetenv("AURA_GOOGLE_CLIENT_SECRET");
-    ::unsetenv("AURA_OAUTH_STATE_TTL");
+    ::unsetenv("SELFVOY_GOOGLE_CLIENT_ID");
+    ::unsetenv("SELFVOY_GOOGLE_CLIENT_SECRET");
+    ::unsetenv("SELFVOY_OAUTH_STATE_TTL");
 }
 
 TEST(integrations_database_roundtrip) {
     Fixture fixture;
     auto& db = fixture.server->database().db();
 
-    aura::IntegrationConnectionRecord record;
+    selfvoy::IntegrationConnectionRecord record;
     record.userId = 7;
     record.provider = "google_calendar";
     record.account = "anna@gmail.com";
@@ -1892,7 +1893,7 @@ TEST(integrations_database_roundtrip) {
     CHECK(!db.deleteIntegrationConnection(id).ok);  // уже удалено
 
     // Одноразовые OAuth-состояния.
-    aura::OauthStateRecord state;
+    selfvoy::OauthStateRecord state;
     state.state = "st-1";
     state.userId = 7;
     state.provider = "google_gmail";
@@ -1915,7 +1916,7 @@ TEST(integrations_list_hides_secret) {
     auto anna = fixture.makeSession("anna");
     fixture.registerUser(anna, "anna@example.com", "Анна");
 
-    aura::IntegrationConnectionRecord record;
+    selfvoy::IntegrationConnectionRecord record;
     record.userId = anna->userId();
     record.provider = "google_gmail";
     record.account = "anna@gmail.com";
@@ -1952,7 +1953,7 @@ TEST(server_notifications_flow) {
         if (item.getString("kind") == std::string("login.new")) {
             sawLogin = true;
             loginId = item.getInt("id");
-            CHECK_EQ(item.getString("title"), std::string("Новый вход в Aura"));
+            CHECK_EQ(item.getString("title"), std::string("Новый вход в Selfvoy"));
             CHECK_EQ(item.getBool("read"), false);
         }
     }
@@ -1969,9 +1970,9 @@ TEST(server_notifications_flow) {
     const Json setup = fixture.call(session, "auth.setup2fa");
     CHECK_EQ(setup.getString("type"), std::string("ok"));
     std::string rawSecret;
-    CHECK(aura::totp::decodeSecretBase32(setup.get("payload").getString("secret"), rawSecret));
+    CHECK(selfvoy::totp::decodeSecretBase32(setup.get("payload").getString("secret"), rawSecret));
     Json confirm = Json::object();
-    confirm.set("code", Json(aura::totp::codeNow(rawSecret)));
+    confirm.set("code", Json(selfvoy::totp::codeNow(rawSecret)));
     CHECK_EQ(fixture.call(session, "auth.confirm2fa", confirm).getString("type"), std::string("ok"));
 
     // Фильтр непрочитанных видит twofactor.enabled.
@@ -2148,9 +2149,9 @@ TEST(server_push_devices_fcm) {
 
 TEST(security_brute_force_throttle) {
     // Порог снижаем до 3, окно — 60 с (Fixture читает Config::fromEnv()).
-    ::setenv("AURA_MAX_LOGIN_ATTEMPTS", "3", 1);
-    ::setenv("AURA_MAX_IP_ATTEMPTS", "3", 1);
-    ::setenv("AURA_LOGIN_WINDOW", "60", 1);
+    ::setenv("SELFVOY_MAX_LOGIN_ATTEMPTS", "3", 1);
+    ::setenv("SELFVOY_MAX_IP_ATTEMPTS", "3", 1);
+    ::setenv("SELFVOY_LOGIN_WINDOW", "60", 1);
     {
         Fixture fixture;
         auto session = fixture.makeSession("brute");
@@ -2165,21 +2166,21 @@ TEST(security_brute_force_throttle) {
         }
 
         // Превышен порог: даже верный пароль заблокирован до конца окна.
-        login.set("password", Json("aura1234"));
+        login.set("password", Json("selfvoy1234"));
         const Json blocked = fixture.call(session, "auth.login", login);
         CHECK_EQ(blocked.getString("code"), std::string("forbidden"));
 
         // Регистрация под перебором тоже блокируется (тот же счётчик адреса).
         Json reg = Json::object();
         reg.set("email", Json("fresh@example.com"));
-        reg.set("password", Json("aura1234"));
+        reg.set("password", Json("selfvoy1234"));
         reg.set("display_name", Json("Фреш"));
         CHECK_EQ(fixture.call(session, "auth.register", reg).getString("code"),
                  std::string("forbidden"));
     }
-    ::unsetenv("AURA_MAX_LOGIN_ATTEMPTS");
-    ::unsetenv("AURA_MAX_IP_ATTEMPTS");
-    ::unsetenv("AURA_LOGIN_WINDOW");
+    ::unsetenv("SELFVOY_MAX_LOGIN_ATTEMPTS");
+    ::unsetenv("SELFVOY_MAX_IP_ATTEMPTS");
+    ::unsetenv("SELFVOY_LOGIN_WINDOW");
 }
 
 TEST(security_injection_payloads_are_literal) {
@@ -2219,7 +2220,7 @@ TEST(security_injection_payloads_are_literal) {
     // Чужой email с инъекцией не входит (и не ломает хранилище).
     Json login = Json::object();
     login.set("email", Json("inject@example.com' OR '1'='1"));
-    login.set("password", Json("aura1234"));
+    login.set("password", Json("selfvoy1234"));
     CHECK_EQ(fixture.call(session, "auth.login", login).getString("type"), std::string("error"));
 }
 
@@ -2359,45 +2360,45 @@ TEST(audit_c1_c2_config_validation) {
     std::vector<std::string> warnings;
     std::string error;
 
-    // C1: драйвер почты по умолчанию — log; dev без AURA_DEV_MODE не стартует.
-    aura::Config defaults;
+    // C1: драйвер почты по умолчанию — log; dev без SELFVOY_DEV_MODE не стартует.
+    selfvoy::Config defaults;
     CHECK_EQ(defaults.mailDriver, std::string("log"));
     CHECK(defaults.jwtSecret.empty());
     CHECK(!defaults.devMode);
 
-    aura::Config prod;
+    selfvoy::Config prod;
     prod.jwtSecret = std::string(48, 'k') + "random";
     prod.twoFactorKey = "0123456789abcdef0123456789abcdef";
     CHECK(prod.validate(error, warnings));
     prod.mailDriver = "dev";
     error.clear();
     CHECK(!prod.validate(error, warnings));
-    CHECK(error.find("AURA_DEV_MODE") != std::string::npos);
+    CHECK(error.find("SELFVOY_DEV_MODE") != std::string::npos);
 
     // Сервер с такой конфигурацией не стартует.
-    aura::Server refused(prod);
+    selfvoy::Server refused(prod);
     error.clear();
     CHECK(!refused.start(error));
-    CHECK(error.find("AURA_DEV_MODE") != std::string::npos);
+    CHECK(error.find("SELFVOY_DEV_MODE") != std::string::npos);
 
     // C2: слабые/пустые/шаблонные секреты и отсутствие ключа 2FA вне dev — отказ.
-    for (const std::string secret : {std::string(""), std::string("aura-dev-secret"), std::string("short-secret"),
+    for (const std::string secret : {std::string(""), std::string("selfvoy-dev-secret"), std::string("short-secret"),
                                      std::string("CHANGE-IN-PRODUCTION-0123456789abcdefghijklmnop")}) {
-        aura::Config weak;
+        selfvoy::Config weak;
         weak.jwtSecret = secret;
         weak.twoFactorKey = "0123456789abcdef0123456789abcdef";
         error.clear();
         CHECK(!weak.validate(error, warnings));
-        CHECK(error.find("AURA_JWT_SECRET") != std::string::npos);
+        CHECK(error.find("SELFVOY_JWT_SECRET") != std::string::npos);
     }
-    aura::Config noTwoFactor;
+    selfvoy::Config noTwoFactor;
     noTwoFactor.jwtSecret = std::string(64, 'x');
     error.clear();
     CHECK(!noTwoFactor.validate(error, warnings));
-    CHECK(error.find("AURA_2FA_KEY") != std::string::npos);
+    CHECK(error.find("SELFVOY_2FA_KEY") != std::string::npos);
 
     // В dev-режиме без секрета — случайный секрет на процесс (с предупреждением).
-    aura::Config dev;
+    selfvoy::Config dev;
     dev.devMode = true;
     dev.mailDriver = "dev";
     warnings.clear();
@@ -2405,28 +2406,72 @@ TEST(audit_c1_c2_config_validation) {
     CHECK(dev.validate(error, warnings));
     CHECK_EQ(dev.jwtSecret.size(), static_cast<std::size_t>(64));
     CHECK(!warnings.empty());
-    aura::Config dev2;
+    selfvoy::Config dev2;
     dev2.devMode = true;
     CHECK(dev2.validate(error, warnings));
     CHECK(dev.jwtSecret != dev2.jwtSecret);
 
     // Код сброса живёт не дольше часа.
-    aura::Config longReset = prod;
+    selfvoy::Config longReset = prod;
     longReset.mailDriver = "log";
     longReset.resetTtlSeconds = 86400;
     CHECK(longReset.validate(error, warnings));
     CHECK_EQ(longReset.resetTtlSeconds, 3600LL);
 }
 
+// Переименование Aura -> Selfvoy: старые AURA_* читаются один релиз, если SELFVOY_* не задана.
+TEST(config_legacy_aura_env_fallback) {
+    ::unsetenv("SELFVOY_PORT");
+    ::unsetenv("SELFVOY_LOG_LEVEL");
+    ::setenv("AURA_PORT", "9123", 1);
+    ::setenv("AURA_LOG_LEVEL", "debug", 1);
+    selfvoy::Config legacy = selfvoy::Config::fromEnv();
+    CHECK_EQ(legacy.port, 9123);
+    CHECK_EQ(legacy.logLevel, std::string("debug"));
+    CHECK_EQ(legacy.legacyEnvNames.size(), static_cast<std::size_t>(2));
+    CHECK(std::find(legacy.legacyEnvNames.begin(), legacy.legacyEnvNames.end(), "AURA_PORT") !=
+          legacy.legacyEnvNames.end());
+
+    // Одно предупреждение со списком старых имён.
+    legacy.jwtSecret = std::string(48, 'k') + "random";
+    legacy.twoFactorKey = "0123456789abcdef0123456789abcdef";
+    std::vector<std::string> warnings;
+    std::string error;
+    CHECK(legacy.validate(error, warnings));
+    std::size_t deprecations = 0;
+    for (const auto& warning : warnings) {
+        if (warning.find("AURA_PORT") != std::string::npos) {
+            ++deprecations;
+            CHECK(warning.find("AURA_LOG_LEVEL") != std::string::npos);
+        }
+    }
+    CHECK_EQ(deprecations, static_cast<std::size_t>(1));
+
+    // Если заданы обе — побеждает SELFVOY_*, старое имя не считается использованным.
+    ::setenv("SELFVOY_PORT", "9456", 1);
+    selfvoy::Config both = selfvoy::Config::fromEnv();
+    CHECK_EQ(both.port, 9456);
+    CHECK(std::find(both.legacyEnvNames.begin(), both.legacyEnvNames.end(), "AURA_PORT") ==
+          both.legacyEnvNames.end());
+    CHECK_EQ(selfvoy::envOr("SELFVOY_LOG_LEVEL", "info"), std::string("debug"));
+
+    ::unsetenv("SELFVOY_PORT");
+    ::unsetenv("AURA_PORT");
+    ::unsetenv("AURA_LOG_LEVEL");
+    selfvoy::Config clean = selfvoy::Config::fromEnv();
+    CHECK_EQ(clean.port, 9000);
+    CHECK(clean.legacyEnvNames.empty());
+}
+
 TEST(audit_c1_log_driver_hides_codes) {
-    aura::Config config;
+    selfvoy::Config config;
     config.mailDriver = "log";
-    CHECK(!aura::makeMailProvider(config)->exposesCodes());
+    CHECK(!selfvoy::makeMailProvider(config)->exposesCodes());
     // dev без devMode тоже не раскрывает коды (вторая линия защиты).
     config.mailDriver = "dev";
-    CHECK(!aura::makeMailProvider(config)->exposesCodes());
+    CHECK(!selfvoy::makeMailProvider(config)->exposesCodes());
     config.devMode = true;
-    CHECK(aura::makeMailProvider(config)->exposesCodes());
+    CHECK(selfvoy::makeMailProvider(config)->exposesCodes());
 }
 
 TEST(audit_c2_forged_sub_rejected) {
@@ -2446,13 +2491,13 @@ TEST(audit_c2_forged_sub_rejected) {
         if (ch == '_') ch = '/';
     }
     while (padded.size() % 4) padded.push_back('=');
-    CHECK(aura::crypto::base64Decode(padded, claimsRaw));
+    CHECK(selfvoy::crypto::base64Decode(padded, claimsRaw));
     Json claims = Json::parse(claimsRaw);
     claims.set("sub", Json(victim->userId()));
     claims.set("email", Json("victim@example.com"));
     claims.erase("exp");
     claims.erase("iat");
-    const std::string forged = aura::jwt::sign(claims, fixture.config.jwtSecret, 3600);
+    const std::string forged = selfvoy::jwt::sign(claims, fixture.config.jwtSecret, 3600);
 
     auto attacker = fixture.makeSession("attacker");
     Json auth = Json::object();
@@ -2496,15 +2541,15 @@ TEST(audit_h3_json_many_keys_and_preauth_frame) {
     ok += "}";
     CHECK_EQ(Json::parse(ok).keys().size(), Json::kMaxObjectKeys);
 
-    // До входа кадр больше AURA_MAX_PREAUTH_FRAME закрывает соединение.
-    aura::Config config;
+    // До входа кадр больше SELFVOY_MAX_PREAUTH_FRAME закрывает соединение.
+    selfvoy::Config config;
     config.maxPreAuthFrameBytes = 1024;
     config.authTimeoutSec = 0;
     int fds[2] = {-1, -1};
     CHECK_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
-    auto session = std::make_shared<aura::Session>(fds[1], "big", "127.0.0.1:1", config);
+    auto session = std::make_shared<selfvoy::Session>(fds[1], "big", "127.0.0.1:1", config);
     bool handled = false;
-    std::thread reader([&] { session->readLoop([&](std::shared_ptr<aura::Session>, const Json&) { handled = true; }); });
+    std::thread reader([&] { session->readLoop([&](std::shared_ptr<selfvoy::Session>, const Json&) { handled = true; }); });
     const std::string frame = audit::maskedFrame(R"({"type":"ping","payload":{"x":")" + std::string(4000, 'a') + "\"}}");
     CHECK(::send(fds[0], frame.data(), frame.size(), 0) > 0);
     reader.join();
@@ -2515,23 +2560,23 @@ TEST(audit_h3_json_many_keys_and_preauth_frame) {
 
 TEST(audit_h4_argon2_gate_and_register_limits) {
     // Параллельные Argon2id ограничены числом ядер.
-    aura::crypto::resetArgon2Peak();
-    const int limit = aura::crypto::argon2Stats().limit;
+    selfvoy::crypto::resetArgon2Peak();
+    const int limit = selfvoy::crypto::argon2Stats().limit;
     CHECK(limit >= 1);
     std::vector<std::thread> workers;
     for (int i = 0; i < limit + 3; ++i) {
-        workers.emplace_back([] { aura::crypto::hashPassword("pass1234"); });
+        workers.emplace_back([] { selfvoy::crypto::hashPassword("pass1234"); });
     }
     for (auto& worker : workers) worker.join();
-    CHECK(aura::crypto::argon2Stats().peak <= limit);
-    CHECK_EQ(aura::crypto::argon2Stats().inFlight, 0);
+    CHECK(selfvoy::crypto::argon2Stats().peak <= limit);
+    CHECK_EQ(selfvoy::crypto::argon2Stats().inFlight, 0);
 
-    ::setenv("AURA_REGISTER_PER_IP_HOUR", "2", 1);
+    ::setenv("SELFVOY_REGISTER_PER_IP_HOUR", "2", 1);
     {
         Fixture fixture;
         auto session = fixture.makeSession("reg");
         Json reg = Json::object();
-        reg.set("password", Json("aura1234"));
+        reg.set("password", Json("selfvoy1234"));
         reg.set("email", Json("r1@example.com"));
         CHECK_EQ(fixture.call(session, "auth.register", reg).getString("type"), std::string("ok"));
         // Дубликат отсекается до хэширования и не расходует лимит регистраций.
@@ -2539,12 +2584,12 @@ TEST(audit_h4_argon2_gate_and_register_limits) {
         reg.set("email", Json("r2@example.com"));
         CHECK_EQ(fixture.call(session, "auth.register", reg).getString("type"), std::string("ok"));
         // Третья регистрация с того же IP (другой порт) за час — отказ.
-        auto other = std::make_shared<aura::Session>(-1, "reg2", "127.0.0.1:5555", fixture.config);
+        auto other = std::make_shared<selfvoy::Session>(-1, "reg2", "127.0.0.1:5555", fixture.config);
         reg.set("email", Json("r3@example.com"));
         const Json third = fixture.call(other, "auth.register", reg);
         CHECK_EQ(third.getString("code"), std::string("forbidden"));
     }
-    ::unsetenv("AURA_REGISTER_PER_IP_HOUR");
+    ::unsetenv("SELFVOY_REGISTER_PER_IP_HOUR");
 }
 
 TEST(audit_h5_verify_code_attempts) {
@@ -2552,7 +2597,7 @@ TEST(audit_h5_verify_code_attempts) {
     auto session = fixture.makeSession("verify");
     Json reg = Json::object();
     reg.set("email", Json("squat@example.com"));
-    reg.set("password", Json("aura1234"));
+    reg.set("password", Json("selfvoy1234"));
     const std::string code = integration::payloadOf(fixture.call(session, "auth.register", reg)).getString("email_code");
     CHECK_EQ(code.size(), static_cast<std::size_t>(6));
 
@@ -2575,18 +2620,18 @@ TEST(audit_h5_verify_code_attempts) {
 }
 
 TEST(audit_h6_totp_bruteforce_and_ip_key) {
-    CHECK_EQ(aura::Session::ipOf("127.0.0.1:54321"), std::string("127.0.0.1"));
-    CHECK_EQ(aura::Session::ipOf("2001:db8::1:443"), std::string("2001:db8::1"));
-    CHECK_EQ(aura::Session::ipOf("10.0.0.1"), std::string("10.0.0.1"));
+    CHECK_EQ(selfvoy::Session::ipOf("127.0.0.1:54321"), std::string("127.0.0.1"));
+    CHECK_EQ(selfvoy::Session::ipOf("2001:db8::1:443"), std::string("2001:db8::1"));
+    CHECK_EQ(selfvoy::Session::ipOf("10.0.0.1"), std::string("10.0.0.1"));
 
     Fixture fixture;
     auto owner = fixture.makeSession("erin");
     fixture.registerUser(owner, "erin@example.com", "Эрин");
     const std::string secret = integration::payloadOf(fixture.call(owner, "auth.setup2fa")).getString("secret");
     std::string raw;
-    CHECK(aura::totp::decodeSecretBase32(secret, raw));
+    CHECK(selfvoy::totp::decodeSecretBase32(secret, raw));
     Json confirm = Json::object();
-    confirm.set("code", Json(aura::totp::codeNow(raw)));
+    confirm.set("code", Json(selfvoy::totp::codeNow(raw)));
     CHECK_EQ(fixture.call(owner, "auth.confirm2fa", confirm).getString("type"), std::string("ok"));
 
     // H7: повторный setup2fa при включённой 2FA — отказ, 2FA остаётся включённой.
@@ -2594,11 +2639,11 @@ TEST(audit_h6_totp_bruteforce_and_ip_key) {
     CHECK(fixture.call(owner, "auth.status2fa").get("payload").getBool("enabled"));
 
     // Перебор TOTP с переподключениями и «верным паролем» между попытками.
-    const std::string valid = aura::totp::codeNow(raw);
-    Json attempt = audit::loginPayload("erin@example.com", "aura1234");
+    const std::string valid = selfvoy::totp::codeNow(raw);
+    Json attempt = audit::loginPayload("erin@example.com", "selfvoy1234");
     int wrong = 0;
     for (int i = 0; i < 5; ++i) {
-        auto attacker = std::make_shared<aura::Session>(-1, "atk", "127.0.0.1:" + std::to_string(40000 + i), fixture.config);
+        auto attacker = std::make_shared<selfvoy::Session>(-1, "atk", "127.0.0.1:" + std::to_string(40000 + i), fixture.config);
         CHECK_EQ(fixture.call(attacker, "auth.login", attempt).getString("code"), std::string("requires_2fa"));
         Json guess = attempt;
         guess.set("code", Json(valid == "000000" ? std::string("000001") : std::string("000000")));
@@ -2606,10 +2651,10 @@ TEST(audit_h6_totp_bruteforce_and_ip_key) {
     }
     CHECK_EQ(wrong, 5);
     // Лимит исчерпан: даже верный код отклоняется до конца окна.
-    auto late = std::make_shared<aura::Session>(-1, "late", "127.0.0.1:49999", fixture.config);
-    const std::int64_t next = (std::time(nullptr) / aura::totp::kPeriod + 1) * aura::totp::kPeriod;
+    auto late = std::make_shared<selfvoy::Session>(-1, "late", "127.0.0.1:49999", fixture.config);
+    const std::int64_t next = (std::time(nullptr) / selfvoy::totp::kPeriod + 1) * selfvoy::totp::kPeriod;
     Json good = attempt;
-    good.set("code", Json(aura::totp::codeAt(raw, next)));
+    good.set("code", Json(selfvoy::totp::codeAt(raw, next)));
     CHECK_EQ(fixture.call(late, "auth.login2fa", good).getString("code"), std::string("forbidden"));
 }
 
@@ -2618,8 +2663,8 @@ TEST(audit_h8_open_connections_follow_revocation) {
     auto first = fixture.makeSession("first");
     fixture.registerUser(first, "bob@example.com", "Боб");
     // Второе соединение не через makeSession (иначе закроется сокет первого).
-    auto second = std::make_shared<aura::Session>(-1, "second", "127.0.0.1:2", fixture.config);
-    CHECK_EQ(fixture.call(second, "auth.login", audit::loginPayload("bob@example.com", "aura1234")).getString("type"),
+    auto second = std::make_shared<selfvoy::Session>(-1, "second", "127.0.0.1:2", fixture.config);
+    CHECK_EQ(fixture.call(second, "auth.login", audit::loginPayload("bob@example.com", "selfvoy1234")).getString("type"),
              std::string("ok"));
     CHECK_EQ(fixture.call(first, "auth.me").getString("type"), std::string("ok"));
 
@@ -2633,7 +2678,7 @@ TEST(audit_h8_open_connections_follow_revocation) {
     CHECK(second->authenticated());
 
     // Отзыв в обход сервера (другой экземпляр/администратор): соединение
-    // перепроверяется по БД не реже AURA_AUTH_RECHECK.
+    // перепроверяется по БД не реже SELFVOY_AUTH_RECHECK.
     fixture.server->database().db().revokeSession(second->jwtId());
     CHECK_EQ(fixture.call(second, "auth.me").getString("type"), std::string("ok"));  // в пределах окна кэша
     CHECK_EQ(fixture.server->kickUser(0, "noop"), static_cast<std::size_t>(0));  // userId=0 — ничего
@@ -2641,7 +2686,7 @@ TEST(audit_h8_open_connections_follow_revocation) {
 }
 
 TEST(audit_h8_recheck_every_request) {
-    ::setenv("AURA_AUTH_RECHECK", "0", 1);
+    ::setenv("SELFVOY_AUTH_RECHECK", "0", 1);
     {
         Fixture fixture;
         auto session = fixture.makeSession("recheck");
@@ -2651,16 +2696,16 @@ TEST(audit_h8_recheck_every_request) {
         CHECK_EQ(fixture.call(session, "auth.me").getString("code"), std::string("unauthorized"));
         CHECK(!session->authenticated());
     }
-    ::unsetenv("AURA_AUTH_RECHECK");
+    ::unsetenv("SELFVOY_AUTH_RECHECK");
 }
 
 TEST(audit_h9_agent_ask_requires_membership) {
     Fixture fixture;
     auto anna = fixture.makeSession("anna");
     fixture.registerUser(anna, "anna9@example.com", "Анна");
-    auto bob = std::make_shared<aura::Session>(-1, "bob", "127.0.0.1:3", fixture.config);
+    auto bob = std::make_shared<selfvoy::Session>(-1, "bob", "127.0.0.1:3", fixture.config);
     fixture.registerUser(bob, "bob9@example.com", "Боб");
-    auto eve = std::make_shared<aura::Session>(-1, "eve", "127.0.0.1:4", fixture.config);
+    auto eve = std::make_shared<selfvoy::Session>(-1, "eve", "127.0.0.1:4", fixture.config);
     fixture.registerUser(eve, "eve9@example.com", "Ева");
 
     Json open = Json::object();
@@ -2702,20 +2747,20 @@ TEST(audit_m10_refresh_revoked_with_sessions) {
 
     // Выход отзывает refresh-токен этого устройства.
     fixture.call(session, "auth.logout");
-    auto probe = std::make_shared<aura::Session>(-1, "probe", "127.0.0.1:7", fixture.config);
+    auto probe = std::make_shared<selfvoy::Session>(-1, "probe", "127.0.0.1:7", fixture.config);
     Json refresh = Json::object();
     refresh.set("refresh_token", Json(refresh1));
     CHECK_EQ(fixture.call(probe, "auth.refresh", refresh).getString("code"), std::string("unauthorized"));
 
     // revokeAll с устройства B: refresh устройства A мёртв, своего — жив.
-    auto deviceA = std::make_shared<aura::Session>(-1, "A", "127.0.0.1:8", fixture.config);
-    auto deviceB = std::make_shared<aura::Session>(-1, "B", "127.0.0.1:9", fixture.config);
+    auto deviceA = std::make_shared<selfvoy::Session>(-1, "A", "127.0.0.1:8", fixture.config);
+    auto deviceB = std::make_shared<selfvoy::Session>(-1, "B", "127.0.0.1:9", fixture.config);
     const std::string refreshA = integration::payloadOf(
-        fixture.call(deviceA, "auth.login", audit::loginPayload("frank@example.com", "aura1234"))).getString("refresh_token");
+        fixture.call(deviceA, "auth.login", audit::loginPayload("frank@example.com", "selfvoy1234"))).getString("refresh_token");
     const std::string refreshB = integration::payloadOf(
-        fixture.call(deviceB, "auth.login", audit::loginPayload("frank@example.com", "aura1234"))).getString("refresh_token");
+        fixture.call(deviceB, "auth.login", audit::loginPayload("frank@example.com", "selfvoy1234"))).getString("refresh_token");
     CHECK_EQ(fixture.call(deviceB, "sessions.revokeAll").getString("type"), std::string("ok"));
-    auto probe2 = std::make_shared<aura::Session>(-1, "probe2", "127.0.0.1:10", fixture.config);
+    auto probe2 = std::make_shared<selfvoy::Session>(-1, "probe2", "127.0.0.1:10", fixture.config);
     refresh.set("refresh_token", Json(refreshA));
     CHECK_EQ(fixture.call(probe2, "auth.refresh", refresh).getString("code"), std::string("unauthorized"));
     refresh.set("refresh_token", Json(refreshB));
@@ -2723,8 +2768,8 @@ TEST(audit_m10_refresh_revoked_with_sessions) {
     CHECK_EQ(rotated.getString("type"), std::string("ok"));
 
     // sessions.revoke отзывает и refresh-семейство этой сессии.
-    auto deviceC = std::make_shared<aura::Session>(-1, "C", "127.0.0.1:11", fixture.config);
-    const Json loginC = fixture.call(deviceC, "auth.login", audit::loginPayload("frank@example.com", "aura1234"));
+    auto deviceC = std::make_shared<selfvoy::Session>(-1, "C", "127.0.0.1:11", fixture.config);
+    const Json loginC = fixture.call(deviceC, "auth.login", audit::loginPayload("frank@example.com", "selfvoy1234"));
     const std::string refreshC = integration::payloadOf(loginC).getString("refresh_token");
     Json revoke = Json::object();
     revoke.set("session_id", Json(integration::payloadOf(loginC).getString("session_id")));
@@ -2759,7 +2804,7 @@ TEST(audit_m13_mail_per_target_limit) {
     int issued = 0;
     for (int i = 0; i < 5; ++i) {
         // Каждый раз новое соединение (другой порт): лимит на адрес получателя.
-        auto client = std::make_shared<aura::Session>(-1, "m", "127.0.0.1:" + std::to_string(30000 + i), fixture.config);
+        auto client = std::make_shared<selfvoy::Session>(-1, "m", "127.0.0.1:" + std::to_string(30000 + i), fixture.config);
         const Json reply = fixture.call(client, "auth.forgotPassword", forgot);
         CHECK_EQ(reply.getString("type"), std::string("ok"));  // ответ одинаковый
         if (!integration::payloadOf(reply).getString("reset_code").empty()) ++issued;
@@ -2769,12 +2814,12 @@ TEST(audit_m13_mail_per_target_limit) {
 
 TEST(audit_m14_connection_limits) {
     // Неавторизованное соединение закрывается по таймауту.
-    aura::Config config;
+    selfvoy::Config config;
     config.authTimeoutSec = 1;
     config.pingIntervalSec = 0;
     int fds[2] = {-1, -1};
     CHECK_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
-    auto session = std::make_shared<aura::Session>(fds[1], "idle", "127.0.0.1:1", config);
+    auto session = std::make_shared<selfvoy::Session>(fds[1], "idle", "127.0.0.1:1", config);
     const auto started = std::chrono::steady_clock::now();
     std::thread reader([&] { session->readLoop(nullptr); });
     reader.join();
@@ -2784,7 +2829,7 @@ TEST(audit_m14_connection_limits) {
     ::close(fds[0]);
 
     // Лимит соединений с одного IP.
-    ::setenv("AURA_MAX_CONNECTIONS_PER_IP", "2", 1);
+    ::setenv("SELFVOY_MAX_CONNECTIONS_PER_IP", "2", 1);
     {
         Fixture fixture;
         const int port = fixture.server->port();
@@ -2810,14 +2855,14 @@ TEST(audit_m14_connection_limits) {
         ::close(b);
         ::close(c);
     }
-    ::unsetenv("AURA_MAX_CONNECTIONS_PER_IP");
+    ::unsetenv("SELFVOY_MAX_CONNECTIONS_PER_IP");
 }
 
 TEST(audit_m17_chat_send_kind_whitelist) {
     Fixture fixture;
     auto anna = fixture.makeSession("anna17");
     fixture.registerUser(anna, "anna17@example.com", "Анна");
-    auto bob = std::make_shared<aura::Session>(-1, "bob17", "127.0.0.1:17", fixture.config);
+    auto bob = std::make_shared<selfvoy::Session>(-1, "bob17", "127.0.0.1:17", fixture.config);
     fixture.registerUser(bob, "bob17@example.com", "Боб");
     Json open = Json::object();
     open.set("contact", Json("bob17@example.com"));
@@ -2825,14 +2870,14 @@ TEST(audit_m17_chat_send_kind_whitelist) {
 
     Json send = Json::object();
     send.set("chat_id", Json(chatId));
-    send.set("body", Json("Аура договорилась: перевод 1000 €"));
+    send.set("body", Json("Selfvoy договорился: перевод 1000 €"));
     send.set("kind", Json("agent_reply"));
     CHECK_EQ(fixture.call(anna, "chat.send", send).getString("code"), std::string("bad_request"));
     send.set("kind", Json("system"));
     CHECK_EQ(fixture.call(anna, "chat.send", send).getString("code"), std::string("bad_request"));
     send.set("kind", Json("text"));
     Json spoof = Json::object();
-    spoof.set("origin", Json("aura-agent"));
+    spoof.set("origin", Json("selfvoy-agent"));
     send.set("payload", spoof);
     CHECK_EQ(fixture.call(anna, "chat.send", send).getString("code"), std::string("bad_request"));
     send.erase("payload");
@@ -2851,7 +2896,7 @@ TEST(audit_l19_disabled_user) {
     CHECK_EQ(fixture.server->kickUser(userId, "blocked"), static_cast<std::size_t>(1));
     CHECK(!session->authenticated());
 
-    auto probe = std::make_shared<aura::Session>(-1, "p", "127.0.0.1:19", fixture.config);
+    auto probe = std::make_shared<selfvoy::Session>(-1, "p", "127.0.0.1:19", fixture.config);
     Json auth = Json::object();
     auth.set("token", Json(token));
     CHECK_EQ(fixture.call(probe, "auth.token", auth).getString("code"), std::string("unauthorized"));
@@ -2859,7 +2904,7 @@ TEST(audit_l19_disabled_user) {
     const Json wrong = fixture.call(probe, "auth.login", audit::loginPayload("dis@example.com", "wrongpass1"));
     CHECK_EQ(wrong.getString("code"), std::string("unauthorized"));
     CHECK(wrong.getString("message").find("отключ") == std::string::npos);
-    const Json right = fixture.call(probe, "auth.login", audit::loginPayload("dis@example.com", "aura1234"));
+    const Json right = fixture.call(probe, "auth.login", audit::loginPayload("dis@example.com", "selfvoy1234"));
     CHECK_EQ(right.getString("code"), std::string("forbidden"));
 }
 
@@ -2871,7 +2916,7 @@ TEST(audit_l21_races_are_atomic) {
     const long long userId = session->userId();
 
     // Двойное подтверждение: исполняет только первый claim.
-    aura::PendingActionRecord pending;
+    selfvoy::PendingActionRecord pending;
     pending.userId = userId;
     pending.tool = "create_note";
     pending.args.set("text", Json("заметка"));
@@ -2883,13 +2928,13 @@ TEST(audit_l21_races_are_atomic) {
 
     // Одновременный refresh: второй отзыв того же токена не проходит.
     const std::string refresh = integration::payloadOf(logged).getString("refresh_token");
-    const auto record = db.findRefreshToken(aura::crypto::toHex(aura::crypto::sha256(refresh)));
+    const auto record = db.findRefreshToken(selfvoy::crypto::toHex(selfvoy::crypto::sha256(refresh)));
     CHECK(record.has_value());
     CHECK(db.revokeRefreshToken(record->id, "").ok);
     CHECK(!db.revokeRefreshToken(record->id, "").ok);
 
     // tasks.due обрабатывает только свои напоминания.
-    auto other_user = std::make_shared<aura::Session>(-1, "o", "127.0.0.1:21", fixture.config);
+    auto other_user = std::make_shared<selfvoy::Session>(-1, "o", "127.0.0.1:21", fixture.config);
     fixture.registerUser(other_user, "race2@example.com", "Гонка2");
     Json task = Json::object();
     task.set("title", Json("чужое"));
@@ -2902,7 +2947,7 @@ TEST(audit_l21_races_are_atomic) {
 
 TEST(audit_l22_internal_errors_are_generic) {
     Fixture fixture;
-    fixture.server->registerHandler("test.throw", [](std::shared_ptr<aura::Session>, const aura::protocol::Request&) -> Json {
+    fixture.server->registerHandler("test.throw", [](std::shared_ptr<selfvoy::Session>, const selfvoy::protocol::Request&) -> Json {
         throw std::runtime_error("ERROR: relation \"users\" violates constraint users_email_key");
     });
     auto session = fixture.makeSession("throw");
@@ -2913,13 +2958,13 @@ TEST(audit_l22_internal_errors_are_generic) {
 }
 
 TEST(audit_l23_embedded_file_safety) {
-    const std::string path = "/tmp/aura-audit-db-" + std::to_string(::getpid()) + ".json";
+    const std::string path = "/tmp/selfvoy-audit-db-" + std::to_string(::getpid()) + ".json";
     {
         FILE* file = std::fopen(path.c_str(), "w");
         std::fputs("{\"users\": [ {\"id\": 1, ", file);  // обрезанный JSON
         std::fclose(file);
     }
-    auto broken = aura::makeEmbeddedDatabase(path);
+    auto broken = selfvoy::makeEmbeddedDatabase(path);
     std::string error;
     CHECK(!broken->connect(error));
     CHECK(error.find("повреждён") != std::string::npos);
@@ -2933,7 +2978,7 @@ TEST(audit_l23_embedded_file_safety) {
     }
     std::remove(path.c_str());
 
-    auto fresh = aura::makeEmbeddedDatabase(path);
+    auto fresh = selfvoy::makeEmbeddedDatabase(path);
     error.clear();
     CHECK(fresh->connect(error));
     long long id = 0;
@@ -2945,8 +2990,8 @@ TEST(audit_l23_embedded_file_safety) {
 }
 
 TEST(audit_l24_attempts_table_bounded) {
-    ::setenv("AURA_LOGIN_WINDOW", "1", 1);
-    ::setenv("AURA_MAX_IP_ATTEMPTS", "0", 1);
+    ::setenv("SELFVOY_LOGIN_WINDOW", "1", 1);
+    ::setenv("SELFVOY_MAX_IP_ATTEMPTS", "0", 1);
     {
         Fixture fixture;
         auto& auth = fixture.server->auth();
@@ -2958,20 +3003,20 @@ TEST(audit_l24_attempts_table_bounded) {
         for (int i = 0; i < 10; ++i) auth.login("late" + std::to_string(i) + "@example.com", "wrongpass1", "t", "", "127.0.0.1:1");
         CHECK(auth.attemptsSize() < 100);
     }
-    ::unsetenv("AURA_LOGIN_WINDOW");
-    ::unsetenv("AURA_MAX_IP_ATTEMPTS");
+    ::unsetenv("SELFVOY_LOGIN_WINDOW");
+    ::unsetenv("SELFVOY_MAX_IP_ATTEMPTS");
 }
 
 TEST(audit_password_unicode_rule) {
-    CHECK(aura::AuthManager::passwordError("пароль12").empty());
-    CHECK(aura::AuthManager::passwordError("Ελληνικά1").empty());
-    CHECK(aura::AuthManager::passwordError("Größe123").empty());
-    CHECK(!aura::AuthManager::passwordError("парол1").empty());     // 6 символов, хотя 11 байт
-    CHECK(!aura::AuthManager::passwordError("пароль-пароль").empty());  // нет цифр
-    CHECK(!aura::AuthManager::passwordError("12345678±").empty());  // нет букв
-    CHECK(!aura::AuthManager::passwordError(std::string("abc\xff" "12345")).empty());  // не UTF-8
-    CHECK(!aura::AuthManager::passwordError("a1" + std::string(255, 'b')).empty());   // > 256 байт
-    CHECK(aura::AuthManager::passwordError("a1" + std::string(254, 'b')).empty());    // ровно 256
+    CHECK(selfvoy::AuthManager::passwordError("пароль12").empty());
+    CHECK(selfvoy::AuthManager::passwordError("Ελληνικά1").empty());
+    CHECK(selfvoy::AuthManager::passwordError("Größe123").empty());
+    CHECK(!selfvoy::AuthManager::passwordError("парол1").empty());     // 6 символов, хотя 11 байт
+    CHECK(!selfvoy::AuthManager::passwordError("пароль-пароль").empty());  // нет цифр
+    CHECK(!selfvoy::AuthManager::passwordError("12345678±").empty());  // нет букв
+    CHECK(!selfvoy::AuthManager::passwordError(std::string("abc\xff" "12345")).empty());  // не UTF-8
+    CHECK(!selfvoy::AuthManager::passwordError("a1" + std::string(255, 'b')).empty());   // > 256 байт
+    CHECK(selfvoy::AuthManager::passwordError("a1" + std::string(254, 'b')).empty());    // ровно 256
 }
 
 TEST(audit_change_password_returns_token_pair) {
@@ -2979,11 +3024,11 @@ TEST(audit_change_password_returns_token_pair) {
     auto session = fixture.makeSession("kai2");
     const Json logged = fixture.registerUser(session, "kai2@example.com", "Кай");
     const std::string oldRefresh = integration::payloadOf(logged).getString("refresh_token");
-    auto other = std::make_shared<aura::Session>(-1, "other", "127.0.0.1:31", fixture.config);
-    fixture.call(other, "auth.login", audit::loginPayload("kai2@example.com", "aura1234"));
+    auto other = std::make_shared<selfvoy::Session>(-1, "other", "127.0.0.1:31", fixture.config);
+    fixture.call(other, "auth.login", audit::loginPayload("kai2@example.com", "selfvoy1234"));
 
     Json change = Json::object();
-    change.set("old_password", Json("aura1234"));
+    change.set("old_password", Json("selfvoy1234"));
     change.set("new_password", Json("новыйпароль1"));
     const Json changed = fixture.call(session, "auth.changePassword", change);
     CHECK_EQ(changed.getString("type"), std::string("ok"));
@@ -2996,7 +3041,7 @@ TEST(audit_change_password_returns_token_pair) {
     CHECK_EQ(fixture.call(session, "auth.me").getString("type"), std::string("ok"));
     CHECK(!other->authenticated());
     // Старый refresh мёртв, новый — работает.
-    auto probe = std::make_shared<aura::Session>(-1, "probe", "127.0.0.1:32", fixture.config);
+    auto probe = std::make_shared<selfvoy::Session>(-1, "probe", "127.0.0.1:32", fixture.config);
     Json refresh = Json::object();
     refresh.set("refresh_token", Json(oldRefresh));
     CHECK_EQ(fixture.call(probe, "auth.refresh", refresh).getString("code"), std::string("unauthorized"));
@@ -3035,18 +3080,18 @@ TEST(audit_reset_code_six_digits_with_limit) {
 }
 
 // M15: после рестарта/обрыва PostgreSQL сервер переподключается сам.
-// Запускается, только если сервер собран с libpq и задан AURA_TEST_PG_URL.
+// Запускается, только если сервер собран с libpq и задан SELFVOY_TEST_PG_URL.
 TEST(audit_m15_postgres_reconnect) {
-#ifdef AURA_WITH_LIBPQ
-    const char* url = std::getenv("AURA_TEST_PG_URL");
+#ifdef SELFVOY_WITH_LIBPQ
+    const char* url = std::getenv("SELFVOY_TEST_PG_URL");
     if (url == nullptr || *url == '\0') {
-        std::cout << "  (пропущен: AURA_TEST_PG_URL не задан)\n";
+        std::cout << "  (пропущен: SELFVOY_TEST_PG_URL не задан)\n";
         return;
     }
     const std::string base = url;
     const std::string appUrl = base + (base.find('?') == std::string::npos ? "?" : "&") +
-                               "application_name=aura-reconnect-test";
-    auto database = aura::makePostgresDatabase(appUrl);
+                               "application_name=selfvoy-reconnect-test";
+    auto database = selfvoy::makePostgresDatabase(appUrl);
     std::string error;
     CHECK(database && database->connect(error));
     if (!database) return;
@@ -3056,7 +3101,7 @@ TEST(audit_m15_postgres_reconnect) {
     CHECK(PQstatus(admin) == CONNECTION_OK);
     PGresult* killed = PQexec(admin,
         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-        "WHERE application_name = 'aura-reconnect-test' AND pid <> pg_backend_pid()");
+        "WHERE application_name = 'selfvoy-reconnect-test' AND pid <> pg_backend_pid()");
     CHECK(PQresultStatus(killed) == PGRES_TUPLES_OK && PQntuples(killed) >= 1);
     PQclear(killed);
     PQfinish(admin);
@@ -3108,11 +3153,11 @@ TEST(audit_a11_external_tools_get_no_ai_token) {
     });
 
     Fixture fixture;
-    aura::Config config = fixture.config;
+    selfvoy::Config config = fixture.config;
     config.toolsMode = "http";
     config.mapsApiUrl = "http://127.0.0.1:" + std::to_string(port) + "/places";
     config.aiServiceToken = "super-secret-ai-token";
-    aura::ToolManager tools(config, fixture.server->database(), fixture.server->chats());
+    selfvoy::ToolManager tools(config, fixture.server->database(), fixture.server->chats());
     Json args = Json::object();
     args.set("city", Json("Херлен"));
     CHECK(tools.findCafe(1, args).ok);
@@ -3120,7 +3165,7 @@ TEST(audit_a11_external_tools_get_no_ai_token) {
     ::close(listener);
     CHECK(request.find("POST /places") != std::string::npos);
     CHECK(request.find("super-secret-ai-token") == std::string::npos);
-    CHECK(request.find("X-Aura-Token") == std::string::npos);
+    CHECK(request.find("X-Selfvoy-Token") == std::string::npos);
 }
 
 // ------------------------------------------------------- админ-панель (admin.*)
@@ -3134,12 +3179,12 @@ struct Sockets {
     ~Sockets() {
         for (const int fd : fds) ::close(fd);
     }
-    std::shared_ptr<aura::Session> open(Fixture& fixture, const std::string& id) {
+    std::shared_ptr<selfvoy::Session> open(Fixture& fixture, const std::string& id) {
         int pair[2] = {-1, -1};
         if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) return nullptr;
         fds.push_back(pair[0]);
         fds.push_back(pair[1]);
-        return std::make_shared<aura::Session>(pair[1], id, "127.0.0.1:0", fixture.config);
+        return std::make_shared<selfvoy::Session>(pair[1], id, "127.0.0.1:0", fixture.config);
     }
 };
 
@@ -3169,7 +3214,7 @@ Json setRolePayload(long long userId, const std::string& role) {
 Json loginPayload(const std::string& email) {
     Json payload = Json::object();
     payload.set("email", Json(email));
-    payload.set("password", Json("aura1234"));
+    payload.set("password", Json("selfvoy1234"));
     return payload;
 }
 
@@ -3191,9 +3236,9 @@ TEST(admin_role_in_auth_payloads) {
 }
 
 TEST(admin_bootstrap_from_env_verified_only) {
-    ::setenv("AURA_ADMIN_EMAILS", "Boss@Example.com, ghost@example.com;late@example.com", 1);
+    ::setenv("SELFVOY_ADMIN_EMAILS", "Boss@Example.com, ghost@example.com;late@example.com", 1);
     Fixture fixture;
-    ::unsetenv("AURA_ADMIN_EMAILS");
+    ::unsetenv("SELFVOY_ADMIN_EMAILS");
     CHECK_EQ(fixture.config.adminEmails.empty(), false);
 
     // Подтверждённый адрес из списка — admin сразу после verifyEmail; ответ входа уже с ролью.
@@ -3208,7 +3253,7 @@ TEST(admin_bootstrap_from_env_verified_only) {
     auto ghost = fixture.makeSession("ghost");
     Json reg = Json::object();
     reg.set("email", Json("ghost@example.com"));
-    reg.set("password", Json("aura1234"));
+    reg.set("password", Json("selfvoy1234"));
     reg.set("display_name", Json("Призрак"));
     CHECK_EQ(fixture.call(ghost, "auth.register", reg).getString("type"), std::string("ok"));
     auto& db = fixture.server->database().db();
@@ -3225,7 +3270,7 @@ TEST(admin_bootstrap_from_env_verified_only) {
     // bootstrapAll при старте: пользователь подтвердился раньше, чем адрес попал в список.
     fixture.config.adminEmails = "other@example.com";
     fixture.server->stop();
-    fixture.server = std::make_unique<aura::Server>(fixture.config);
+    fixture.server = std::make_unique<selfvoy::Server>(fixture.config);
     std::string error;
     CHECK(fixture.server->start(error));
     auto& restarted = fixture.server->database().db();
@@ -3320,7 +3365,7 @@ TEST(admin_moderator_vs_admin_permissions) {
     // Роль модератора/админа — только активному пользователю с подтверждённым email.
     Json reg = Json::object();
     reg.set("email", Json("pnew@example.com"));
-    reg.set("password", Json("aura1234"));
+    reg.set("password", Json("selfvoy1234"));
     reg.set("display_name", Json("Новый"));
     fixture.call(fixture.makeSession("perm-new"), "auth.register", reg);
     const long long freshId = db.findUserByEmail("pnew@example.com")->id;
@@ -3394,7 +3439,7 @@ TEST(admin_disable_kicks_and_blocks_login) {
     // Даже живая сессия в БД (созданная в обход) не пускает заблокированного по токену.
     std::string jwtId;
     const std::string forged = fixture.server->auth().issueToken(victimId, "dvictim@example.com", jwtId);
-    aura::SessionRecord record;
+    selfvoy::SessionRecord record;
     record.id = "00000000000000000000000000000001";
     record.userId = victimId;
     record.jwtId = jwtId;
@@ -3459,7 +3504,7 @@ TEST(admin_users_filters_and_stats) {
     // Неподтверждённый пользователь.
     Json reg = Json::object();
     reg.set("email", Json("unverified@example.com"));
-    reg.set("password", Json("aura1234"));
+    reg.set("password", Json("selfvoy1234"));
     reg.set("display_name", Json("Ivan Unverified"));
     fixture.call(fixture.makeSession("flt-unv"), "auth.register", reg);
     // Модератор, заблокированный и пользователь с 2FA.
@@ -3470,7 +3515,7 @@ TEST(admin_users_filters_and_stats) {
     CHECK_EQ(fixture.call(adminSession, "admin.setActive", admin_test::setActivePayload(petrId, false, "спам"))
                  .getString("type"),
              std::string("ok"));
-    aura::TwoFactorRecord twoFactor;
+    selfvoy::TwoFactorRecord twoFactor;
     twoFactor.userId = ivanId;
     twoFactor.secretEncrypted = "x";
     twoFactor.enabled = true;
@@ -3658,8 +3703,8 @@ std::time_t future(int hours) {
 
 Json slot(std::time_t start, int minutes) {
     Json json = Json::object();
-    json.set("start", Json(aura::isoUtc(start)));
-    json.set("end", Json(aura::isoUtc(start + minutes * 60)));
+    json.set("start", Json(selfvoy::isoUtc(start)));
+    json.set("end", Json(selfvoy::isoUtc(start + minutes * 60)));
     json.set("score", Json(0.9));
     json.set("reason", Json("удобное время"));
     return json;
@@ -3670,7 +3715,7 @@ void useAi(Fixture& fixture, const std::string& url, const std::string& publicUr
     fixture.config.aiServiceUrl = url;
     fixture.config.publicUrl = publicUrl;
     fixture.server->stop();
-    fixture.server = std::make_unique<aura::Server>(fixture.config);
+    fixture.server = std::make_unique<selfvoy::Server>(fixture.config);
     std::string error;
     if (!fixture.server->start(error)) std::cout << "  не удалось перезапустить сервер: " << error << "\n";
 }
@@ -3721,7 +3766,7 @@ TEST(invite_accept_flow) {
         return body.dump();
     });
     Fixture fixture;
-    useAi(fixture, ai.url(), "https://aura.example.com");
+    useAi(fixture, ai.url(), "https://selfvoy.example.com");
     admin_test::Sockets sockets;
     auto owner = sockets.open(fixture, "invite-owner");
     fixture.registerUser(owner, "host@example.com", "Иван");
@@ -3735,12 +3780,12 @@ TEST(invite_accept_flow) {
     const Json createdPayload = integration::payloadOf(created);
     const std::string token = createdPayload.getString("token");
     CHECK_EQ(token.size(), std::size_t(43));
-    CHECK_EQ(createdPayload.getString("url"), "https://aura.example.com/#/i/" + token);
+    CHECK_EQ(createdPayload.getString("url"), "https://selfvoy.example.com/#/i/" + token);
     const Json invite = createdPayload.get("invite");
     CHECK_EQ(invite.getString("status"), std::string("open"));
     CHECK_EQ(invite.get("slots").items().size(), std::size_t(3));
-    CHECK_EQ(invite.get("slots").items().front().getString("start"), aura::isoUtc(first));
-    CHECK_EQ(invite.getString("expires_at"), aura::isoUtc(third));
+    CHECK_EQ(invite.get("slots").items().front().getString("start"), selfvoy::isoUtc(first));
+    CHECK_EQ(invite.getString("expires_at"), selfvoy::isoUtc(third));
     {
         std::lock_guard<std::mutex> lock(ai.mutex);
         // Первый запрос — проверка /healthz при старте сервера.
@@ -3758,7 +3803,7 @@ TEST(invite_accept_flow) {
     const auto stored = db.findInvite(invite.getInt("id"));
     CHECK(stored.has_value());
     CHECK(stored->tokenHash != token);
-    CHECK_EQ(stored->tokenHash, aura::InviteManager::tokenHash(token));
+    CHECK_EQ(stored->tokenHash, selfvoy::InviteManager::tokenHash(token));
     const Json listed = integration::payloadOf(fixture.call(owner, "invite.list"));
     CHECK_EQ(listed.get("invites").items().size(), std::size_t(1));
     CHECK(listed.dump().find(token) == std::string::npos);
@@ -3777,26 +3822,26 @@ TEST(invite_accept_flow) {
     CHECK_EQ(fixture.call(guest, "invite.get", tokenPayload("short")).getString("code"), std::string("not_found"));
 
     // Ошибки ввода гостя.
-    CHECK_EQ(fixture.call(guest, "invite.respond", respondPayload(token, "accept", aura::isoUtc(first + 600), "Мария"))
+    CHECK_EQ(fixture.call(guest, "invite.respond", respondPayload(token, "accept", selfvoy::isoUtc(first + 600), "Мария"))
                  .getString("code"),
              std::string("bad_request"));
-    CHECK_EQ(fixture.call(guest, "invite.respond", respondPayload(token, "accept", aura::isoUtc(first), "  "))
+    CHECK_EQ(fixture.call(guest, "invite.respond", respondPayload(token, "accept", selfvoy::isoUtc(first), "  "))
                  .getString("code"),
              std::string("bad_request"));
-    Json badEmail = respondPayload(token, "accept", aura::isoUtc(first), "Мария");
+    Json badEmail = respondPayload(token, "accept", selfvoy::isoUtc(first), "Мария");
     badEmail.set("guest_email", Json("not an email"));
     CHECK_EQ(fixture.call(guest, "invite.respond", badEmail).getString("code"), std::string("bad_request"));
 
     // Выбор времени: ответ гостя закрывает приглашение.
-    Json accept = respondPayload(token, "accept", aura::isoUtc(second), "Мария");
+    Json accept = respondPayload(token, "accept", selfvoy::isoUtc(second), "Мария");
     accept.set("guest_email", Json("maria@example.com"));
     accept.set("comment", Json("Возьму ноутбук"));
     const Json accepted = fixture.call(guest, "invite.respond", accept);
     CHECK_EQ(accepted.getString("type"), std::string("ok"));
     const Json acceptedView = integration::payloadOf(accepted).get("invite");
     CHECK_EQ(acceptedView.getString("status"), std::string("accepted"));
-    CHECK_EQ(acceptedView.get("chosen").getString("start"), aura::isoUtc(second));
-    CHECK_EQ(acceptedView.get("chosen").getString("end"), aura::isoUtc(second + 3600));
+    CHECK_EQ(acceptedView.get("chosen").getString("start"), selfvoy::isoUtc(second));
+    CHECK_EQ(acceptedView.get("chosen").getString("end"), selfvoy::isoUtc(second + 3600));
     CHECK_EQ(acceptedView.get("slots").items().size(), std::size_t(0));
     // Повторный ответ (в т.ч. отказ) — conflict.
     CHECK_EQ(fixture.call(guest, "invite.respond", respondPayload(token, "decline", "", "Мария")).getString("code"),
@@ -3818,8 +3863,8 @@ TEST(invite_accept_flow) {
         taskFound = true;
         // Сравниваем моменты, а не строки: PostgreSQL и встроенная БД пишут «.000Z».
         std::time_t due = 0, remind = 0;
-        CHECK(aura::parseIsoUtc(task.getString("due_at"), due));
-        CHECK(aura::parseIsoUtc(task.getString("remind_at"), remind));
+        CHECK(selfvoy::parseIsoUtc(task.getString("due_at"), due));
+        CHECK(selfvoy::parseIsoUtc(task.getString("remind_at"), remind));
         CHECK_EQ(due, second);
         CHECK_EQ(remind, second - 900);
         CHECK(task.getString("notes").find("maria@example.com") != std::string::npos);
@@ -3836,14 +3881,14 @@ TEST(invite_accept_flow) {
     for (const auto& item : notifications.items()) {
         if (item.getString("kind") == "invite.accepted") {
             notified = true;
-            CHECK_EQ(item.get("payload").getString("start"), aura::isoUtc(second));
+            CHECK_EQ(item.get("payload").getString("start"), selfvoy::isoUtc(second));
         }
     }
     CHECK(notified);
     // Страница гостя после выбора: время видно, слотов нет.
     const Json reopened = integration::payloadOf(fixture.call(guest, "invite.get", tokenPayload(token))).get("invite");
     CHECK_EQ(reopened.getString("status"), std::string("accepted"));
-    CHECK_EQ(reopened.get("chosen").getString("start"), aura::isoUtc(second));
+    CHECK_EQ(reopened.get("chosen").getString("start"), selfvoy::isoUtc(second));
 }
 
 TEST(invite_busy_cancel_and_decline) {
@@ -3866,19 +3911,19 @@ TEST(invite_busy_cancel_and_decline) {
     const Json a = integration::payloadOf(fixture.call(owner, "invite.create", createPayload("Созвон")));
     const Json b = integration::payloadOf(fixture.call(owner, "invite.create", createPayload("Обед")));
     const Json c = integration::payloadOf(fixture.call(owner, "invite.create", createPayload("Прогулка")));
-    CHECK_EQ(a.getString("url"), std::string());  // AURA_PUBLIC_URL не задан
+    CHECK_EQ(a.getString("url"), std::string());  // SELFVOY_PUBLIC_URL не задан
     auto guest = sockets.open(fixture, "busy-guest");
 
     // Время, занятое гостем приглашения A, исчезает из B и не принимается в B.
     CHECK_EQ(fixture.call(guest, "invite.respond",
-                          respondPayload(a.getString("token"), "accept", aura::isoUtc(first), "Пётр"))
+                          respondPayload(a.getString("token"), "accept", selfvoy::isoUtc(first), "Пётр"))
                  .getString("type"),
              std::string("ok"));
     const Json bView = integration::payloadOf(fixture.call(guest, "invite.get", tokenPayload(b.getString("token"))));
     CHECK_EQ(bView.get("invite").get("slots").items().size(), std::size_t(1));
-    CHECK_EQ(bView.get("invite").get("slots").items().front().getString("start"), aura::isoUtc(second));
+    CHECK_EQ(bView.get("invite").get("slots").items().front().getString("start"), selfvoy::isoUtc(second));
     const Json taken = fixture.call(guest, "invite.respond",
-                                    respondPayload(b.getString("token"), "accept", aura::isoUtc(first), "Анна"));
+                                    respondPayload(b.getString("token"), "accept", selfvoy::isoUtc(first), "Анна"));
     CHECK_EQ(taken.getString("code"), std::string("conflict"));
     CHECK(taken.getString("message").find("занято") != std::string::npos);
 
@@ -3908,7 +3953,7 @@ TEST(invite_busy_cancel_and_decline) {
     CHECK_EQ(integration::payloadOf(cancelled).get("invite").getString("status"), std::string("cancelled"));
     CHECK_EQ(fixture.call(owner, "invite.cancel", byId).getString("code"), std::string("conflict"));
     CHECK_EQ(fixture.call(guest, "invite.respond",
-                          respondPayload(c.getString("token"), "accept", aura::isoUtc(second), "Пётр"))
+                          respondPayload(c.getString("token"), "accept", selfvoy::isoUtc(second), "Пётр"))
                  .getString("code"),
              std::string("conflict"));
     CHECK_EQ(integration::payloadOf(fixture.call(guest, "invite.get", tokenPayload(c.getString("token"))))
@@ -3949,15 +3994,15 @@ TEST(invite_validation_limits_and_upstream) {
     auto again = sockets.open(fixture, "inv-owner-2");
     Json login = Json::object();
     login.set("email", Json("limits@example.com"));
-    login.set("password", Json("aura1234"));
+    login.set("password", Json("selfvoy1234"));
     CHECK_EQ(fixture.call(again, "auth.login", login).getString("type"), std::string("ok"));
     CHECK_EQ(fixture.call(again, "invite.create", createPayload("Кофе")).getString("code"), std::string("conflict"));
 
     // Лимит ответов гостя с одного IP.
     std::string lastCode;
-    for (int i = 0; i <= aura::InviteManager::kRespondPerMinute; ++i) {
+    for (int i = 0; i <= selfvoy::InviteManager::kRespondPerMinute; ++i) {
         lastCode = fixture.call(anonymous, "invite.respond",
-                                respondPayload(std::string(43, 'B'), "accept", aura::isoUtc(future(30)), "Гость"))
+                                respondPayload(std::string(43, 'B'), "accept", selfvoy::isoUtc(future(30)), "Гость"))
                        .getString("code");
     }
     CHECK_EQ(lastCode, std::string("forbidden"));
@@ -3965,15 +4010,15 @@ TEST(invite_validation_limits_and_upstream) {
 
 TEST(invite_effective_status_and_open_limit) {
     using namespace invite_test;
-    aura::InviteRecord record;
+    selfvoy::InviteRecord record;
     record.status = "open";
-    record.expiresAt = aura::isoUtc(std::time(nullptr) - 60);
-    CHECK_EQ(aura::InviteManager::effectiveStatus(record, std::time(nullptr)), std::string("expired"));
-    record.expiresAt = aura::isoUtc(std::time(nullptr) + 3600);
-    CHECK_EQ(aura::InviteManager::effectiveStatus(record, std::time(nullptr)), std::string("open"));
+    record.expiresAt = selfvoy::isoUtc(std::time(nullptr) - 60);
+    CHECK_EQ(selfvoy::InviteManager::effectiveStatus(record, std::time(nullptr)), std::string("expired"));
+    record.expiresAt = selfvoy::isoUtc(std::time(nullptr) + 3600);
+    CHECK_EQ(selfvoy::InviteManager::effectiveStatus(record, std::time(nullptr)), std::string("open"));
     record.status = "declined";
-    CHECK_EQ(aura::InviteManager::effectiveStatus(record, std::time(nullptr)), std::string("declined"));
-    CHECK_EQ(aura::InviteManager::tokenHash("bad token with spaces and 43 symbols long.."), std::string());
+    CHECK_EQ(selfvoy::InviteManager::effectiveStatus(record, std::time(nullptr)), std::string("declined"));
+    CHECK_EQ(selfvoy::InviteManager::tokenHash("bad token with spaces and 43 symbols long.."), std::string());
 
     // Не больше kMaxOpenInvites открытых приглашений у владельца.
     const std::time_t start = future(30);
@@ -3989,7 +4034,7 @@ TEST(invite_effective_status_and_open_limit) {
     admin_test::Sockets sockets;
     auto owner = sockets.open(fixture, "open-limit");
     fixture.registerUser(owner, "many@example.com", "Много");
-    for (int i = 0; i < aura::InviteManager::kMaxOpenInvites; ++i) {
+    for (int i = 0; i < selfvoy::InviteManager::kMaxOpenInvites; ++i) {
         CHECK_EQ(fixture.call(owner, "invite.create", createPayload("Встреча " + std::to_string(i), 30))
                      .getString("type"),
                  std::string("ok"));
@@ -4049,7 +4094,7 @@ Json slugPayload(const std::string& slug) {
 
 Json bookPayload(const std::string& slug, std::time_t start, const std::string& name, long long count = 1) {
     Json payload = slugPayload(slug);
-    payload.set("start", Json(aura::isoUtc(start)));
+    payload.set("start", Json(selfvoy::isoUtc(start)));
     payload.set("guest_name", Json(name));
     if (count != 1) payload.set("count", Json(count));
     return payload;
@@ -4058,15 +4103,15 @@ Json bookPayload(const std::string& slug, std::time_t start, const std::string& 
 Json tokenPayload(const std::string& token) { return invite_test::tokenPayload(token); }
 
 // Письма гостям уходят из фоновой очереди — ждём, пока ящик dev перестанет меняться.
-std::vector<aura::MailNotice> settledOutbox() {
-    std::size_t last = aura::devOutbox().size();
+std::vector<selfvoy::MailNotice> settledOutbox() {
+    std::size_t last = selfvoy::devOutbox().size();
     for (int i = 0; i < 60; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        const std::size_t now = aura::devOutbox().size();
+        const std::size_t now = selfvoy::devOutbox().size();
         if (now == last && i >= 2) break;
         last = now;
     }
-    return aura::devOutbox();
+    return selfvoy::devOutbox();
 }
 
 // Ответ поддельного AI на POST /v1/agent/series: повторы ровно через неделю
@@ -4074,16 +4119,16 @@ std::vector<aura::MailNotice> settledOutbox() {
 std::string seriesBody(const std::string& request) {
     const Json body = Json::parse(request.substr(request.find("\r\n\r\n") + 4));
     std::time_t start = 0;
-    aura::parseIsoUtc(body.getString("start"), start);
+    selfvoy::parseIsoUtc(body.getString("start"), start);
     const long long minutes = body.getInt("duration_minutes", 60);
     Json occurrences = Json::array();
     for (long long k = 0; k < body.getInt("count", 1); ++k) {
         const std::time_t at = start + k * 7 * 86400;
         Json item = Json::object();
-        item.set("start", Json(aura::isoUtc(at)));
-        item.set("end", Json(aura::isoUtc(at + minutes * 60)));
-        item.set("day", Json(aura::isoUtc(at).substr(0, 10)));
-        item.set("local", Json(aura::isoUtc(at).substr(0, 16)));
+        item.set("start", Json(selfvoy::isoUtc(at)));
+        item.set("end", Json(selfvoy::isoUtc(at + minutes * 60)));
+        item.set("day", Json(selfvoy::isoUtc(at).substr(0, 10)));
+        item.set("local", Json(selfvoy::isoUtc(at).substr(0, 16)));
         occurrences.push(item);
     }
     Json answer = Json::object();
@@ -4094,7 +4139,7 @@ std::string seriesBody(const std::string& request) {
 bool hasSlot(const Json& page, std::time_t start) {
     const Json slots = page.get("slots");  // get() возвращает копию: держим её до конца цикла
     for (const auto& slot : slots.items()) {
-        if (slot.getString("start") == aura::isoUtc(start)) return true;
+        if (slot.getString("start") == selfvoy::isoUtc(start)) return true;
     }
     return false;
 }
@@ -4106,7 +4151,7 @@ bool isBusy(Fixture& fixture, long long ownerId, std::time_t start) {
     return false;
 }
 
-int countTasks(Fixture& fixture, const std::shared_ptr<aura::Session>& owner, const std::string& title) {
+int countTasks(Fixture& fixture, const std::shared_ptr<selfvoy::Session>& owner, const std::string& title) {
     int count = 0;
     const Json tasks = integration::payloadOf(fixture.call(owner, "tasks.list")).get("tasks");
     for (const auto& task : tasks.items()) {
@@ -4115,7 +4160,7 @@ int countTasks(Fixture& fixture, const std::shared_ptr<aura::Session>& owner, co
     return count;
 }
 
-int countNotifications(Fixture& fixture, const std::shared_ptr<aura::Session>& owner, const std::string& kind) {
+int countNotifications(Fixture& fixture, const std::shared_ptr<selfvoy::Session>& owner, const std::string& kind) {
     int count = 0;
     const Json list = integration::payloadOf(fixture.call(owner, "notifications.list")).get("notifications");
     for (const auto& item : list.items()) {
@@ -4131,7 +4176,7 @@ TEST(booking_page_book_reschedule_cancel) {
     const std::time_t first = future(26);
     const std::time_t second = first + 2 * 3600;
     const std::time_t third = first + 4 * 3600;
-    const std::string day = aura::isoUtc(first).substr(0, 10);
+    const std::string day = selfvoy::isoUtc(first).substr(0, 10);
     // AI предлагает и лишнее (прошлое, чужая длительность, пересечение) — сервер отбрасывает.
     FakeAi* self = nullptr;
     FakeAi ai([&] {
@@ -4152,7 +4197,7 @@ TEST(booking_page_book_reschedule_cancel) {
     });
     self = &ai;
     Fixture fixture;
-    invite_test::useAi(fixture, ai.url(), "https://aura.example.com");
+    invite_test::useAi(fixture, ai.url(), "https://selfvoy.example.com");
     admin_test::Sockets sockets;
     auto owner = sockets.open(fixture, "booking-owner");
     fixture.registerUser(owner, "coach@example.com", "Ольга");
@@ -4175,8 +4220,8 @@ TEST(booking_page_book_reschedule_cancel) {
     CHECK_EQ(created.getString("type"), std::string("ok"));
     const Json page = integration::payloadOf(created).get("page");
     const std::string slug = page.getString("slug");
-    CHECK(aura::BookingManager::validSlug(slug));
-    CHECK_EQ(page.getString("url"), "https://aura.example.com/#/b/" + slug);
+    CHECK(selfvoy::BookingManager::validSlug(slug));
+    CHECK_EQ(page.getString("url"), "https://selfvoy.example.com/#/b/" + slug);
     CHECK_EQ(page.getString("status"), std::string("active"));
     CHECK_EQ(page.getInt("max_series"), 3LL);
 
@@ -4223,17 +4268,17 @@ TEST(booking_page_book_reschedule_cancel) {
     }
     const std::string token = integration::payloadOf(booked).getString("token");
     CHECK_EQ(token.size(), std::size_t(43));
-    CHECK_EQ(integration::payloadOf(booked).getString("url"), "https://aura.example.com/#/m/" + token);
+    CHECK_EQ(integration::payloadOf(booked).getString("url"), "https://selfvoy.example.com/#/m/" + token);
     const Json bookedView = integration::payloadOf(booked).get("booking");
     CHECK_EQ(bookedView.get("occurrences").items().size(), std::size_t(2));
-    CHECK_EQ(bookedView.get("occurrences").at(1).getString("start"), aura::isoUtc(first + 7 * 86400));
-    CHECK_EQ(bookedView.get("occurrences").at(1).getString("local"), aura::isoUtc(first + 7 * 86400).substr(0, 16));
+    CHECK_EQ(bookedView.get("occurrences").at(1).getString("start"), selfvoy::isoUtc(first + 7 * 86400));
+    CHECK_EQ(bookedView.get("occurrences").at(1).getString("local"), selfvoy::isoUtc(first + 7 * 86400).substr(0, 16));
     CHECK(isBusy(fixture, ownerId, first));
     CHECK(isBusy(fixture, ownerId, first + 7 * 86400));
     CHECK_EQ(countTasks(fixture, owner, "Запись: Консультация — Пётр"), 2);
     CHECK_EQ(countNotifications(fixture, owner, "booking.created"), 1);
     // В БД только хэш токена; повторная запись на занятое время — conflict.
-    const auto stored = fixture.server->database().db().findBookingByToken(aura::BookingManager::tokenHash(token));
+    const auto stored = fixture.server->database().db().findBookingByToken(selfvoy::BookingManager::tokenHash(token));
     CHECK(stored.has_value());
     CHECK(stored && stored->manageHash != token);
     CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, first, "Анна")).getString("code"),
@@ -4258,23 +4303,23 @@ TEST(booking_page_book_reschedule_cancel) {
     CHECK_EQ(managed.getInt("reschedules_left"), 3LL);
     CHECK(hasSlot(managed, third));
     Json move = tokenPayload(token);
-    move.set("start", Json(aura::isoUtc(third)));
+    move.set("start", Json(selfvoy::isoUtc(third)));
     const Json moved = fixture.call(guest, "booking.reschedule", move);
     CHECK_EQ(moved.getString("type"), std::string("ok"));
     const Json movedView = integration::payloadOf(moved).get("booking");
-    CHECK_EQ(movedView.get("occurrences").at(0).getString("start"), aura::isoUtc(third));
+    CHECK_EQ(movedView.get("occurrences").at(0).getString("start"), selfvoy::isoUtc(third));
     CHECK_EQ(movedView.getInt("reschedules_left"), 2LL);
     CHECK(!isBusy(fixture, ownerId, first));
     CHECK(isBusy(fixture, ownerId, third));
     CHECK_EQ(countTasks(fixture, owner, "Запись: Консультация — Пётр"), 2);
     CHECK_EQ(countNotifications(fixture, owner, "booking.rescheduled"), 1);
     // На занятое время перенести нельзя.
-    move.set("start", Json(aura::isoUtc(second)));
+    move.set("start", Json(selfvoy::isoUtc(second)));
     CHECK_EQ(fixture.call(guest, "booking.reschedule", move).getString("code"), std::string("conflict"));
 
     // Отмена второй встречи серии, затем всех оставшихся.
     Json cancelOne = tokenPayload(token);
-    cancelOne.set("occurrence", Json(aura::isoUtc(first + 7 * 86400)));
+    cancelOne.set("occurrence", Json(selfvoy::isoUtc(first + 7 * 86400)));
     const Json oneCancelled = fixture.call(guest, "booking.cancel", cancelOne);
     CHECK_EQ(oneCancelled.getString("type"), std::string("ok"));
     CHECK_EQ(integration::payloadOf(oneCancelled).get("booking").getString("status"), std::string("active"));
@@ -4299,7 +4344,7 @@ TEST(booking_page_book_reschedule_cancel) {
             if (notice.to != "petr@example.com") continue;
             if (notice.kind == "booking.created") {
                 ++created;
-                CHECK_EQ(notice.linkUrl, "https://aura.example.com/#/m/" + token);
+                CHECK_EQ(notice.linkUrl, "https://selfvoy.example.com/#/m/" + token);
                 CHECK_EQ(notice.lines.size(), std::size_t(2));
                 // Тема — только текст сервера; название страницы — в теле письма.
                 CHECK(notice.subject.find("Консультация") == std::string::npos);
@@ -4423,11 +4468,11 @@ TEST(booking_ai_unavailable) {
 // от остальных заголовок игнорируется — иначе лимиты гостей обходились бы подделкой.
 TEST(session_forwarded_for_trusted_proxy) {
     const auto shake = [](const std::string& peer, const std::string& trusted, const std::string& xff) {
-        aura::Config config;
+        selfvoy::Config config;
         config.trustedProxies = trusted;
         int fds[2] = {-1, -1};
         CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
-        aura::Session session(fds[1], "xff", peer, config);
+        selfvoy::Session session(fds[1], "xff", peer, config);
         const std::string request = "GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                                     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
                                     "X-Forwarded-For: " + xff + "\r\n\r\n";
@@ -4447,17 +4492,17 @@ TEST(session_forwarded_for_trusted_proxy) {
 // Одноразовые секреты: второе использование резервного кода 2FA и OAuth state не проходит
 // (иначе два параллельных запроса с одним кодом оба считались бы верными).
 TEST(one_time_secrets_single_use) {
-    auto db = aura::makeEmbeddedDatabase("");
+    auto db = selfvoy::makeEmbeddedDatabase("");
     long long userId = 0;
     CHECK(db->createUser("once@example.com", "argon2id$x", "Раз", userId).ok);
-    aura::RecoveryCodeRecord code;
+    selfvoy::RecoveryCodeRecord code;
     code.id = "11111111-1111-1111-1111-111111111111";
     code.userId = userId;
     code.codeHash = std::string(64, 'a');
     CHECK(db->replaceRecoveryCodes(userId, {code}).ok);
     CHECK(db->useRecoveryCode(code.id).ok);
     CHECK(!db->useRecoveryCode(code.id).ok);
-    aura::OauthStateRecord state;
+    selfvoy::OauthStateRecord state;
     state.state = "state-once";
     state.userId = userId;
     state.provider = "google";
@@ -4470,11 +4515,11 @@ TEST(one_time_secrets_single_use) {
 // Встроенная БД: id не переиспользуются — иначе task_id старой записи указал бы
 // на задачу другого пользователя (и отмена записи удалила бы чужую задачу).
 TEST(embedded_ids_not_reused) {
-    auto db = aura::makeEmbeddedDatabase("");
+    auto db = selfvoy::makeEmbeddedDatabase("");
     long long anna = 0, boris = 0;
     CHECK(db->createUser("ids-anna@example.com", "argon2id$x", "Анна", anna).ok);
     CHECK(db->createUser("ids-boris@example.com", "argon2id$x", "Борис", boris).ok);
-    aura::TaskRecord task;
+    selfvoy::TaskRecord task;
     task.userId = anna;
     task.title = "встреча";
     long long first = 0;
@@ -4488,8 +4533,8 @@ TEST(embedded_ids_not_reused) {
 
 // Блокировка расписания — на владельца: чужой владелец не ждёт, тот же — ждёт release().
 TEST(schedule_lock_per_owner) {
-    aura::DatabaseManager database(aura::makeEmbeddedDatabase(""));
-    aura::ScheduleLock locks(database);
+    selfvoy::DatabaseManager database(selfvoy::makeEmbeddedDatabase(""));
+    selfvoy::ScheduleLock locks(database);
     auto held = locks.acquire(1);
     CHECK(held.ok());
     const auto started = std::chrono::steady_clock::now();
@@ -4507,14 +4552,14 @@ TEST(schedule_lock_per_owner) {
 
 // Ссылку, которая приходит только письмом, нельзя менять, если письма не уходят.
 TEST(mail_provider_delivers) {
-    aura::Config config;
+    selfvoy::Config config;
     config.mailDriver = "log";
-    CHECK(!aura::makeMailProvider(config)->delivers());
+    CHECK(!selfvoy::makeMailProvider(config)->delivers());
     config.mailDriver = "dev";
     config.devMode = true;
-    CHECK(aura::makeMailProvider(config)->delivers());
+    CHECK(selfvoy::makeMailProvider(config)->delivers());
     config.mailDriver = "smtp";
-    CHECK(aura::makeMailProvider(config)->delivers());
+    CHECK(selfvoy::makeMailProvider(config)->delivers());
 }
 
 TEST(referral_register_and_verify) {
@@ -4532,7 +4577,7 @@ TEST(referral_register_and_verify) {
     auto newcomer = sockets.open(fixture, "ref-new");
     Json payload = Json::object();
     payload.set("email", Json("friend@example.com"));
-    payload.set("password", Json("aura1234"));
+    payload.set("password", Json("selfvoy1234"));
     payload.set("display_name", Json("Саша"));
     std::string lower = code;
     for (auto& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));

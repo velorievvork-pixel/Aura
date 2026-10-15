@@ -1,12 +1,12 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 import "Format.js" as F
 
 /*
   BookingPage — «Запись»: страницы записи владельца (booking.*). Постоянная
-  ссылка #/b/<slug>: люди без Aura сами выбирают свободное время (страница гостя —
+  ссылка #/b/<slug>: люди без Selfvoy сами выбирают свободное время (страница гостя —
   в веб-клиенте). Здесь — создать/изменить страницу, пауза, удаление, ссылка
   (копировать) и записи гостей с отменой. Обновляется по уведомлениям booking.*.
 */
@@ -61,9 +61,9 @@ Item {
     component Caption: Text {
         Layout.fillWidth: true
         wrapMode: Text.WordWrap
-        font.family: AuraTheme.fontFamily
-        font.pixelSize: AuraTheme.fontMicro
-        color: AuraTheme.textMuted
+        font.family: SelfvoyTheme.fontFamily
+        font.pixelSize: SelfvoyTheme.fontMicro
+        color: SelfvoyTheme.textMuted
     }
 
     component GlassSwitch: Switch {
@@ -74,9 +74,9 @@ Item {
         indicator: Rectangle {
             anchors.fill: parent
             radius: height / 2
-            color: sw.checked ? AuraTheme.accentA(0.85) : Qt.rgba(1, 1, 1, 0.12)
+            color: sw.checked ? SelfvoyTheme.accentA(0.85) : Qt.rgba(1, 1, 1, 0.12)
             border.width: 1
-            border.color: sw.checked ? AuraTheme.lilacA(0.5) : Qt.rgba(1, 1, 1, 0.18)
+            border.color: sw.checked ? SelfvoyTheme.lilacA(0.5) : Qt.rgba(1, 1, 1, 0.18)
             Rectangle {
                 width: 20; height: 20; radius: 10
                 y: 3
@@ -105,10 +105,10 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     text: "Запись"
-                    font.family: AuraTheme.fontFamily
+                    font.family: SelfvoyTheme.fontFamily
                     font.pixelSize: 38
                     font.weight: Font.Bold
-                    color: AuraTheme.textPrimary
+                    color: SelfvoyTheme.textPrimary
                 }
                 GlassButton {
                     visible: !page.formOpen
@@ -121,10 +121,10 @@ Item {
             Text {
                 Layout.fillWidth: true
                 wrapMode: Text.WordWrap
-                text: "Постоянная ссылка: люди без Aura сами выбирают свободное время в вашем расписании — можно сразу серией раз в неделю."
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontBody
-                color: AuraTheme.textSecondary
+                text: "Постоянная ссылка: люди без Selfvoy сами выбирают свободное время в вашем расписании — можно сразу серией раз в неделю."
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontBody
+                color: SelfvoyTheme.textSecondary
             }
 
             // ------------------------------------------------ форма страницы
@@ -144,10 +144,10 @@ Item {
 
                     Text {
                         text: page.editing ? "Изменить страницу" : "Новая страница записи"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontTitle
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontTitle
                         font.weight: Font.DemiBold
-                        color: AuraTheme.textPrimary
+                        color: SelfvoyTheme.textPrimary
                     }
                     GlassField {
                         id: titleField
@@ -219,10 +219,10 @@ Item {
                             spacing: 2
                             Text {
                                 text: "Выходные"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontBody
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontBody
                                 font.weight: Font.DemiBold
-                                color: AuraTheme.textPrimary
+                                color: SelfvoyTheme.textPrimary
                             }
                             Caption { text: weekendsSwitch.checked ? "Будни и выходные" : "Только будни" }
                         }
@@ -233,9 +233,9 @@ Item {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
                         text: page.formError
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.danger
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.danger
                     }
                     RowLayout {
                         spacing: 10
@@ -269,10 +269,10 @@ Item {
             // ------------------------------------------------ страницы
             Text {
                 text: "Страницы"
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontTitle
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontTitle
                 font.weight: Font.DemiBold
-                color: AuraTheme.textPrimary
+                color: SelfvoyTheme.textPrimary
             }
             Caption {
                 visible: App && App.bookingLoaded && page.pages.length === 0
@@ -298,16 +298,16 @@ Item {
                                 Layout.fillWidth: true
                                 text: card.modelData.title
                                 elide: Text.ElideRight
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontBody
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontBody
                                 font.weight: Font.DemiBold
-                                color: AuraTheme.textPrimary
+                                color: SelfvoyTheme.textPrimary
                             }
                             Text {
                                 text: card.modelData.status === "active" ? "Открыта" : "На паузе"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontMicro
-                                color: card.modelData.status === "active" ? AuraTheme.textSecondary : AuraTheme.warning
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontMicro
+                                color: card.modelData.status === "active" ? SelfvoyTheme.textSecondary : SelfvoyTheme.warning
                             }
                         }
                         Caption {
@@ -324,13 +324,13 @@ Item {
                             selectByMouse: true
                             wrapMode: TextEdit.WrapAnywhere
                             text: page.link(card.modelData)
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textPrimary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textPrimary
                         }
                         Caption {
                             visible: !card.modelData.url
-                            text: "Сервер не знает свой публичный адрес (AURA_PUBLIC_URL) — полную ссылку соберите из адреса веб-клиента."
+                            text: "Сервер не знает свой публичный адрес (SELFVOY_PUBLIC_URL) — полную ссылку соберите из адреса веб-клиента."
                         }
                         Caption {
                             text: card.modelData.upcoming > 0
@@ -372,10 +372,10 @@ Item {
             // ------------------------------------------------ записи гостей
             Text {
                 text: "Записи гостей"
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontTitle
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontTitle
                 font.weight: Font.DemiBold
-                color: AuraTheme.textPrimary
+                color: SelfvoyTheme.textPrimary
             }
             Caption {
                 visible: page.bookings.length === 0
@@ -405,16 +405,16 @@ Item {
                                 Layout.fillWidth: true
                                 text: row.modelData.guest_name + " · " + row.modelData.page_title
                                 elide: Text.ElideRight
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontBody
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontBody
                                 font.weight: Font.DemiBold
-                                color: AuraTheme.textPrimary
+                                color: SelfvoyTheme.textPrimary
                             }
                             Text {
                                 text: row.state_
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontMicro
-                                color: row.modelData.status === "cancelled" ? AuraTheme.danger : AuraTheme.textSecondary
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontMicro
+                                color: row.modelData.status === "cancelled" ? SelfvoyTheme.danger : SelfvoyTheme.textSecondary
                             }
                         }
                         Caption {

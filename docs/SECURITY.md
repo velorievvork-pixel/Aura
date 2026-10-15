@@ -1,6 +1,6 @@
-# Aura — модель безопасности
+# Selfvoy — модель безопасности
 
-Документ описывает механизмы защиты аккаунта и данных в Aura: пароли,
+Документ описывает механизмы защиты аккаунта и данных в Selfvoy: пароли,
 сессии, токены, двухфакторную аутентификацию, шифрование секретов и журнал
 событий. Все перечисленные механизмы реализованы на сервере (`server/`) и
 покрыты тестами (`server/tests/test_main.cpp`, сквозной сценарий 2FA).
@@ -51,9 +51,9 @@
 
 - Секрет TOTP **никогда не хранится в открытом виде**: он шифруется
   **AES-256-GCM** (FIPS-197 + SP 800-38D), blob = `nonce(12) ‖ ciphertext ‖ tag(16)`.
-- Ключ AES-256 (32 байта) выводится из переменной окружения `AURA_2FA_KEY`
-  (SHA-256 от её значения). В демо-режиме ключ выводится из `AURA_JWT_SECRET`.
-- AAD («aura-2fa-secret») связывает шифртекст с контекстом, исключая подмену.
+- Ключ AES-256 (32 байта) выводится из переменной окружения `SELFVOY_2FA_KEY`
+  (SHA-256 от её значения). В демо-режиме ключ выводится из `SELFVOY_JWT_SECRET`.
+- AAD («aura-2fa-secret», прежнее имя оставлено ради совместимости с уже сохранёнными данными) связывает шифртекст с контекстом, исключая подмену.
 - GCM даёт и конфиденциальность, и целостность: подделка/повреждение blob
   отклоняется по тегу.
 
@@ -141,7 +141,7 @@
 - WebAuthn/FIDO2 опирается на **асимметричную криптографию**: регистрация
   создаёт ключевую пару (обычно **ECDSA P-256**), сервер хранит публичный ключ
   и проверяет подпись вызова (challenge) при входе.
-- Текущий крипто-слой Aura реализует симметричные и хэш-примитивы
+- Текущий крипто-слой Selfvoy реализует симметричные и хэш-примитивы
   (SHA/HMAC/PBKDF2/Argon2/AES-GCM/TOTP), но **не содержит ECDSA P-256 и
   проверки подписей** — они требуют аккуратной реализации (или библиотеки),
   чтобы не внести уязвимости (например, через плохой nonce в ECDSA).
@@ -159,29 +159,29 @@
 
 | переменная | назначение |
 | --- | --- |
-| `AURA_JWT_SECRET` | секрет подписи JWT (HS256) |
-| `AURA_2FA_KEY` | ключ шифрования TOTP-секретов (AES-256-GCM); в продакшене обязателен |
-| `AURA_TOKEN_TTL` | срок жизни access-токена |
-| `AURA_REFRESH_TTL` | срок жизни refresh-токена |
-| `AURA_MAX_LOGIN_ATTEMPTS`, `AURA_LOGIN_WINDOW` | ограничение частоты попыток входа |
-| `AURA_GOOGLE_CLIENT_ID`, `AURA_GOOGLE_CLIENT_SECRET` | клиент OAuth 2.0 (Google); без них интеграции отключены |
-| `AURA_GOOGLE_AUTH_URL`, `AURA_GOOGLE_TOKEN_URL`, `AURA_GOOGLE_REVOKE_URL` | эндпоинты OAuth (по умолчанию — реальные Google) |
-| `AURA_GOOGLE_CALENDAR_URL`, `AURA_GOOGLE_GMAIL_URL` | базовые URL Calendar/Gmail API |
-| `AURA_OAUTH_STATE_TTL` | время жизни одноразового OAuth-`state` (по умолчанию 600 с) |
+| `SELFVOY_JWT_SECRET` | секрет подписи JWT (HS256) |
+| `SELFVOY_2FA_KEY` | ключ шифрования TOTP-секретов (AES-256-GCM); в продакшене обязателен |
+| `SELFVOY_TOKEN_TTL` | срок жизни access-токена |
+| `SELFVOY_REFRESH_TTL` | срок жизни refresh-токена |
+| `SELFVOY_MAX_LOGIN_ATTEMPTS`, `SELFVOY_LOGIN_WINDOW` | ограничение частоты попыток входа |
+| `SELFVOY_GOOGLE_CLIENT_ID`, `SELFVOY_GOOGLE_CLIENT_SECRET` | клиент OAuth 2.0 (Google); без них интеграции отключены |
+| `SELFVOY_GOOGLE_AUTH_URL`, `SELFVOY_GOOGLE_TOKEN_URL`, `SELFVOY_GOOGLE_REVOKE_URL` | эндпоинты OAuth (по умолчанию — реальные Google) |
+| `SELFVOY_GOOGLE_CALENDAR_URL`, `SELFVOY_GOOGLE_GMAIL_URL` | базовые URL Calendar/Gmail API |
+| `SELFVOY_OAUTH_STATE_TTL` | время жизни одноразового OAuth-`state` (по умолчанию 600 с) |
 
 ## 9. Токены интеграций (этап 9)
 
 Подключения внешних сервисов (Google Календарь, Gmail) хранят access/refresh-
 токены **только зашифрованными**: AES-256-GCM, ключ — SHA-256 от
-`AURA_JWT_SECRET` (или `AURA_2FA_KEY`, если задан), AAD —
-`aura-integration-token` (отделяет шифртексты токенов от TOTP-секретов).
+`SELFVOY_JWT_SECRET` (или `SELFVOY_2FA_KEY`, если задан), AAD —
+`aura-integration-token`, прежнее имя ради совместимости (отделяет шифртексты токенов от TOTP-секретов).
 
 - Токены никогда не отдаются клиенту: `integrations.list` возвращает только
   метаданные (`provider`, `account`, `status`, …); поля `token_encrypted` нет
   ни в одном ответе протокола.
 - OAuth 2.0 Authorization Code + **PKCE (S256)**: `code_verifier` не покидает
   сервер, `state` одноразовый (помечается использованным до обмена кода),
-  TTL — `AURA_OAUTH_STATE_TTL`; повтор/чужой `state`/несовпадение провайдера
+  TTL — `SELFVOY_OAUTH_STATE_TTL`; повтор/чужой `state`/несовпадение провайдера
   отклоняются.
 - Отзыв доступа (`integrations.revoke`) отправляет токен в Google `/revoke` и
   удаляет запись; при недоступности провайдера запись сохраняется, чтобы
@@ -201,7 +201,7 @@
 - C++-ядро **не говорит с APNs напрямую**: нет TLS/HTTP2/ES256 в net.h и
   crypto — это сознательное решение. Сервер формирует готовый APNs-конверт
   (`url`, `headers`, `payload`) и POST-ит его во внешний шлюз
-  (`AURA_PUSH_DRIVER=webhook`, `AURA_PUSH_WEBHOOK_URL`); шлюз подписывает
+  (`SELFVOY_PUSH_DRIVER=webhook`, `SELFVOY_PUSH_WEBHOOK_URL`); шлюз подписывает
   JWT ключом `.p8` и форвардит запрос в Apple. Секрет подписи в ядро не
   попадает. Драйвер `dev` (по умолчанию) честно логирует вместо имитации.
 - Уведомления — только для владельца: выборки фильтруются по `user_id`,

@@ -1,5 +1,5 @@
-// aura/smtp.cpp — SMTP-клиент: EHLO, STARTTLS/SMTPS, AUTH PLAIN/LOGIN, MIME-письмо.
-#include "aura/smtp.h"
+// selfvoy/smtp.cpp — SMTP-клиент: EHLO, STARTTLS/SMTPS, AUTH PLAIN/LOGIN, MIME-письмо.
+#include "selfvoy/smtp.h"
 
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -11,16 +11,16 @@
 #include <ctime>
 #include <initializer_list>
 
-#include "aura/crypto.h"
-#include "aura/net.h"
+#include "selfvoy/crypto.h"
+#include "selfvoy/net.h"
 
-#ifdef AURA_HAVE_OPENSSL
+#ifdef SELFVOY_HAVE_OPENSSL
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/x509v3.h>
 #endif
 
-namespace aura::smtp {
+namespace selfvoy::smtp {
 
 namespace {
 
@@ -88,7 +88,7 @@ bool isLoopback(const std::string& host) {
 class Connection {
 public:
     ~Connection() {
-#ifdef AURA_HAVE_OPENSSL
+#ifdef SELFVOY_HAVE_OPENSSL
         if (ssl_) {
             SSL_shutdown(ssl_);
             SSL_free(ssl_);
@@ -112,13 +112,13 @@ public:
     bool secure() const { return secure_; }
 
     bool startTls(const Settings& settings, std::string& error) {
-#ifdef AURA_HAVE_OPENSSL
+#ifdef SELFVOY_HAVE_OPENSSL
         ctx_ = SSL_CTX_new(TLS_client_method());
         if (!ctx_) return fail("TLS: не удалось создать контекст", error);
         SSL_CTX_set_min_proto_version(ctx_, TLS1_2_VERSION);
         SSL_CTX_set_default_verify_paths(ctx_);
         if (!settings.caFile.empty() && SSL_CTX_load_verify_locations(ctx_, settings.caFile.c_str(), nullptr) != 1) {
-            return fail("TLS: не удалось прочитать AURA_SMTP_CA_FILE", error);
+            return fail("TLS: не удалось прочитать SELFVOY_SMTP_CA_FILE", error);
         }
         SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
         ssl_ = SSL_new(ctx_);
@@ -144,7 +144,7 @@ public:
         return true;
 #else
         (void)settings;
-        return fail("сервер собран без OpenSSL — TLS для SMTP недоступен (AURA_SMTP_TLS=none только для локального ретранслятора)",
+        return fail("сервер собран без OpenSSL — TLS для SMTP недоступен (SELFVOY_SMTP_TLS=none только для локального ретранслятора)",
                     error);
 #endif
     }
@@ -153,7 +153,7 @@ public:
         std::size_t sent = 0;
         while (sent < data.size()) {
             long n = 0;
-#ifdef AURA_HAVE_OPENSSL
+#ifdef SELFVOY_HAVE_OPENSSL
             if (ssl_) n = SSL_write(ssl_, data.data() + sent, static_cast<int>(data.size() - sent));
             else
 #endif
@@ -191,7 +191,7 @@ private:
             if (buffer_.size() > kMaxReply) return false;
             char chunk[4096];
             long n = 0;
-#ifdef AURA_HAVE_OPENSSL
+#ifdef SELFVOY_HAVE_OPENSSL
             if (ssl_) n = SSL_read(ssl_, chunk, sizeof chunk);
             else
 #endif
@@ -206,7 +206,7 @@ private:
         return false;
     }
 
-#ifdef AURA_HAVE_OPENSSL
+#ifdef SELFVOY_HAVE_OPENSSL
     static std::string lastSslError() {
         char buf[256] = {0};
         const unsigned long code = ERR_get_error();
@@ -258,7 +258,7 @@ std::string authMechanisms(const std::string& ehlo) {
 }  // namespace
 
 bool tlsAvailable() {
-#ifdef AURA_HAVE_OPENSSL
+#ifdef SELFVOY_HAVE_OPENSSL
     return true;
 #else
     return false;
@@ -291,7 +291,7 @@ std::string buildMessage(const Settings& settings, const Message& message, const
         while (!name.empty() && name.back() == ' ') name.pop_back();
         from = encodeHeader(name) + " " + from.substr(open);
     }
-    const std::string boundary = "=_aura_" + crypto::toHex(crypto::sha256(messageId)).substr(0, 24);
+    const std::string boundary = "=_selfvoy_" + crypto::toHex(crypto::sha256(messageId)).substr(0, 24);
 
     std::string out;
     out += "From: " + from + "\r\n";
@@ -321,7 +321,7 @@ std::string buildMessage(const Settings& settings, const Message& message, const
 bool send(const Settings& settings, const Message& message, std::string& error) {
     const std::string fromAddress = addressOf(settings.from);
     if (settings.host.empty() || fromAddress.find('@') == std::string::npos) {
-        error = "SMTP не настроен: нужны AURA_SMTP_HOST и AURA_SMTP_FROM";
+        error = "SMTP не настроен: нужны SELFVOY_SMTP_HOST и SELFVOY_SMTP_FROM";
         return false;
     }
     if (!safeHeaderValue(message.to) || !safeHeaderValue(message.subject) || !safeHeaderValue(settings.from) ||
@@ -331,7 +331,7 @@ bool send(const Settings& settings, const Message& message, std::string& error) 
     }
     const std::string mode = lower(settings.tls);
     if (mode != "starttls" && mode != "tls" && mode != "none") {
-        error = "AURA_SMTP_TLS: starttls, tls или none";
+        error = "SELFVOY_SMTP_TLS: starttls, tls или none";
         return false;
     }
 
@@ -346,7 +346,7 @@ bool send(const Settings& settings, const Message& message, std::string& error) 
 
     if (mode == "starttls") {
         if (!hasCapability(text, "STARTTLS")) {
-            error = "SMTP-сервер не поддерживает STARTTLS (укажите AURA_SMTP_TLS=tls для порта 465)";
+            error = "SMTP-сервер не поддерживает STARTTLS (укажите SELFVOY_SMTP_TLS=tls для порта 465)";
             return false;
         }
         if (!command(conn, "STARTTLS", {220}, text, error)) return false;
@@ -357,7 +357,7 @@ bool send(const Settings& settings, const Message& message, std::string& error) 
     if (!settings.user.empty()) {
         // Пароль по открытому каналу — только к ретранслятору на этой же машине.
         if (!conn.secure() && !isLoopback(settings.host)) {
-            error = "SMTP: авторизация без TLS запрещена (AURA_SMTP_TLS=none допустим только для localhost)";
+            error = "SMTP: авторизация без TLS запрещена (SELFVOY_SMTP_TLS=none допустим только для localhost)";
             return false;
         }
         const std::string mechanisms = authMechanisms(text);
@@ -401,4 +401,4 @@ bool send(const Settings& settings, const Message& message, std::string& error) 
     return true;
 }
 
-}  // namespace aura::smtp
+}  // namespace selfvoy::smtp

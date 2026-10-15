@@ -1,8 +1,8 @@
-// Desktop shell for Aura (macOS, Windows, Linux). Loads the built web app from dist/ in a
-// sandboxed window; in development (unpackaged app only) set AURA_DEV_URL to load the Vite
+// Desktop shell for Selfvoy (macOS, Windows, Linux). Loads the built web app from dist/ in a
+// sandboxed window; in development (unpackaged app only) set SELFVOY_DEV_URL to load the Vite
 // dev server instead.
 //
-// Security model: the page gets window.auraSecure (the login tokens), so only the app's own
+// Security model: the page gets window.selfvoySecure (the login tokens), so only the app's own
 // page may ever be loaded in the window. Navigation is allowed to the exact dist/index.html
 // (any hash — the app uses a hash router) or, in development, to the dev server's origin;
 // anything else (a dropped file, a link, a redirect) is blocked. IPC handlers check that the
@@ -19,9 +19,9 @@ const APP_URL = pathToFileURL(APP_FILE).href;
 
 /** Dev server origin (http(s) only), honoured only in an unpackaged app. */
 function devOrigin() {
-  if (app.isPackaged || !process.env.AURA_DEV_URL) return null;
+  if (app.isPackaged || !process.env.SELFVOY_DEV_URL) return null;
   try {
-    const url = new URL(process.env.AURA_DEV_URL);
+    const url = new URL(process.env.SELFVOY_DEV_URL);
     return url.protocol === 'http:' || url.protocol === 'https:' ? url.origin : null;
   } catch {
     return null;
@@ -70,7 +70,7 @@ function createWindow() {
     minHeight: 620,
     backgroundColor: BG,
     show: false,
-    title: 'Aura',
+    title: 'Selfvoy',
     // The app draws its own glass chrome: hide the title bar but keep native window controls.
     titleBarStyle: 'hidden',
     ...(isMac ? { trafficLightPosition: { x: 46, y: 46 } } : { titleBarOverlay: { color: BG, symbolColor: '#a1a4ae', height: 32 } }),
@@ -92,7 +92,7 @@ function createWindow() {
     return { action: 'deny' };
   });
   // Only the app's own page may load here: a dropped .html file or any other file:// page
-  // would otherwise get window.auraSecure and read the tokens.
+  // would otherwise get window.selfvoySecure and read the tokens.
   const guard = (e, legacyUrl) => {
     const url = e.url || legacyUrl;
     if (isAppUrl(url)) return;
@@ -105,7 +105,7 @@ function createWindow() {
     if (!e.isMainFrame && !isAppUrl(e.url)) e.preventDefault();
   });
 
-  if (DEV_ORIGIN) win.loadURL(process.env.AURA_DEV_URL);
+  if (DEV_ORIGIN) win.loadURL(process.env.SELFVOY_DEV_URL);
   else win.loadFile(APP_FILE);
 }
 
@@ -134,7 +134,7 @@ app.on('web-contents-created', (_e, contents) => {
   });
 });
 
-// Token storage for the renderer (window.auraSecure): values are encrypted by the OS
+// Token storage for the renderer (window.selfvoySecure): values are encrypted by the OS
 // (Keychain / DPAPI / libsecret / KWallet) and kept in userData. Without an OS keyring
 // (bare Linux) safeStorage either is unavailable (values stored as-is) or falls back to
 // "basic_text" — a hard-coded key, i.e. obfuscation, not encryption. Either way the UI is
@@ -210,7 +210,25 @@ function buildMenu() {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
-app.setAppUserModelId('app.aura.network');
+// The app used to be called Aura: its profile (localStorage with the server address and
+// settings, secure.json with the login tokens) lives in a userData folder named after the
+// app. On the first launch under the new name copy the old folder over, so users stay
+// signed in; the page then renames its "aura.*" storage keys itself. Must run before
+// anything (the single-instance lock included) creates the new folder.
+function migrateUserData() {
+  try {
+    const target = app.getPath('userData');
+    if (fs.existsSync(target)) return;
+    const appData = app.getPath('appData');
+    const legacy = ['Aura', 'aura-web'].map((name) => path.join(appData, name)).find((dir) => dir !== target && fs.existsSync(dir));
+    if (legacy) fs.cpSync(legacy, target, { recursive: true });
+  } catch {
+    /* start with a fresh profile: the user signs in again */
+  }
+}
+migrateUserData();
+
+app.setAppUserModelId('app.selfvoy.network');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

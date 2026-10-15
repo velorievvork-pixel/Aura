@@ -1,8 +1,8 @@
 -- ============================================================================
---  Aura — миграция уведомлений (этап 13)
+--  Selfvoy — миграция уведомлений (этап 13)
 --  In-app «входящая» (notifications) + устройства push (push_devices).
 --  Применение к существующей БД:
---    psql "$AURA_DATABASE_URL" -f schema/migrations/2026_09_20_notifications.sql
+--    psql "$SELFVOY_DATABASE_URL" -f schema/migrations/2026_09_20_notifications.sql
 --  Для свежей БД достаточно schema/schema.sql — миграция идемпотентна.
 -- ============================================================================
 

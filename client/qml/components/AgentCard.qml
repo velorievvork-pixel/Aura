@@ -1,15 +1,15 @@
 import QtQuick
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 
 /*
-  AgentCard — карточка участника переговоров: аватар, имя, «Аура имени»,
-  «голосовая волна» (пульсирует, пока говорит эта Аура) и что она раскрывает.
+  AgentCard — карточка участника переговоров: аватар, имя, «Selfvoy имени»,
+  «голосовая волна» (пульсирует, пока говорит этот Selfvoy) и что он раскрывает.
 */
 Rectangle {
     id: root
     property string name: ""
-    property string auraName: ""
+    property string selfvoyName: ""
     property bool talking: false
     property bool them: false
     property var facts: []
@@ -30,7 +30,7 @@ Rectangle {
         width: root.width - 40
         spacing: 4
 
-        AuraAvatar {
+        SelfvoyAvatar {
             Layout.alignment: Qt.AlignHCenter
             name: root.name
             size: 76
@@ -40,17 +40,17 @@ Rectangle {
             Layout.alignment: Qt.AlignHCenter
             Layout.topMargin: 10
             text: root.name
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontTitle
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontTitle
             font.weight: Font.Bold
-            color: AuraTheme.textPrimary
+            color: SelfvoyTheme.textPrimary
         }
         Text {
             Layout.alignment: Qt.AlignHCenter
-            text: root.auraName
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontSmall
-            color: AuraTheme.textSecondary
+            text: root.selfvoyName
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontSmall
+            color: SelfvoyTheme.textSecondary
         }
 
         // Волна
@@ -74,7 +74,7 @@ Rectangle {
                         anchors.bottom: parent.bottom
                         radius: 2
                         gradient: Gradient {
-                            GradientStop { position: 0.0; color: AuraTheme.accent }
+                            GradientStop { position: 0.0; color: SelfvoyTheme.accent }
                             GradientStop { position: 1.0; color: "#6366F1" }
                         }
                         Behavior on height { NumberAnimation { duration: 260 } }
@@ -100,14 +100,14 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.topMargin: 6
                 spacing: 8
-                Icon { name: modelData.icon; size: 13; color: AuraTheme.textSecondary }
+                Icon { name: modelData.icon; size: 13; color: SelfvoyTheme.textSecondary }
                 Text {
                     Layout.fillWidth: true
                     text: modelData.text
                     wrapMode: Text.WordWrap
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontMicro + 1
-                    color: AuraTheme.textSecondary
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontMicro + 1
+                    color: SelfvoyTheme.textSecondary
                 }
             }
         }

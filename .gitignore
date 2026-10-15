@@ -7,11 +7,14 @@ dist/
 *.a
 *.so
 *.so.*
-aura-server
-aura-tests
-aura-client
+selfvoy-server
+selfvoy-tests
+selfvoy-client
 
 # Локальные данные и окружение
+.selfvoy-data.json
+.selfvoy_memory.json
+# те же данные под именами до переименования продукта
 .aura-data.json
 .aura_memory.json
 .env

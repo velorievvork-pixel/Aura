@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 
 /*
   OnboardingPage — опрос после регистрации (день рождения, аллергии, диета,
@@ -17,7 +17,7 @@ Item {
     // Карточка по центру окна; если выше окна — прокручивается целиком.
     Flickable {
         anchors.fill: parent
-        contentHeight: card.height + 2 * AuraTheme.spaceXl
+        contentHeight: card.height + 2 * SelfvoyTheme.spaceXl
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         // Без полосы не видно, что «Сохранить» ниже края окна.
@@ -26,8 +26,8 @@ Item {
         GlassPanel {
             id: card
             x: (parent.width - width) / 2
-            y: Math.max(AuraTheme.spaceXl, (page.height - height) / 2)
-            width: Math.min(page.width - 2 * AuraTheme.spaceLg, 540)
+            y: Math.max(SelfvoyTheme.spaceXl, (page.height - height) / 2)
+            width: Math.min(page.width - 2 * SelfvoyTheme.spaceLg, 540)
             height: implicitHeight
             radius: 34
             padding: 34
@@ -37,25 +37,25 @@ Item {
                 id: column
                 anchors.left: parent.left
                 anchors.right: parent.right
-                spacing: AuraTheme.spaceMd
+                spacing: SelfvoyTheme.spaceMd
 
-                AuraEmblem { Layout.alignment: Qt.AlignHCenter; size: 56 }
+                SelfvoyEmblem { Layout.alignment: Qt.AlignHCenter; size: 56 }
                 Text {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     text: "Расскажите о себе"
-                    font.family: AuraTheme.fontFamily
+                    font.family: SelfvoyTheme.fontFamily
                     font.pixelSize: 26
                     font.weight: Font.Bold
-                    color: AuraTheme.textPrimary
+                    color: SelfvoyTheme.textPrimary
                 }
                 Text {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
-                    text: "Аура использует это для мест, времени и рекомендаций. Всё необязательно и меняется в настройках."
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    color: AuraTheme.textSecondary
+                    text: "Selfvoy использует это для мест, времени и рекомендаций. Всё необязательно и меняется в настройках."
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontSmall
+                    color: SelfvoyTheme.textSecondary
                     wrapMode: Text.WordWrap
                 }
 
@@ -72,13 +72,13 @@ Item {
 
                 Text {
                     text: "Диета"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontBody
-                    color: AuraTheme.textSecondary
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontBody
+                    color: SelfvoyTheme.textSecondary
                 }
                 Flow {
                     Layout.fillWidth: true
-                    spacing: AuraTheme.spaceSm
+                    spacing: SelfvoyTheme.spaceSm
                     property var selected: []
                     id: dietFlow
                     Repeater {
@@ -107,13 +107,13 @@ Item {
 
                 Text {
                     text: "Передвижение"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontBody
-                    color: AuraTheme.textSecondary
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontBody
+                    color: SelfvoyTheme.textSecondary
                 }
                 Flow {
                     Layout.fillWidth: true
-                    spacing: AuraTheme.spaceSm
+                    spacing: SelfvoyTheme.spaceSm
                     id: transportFlow
                     property string selected: "walk"
                     Repeater {

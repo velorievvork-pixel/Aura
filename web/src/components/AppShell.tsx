@@ -8,7 +8,7 @@ import { Avatar, Logo } from './ui';
 
 const MAIN = [
   { to: '/', label: 'Главная', icon: Home, end: true },
-  { to: '/aura', label: 'Аура', icon: MessageCircle },
+  { to: '/selfvoy', label: 'Selfvoy', icon: MessageCircle },
   { to: '/negotiations', label: 'Переговоры', icon: Handshake },
   { to: '/tasks', label: 'Задачи', icon: CheckSquare },
   { to: '/contacts', label: 'Контакты', icon: Users },
@@ -23,7 +23,7 @@ export function AppShell() {
     <div className="app">
       <aside className="sidebar" aria-label="Навигация">
         <div className="brand">
-          <Logo /> Aura
+          <Logo /> Selfvoy
         </div>
         {MAIN.map(({ to, label, icon: Icon, end }) => (
           <NavLink key={to} to={to} end={end} className="nav-item">

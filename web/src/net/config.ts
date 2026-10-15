@@ -1,18 +1,18 @@
 /*
-  Адрес сервера Aura (WebSocket). Порядок выбора:
+  Адрес сервера Selfvoy (WebSocket). Порядок выбора:
 
   1. адрес, который пользователь ввёл сам («Адрес сервера» на экране входа
      или в настройках) — хранится на устройстве;
-  2. VITE_AURA_SERVER_URL — задаётся при сборке (.env или переменная CI),
+  2. VITE_SELFVOY_SERVER_URL — задаётся при сборке (.env или переменная CI),
      для продакшна это wss://… за TLS-прокси;
-  3. VITE_AURA_FALLBACK_URL — запасной адрес: если основной не отвечает,
+  3. VITE_SELFVOY_FALLBACK_URL — запасной адрес: если основной не отвечает,
      клиент сам переключается на него;
   4. платформенный дефолт — только если адрес при сборке не задан (или это
      dev-сборка Vite): на Android-эмуляторе компьютер разработчика — это
      10.0.2.2 (localhost там — сам телефон), в браузере, открытом с настоящего
      хоста по https, — тот же хост по wss, иначе ws://127.0.0.1:9000.
 
-  В продакшн-сборке с VITE_AURA_SERVER_URL клиент никогда не уходит на
+  В продакшн-сборке с VITE_SELFVOY_SERVER_URL клиент никогда не уходит на
   платформенный дефолт: иначе токены могли бы уехать на ws:// без TLS или на
   чужой локальный порт.
 
@@ -21,7 +21,7 @@
 */
 import { Capacitor } from '@capacitor/core';
 
-const OVERRIDE_KEY = 'aura.server';
+const OVERRIDE_KEY = 'selfvoy.server';
 export const DEV_PORT = 9000;
 
 export interface ServerEnv {
@@ -57,8 +57,8 @@ export function isLocalHost(hostname: string): boolean {
 
 /**
  * Приводит ввод пользователя к ws(s)-адресу: «192.168.1.5» → ws://192.168.1.5:9000,
- * «https://aura.example.com» → wss://aura.example.com. Голый публичный хост
- * («aura.example.com») — wss:// без порта: пароли и токены не должны идти открытым
+ * «https://selfvoy.example.com» → wss://selfvoy.example.com. Голый публичный хост
+ * («selfvoy.example.com») — wss:// без порта: пароли и токены не должны идти открытым
  * текстом; голый локальный/частный хост — ws:// и порт сервера разработки.
  * Явный ws:// оставляем как ввели. Неразборчивый ввод → null.
  */
@@ -124,8 +124,8 @@ export function serverCandidates(override: string | null, env: ServerEnv): strin
 
 export function currentEnv(): ServerEnv {
   return {
-    primary: import.meta.env.VITE_AURA_SERVER_URL,
-    fallback: import.meta.env.VITE_AURA_FALLBACK_URL,
+    primary: import.meta.env.VITE_SELFVOY_SERVER_URL,
+    fallback: import.meta.env.VITE_SELFVOY_FALLBACK_URL,
     dev: Boolean(import.meta.env.DEV),
     platform: Capacitor.getPlatform(),
     location: typeof location === 'undefined' ? undefined : { protocol: location.protocol, hostname: location.hostname, host: location.host },

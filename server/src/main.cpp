@@ -1,43 +1,43 @@
-// aura/server main — точка входа C++-сервера Aura.
+// selfvoy/server main — точка входа C++-сервера Selfvoy.
 //
-//   ./aura-server [--port 9000] [--host 0.0.0.0] [--help]
+//   ./selfvoy-server [--port 9000] [--host 0.0.0.0] [--help]
 //
-// Конфигурация — переменные окружения (см. aura/config.h):
-//   AURA_HOST, AURA_PORT, AURA_DATABASE_URL, AURA_AI_URL, AURA_JWT_SECRET, ...
+// Конфигурация — переменные окружения (см. selfvoy/config.h):
+//   SELFVOY_HOST, SELFVOY_PORT, SELFVOY_DATABASE_URL, SELFVOY_AI_URL, SELFVOY_JWT_SECRET, ...
 #include <csignal>
 #include <cstring>
 #include <iostream>
 #include <string>
 
-#include "aura/log.h"
-#include "aura/server.h"
+#include "selfvoy/log.h"
+#include "selfvoy/server.h"
 
 namespace {
 
-aura::Server* g_server = nullptr;
+selfvoy::Server* g_server = nullptr;
 
 void onSignal(int signal) {
-    AURA_LOG(aura::log::Level::Info, "main") << "получен сигнал " << signal << ", останавливаюсь";
+    SELFVOY_LOG(selfvoy::log::Level::Info, "main") << "получен сигнал " << signal << ", останавливаюсь";
     if (g_server != nullptr) g_server->requestStop();
 }
 
 void printUsage() {
     std::cout <<
-        "Aura server — сеть ИИ-агентов\n"
+        "Сервер Selfvoy — сеть ИИ-агентов\n"
         "\n"
-        "Использование: aura-server [опции]\n"
-        "  --host <addr>      адрес для прослушивания (AURA_HOST, по умолчанию 0.0.0.0)\n"
-        "  --port <port>      порт WebSocket (AURA_PORT, по умолчанию 9000)\n"
-        "  --database <url>   PostgreSQL DSN (AURA_DATABASE_URL)\n"
-        "  --ai <url>         адрес Python AI Service (AURA_AI_URL)\n"
-        "  --log <level>      debug|info|warn|error (AURA_LOG_LEVEL)\n"
+        "Использование: selfvoy-server [опции]\n"
+        "  --host <addr>      адрес для прослушивания (SELFVOY_HOST, по умолчанию 0.0.0.0)\n"
+        "  --port <port>      порт WebSocket (SELFVOY_PORT, по умолчанию 9000)\n"
+        "  --database <url>   PostgreSQL DSN (SELFVOY_DATABASE_URL)\n"
+        "  --ai <url>         адрес Python AI Service (SELFVOY_AI_URL)\n"
+        "  --log <level>      debug|info|warn|error (SELFVOY_LOG_LEVEL)\n"
         "  --help             эта справка\n";
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    aura::Config config = aura::Config::fromEnv();
+    selfvoy::Config config = selfvoy::Config::fromEnv();
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -68,7 +68,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    aura::Server server(config);
+    selfvoy::Server server(config);
     g_server = &server;
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
@@ -80,10 +80,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    AURA_LOG(aura::log::Level::Info, "main")
+    SELFVOY_LOG(selfvoy::log::Level::Info, "main")
         << "WebSocket: ws://" << config.host << ":" << server.port() << "  (Ctrl+C — остановка)";
     server.wait();
     server.stop();
-    AURA_LOG(aura::log::Level::Info, "main") << "сервер остановлен";
+    SELFVOY_LOG(selfvoy::log::Level::Info, "main") << "сервер остановлен";
     return 0;
 }

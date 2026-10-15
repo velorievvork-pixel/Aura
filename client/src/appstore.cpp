@@ -33,22 +33,22 @@
 
 #include "websocketclient.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
-constexpr const char* kTokenKey = "aura/token";
-constexpr const char* kRefreshKey = "aura/refresh_token";
-constexpr const char* kServerKey = "aura/server";
-constexpr const char* kDeviceIdKey = "aura/device_id";
-constexpr const char* kPendingFocusKey = "aura/pending_focus";
+constexpr const char* kTokenKey = "selfvoy/token";
+constexpr const char* kRefreshKey = "selfvoy/refresh_token";
+constexpr const char* kServerKey = "selfvoy/server";
+constexpr const char* kDeviceIdKey = "selfvoy/device_id";
+constexpr const char* kPendingFocusKey = "selfvoy/pending_focus";
 // Голосовой ввод и озвучка.
-constexpr const char* kAutoSendVoiceKey = "aura/voice/auto_send";
-constexpr const char* kMicLanguageKey = "aura/voice/language";
-constexpr const char* kTtsEnabledKey = "aura/tts/enabled";
-constexpr const char* kTtsVoiceKey = "aura/tts/voice";
-constexpr const char* kTtsRateKey = "aura/tts/rate";
-constexpr const char* kTtsVolumeKey = "aura/tts/volume";
-constexpr const char* kTtsImportantOnlyKey = "aura/tts/important_only";
+constexpr const char* kAutoSendVoiceKey = "selfvoy/voice/auto_send";
+constexpr const char* kMicLanguageKey = "selfvoy/voice/language";
+constexpr const char* kTtsEnabledKey = "selfvoy/tts/enabled";
+constexpr const char* kTtsVoiceKey = "selfvoy/tts/voice";
+constexpr const char* kTtsRateKey = "selfvoy/tts/rate";
+constexpr const char* kTtsVolumeKey = "selfvoy/tts/volume";
+constexpr const char* kTtsImportantOnlyKey = "selfvoy/tts/important_only";
 // Параметры записи: 16 кГц, моно, 16 бит — формат, который понимает Whisper.
 constexpr int kSampleRate = 16000;
 constexpr int kChannels = 1;
@@ -184,7 +184,7 @@ QString AppStore::connectionLabel() const {
     if (!client_->isConnected()) {
         return QStringLiteral("нет связи с %1 — пробуем снова, проверьте адрес сервера").arg(serverUrlText_);
     }
-    return authenticated() ? QStringLiteral("Аура на связи") : QStringLiteral("сервер: %1").arg(serverUrlText_);
+    return authenticated() ? QStringLiteral("Selfvoy на связи") : QStringLiteral("сервер: %1").arg(serverUrlText_);
 }
 
 void AppStore::setBusy(bool busy) {
@@ -235,7 +235,7 @@ void AppStore::applyAuth(const QJsonObject& payload) {
 
     emit profileChanged();
     if (firstTime) emit authenticatedChanged();
-    // Ответ из регистрации «С чем помогать?» — в память Ауры, один раз.
+    // Ответ из регистрации «С чем помогать?» — в память Selfvoy, один раз.
     {
         QSettings settings;
         const QString focus = settings.value(QLatin1String(kPendingFocusKey)).toString();
@@ -847,7 +847,7 @@ void AppStore::askAgent(qint64 chatId, const QString& message) {
         return;
     }
     setBusy(true);
-    setStatus(QStringLiteral("Аура думает…"));
+    setStatus(QStringLiteral("Selfvoy думает…"));
     QJsonObject payload;
     payload.insert(QStringLiteral("chat_id"), static_cast<double>(chatId));
     payload.insert(QStringLiteral("message"), message.trimmed());
@@ -862,8 +862,8 @@ void AppStore::askAgent(qint64 chatId, const QString& message) {
                              }
                              const QJsonObject body = response.value(QStringLiteral("payload")).toObject();
                              const QString reply = body.value(QStringLiteral("reply")).toString();
-                             setStatus(reply.isEmpty() ? QStringLiteral("Аура выполнила задачу") : reply);
-                             // Ответ Ауры — «важное»: озвучиваем даже в режиме «только важное».
+                             setStatus(reply.isEmpty() ? QStringLiteral("Selfvoy выполнил задачу") : reply);
+                             // Ответ Selfvoy — «важное»: озвучиваем даже в режиме «только важное».
                              speakImportant(reply.isEmpty() ? QStringLiteral("Готово") : reply);
                              loadMessages(chatId);
                              loadMemory();
@@ -890,7 +890,7 @@ void AppStore::askAgentGlobal(const QString& message) {
         return;
     }
     setBusy(true);
-    setStatus(QStringLiteral("Аура думает…"));
+    setStatus(QStringLiteral("Selfvoy думает…"));
     appendDialog({{QStringLiteral("from"), QStringLiteral("user")},
                   {QStringLiteral("text"), message.trimmed()}});
     QJsonObject payload;
@@ -901,7 +901,7 @@ void AppStore::askAgentGlobal(const QString& message) {
                          [this](const QJsonObject& response, const QString& error) {
                              setBusy(false);
                              if (!error.isEmpty()) {
-                                 appendDialog({{QStringLiteral("from"), QStringLiteral("aura")},
+                                 appendDialog({{QStringLiteral("from"), QStringLiteral("selfvoy")},
                                                {QStringLiteral("text"), error},
                                                {QStringLiteral("error"), true}});
                                  setError(error);
@@ -922,14 +922,14 @@ void AppStore::askAgentGlobal(const QString& message) {
                                      {QStringLiteral("tool"), result.value(QStringLiteral("tool")).toString()}});
                              }
                              QVariantMap entry{
-                                 {QStringLiteral("from"), QStringLiteral("aura")},
+                                 {QStringLiteral("from"), QStringLiteral("selfvoy")},
                                  {QStringLiteral("text"), homeReply_.isEmpty() ? QStringLiteral("Готово") : homeReply_},
                                  {QStringLiteral("intent"), body.value(QStringLiteral("intent")).toString()},
                                  {QStringLiteral("actions"), actions}};
                              const QJsonValue a2a = body.value(QStringLiteral("a2a"));
                              if (a2a.isObject()) entry.insert(QStringLiteral("a2a"), a2a.toObject().toVariantMap());
                              appendDialog(entry);
-                             setStatus(homeReply_.isEmpty() ? QStringLiteral("Аура выполнила задачу")
+                             setStatus(homeReply_.isEmpty() ? QStringLiteral("Selfvoy выполнил задачу")
                                                             : homeReply_);
                              speakImportant(homeReply_.isEmpty() ? QStringLiteral("Готово") : homeReply_);
                              loadNotifications();
@@ -944,7 +944,7 @@ void AppStore::negotiateAgent(const QString& target, const QString& topic,
         return;
     }
     setBusy(true);
-    setStatus(QStringLiteral("Ауры договариваются…"));
+    setStatus(QStringLiteral("Оба Selfvoy договариваются…"));
     QJsonObject payload;
     payload.insert(QStringLiteral("target"), target.trimmed());
     if (!topic.trimmed().isEmpty()) payload.insert(QStringLiteral("topic"), topic.trimmed());
@@ -980,7 +980,7 @@ void AppStore::negotiateAgent(const QString& target, const QString& topic,
                              negotiationHistory_.prepend(negotiation_);
                              emit negotiationChanged();
                              const bool accepted = negotiation_.value(QStringLiteral("accepted")).toBool();
-                             setStatus(accepted ? QStringLiteral("Ауры договорились")
+                             setStatus(accepted ? QStringLiteral("Оба Selfvoy договорились")
                                                 : QStringLiteral("Собеседник занят — попробуйте позже"));
                              speakImportant(accepted ? QStringLiteral("Встреча согласована")
                                                      : QStringLiteral("Договориться не удалось"));
@@ -1057,7 +1057,7 @@ void AppStore::savePreferences(const QVariantMap& preferences) {
                                  response.value(QStringLiteral("payload")).toObject().toVariantMap();
                              if (privacyPending_ > 0) preferences_.insert(QStringLiteral("privacy"), privacyNow);
                              emit preferencesChanged();
-                             setStatus(QStringLiteral("Настройки Ауры сохранены"));
+                             setStatus(QStringLiteral("Настройки Selfvoy сохранены"));
                          });
 }
 
@@ -1858,7 +1858,7 @@ void AppStore::beginIntegration(const QString& provider) {
                              pendingProvider_ = provider;
                              emit integrationUrlChanged();
                              if (QDesktopServices::openUrl(QUrl(integrationUrl_))) {
-                                 setStatus(QStringLiteral("Открыт браузер: разрешите Ауре доступ"));
+                                 setStatus(QStringLiteral("Открыт браузер: разрешите Selfvoy доступ"));
                              } else {
                                  setError(QStringLiteral("Не удалось открыть браузер. Ссылка: ") +
                                           integrationUrl_);
@@ -1882,7 +1882,7 @@ void AppStore::handleRedirectRequest() {
             query.setQuery(QString::fromLatin1(firstLine.mid(question + 1, end - question - 1)));
         }
         const QByteArray body =
-            "<html><body style='font-family:sans-serif'><h3>Аура: доступ получен</h3>"
+            "<html><body style='font-family:sans-serif'><h3>Selfvoy: доступ получен</h3>"
             "<p>Окно можно закрыть и вернуться в приложение.</p></body></html>";
         socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
                       "Content-Length: " + QByteArray::number(body.size()) +
@@ -2039,8 +2039,8 @@ void AppStore::revokePushDevice(qint64 deviceId) {
 void AppStore::appendDialog(QVariantMap entry) {
     entry.insert(QStringLiteral("id"), ++dialogSeq_);
     entry.insert(QStringLiteral("at"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
-    auraDialog_.append(entry);
-    emit auraDialogChanged();
+    selfvoyDialog_.append(entry);
+    emit selfvoyDialogChanged();
 }
 
 void AppStore::setPendingFocus(const QString& text) {
@@ -2049,9 +2049,9 @@ void AppStore::setPendingFocus(const QString& text) {
     else settings.setValue(QLatin1String(kPendingFocusKey), text.trimmed());
 }
 
-void AppStore::clearAuraDialog() {
-    auraDialog_.clear();
-    emit auraDialogChanged();
+void AppStore::clearSelfvoyDialog() {
+    selfvoyDialog_.clear();
+    emit selfvoyDialogChanged();
 }
 
 QString AppStore::toolMode(const QString& tool) const {
@@ -2072,7 +2072,7 @@ void AppStore::bookNegotiation() {
         setError(QStringLiteral("Нет согласованного места для брони"));
         return;
     }
-    // Пользователь запретил Ауре бронировать — не обходим его выбор.
+    // Пользователь запретил Selfvoy бронировать — не обходим его выбор.
     if (toolMode(QStringLiteral("book_table")) == QLatin1String("deny")) {
         setError(QStringLiteral("Бронирование запрещено в настройках разрешений"));
         return;
@@ -2173,4 +2173,4 @@ void AppStore::reopenTask(qint64 taskId) {
                          });
 }
 
-}  // namespace aura
+}  // namespace selfvoy

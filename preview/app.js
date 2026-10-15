@@ -1,4 +1,4 @@
-/* Aura — дизайн-превью. Переключение экранов + живой запрос к Python AI Service. */
+/* Selfvoy — дизайн-превью. Переключение экранов + живой запрос к Python AI Service. */
 
 const screens = document.querySelectorAll(".screen");
 const railButtons = document.querySelectorAll(".rail-btn");
@@ -37,7 +37,7 @@ function appendBubble(text, kind = "mine") {
   const wrap = document.createElement("div");
   wrap.className = `bubble-wrap ${kind}`;
   const time = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-  const badge = kind === "agent" ? '<div class="agent-badge"><i></i>Аура</div>' : "";
+  const badge = kind === "agent" ? '<div class="agent-badge"><i></i>Selfvoy</div>' : "";
   wrap.innerHTML = `${badge}<div class="bubble"></div><div class="meta-line">${time}</div>`;
   wrap.querySelector(".bubble").textContent = text;
   chatLog.appendChild(wrap);
@@ -83,10 +83,10 @@ const context = {
 };
 const peer = { user_id: 2, email: "anya@example.com", display_name: "Аня", preferences: { diet: ["gluten_free"], city: "Херлен", lat: 50.888, lon: 5.978 } };
 
-async function askAura(message) {
+async function askSelfvoy(message) {
   if (!message) { notify("Опишите, о чём договориться", true); return; }
   agentButton.classList.add("is-busy"); agentButton.disabled = true;
-  agentStatus.textContent = "Аура думает… (POST /v1/agent/run)";
+  agentStatus.textContent = "Selfvoy думает… (POST /v1/agent/run)";
   try {
     const response = await fetch("/v1/agent/run", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -108,7 +108,7 @@ async function askAura(message) {
     agentStatus.textContent = parts.join(" · ");
     const neg = document.getElementById("neg-result");
     if (neg && slot) neg.textContent = `${new Date(slot.start).toLocaleString("ru-RU", { weekday: "long", hour: "2-digit", minute: "2-digit" })} — ${place || ""}`;
-    notify(data.reply || "Аура выполнила задачу");
+    notify(data.reply || "Selfvoy выполнил задачу");
   } catch (error) {
     agentStatus.textContent = `Ошибка: ${error.message}`;
     notify(`AI-сервис недоступен: ${error.message}`, true);
@@ -117,8 +117,8 @@ async function askAura(message) {
   }
 }
 
-agentButton.addEventListener("click", () => askAura(agentInput.value.trim()));
-document.getElementById("home-ask").addEventListener("click", () => askAura(homeInput.value.trim()));
+agentButton.addEventListener("click", () => askSelfvoy(agentInput.value.trim()));
+document.getElementById("home-ask").addEventListener("click", () => askSelfvoy(homeInput.value.trim()));
 
 document.getElementById("login-btn").addEventListener("click", () => {
   notify("Это дизайн-превью: настоящий вход — в Qt-клиенте");

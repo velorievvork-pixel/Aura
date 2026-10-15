@@ -1,16 +1,17 @@
-// aura/server/integrationmanager.cpp — Google OAuth 2.0 + PKCE (этап 9).
+// selfvoy/server/integrationmanager.cpp — Google OAuth 2.0 + PKCE (этап 9).
 #include "integrationmanager.h"
 
 #include <chrono>
 #include <ctime>
 
-#include "aura/crypto.h"
-#include "aura/log.h"
-#include "aura/net.h"
+#include "selfvoy/crypto.h"
+#include "selfvoy/log.h"
+#include "selfvoy/net.h"
 
-namespace aura {
+namespace selfvoy {
 namespace {
 
+// AAD токенов интеграций: старое значение сохранено для совместимости с уже сохранёнными в БД данными.
 constexpr const char* kTokenAad = "aura-integration-token";
 
 std::string percentEncode(const std::string& value) {
@@ -95,7 +96,7 @@ IntegrationManager::Result IntegrationManager::begin(long long userId,
     }
     if (config_.googleClientId.empty() || config_.googleClientSecret.empty()) {
         return Result::failure("not_configured",
-                               "Google OAuth не настроен на сервере (AURA_GOOGLE_CLIENT_ID/SECRET)");
+                               "Google OAuth не настроен на сервере (SELFVOY_GOOGLE_CLIENT_ID/SECRET)");
     }
     if (redirectUri.empty()) {
         return Result::failure("bad_request", "redirect_uri обязателен");
@@ -150,7 +151,7 @@ IntegrationManager::Result IntegrationManager::callback(long long userId,
     }
     if (config_.googleClientId.empty() || config_.googleClientSecret.empty()) {
         return Result::failure("not_configured",
-                               "Google OAuth не настроен на сервере (AURA_GOOGLE_CLIENT_ID/SECRET)");
+                               "Google OAuth не настроен на сервере (SELFVOY_GOOGLE_CLIENT_ID/SECRET)");
     }
 
     const auto found = database_.db().findOauthState(state);
@@ -178,7 +179,7 @@ IntegrationManager::Result IntegrationManager::callback(long long userId,
                                            {{"Content-Type", "application/x-www-form-urlencoded"}},
                                            body, config_.aiTimeoutMs, error);
     if (!error.empty()) {
-        AURA_LOG(log::Level::Warn, "integrations") << "token endpoint недоступен: " << error;
+        SELFVOY_LOG(log::Level::Warn, "integrations") << "token endpoint недоступен: " << error;
         return Result::failure("upstream_error", "не удалось связаться с эндаунтом токенов: " + error);
     }
     Json token = Json::parse(response.body, &error);
@@ -221,7 +222,7 @@ IntegrationManager::Result IntegrationManager::callback(long long userId,
     Result result;
     result.ok = true;
     result.payload = saved ? saved->toJson() : record.toJson();
-    AURA_LOG(log::Level::Info, "integrations")
+    SELFVOY_LOG(log::Level::Info, "integrations")
         << "подключено: user=" << userId << " provider=" << provider
         << " account=" << (blob.account.empty() ? "?" : blob.account);
     return result;
@@ -276,7 +277,7 @@ IntegrationManager::Result IntegrationManager::revoke(long long userId, long lon
             }
         }
     } else {
-        AURA_LOG(log::Level::Warn, "integrations")
+        SELFVOY_LOG(log::Level::Warn, "integrations")
             << "токен подключения " << connectionId << " не расшифрован — удаляю локально";
     }
 
@@ -321,7 +322,7 @@ IntegrationManager::Result IntegrationManager::sync(long long userId, long long 
             std::string when = start.getString("dateTime");
             if (when.empty()) when = start.getString("date");
             const std::string text = "Google Календарь: " + (when.empty() ? "?" : when) + " — " + summary;
-            const auto saved = database_.db().upsertMemory(userId, "schedule.google", text, 0.8,
+            const auto saved = database_.db().upsertMemory(userId, "schedule", text, 0.8,
                                                            {"google", "calendar"});
             if (saved.ok) ++count;
         }
@@ -373,7 +374,7 @@ std::string IntegrationManager::accessToken(long long userId,
 // ---------------------------------------------------------------- private
 
 std::string IntegrationManager::tokenKeyBytes() const {
-    // Тот же вывод ключа, что у AuthManager::twoFactorKeyBytes (AURA_2FA_KEY,
+    // Тот же вывод ключа, что у AuthManager::twoFactorKeyBytes (SELFVOY_2FA_KEY,
     // fallback jwtSecret); AAD отделяет шифртексты токенов от TOTP-секретов.
     const std::string base = config_.twoFactorKey.empty() ? config_.jwtSecret : config_.twoFactorKey;
     return crypto::sha256(base);
@@ -541,4 +542,4 @@ IntegrationManager::TokenBlob IntegrationManager::TokenBlob::fromJson(const Json
     return token;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

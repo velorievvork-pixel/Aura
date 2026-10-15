@@ -1,10 +1,10 @@
 /*
-  Данные приложения с сервера Aura: настройки, задачи, уведомления,
-  подтверждения, разрешения, чаты/контакты, диалог с Аурой и переговоры.
+  Данные приложения с сервера Selfvoy: настройки, задачи, уведомления,
+  подтверждения, разрешения, чаты/контакты, диалог с Selfvoy и переговоры.
 
   Загружаются после входа и при каждом переподключении; push-события сервера
   (chat.message, notification.new, task.due) обновляют нужные списки сразу.
-  Диалог с Аурой и история переговоров — локальная лента этого устройства
+  Диалог с Selfvoy и история переговоров — локальная лента этого устройства
   (сервер хранит их результат: задачи, сообщения в чатах, подтверждения).
 */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -21,7 +21,7 @@ export interface DialogAction {
 
 export interface DialogEntry {
   id: string;
-  from: 'user' | 'aura';
+  from: 'user' | 'selfvoy';
   text: string;
   at: string;
   error?: boolean;
@@ -392,7 +392,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     async (id: number, approve: boolean) => {
       try {
         const r = await (approve ? api.approve(id) : api.deny(id));
-        notify(approve ? (r.status === 'executed' ? 'Готово — Аура выполнила действие' : 'Не получилось выполнить действие') : 'Отклонено');
+        notify(approve ? (r.status === 'executed' ? 'Готово — Selfvoy выполнил действие' : 'Не получилось выполнить действие') : 'Отклонено');
       } catch (error) {
         fail(error);
       }
@@ -431,12 +431,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
         if (r.a2a && typeof r.a2a.accepted === 'boolean' && !r.a2a_note) {
           negotiationId = recordNegotiation(r.a2a.target ?? '', r.a2a.target ?? '', '', 60, 96, r.a2a);
         }
-        pushDialog({ from: 'aura', text: r.reply || 'Готово', actions: actions.length ? actions : undefined, negotiationId });
+        pushDialog({ from: 'selfvoy', text: r.reply || 'Готово', actions: actions.length ? actions : undefined, negotiationId });
         if (actions.length) loadConfirmations().catch(() => undefined);
         loadTasks().catch(() => undefined);
         return negotiationId ?? null;
       } catch (error) {
-        pushDialog({ from: 'aura', text: errorText(error), error: true });
+        pushDialog({ from: 'selfvoy', text: errorText(error), error: true });
         return null;
       } finally {
         setThinking(false);
@@ -464,7 +464,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const slot = record?.result.slot;
       if (!record || !slot) return;
       if (permissionsRef.current.find((p) => p.tool === 'book_table')?.mode === 'deny') {
-        notify('Бронирование запрещено в разрешениях Ауры', 'error');
+        notify('Бронирование запрещено в разрешениях Selfvoy', 'error');
         return;
       }
       try {

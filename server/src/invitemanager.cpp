@@ -1,24 +1,24 @@
-// aura/invitemanager.cpp
-#include "aura/invitemanager.h"
+// selfvoy/invitemanager.cpp
+#include "selfvoy/invitemanager.h"
 
 #include <algorithm>
 #include <cctype>
 #include <optional>
 #include <vector>
 
-#include "aura/config.h"
-#include "aura/crypto.h"
-#include "aura/databasemanager.h"
-#include "aura/log.h"
-#include "aura/memorymanager.h"
-#include "aura/net.h"
-#include "aura/protocol.h"
-#include "aura/referralmanager.h"
-#include "aura/schedulelock.h"
-#include "aura/session.h"
+#include "selfvoy/config.h"
+#include "selfvoy/crypto.h"
+#include "selfvoy/databasemanager.h"
+#include "selfvoy/log.h"
+#include "selfvoy/memorymanager.h"
+#include "selfvoy/net.h"
+#include "selfvoy/protocol.h"
+#include "selfvoy/referralmanager.h"
+#include "selfvoy/schedulelock.h"
+#include "selfvoy/session.h"
 #include "notificationsmanager.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -135,7 +135,7 @@ Json InviteManager::guestJson(const InviteRecord& record, std::time_t now) {
     json.set("topic", Json(record.topic));
     json.set("note", Json(record.note));
     json.set("duration_minutes", Json(static_cast<long long>(record.durationMinutes)));
-    std::string ownerName = "Пользователь Aura";
+    std::string ownerName = "Пользователь Selfvoy";
     std::string ownerTimezone = "UTC";
     if (const auto owner = database_.db().findUserById(record.ownerId)) {
         if (!owner->displayName.empty()) ownerName = owner->displayName;
@@ -196,7 +196,7 @@ bool InviteManager::requestSlots(long long ownerId, const std::string& topic, in
     request.set("max_slots", Json(static_cast<long long>(kMaxSlots)));
 
     std::map<std::string, std::string> headers{{"Content-Type", "application/json"}};
-    if (!config_.aiServiceToken.empty()) headers["X-Aura-Token"] = config_.aiServiceToken;
+    if (!config_.aiServiceToken.empty()) headers["X-Selfvoy-Token"] = config_.aiServiceToken;
     const net::HttpResponse response = net::httpRequest(
         "POST", joinUrl(config_.aiServiceUrl, "/v1/agent/slots"), headers, request.dump(), config_.aiTimeoutMs, error);
     if (!response.ok()) {
@@ -261,7 +261,7 @@ InviteManager::Result InviteManager::create(long long ownerId, const Json& paylo
     Json slots;
     std::string error;
     if (!requestSlots(ownerId, topic, static_cast<int>(duration), static_cast<int>(window), slots, error)) {
-        AURA_LOG(log::Level::Warn, "invite") << "подбор слотов не удался: " << error;
+        SELFVOY_LOG(log::Level::Warn, "invite") << "подбор слотов не удался: " << error;
         return Result::failure(protocol::code::kUpstream, "AI-сервис недоступен — не удалось подобрать время");
     }
     if (slots.items().empty()) {
@@ -287,7 +287,7 @@ InviteManager::Result InviteManager::create(long long ownerId, const Json& paylo
         if (record.tokenHash.empty()) continue;
         const DatabaseError saved = database_.db().createInvite(record, id);
         if (!saved.ok) {
-            AURA_LOG(log::Level::Warn, "invite") << "приглашение не сохранено: " << saved.message;
+            SELFVOY_LOG(log::Level::Warn, "invite") << "приглашение не сохранено: " << saved.message;
             id = 0;
         }
     }
@@ -424,7 +424,7 @@ InviteManager::Result InviteManager::respond(const Json& payload, const std::str
             record->ownerId, "schedule", title + " (" + isoUtc(start) + "/" + isoUtc(end) + ")", 1.5,
             {"meeting", "invite"});
         if (!remembered.ok) {
-            AURA_LOG(log::Level::Warn, "invite") << "встреча не записана в расписание: " << remembered.message;
+            SELFVOY_LOG(log::Level::Warn, "invite") << "встреча не записана в расписание: " << remembered.message;
         }
     }
     // Время занято и записано — расписание владельца больше не держим: задача,
@@ -445,7 +445,7 @@ InviteManager::Result InviteManager::respond(const Json& payload, const std::str
         long long taskId = 0;
         const DatabaseError taskSaved = database_.db().createTask(task, taskId);
         if (!taskSaved.ok) {
-            AURA_LOG(log::Level::Warn, "invite") << "задача встречи не создана: " << taskSaved.message;
+            SELFVOY_LOG(log::Level::Warn, "invite") << "задача встречи не создана: " << taskSaved.message;
         }
         if (notifications_) {
             Json notify = Json::object();
@@ -473,4 +473,4 @@ InviteManager::Result InviteManager::respond(const Json& payload, const std::str
     return result;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

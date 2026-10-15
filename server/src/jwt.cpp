@@ -1,11 +1,11 @@
-// aura/jwt.cpp — реализация HS256.
-#include "aura/jwt.h"
+// selfvoy/jwt.cpp — реализация HS256.
+#include "selfvoy/jwt.h"
 
 #include <chrono>
 
-#include "aura/crypto.h"
+#include "selfvoy/crypto.h"
 
-namespace aura::jwt {
+namespace selfvoy::jwt {
 
 long long nowEpoch() {
     return std::chrono::duration_cast<std::chrono::seconds>(
@@ -97,4 +97,4 @@ Token verify(const std::string& token, const std::string& secret, long long nowE
     return result;
 }
 
-}  // namespace aura::jwt
+}  // namespace selfvoy::jwt

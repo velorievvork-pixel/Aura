@@ -7,12 +7,15 @@ import { lazyNamed, LazyOutlet } from './components/Lazy';
 import { Spinner } from './components/ui';
 import { NativeBridge } from './platform/NativeBridge';
 import { initPlatform } from './platform/native';
+import { migrateLegacyStorage } from './net/storageMigration';
 import { ForgotPassword, Login, Signup, TwoFactor, VerifyEmail } from './pages/Auth';
 import { DataProvider } from './state/data';
 import { SessionProvider, useSession } from './state/session';
 import '@fontsource-variable/inter';
 import './styles/global.css';
 
+// Ключи «aura.*» → «selfvoy.*» до первого чтения хранилища (вход и настройки сохраняются).
+migrateLegacyStorage();
 initPlatform();
 
 // Страницы — отдельными чанками: гостевые ссылки (#/i, #/b, #/m) не тянут код приложения,
@@ -85,7 +88,7 @@ function Root() {
           {/* Меню оболочки на экране сразу, страница подгружается внутри неё. */}
           <Route element={<LazyOutlet />}>
             <Route index element={<Home />} />
-            <Route path="aura" element={<Chat />} />
+            <Route path="selfvoy" element={<Chat />} />
             <Route path="negotiations" element={<Negotiations />} />
             <Route path="negotiations/:id" element={<NegotiationView />} />
             <Route path="booking" element={<BookingPage />} />

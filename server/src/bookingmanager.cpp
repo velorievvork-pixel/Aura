@@ -1,5 +1,5 @@
-// aura/bookingmanager.cpp
-#include "aura/bookingmanager.h"
+// selfvoy/bookingmanager.cpp
+#include "selfvoy/bookingmanager.h"
 
 #include <algorithm>
 #include <cctype>
@@ -7,20 +7,20 @@
 #include <cstdlib>
 #include <map>
 
-#include "aura/config.h"
-#include "aura/crypto.h"
-#include "aura/databasemanager.h"
-#include "aura/log.h"
-#include "aura/mailprovider.h"
-#include "aura/memorymanager.h"
-#include "aura/net.h"
-#include "aura/protocol.h"
-#include "aura/referralmanager.h"
-#include "aura/schedulelock.h"
-#include "aura/session.h"
+#include "selfvoy/config.h"
+#include "selfvoy/crypto.h"
+#include "selfvoy/databasemanager.h"
+#include "selfvoy/log.h"
+#include "selfvoy/mailprovider.h"
+#include "selfvoy/memorymanager.h"
+#include "selfvoy/net.h"
+#include "selfvoy/protocol.h"
+#include "selfvoy/referralmanager.h"
+#include "selfvoy/schedulelock.h"
+#include "selfvoy/session.h"
 #include "notificationsmanager.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -191,7 +191,7 @@ void BookingManager::mailLoop() {
         mailBusy_ = true;
         lock.unlock();
         if (!mail_->sendNotice(notice)) {
-            AURA_LOG(log::Level::Warn, "booking") << "письмо гостю (" << notice.kind << ") не отправлено";
+            SELFVOY_LOG(log::Level::Warn, "booking") << "письмо гостю (" << notice.kind << ") не отправлено";
         }
         lock.lock();
         mailBusy_ = false;
@@ -227,13 +227,13 @@ void BookingManager::mailGuest(const BookingRecord& booking, const BookingPageRe
     std::transform(address.begin(), address.end(), address.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     // Лимиты на адрес и на владельца: форма записи не должна превращаться в
-    // рассылку на чужой email, а страница — в канал рассылки от имени Aura.
+    // рассылку на чужой email, а страница — в канал рассылки от имени Selfvoy.
     if (!reserved && limited("booking.mail:" + address, kMailPerAddressHour, 3600)) {
-        AURA_LOG(log::Level::Warn, "booking") << "лимит писем на адрес исчерпан, письмо (" << kind << ") не отправлено";
+        SELFVOY_LOG(log::Level::Warn, "booking") << "лимит писем на адрес исчерпан, письмо (" << kind << ") не отправлено";
         return;
     }
     if (limited("booking.mail.owner:" + std::to_string(page.ownerId), kMailPerOwnerHour, 3600)) {
-        AURA_LOG(log::Level::Warn, "booking") << "лимит писем владельца " << page.ownerId << " исчерпан";
+        SELFVOY_LOG(log::Level::Warn, "booking") << "лимит писем владельца " << page.ownerId << " исчерпан";
         return;
     }
     std::string ownerName;
@@ -262,7 +262,7 @@ void BookingManager::mailGuest(const BookingRecord& booking, const BookingPageRe
         notice.linkText = "Выбрать другое время";
     }
     notice.note = "Письмо пришло, потому что этот адрес указали при записи на странице «" + page.title +
-                  "» (" + ownerName + ") в Aura." + (link.empty() ? "" : " Ссылка — только для вас, не пересылайте её.");
+                  "» (" + ownerName + ") в Selfvoy." + (link.empty() ? "" : " Ссылка — только для вас, не пересылайте её.");
     std::lock_guard<std::mutex> lock(mailMutex_);
     if (mailStop_) return;
     mailQueue_.push_back(std::move(notice));
@@ -306,7 +306,7 @@ bool BookingManager::limited(const std::string& key, int perWindow, int windowSe
 }
 
 void BookingManager::ownerInfo(long long ownerId, std::string& name, std::string& timezone) const {
-    name = "Пользователь Aura";
+    name = "Пользователь Selfvoy";
     timezone = "UTC";
     if (const auto owner = database_.db().findUserById(ownerId)) {
         if (!owner->displayName.empty()) name = owner->displayName;
@@ -454,20 +454,20 @@ bool BookingManager::offers(const BookingPageRecord& page, std::vector<Offer>& o
     request.set("weekends", Json(page.weekends));
 
     std::map<std::string, std::string> headers{{"Content-Type", "application/json"}};
-    if (!config_.aiServiceToken.empty()) headers["X-Aura-Token"] = config_.aiServiceToken;
+    if (!config_.aiServiceToken.empty()) headers["X-Selfvoy-Token"] = config_.aiServiceToken;
     std::string error;
     std::string url = config_.aiServiceUrl;
     while (!url.empty() && url.back() == '/') url.pop_back();
     const net::HttpResponse response =
         net::httpRequest("POST", url + "/v1/agent/slots", headers, request.dump(), config_.aiTimeoutMs, error);
     if (!response.ok()) {
-        AURA_LOG(log::Level::Warn, "booking")
+        SELFVOY_LOG(log::Level::Warn, "booking")
             << "подбор слотов не удался: " << (error.empty() ? "HTTP " + std::to_string(response.status) : error);
         return false;
     }
     const Json answer = Json::parse(response.body, &error);
     if (!answer.isObject() || !answer.get("slots").isArray()) {
-        AURA_LOG(log::Level::Warn, "booking") << "некорректный ответ /v1/agent/slots";
+        SELFVOY_LOG(log::Level::Warn, "booking") << "некорректный ответ /v1/agent/slots";
         return false;
     }
 
@@ -521,7 +521,7 @@ bool BookingManager::series(const BookingPageRecord& page, const Offer& first, i
     request.set("interval_days", Json(7LL));
 
     std::map<std::string, std::string> headers{{"Content-Type", "application/json"}};
-    if (!config_.aiServiceToken.empty()) headers["X-Aura-Token"] = config_.aiServiceToken;
+    if (!config_.aiServiceToken.empty()) headers["X-Selfvoy-Token"] = config_.aiServiceToken;
     std::string error;
     std::string url = config_.aiServiceUrl;
     while (!url.empty() && url.back() == '/') url.pop_back();
@@ -529,7 +529,7 @@ bool BookingManager::series(const BookingPageRecord& page, const Offer& first, i
         net::httpRequest("POST", url + "/v1/agent/series", headers, request.dump(), config_.aiTimeoutMs, error);
     const Json answer = response.ok() ? Json::parse(response.body, &error) : Json();
     if (!answer.isObject() || !answer.get("occurrences").isArray()) {
-        AURA_LOG(log::Level::Warn, "booking")
+        SELFVOY_LOG(log::Level::Warn, "booking")
             << "серия не рассчитана: " << (error.empty() ? "HTTP " + std::to_string(response.status) : error);
         return false;
     }
@@ -667,7 +667,7 @@ BookingManager::Result BookingManager::pageCreate(long long ownerId, const Json&
         for (const unsigned char byte : bytes) page.slug.push_back("abcdefghijklmnopqrstuvwxyz0123456789"[byte % 36]);
         const DatabaseError saved = database_.db().createBookingPage(page, id);
         if (!saved.ok) {
-            AURA_LOG(log::Level::Warn, "booking") << "страница записи не сохранена: " << saved.message;
+            SELFVOY_LOG(log::Level::Warn, "booking") << "страница записи не сохранена: " << saved.message;
             id = 0;
         }
     }
@@ -807,7 +807,7 @@ long long BookingManager::createTask(const BookingRecord& booking, const std::st
     task.remindAt = isoUtc(std::max(std::time(nullptr), start - kReminderLeadSec));
     long long taskId = 0;
     const DatabaseError saved = database_.db().createTask(task, taskId);
-    if (!saved.ok) AURA_LOG(log::Level::Warn, "booking") << "задача встречи не создана: " << saved.message;
+    if (!saved.ok) SELFVOY_LOG(log::Level::Warn, "booking") << "задача встречи не создана: " << saved.message;
     return taskId;
 }
 
@@ -889,7 +889,7 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
         std::string ownerName;
         std::string ownerTimezone;
         ownerInfo(page->ownerId, ownerName, ownerTimezone);
-        mailGuest(*booking, *page, "booking.owner_cancelled", "Aura: встреча отменена",
+        mailGuest(*booking, *page, "booking.owner_cancelled", "Selfvoy: встреча отменена",
                   "Организатор отменил встречу",
                   ownerName + (booking->status == "cancelled" ? " отменил(а) запись. Встречи:"
                                                               : " отменил(а) одну встречу. Расписание:"),
@@ -1048,7 +1048,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         if (booking.manageHash.empty()) continue;
         const DatabaseError saved = database_.db().createBooking(booking, id);
         if (!saved.ok) {
-            AURA_LOG(log::Level::Warn, "booking") << "запись не сохранена: " << saved.message;
+            SELFVOY_LOG(log::Level::Warn, "booking") << "запись не сохранена: " << saved.message;
             id = 0;
         }
     }
@@ -1066,7 +1066,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     }
     booking.occurrences = withTasks;
     if (!database_.db().updateBooking(booking).ok) {
-        AURA_LOG(log::Level::Warn, "booking") << "id задач записи " << id << " не сохранены";
+        SELFVOY_LOG(log::Level::Warn, "booking") << "id задач записи " << id << " не сохранены";
     }
     lock.release();  // дальше — уведомление и письмо, расписание владельца не держим
 
@@ -1087,7 +1087,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         std::string ownerName;
         std::string ownerTimezone;
         ownerInfo(page->ownerId, ownerName, ownerTimezone);
-        mailGuest(booking, *page, "booking.created", "Aura: вы записаны", "Вы записаны",
+        mailGuest(booking, *page, "booking.created", "Selfvoy: вы записаны", "Вы записаны",
                   ownerName + (count > 1 ? " ждёт вас на встречах:" : " ждёт вас:"), token, true);
     }
 
@@ -1196,7 +1196,7 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
         notifications_->create(page->ownerId, "booking.rescheduled", booking->guestName + " перенес(ла) встречу",
                                page->title, notify);
     }
-    mailGuest(*booking, *page, "booking.rescheduled", "Aura: встреча перенесена", "Встреча перенесена",
+    mailGuest(*booking, *page, "booking.rescheduled", "Selfvoy: встреча перенесена", "Встреча перенесена",
               "Новое расписание (перенести или отменить можно по ссылке из первого письма):", "", true);
     Result result;
     result.ok = true;
@@ -1247,7 +1247,7 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
                                booking->guestName + (cancelled > 1 ? " отменил(а) встречи" : " отменил(а) встречу"),
                                page->title, notify);
     }
-    mailGuest(*booking, *page, "booking.cancelled", "Aura: запись отменена",
+    mailGuest(*booking, *page, "booking.cancelled", "Selfvoy: запись отменена",
               booking->status == "cancelled" ? "Запись отменена" : "Встреча отменена",
               booking->status == "cancelled" ? "Организатор получил уведомление. Встречи записи:"
                                              : "Организатор получил уведомление. Остальные встречи в силе:",
@@ -1290,10 +1290,10 @@ BookingManager::Result BookingManager::resendLink(const Json& payload, const std
         while (!token.empty() && token.back() == '=') token.pop_back();
         booking.manageHash = tokenHash(token);
         if (booking.manageHash.empty() || !database_.db().updateBooking(booking).ok) continue;
-        mailGuest(booking, *page, "booking.link", "Aura: ссылка на вашу запись", "Ваша запись",
+        mailGuest(booking, *page, "booking.link", "Selfvoy: ссылка на вашу запись", "Ваша запись",
                   "Вы просили прислать ссылку заново — прежняя больше не действует. Встречи:", token, true, true);
     }
     return result;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Effects
-import Aura
+import Selfvoy
 
 /*
   GlassSurface — базовая «стеклянная» поверхность (v3).
@@ -16,10 +16,10 @@ Item {
     // Что размывать под стеклом (обычно — фон окна).
     property Item backdrop: null
     property real blurStrength: 64
-    property color tint: AuraTheme.glassTint
-    property real fill: AuraTheme.glassFill
+    property color tint: SelfvoyTheme.glassTint
+    property real fill: SelfvoyTheme.glassFill
     property real fillHover: fill + 0.03
-    property real borderAlpha: AuraTheme.glassBorder
+    property real borderAlpha: SelfvoyTheme.glassBorder
     // Плотность подложки, когда размывать нечего (0 — прозрачно).
     property real base: 0.78
     property bool edge: true          // сиреневый блик по краю, как в макетах
@@ -27,7 +27,7 @@ Item {
     property bool hovered: false
     property bool pressed: false
     property bool showHighlight: true
-    property real radius: AuraTheme.radiusCard
+    property real radius: SelfvoyTheme.radiusCard
 
     default property alias content: holder.data
 
@@ -44,10 +44,10 @@ Item {
         radius: root.radius
         visible: root.edge && root.solidBase
         gradient: Gradient {
-            GradientStop { position: 0.0; color: AuraTheme.lilacA(root.edgeStrength) }
+            GradientStop { position: 0.0; color: SelfvoyTheme.lilacA(root.edgeStrength) }
             GradientStop { position: 0.35; color: Qt.rgba(1, 1, 1, 0.06) }
             GradientStop { position: 0.7; color: Qt.rgba(1, 1, 1, 0.03) }
-            GradientStop { position: 1.0; color: AuraTheme.lilacA(root.edgeStrength * 0.6) }
+            GradientStop { position: 1.0; color: SelfvoyTheme.lilacA(root.edgeStrength * 0.6) }
         }
     }
 
@@ -86,7 +86,7 @@ Item {
     Rectangle {
         anchors.fill: inner
         radius: Math.max(0, root.radius - 1)
-        color: Qt.rgba(AuraTheme.bgPanel.r, AuraTheme.bgPanel.g, AuraTheme.bgPanel.b,
+        color: Qt.rgba(SelfvoyTheme.bgPanel.r, SelfvoyTheme.bgPanel.g, SelfvoyTheme.bgPanel.b,
                        root.blurred ? 1.0 : root.base)
         visible: root.blurred || root.base > 0
     }
@@ -109,11 +109,11 @@ Item {
         anchors.fill: inner
         radius: Math.max(0, root.radius - 1)
         color: Qt.rgba(root.tint.r, root.tint.g, root.tint.b,
-                       root.pressed ? AuraTheme.glassFillPressed
+                       root.pressed ? SelfvoyTheme.glassFillPressed
                                     : (root.hovered ? root.fillHover : root.fill))
         border.width: root.edge && root.solidBase ? 0 : 1
-        border.color: root.edge ? AuraTheme.lilacA(0.3) : Qt.rgba(1, 1, 1, root.borderAlpha)
-        Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
+        border.color: root.edge ? SelfvoyTheme.lilacA(0.3) : Qt.rgba(1, 1, 1, root.borderAlpha)
+        Behavior on color { ColorAnimation { duration: SelfvoyTheme.pressMs } }
     }
 
     // 4. Блик сверху — ощущение объёма.

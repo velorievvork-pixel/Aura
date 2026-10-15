@@ -1,15 +1,15 @@
-// aura/server/notificationsmanager.cpp — in-app + push (этап 13).
+// selfvoy/server/notificationsmanager.cpp — in-app + push (этап 13).
 #include "notificationsmanager.h"
 
 #include <algorithm>
 #include <cctype>
 #include <ctime>
 
-#include "aura/log.h"
-#include "aura/net.h"
-#include "aura/protocol.h"
+#include "selfvoy/log.h"
+#include "selfvoy/net.h"
+#include "selfvoy/protocol.h"
 
-namespace aura {
+namespace selfvoy {
 
 NotificationsManager::NotificationsManager(DatabaseManager& database,
                                            ConnectionManager& connections,
@@ -31,7 +31,7 @@ long long NotificationsManager::create(long long userId,
     long long id = 0;
     const auto saved = database_.db().createNotification(record, id);
     if (!saved.ok) {
-        AURA_LOG(log::Level::Warn, "notify") << "не удалось сохранить уведомление: " << saved.message;
+        SELFVOY_LOG(log::Level::Warn, "notify") << "не удалось сохранить уведомление: " << saved.message;
         return 0;
     }
     record.id = id;
@@ -185,7 +185,7 @@ void NotificationsManager::deliverPush(const NotificationRecord& record, long lo
                 database_.db().touchPushDevice(device.id);
                 continue;
             }
-            AURA_LOG(log::Level::Warn, "push")
+            SELFVOY_LOG(log::Level::Warn, "push")
                 << "шлюз не принял push для устройства " << device.id << ": "
                 << (error.empty() ? "HTTP " + std::to_string(response.status) : error);
             continue;
@@ -193,7 +193,7 @@ void NotificationsManager::deliverPush(const NotificationRecord& record, long lo
 
         // Драйвер dev (по умолчанию): честный лог вместо имитации доставки.
         database_.db().touchPushDevice(device.id);
-        AURA_LOG(log::Level::Info, "push")
+        SELFVOY_LOG(log::Level::Info, "push")
             << "dev-push user=" << record.userId << " device=" << device.id
             << " kind=" << record.kind << " title=" << record.title;
     }
@@ -217,7 +217,7 @@ Json NotificationsManager::pushEnvelope(const PushDeviceRecord& device,
         notification.set("body", Json(record.body));
 
         Json androidNotification = Json::object();
-        androidNotification.set("channel_id", Json("aura"));
+        androidNotification.set("channel_id", Json("selfvoy"));
         androidNotification.set("sound", Json("default"));
 
         Json androidConfig = Json::object();
@@ -270,4 +270,4 @@ Json NotificationsManager::pushEnvelope(const PushDeviceRecord& device,
     return envelope;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls
-import Aura
+import Selfvoy
 import "../icons/Icons.js" as Icons
 
 /*
@@ -28,16 +28,16 @@ TextField {
 
     implicitHeight: label.length > 0 ? 54 : 48
     implicitWidth: 240
-    leftPadding: AuraTheme.spaceMd
-    rightPadding: rightIcon.length > 0 ? AuraTheme.spaceMd + 26 : AuraTheme.spaceMd
+    leftPadding: SelfvoyTheme.spaceMd
+    rightPadding: rightIcon.length > 0 ? SelfvoyTheme.spaceMd + 26 : SelfvoyTheme.spaceMd
     topPadding: label.length > 0 ? 20 : 0
     bottomPadding: label.length > 0 ? 6 : 0
-    font.family: AuraTheme.fontFamily
-    font.pixelSize: AuraTheme.fontBody
-    color: AuraTheme.textPrimary
-    selectionColor: AuraTheme.accentA(0.5)
-    selectedTextColor: AuraTheme.textPrimary
-    placeholderTextColor: AuraTheme.textMuted
+    font.family: SelfvoyTheme.fontFamily
+    font.pixelSize: SelfvoyTheme.fontBody
+    color: SelfvoyTheme.textPrimary
+    selectionColor: SelfvoyTheme.accentA(0.5)
+    selectedTextColor: SelfvoyTheme.textPrimary
+    placeholderTextColor: SelfvoyTheme.textMuted
     verticalAlignment: TextInput.AlignVCenter
     focusPolicy: Qt.StrongFocus
 
@@ -46,23 +46,23 @@ TextField {
         Rectangle {
             anchors.fill: parent
             anchors.margins: -4
-            radius: AuraTheme.radiusField + 4
+            radius: SelfvoyTheme.radiusField + 4
             color: "transparent"
             border.width: 4
-            border.color: AuraTheme.accentA(control.activeFocus ? 0.18 : 0)
-            Behavior on border.color { ColorAnimation { duration: AuraTheme.pressMs } }
+            border.color: SelfvoyTheme.accentA(control.activeFocus ? 0.18 : 0)
+            Behavior on border.color { ColorAnimation { duration: SelfvoyTheme.pressMs } }
         }
         Rectangle {
             anchors.fill: parent
-            radius: AuraTheme.radiusField
+            radius: SelfvoyTheme.radiusField
             color: control.filled ? Qt.rgba(1, 1, 1, control.activeFocus ? 0.12 : 0.09)
                                   : Qt.rgba(0.04, 0.03, 0.07, control.activeFocus ? 0.6 : 0.45)
             border.width: control.filled && !control.activeFocus && !control.invalid ? 0 : 1
-            border.color: control.invalid ? AuraTheme.danger
-                          : control.activeFocus ? AuraTheme.accentA(0.8)
+            border.color: control.invalid ? SelfvoyTheme.danger
+                          : control.activeFocus ? SelfvoyTheme.accentA(0.8)
                           : Qt.rgba(1, 1, 1, 0.16)
-            Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
-            Behavior on border.color { ColorAnimation { duration: AuraTheme.pressMs } }
+            Behavior on color { ColorAnimation { duration: SelfvoyTheme.pressMs } }
+            Behavior on border.color { ColorAnimation { duration: SelfvoyTheme.pressMs } }
         }
     }
 
@@ -71,22 +71,22 @@ TextField {
         x: control.leftPadding
         y: 8
         text: control.label
-        font.family: AuraTheme.fontFamily
-        font.pixelSize: AuraTheme.fontMicro
+        font.family: SelfvoyTheme.fontFamily
+        font.pixelSize: SelfvoyTheme.fontMicro
         font.weight: Font.DemiBold
-        color: control.activeFocus ? AuraTheme.lilac : AuraTheme.textMuted
+        color: control.activeFocus ? SelfvoyTheme.lilac : SelfvoyTheme.textMuted
         visible: control.label.length > 0
-        Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
+        Behavior on color { ColorAnimation { duration: SelfvoyTheme.pressMs } }
     }
 
     // Иконка или действие справа
     Icon {
         id: trailing
-        x: control.width - AuraTheme.spaceMd - size
+        x: control.width - SelfvoyTheme.spaceMd - size
         anchors.verticalCenter: parent.verticalCenter
         name: control.rightIcon
         size: 18
-        color: control.action.length > 0 && hit.containsMouse ? AuraTheme.textPrimary : AuraTheme.textSecondary
+        color: control.action.length > 0 && hit.containsMouse ? SelfvoyTheme.textPrimary : SelfvoyTheme.textSecondary
         visible: control.rightIcon.length > 0
 
         MouseArea {

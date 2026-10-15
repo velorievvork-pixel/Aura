@@ -6,7 +6,7 @@
 демо-данными (tools/dev_stack.sh, tools/demo_seed.py) на хосте — эмулятор
 видит его как ws://10.0.2.2:9000, это адрес клиента по умолчанию.
 
-    AURA_DEMO_PASSWORD=... python3 tools/android_tour.py shots/android
+    SELFVOY_DEMO_PASSWORD=... python3 tools/android_tour.py shots/android
 Шаги, которые не удались, записываются в tour.log; код возврата 1, если
 приложение упало или не удалось войти.
 """
@@ -19,10 +19,10 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-PACKAGE = "ai.aura.app"
+PACKAGE = "app.selfvoy"
 OUT = sys.argv[1] if len(sys.argv) > 1 else "shots/android"
-EMAIL = os.environ.get("AURA_TOUR_EMAIL", "alex@aura.local")
-PASSWORD = os.environ.get("AURA_DEMO_PASSWORD", "")
+EMAIL = os.environ.get("SELFVOY_TOUR_EMAIL", "alex@selfvoy.local")
+PASSWORD = os.environ.get("SELFVOY_DEMO_PASSWORD", "")
 problems: list[str] = []
 counter = 0
 
@@ -123,7 +123,7 @@ def crashed() -> bool:
 def main() -> int:
     os.makedirs(OUT, exist_ok=True)
     if len(PASSWORD) < 8:
-        sys.exit("Задайте AURA_DEMO_PASSWORD")
+        sys.exit("Задайте SELFVOY_DEMO_PASSWORD")
     adb("shell", "pm", "grant", PACKAGE, "android.permission.POST_NOTIFICATIONS")
     adb("logcat", "-c")
     adb("shell", "am", "start", "-W", "-n", f"{PACKAGE}/.MainActivity", check=True)
@@ -147,13 +147,13 @@ def main() -> int:
     swipe_up()
     shot("home-scrolled")
 
-    # Моя Аура: подсказка-чип, ответ, клавиатура над полем ввода
-    tap("Аура", lowest=True)
-    shot("aura")
+    # Мой Selfvoy: подсказка-чип, ответ, клавиатура над полем ввода
+    tap("Selfvoy", lowest=True)
+    shot("selfvoy")
     if tap("Что у меня сегодня в расписании?", wait=10):
-        shot("aura-reply")
+        shot("selfvoy-reply")
     if tap("Напишите что-нибудь…", wait=2):
-        shot("aura-keyboard")
+        shot("selfvoy-keyboard")
         hide_keyboard()
 
     # Переговоры: форма → раунд → итог

@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 import "Format.js" as F
 
 /*
@@ -29,11 +29,11 @@ Item {
     Timer { interval: 30000; running: true; repeat: true; onTriggered: page.now = new Date() }
 
     function tone(task) {
-        if (task.status === "done") return AuraTheme.success
+        if (task.status === "done") return SelfvoyTheme.success
         const d = F.parse(F.taskWhen(task))
-        if (d && d < page.now) return AuraTheme.danger
-        if (d && d - page.now < 2 * 3600000) return AuraTheme.warning
-        return AuraTheme.accentSoft
+        if (d && d < page.now) return SelfvoyTheme.danger
+        if (d && d - page.now < 2 * 3600000) return SelfvoyTheme.warning
+        return SelfvoyTheme.accentSoft
     }
 
     component Section: ColumnLayout {
@@ -44,17 +44,17 @@ Item {
         spacing: 12
         Text {
             text: parent.title
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontTitle
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontTitle
             font.weight: Font.Bold
-            color: AuraTheme.textPrimary
+            color: SelfvoyTheme.textPrimary
         }
         Text {
             visible: parent.items.length === 0
             text: parent.empty
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontSmall
-            color: AuraTheme.textMuted
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontSmall
+            color: SelfvoyTheme.textMuted
         }
         Repeater {
             model: parent.items
@@ -73,14 +73,14 @@ Item {
         gradient: Gradient {
             orientation: Gradient.Horizontal
             GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, rowArea.containsMouse ? 0.12 : 0.09) }
-            GradientStop { position: 0.6; color: AuraTheme.accentA(0.08) }
+            GradientStop { position: 0.6; color: SelfvoyTheme.accentA(0.08) }
             GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.03) }
         }
         border.width: 1
         border.color: Qt.rgba(1, 1, 1, 0.16)
 
         MouseArea { id: rowArea; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
-        Rectangle { x: 8; y: 8; width: 5; height: 5; radius: 2.5; color: AuraTheme.accentSoft }
+        Rectangle { x: 8; y: 8; width: 5; height: 5; radius: 2.5; color: SelfvoyTheme.accentSoft }
 
         RowLayout {
             anchors.fill: parent
@@ -91,7 +91,7 @@ Item {
             // чекбокс
             Rectangle {
                 implicitWidth: 22; implicitHeight: 22; radius: 7
-                color: row.isDone ? AuraTheme.accent : "transparent"
+                color: row.isDone ? SelfvoyTheme.accent : "transparent"
                 border.width: row.isDone ? 0 : 1.5
                 border.color: Qt.rgba(1, 1, 1, 0.3)
                 Icon { anchors.centerIn: parent; visible: row.isDone; name: "check"; size: 14; color: "#FFFFFF" }
@@ -105,11 +105,11 @@ Item {
             Text {
                 Layout.fillWidth: true
                 text: row.task.title
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontBody
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontBody
                 font.weight: Font.DemiBold
                 font.strikeout: row.isDone
-                color: AuraTheme.textPrimary
+                color: SelfvoyTheme.textPrimary
                 elide: Text.ElideRight
             }
             Text {
@@ -122,9 +122,9 @@ Item {
                     const inWeek = page.week.some(w => F.sameDay(w, d))
                     return (inWeek ? F.dayShort(d) : F.dateLabel(d)) + ", " + F.time(when)
                 }
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontSmall
-                color: AuraTheme.textMuted
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontSmall
+                color: SelfvoyTheme.textMuted
             }
             GlassButton {
                 visible: rowArea.containsMouse
@@ -159,10 +159,10 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     text: "Задачи"
-                    font.family: AuraTheme.fontFamily
+                    font.family: SelfvoyTheme.fontFamily
                     font.pixelSize: 38
                     font.weight: Font.Bold
-                    color: AuraTheme.textPrimary
+                    color: SelfvoyTheme.textPrimary
                 }
                 GlassButton {
                     variant: "accent"
@@ -202,10 +202,10 @@ Item {
                                 GlassButton { variant: "quiet"; implicitWidth: 32; implicitHeight: 32; glyphSize: 15; symbol: "chevron-left"; onClicked: page.day = F.addDays(page.day, -7) }
                                 Text {
                                     text: F.dateLabel(page.week[0]) + " – " + F.dateLabel(page.week[6])
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontSmall
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontSmall
                                     font.weight: Font.DemiBold
-                                    color: AuraTheme.textPrimary
+                                    color: SelfvoyTheme.textPrimary
                                 }
                                 GlassButton { variant: "quiet"; implicitWidth: 32; implicitHeight: 32; glyphSize: 15; symbol: "chevron-right"; onClicked: page.day = F.addDays(page.day, 7) }
                             }
@@ -224,31 +224,31 @@ Item {
                                 Layout.fillWidth: true
                                 implicitHeight: 84
                                 radius: 16
-                                color: selected ? AuraTheme.accentA(0.2) : (dayArea.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent")
+                                color: selected ? SelfvoyTheme.accentA(0.2) : (dayArea.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent")
                                 border.width: selected ? 1 : 0
-                                border.color: AuraTheme.lilacA(0.45)
+                                border.color: SelfvoyTheme.lilacA(0.45)
                                 ColumnLayout {
                                     anchors.centerIn: parent
                                     spacing: 2
                                     Text {
                                         Layout.alignment: Qt.AlignHCenter
                                         text: F.dayShort(modelData)
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontSmall
-                                        color: AuraTheme.textMuted
+                                        font.family: SelfvoyTheme.fontFamily
+                                        font.pixelSize: SelfvoyTheme.fontSmall
+                                        color: SelfvoyTheme.textMuted
                                     }
                                     Text {
                                         Layout.alignment: Qt.AlignHCenter
                                         text: modelData.getDate()
-                                        font.family: AuraTheme.fontFamily
+                                        font.family: SelfvoyTheme.fontFamily
                                         font.pixelSize: 26
                                         font.weight: Font.Bold
-                                        color: F.sameDay(modelData, page.now) ? AuraTheme.lilac : AuraTheme.textPrimary
+                                        color: F.sameDay(modelData, page.now) ? SelfvoyTheme.lilac : SelfvoyTheme.textPrimary
                                     }
                                     Rectangle {
                                         Layout.alignment: Qt.AlignHCenter
                                         implicitWidth: 5; implicitHeight: 5; radius: 2.5
-                                        color: has ? AuraTheme.accentSoft : "transparent"
+                                        color: has ? SelfvoyTheme.accentSoft : "transparent"
                                     }
                                 }
                                 MouseArea { id: dayArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: page.day = modelData }
@@ -282,21 +282,21 @@ Item {
                             anchors.right: parent.right
                             spacing: 12
                             Text {
-                                text: "Подсказки Ауры"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontLead + 2
+                                text: "Подсказки Selfvoy"
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontLead + 2
                                 font.weight: Font.Bold
-                                color: AuraTheme.textPrimary
+                                color: SelfvoyTheme.textPrimary
                             }
                             Text {
                                 Layout.fillWidth: true
                                 wrapMode: Text.WordWrap
                                 text: page.next ? "«" + page.next.title + "» " + F.until(F.taskWhen(page.next))
                                                 : "Впереди ничего не запланировано."
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontBody
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontBody
                                 font.weight: Font.DemiBold
-                                color: AuraTheme.textPrimary
+                                color: SelfvoyTheme.textPrimary
                             }
                             // Прогресс: заполняется, пока до события меньше двух часов
                             Rectangle {
@@ -316,17 +316,17 @@ Item {
                                     }
                                     gradient: Gradient {
                                         orientation: Gradient.Horizontal
-                                        GradientStop { position: 0.0; color: AuraTheme.gradStart }
-                                        GradientStop { position: 1.0; color: AuraTheme.gradEnd }
+                                        GradientStop { position: 0.0; color: SelfvoyTheme.gradStart }
+                                        GradientStop { position: 1.0; color: SelfvoyTheme.gradEnd }
                                     }
                                 }
                             }
                             Text {
                                 visible: !!page.next
                                 text: "Время до следующего события"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontMicro
-                                color: AuraTheme.textMuted
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontMicro
+                                color: SelfvoyTheme.textMuted
                             }
                         }
                     }
@@ -343,9 +343,9 @@ Item {
                             spacing: 12
                             Text {
                                 text: "Хотите с кем-то встретиться?"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontSmall
-                                color: AuraTheme.textSecondary
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                color: SelfvoyTheme.textSecondary
                             }
                             GlassButton {
                                 text: "Начать переговоры"
@@ -390,10 +390,10 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     text: "Новая задача · " + F.dateLabel(page.day)
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontLead
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontLead
                     font.weight: Font.Bold
-                    color: AuraTheme.textPrimary
+                    color: SelfvoyTheme.textPrimary
                 }
                 GlassButton { variant: "quiet"; implicitWidth: 32; implicitHeight: 32; glyphSize: 14; symbol: "x"; onClicked: addDialog.close() }
             }

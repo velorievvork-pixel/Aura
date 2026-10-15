@@ -1,12 +1,12 @@
-// aura/connectionmanager.cpp
-#include "aura/connectionmanager.h"
+// selfvoy/connectionmanager.cpp
+#include "selfvoy/connectionmanager.h"
 
 #include <algorithm>
 
-#include "aura/log.h"
-#include "aura/protocol.h"
+#include "selfvoy/log.h"
+#include "selfvoy/protocol.h"
 
-namespace aura {
+namespace selfvoy {
 
 void ConnectionManager::add(std::shared_ptr<Session> session) {
     if (!session) return;
@@ -87,7 +87,7 @@ void ConnectionManager::closeAll(std::uint16_t code, const std::string& reason) 
         for (const auto& entry : sessions_) alive.push_back(entry.second);
     }
     for (const auto& session : alive) session->close(code, reason);
-    AURA_LOG(log::Level::Info, "connections") << "закрыто соединений: " << alive.size();
+    SELFVOY_LOG(log::Level::Info, "connections") << "закрыто соединений: " << alive.size();
 }
 
 std::size_t ConnectionManager::kickUser(long long userId,
@@ -115,10 +115,10 @@ std::size_t ConnectionManager::kickUser(long long userId,
         session->close(4401, "session revoked");
     }
     if (!targets.empty()) {
-        AURA_LOG(log::Level::Info, "connections")
+        SELFVOY_LOG(log::Level::Info, "connections")
             << "user=" << userId << ": закрыто соединений " << targets.size() << " (" << reason << ")";
     }
     return targets.size();
 }
 
-}  // namespace aura
+}  // namespace selfvoy

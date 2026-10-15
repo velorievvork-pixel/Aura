@@ -1,5 +1,5 @@
 import QtQuick
-import Aura
+import Selfvoy
 import "../icons/Icons.js" as Icons
 
 /*
@@ -12,7 +12,7 @@ Item {
     id: root
 
     property string name: ""
-    property color color: AuraTheme.textSecondary
+    property color color: SelfvoyTheme.textSecondary
     property int size: 18
 
     implicitWidth: size

@@ -1,9 +1,9 @@
 -- ============================================================================
---  Aura — схема PostgreSQL
+--  Selfvoy — схема PostgreSQL
 --  Таблицы ровно по скелету проекта:
 --    Users, Chats, ChatMembers, Messages, UserMemory, UserPreferences, Sessions
 --
---  Применение:  psql "$AURA_DATABASE_URL" -f schema/schema.sql
+--  Применение:  psql "$SELFVOY_DATABASE_URL" -f schema/schema.sql
 -- ============================================================================
 
 -- Требуется PostgreSQL 13+ (gen_random_uuid() входит в ядро, pgcrypto не нужен).
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS users (
     email_verified BOOLEAN       NOT NULL DEFAULT FALSE, -- подтверждён ли email (fail closed)
     created_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
     last_seen_at   TIMESTAMPTZ,
-    -- админ-панель (admin.*); первые админы — AURA_ADMIN_EMAILS
+    -- админ-панель (admin.*); первые админы — SELFVOY_ADMIN_EMAILS
     role           TEXT          NOT NULL DEFAULT 'user'
                    CONSTRAINT users_role_check CHECK (role IN ('user', 'moderator', 'admin'))
 );
@@ -98,7 +98,7 @@ CREATE INDEX IF NOT EXISTS audit_logs_user_idx ON audit_logs (user_id, id DESC);
 
 -- ------------------------------------------------------- TwoFactorSettings --
 -- Настройка TOTP 2FA. Секрет хранится зашифрованным (AES-256-GCM, ключ — env
--- AURA_2FA_KEY); enabled=true только после подтверждения одноразовым кодом.
+-- SELFVOY_2FA_KEY); enabled=true только после подтверждения одноразовым кодом.
 CREATE TABLE IF NOT EXISTS two_factor_settings (
     user_id           BIGINT        PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     secret_encrypted  TEXT          NOT NULL,           -- AES-256-GCM blob, base64
@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS messages (
     kind           TEXT          NOT NULL DEFAULT 'text'
                    CHECK (kind IN ('text', 'agent_action', 'agent_reply', 'system')),
     body           TEXT          NOT NULL DEFAULT '',
-    payload        JSONB         NOT NULL DEFAULT '{}'::jsonb,  -- действия Ауры, A2A-предложения
+    payload        JSONB         NOT NULL DEFAULT '{}'::jsonb,  -- действия Selfvoy, A2A-предложения
     created_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
     edited_at      TIMESTAMPTZ
 );
@@ -218,14 +218,14 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     birthday         TEXT        NOT NULL DEFAULT '',      -- YYYY-MM-DD
     allergies        TEXT[]      NOT NULL DEFAULT '{}',
     onboarded        BOOLEAN     NOT NULL DEFAULT FALSE,   -- опрос пройден
-    -- Приватность Ауры в переговорах с чужими Аурами (сервер применяет при A2A).
+    -- Приватность Selfvoy в переговорах с чужими агентами Selfvoy (сервер применяет при A2A).
     privacy          JSONB       NOT NULL DEFAULT
                      '{"share_free_slots_only": true, "hide_event_titles": true, "allow_place_choice": true}'::jsonb,
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- ------------------------------------------------------ ToolPermissions ----
--- Разрешения пользователя на инструменты Ауры (этап 8, ядро безопасности).
+-- Разрешения пользователя на инструменты Selfvoy (этап 8, ядро безопасности).
 -- Правило v3: LLM лишь формирует намерение, исполняет сервер и только после
 -- проверки прав. mode:
 --   allow — исполнять сразу;
@@ -242,7 +242,7 @@ CREATE TABLE IF NOT EXISTS tool_permissions (
 );
 
 -- ------------------------------------------------------- PendingActions ----
--- Действия, требующие явного подтверждения (барьер подтверждения). Аура
+-- Действия, требующие явного подтверждения (барьер подтверждения). Selfvoy
 -- создаёт запись вместо исполнения; выполнение происходит только после
 -- confirmation.approve. Храним намерение (tool+args) и итог (result).
 CREATE TABLE IF NOT EXISTS pending_actions (
@@ -286,7 +286,7 @@ CREATE INDEX IF NOT EXISTS tasks_due_idx ON tasks (remind_at)
 
 -- ---------------------------------------------- IntegrationConnections ----
 -- Подключённые внешние сервисы (этап 9): Google Calendar, Gmail.
--- Токены хранятся ТОЛЬКО зашифрованными (AES-256-GCM, ключ — env AURA_2FA_KEY),
+-- Токены хранятся ТОЛЬКО зашифрованными (AES-256-GCM, ключ — env SELFVOY_2FA_KEY),
 -- наружу (в клиентах/логах) не отдаются никогда.
 CREATE TABLE IF NOT EXISTS integration_connections (
     id              BIGSERIAL     PRIMARY KEY,
@@ -355,7 +355,7 @@ CREATE TABLE IF NOT EXISTS push_devices (
 
 CREATE INDEX IF NOT EXISTS push_devices_user_idx ON push_devices (user_id);
 
--- Приглашения по ссылке: владелец договаривается о встрече с человеком без Aura.
+-- Приглашения по ссылке: владелец договаривается о встрече с человеком без Selfvoy.
 -- В БД только sha256 токена (сама ссылка показывается владельцу один раз).
 -- slots — предложенные интервалы [{start,end}] (ISO UTC); chosen — выбранный гостем.
 -- Статус expired не хранится: это open с истёкшим expires_at.
@@ -381,7 +381,7 @@ CREATE TABLE IF NOT EXISTS meeting_invites (
 CREATE INDEX IF NOT EXISTS meeting_invites_owner_idx ON meeting_invites (owner_id, id DESC);
 
 -- Страницы записи (booking.*): постоянная публичная ссылка владельца (#/b/<slug>),
--- гости без Aura сами записываются на свободное время. См. docs/PROTOCOL.md.
+-- гости без Selfvoy сами записываются на свободное время. См. docs/PROTOCOL.md.
 CREATE TABLE IF NOT EXISTS booking_pages (
     id               BIGSERIAL     PRIMARY KEY,
     owner_id         BIGINT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -463,7 +463,7 @@ CREATE UNLOGGED TABLE IF NOT EXISTS rate_limits (
 CREATE INDEX IF NOT EXISTS rate_limits_window_idx ON rate_limits (window_start);
 
 -- --------------------------------------------------------------- Триггер ---
-CREATE OR REPLACE FUNCTION aura_touch_updated_at() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION selfvoy_touch_updated_at() RETURNS trigger AS $$
 BEGIN
     NEW.updated_at := now();
     RETURN NEW;
@@ -473,15 +473,15 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS user_memory_touch ON user_memory;
 CREATE TRIGGER user_memory_touch
     BEFORE UPDATE ON user_memory
-    FOR EACH ROW EXECUTE FUNCTION aura_touch_updated_at();
+    FOR EACH ROW EXECUTE FUNCTION selfvoy_touch_updated_at();
 
 DROP TRIGGER IF EXISTS user_preferences_touch ON user_preferences;
 CREATE TRIGGER user_preferences_touch
     BEFORE UPDATE ON user_preferences
-    FOR EACH ROW EXECUTE FUNCTION aura_touch_updated_at();
+    FOR EACH ROW EXECUTE FUNCTION selfvoy_touch_updated_at();
 
 -- При новом сообщении обновляем chats.last_message_at
-CREATE OR REPLACE FUNCTION aura_touch_chat_last_message() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION selfvoy_touch_chat_last_message() RETURNS trigger AS $$
 BEGIN
     UPDATE chats SET last_message_at = NEW.created_at WHERE id = NEW.chat_id;
     RETURN NEW;
@@ -491,10 +491,10 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS messages_touch_chat ON messages;
 CREATE TRIGGER messages_touch_chat
     AFTER INSERT ON messages
-    FOR EACH ROW EXECUTE FUNCTION aura_touch_chat_last_message();
+    FOR EACH ROW EXECUTE FUNCTION selfvoy_touch_chat_last_message();
 
 -- Новый пользователь сразу получает строку настроек
-CREATE OR REPLACE FUNCTION aura_create_defaults() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION selfvoy_create_defaults() RETURNS trigger AS $$
 BEGIN
     INSERT INTO user_preferences (user_id) VALUES (NEW.id) ON CONFLICT DO NOTHING;
     RETURN NEW;
@@ -504,7 +504,13 @@ $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS users_create_defaults ON users;
 CREATE TRIGGER users_create_defaults
     AFTER INSERT ON users
-    FOR EACH ROW EXECUTE FUNCTION aura_create_defaults();
+    FOR EACH ROW EXECUTE FUNCTION selfvoy_create_defaults();
+
+-- Функции с прежним префиксом (до переименования продукта в Selfvoy): триггеры
+-- выше уже пересозданы на selfvoy_*, старые копии на существующей базе не нужны.
+DROP FUNCTION IF EXISTS aura_touch_updated_at();
+DROP FUNCTION IF EXISTS aura_touch_chat_last_message();
+DROP FUNCTION IF EXISTS aura_create_defaults();
 
 COMMIT;
 

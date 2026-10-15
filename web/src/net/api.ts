@@ -1,8 +1,8 @@
 /*
-  Типизированные вызовы протокола Aura поверх AuraSocket. Имена методов и полей —
+  Типизированные вызовы протокола Selfvoy поверх SelfvoySocket. Имена методов и полей —
   ровно как в docs/PROTOCOL.md (те же, что у Qt/Android/iOS-клиентов).
 */
-import type { AuraSocket } from './socket';
+import type { SelfvoySocket } from './socket';
 
 export interface User {
   id: number;
@@ -177,7 +177,7 @@ export interface AskResult {
 type Body = Record<string, unknown>;
 
 /** Обёртка: каждый метод — один тип сообщения протокола. */
-export function makeApi(socket: AuraSocket) {
+export function makeApi(socket: SelfvoySocket) {
   const call = <T,>(type: string, payload: Body = {}, timeout?: number) => socket.request<T>(type, payload, timeout);
   return {
     // -------- аккаунт (docs/PROTOCOL.md → «Авторизация»)
@@ -220,7 +220,7 @@ export function makeApi(socket: AuraSocket) {
     permissions: () => call<{ tools: Permission[] }>('permissions.list'),
     setPermission: (tool: string, mode: Permission['mode']) => call<{ tool: string; mode: string }>('permissions.set', { tool, mode }),
 
-    // -------- Аура
+    // -------- Selfvoy
     ask: (message: string) => call<AskResult>('agent.ask', { message }, 90_000),
     negotiate: (target: string, topic: string, duration_minutes: number, window_hours: number) =>
       call<NegotiationResult>('agent.negotiate', { target, topic, duration_minutes, window_hours }, 90_000),

@@ -45,7 +45,7 @@ export function Tasks() {
       <header className="page-head">
         <div>
           <h1 className="title-xl">Задачи</h1>
-          <div className="sub">Напоминания, встречи из переговоров и всё, что поручили Ауре.</div>
+          <div className="sub">Напоминания, встречи из переговоров и всё, что поручили Selfvoy.</div>
         </div>
       </header>
 

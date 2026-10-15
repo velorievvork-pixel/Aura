@@ -1,16 +1,16 @@
-// aura/server.cpp
-#include "aura/server.h"
-#include "aura/smtp.h"
+// selfvoy/server.cpp
+#include "selfvoy/server.h"
+#include "selfvoy/smtp.h"
 
 #include <algorithm>
 #include <chrono>
 #include <utility>
 
-#include "aura/log.h"
+#include "selfvoy/log.h"
 #include "integrationmanager.h"
 #include "notificationsmanager.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -66,7 +66,7 @@ bool validAvatar(const std::string& value, std::string& error) {
     return false;
 }
 
-// Админ-панель: роль admin для адреса из AURA_ADMIN_EMAILS выдаётся при
+// Админ-панель: роль admin для адреса из SELFVOY_ADMIN_EMAILS выдаётся при
 // успешном входе / подтверждении email. Если роль изменилась, в ответе
 // (payload.user) отдаётся уже обновлённая запись.
 Json withBootstrappedRole(AdminManager& admin, IDatabase& db, long long userId, Json payload,
@@ -115,20 +115,20 @@ Server::~Server() { stop(); }
 
 bool Server::start(std::string& error) {
     // Небезопасная конфигурация (dev-почта, слабый JWT-секрет, нет ключа 2FA)
-    // вне AURA_DEV_MODE=1 — отказ стартовать с понятным сообщением.
+    // вне SELFVOY_DEV_MODE=1 — отказ стартовать с понятным сообщением.
     std::vector<std::string> warnings;
     if (!config_.validate(error, warnings)) return false;
-    for (const auto& warning : warnings) AURA_LOG(log::Level::Warn, "server") << warning;
+    for (const auto& warning : warnings) SELFVOY_LOG(log::Level::Warn, "server") << warning;
     // net.h не умеет TLS: https-адреса Google работают только через TLS-прокси
     // (egress), которому сервер шлёт обычный http. Предупреждаем заранее.
     if (!config_.googleClientId.empty()) {
         for (const std::string* url : {&config_.googleAuthUrl, &config_.googleTokenUrl, &config_.googleRevokeUrl,
                                        &config_.googleCalendarUrl, &config_.googleGmailUrl}) {
             if (url->rfind("https://", 0) == 0 && url != &config_.googleAuthUrl) {
-                AURA_LOG(log::Level::Warn, "server")
+                SELFVOY_LOG(log::Level::Warn, "server")
                     << "интеграции Google: " << *url
                     << " — https, а сервер ходит во внешние API только по http (без TLS). "
-                       "Задайте AURA_GOOGLE_TOKEN_URL/REVOKE_URL/CALENDAR_URL/GMAIL_URL на http-адрес "
+                       "Задайте SELFVOY_GOOGLE_TOKEN_URL/REVOKE_URL/CALENDAR_URL/GMAIL_URL на http-адрес "
                        "TLS-прокси (egress), иначе обмен кода и синхронизация не заработают";
                 break;
             }
@@ -136,7 +136,7 @@ bool Server::start(std::string& error) {
     }
     if (config_.mailDriver == "smtp") {
         if (config_.smtpHost.empty() || smtp::addressOf(config_.smtpFrom).find('@') == std::string::npos) {
-            error = "AURA_MAIL_DRIVER=smtp: задайте AURA_SMTP_HOST и AURA_SMTP_FROM (например «Aura <no-reply@домен>»)";
+            error = "SELFVOY_MAIL_DRIVER=smtp: задайте SELFVOY_SMTP_HOST и SELFVOY_SMTP_FROM (например «Selfvoy <no-reply@домен>»)";
             return false;
         }
         if (config_.smtpTls != "none" && !smtp::tlsAvailable()) {
@@ -170,12 +170,12 @@ bool Server::start(std::string& error) {
         config_, [this](std::shared_ptr<Session> session) { handleConnection(std::move(session)); });
     if (!listener_->start(error)) return false;
 
-    AURA_LOG(log::Level::Info, "server") << "Aura server запущен: " << config_.describe();
+    SELFVOY_LOG(log::Level::Info, "server") << "сервер Selfvoy запущен: " << config_.describe();
     std::string aiError;
     if (agent_->available(aiError)) {
-        AURA_LOG(log::Level::Info, "server") << "AI-сервис доступен: " << config_.aiServiceUrl;
+        SELFVOY_LOG(log::Level::Info, "server") << "AI-сервис доступен: " << config_.aiServiceUrl;
     } else {
-        AURA_LOG(log::Level::Warn, "server")
+        SELFVOY_LOG(log::Level::Warn, "server")
             << "AI-сервис не отвечает (" << config_.aiServiceUrl << "): агент вернёт ошибку upstream_error";
     }
 
@@ -223,7 +223,7 @@ void Server::stop() {
     // Рабочие потоки соединений вызывают обработчики Server — дожидаемся их,
     // иначе они переживут Server (ASan: use-after-free в Listener::releaseIpSlot).
     if (listener_ && !listener_->drain(std::chrono::seconds(10))) {
-        AURA_LOG(log::Level::Warn, "server") << "не все соединения завершились за 10 с";
+        SELFVOY_LOG(log::Level::Warn, "server") << "не все соединения завершились за 10 с";
     }
     // Останавливаем фоновый планировщик и дожидаемся его.
     schedulerCv_.notify_all();
@@ -245,7 +245,7 @@ void Server::wait() {
 Json Server::health() const {
     Json json = Json::object();
     json.set("status", Json("ok"));
-    json.set("service", Json("aura-server"));
+    json.set("service", Json("selfvoy-server"));
     json.set("database", Json(database_ ? database_->backend() : std::string("none")));
     json.set("database_healthy", Json(database_ ? database_->healthy() : false));
     json.set("connections", connections_.stats());
@@ -295,7 +295,7 @@ bool Server::revalidate(const std::shared_ptr<Session>& session) {
         session->markAuthChecked();
         return true;
     }
-    AURA_LOG(log::Level::Info, "server") << "сессия " << session->id() << " больше не действительна: "
+    SELFVOY_LOG(log::Level::Info, "server") << "сессия " << session->id() << " больше не действительна: "
                                          << check.message;
     session->resetAuth();
     connections_.remove(session->id());
@@ -305,14 +305,14 @@ bool Server::revalidate(const std::shared_ptr<Session>& session) {
 void Server::handleConnection(std::shared_ptr<Session> session) {
     std::string error;
     if (!session->performHandshake(error)) {
-        AURA_LOG(log::Level::Warn, "server") << "рукопожатие не удалось: " << error;
+        SELFVOY_LOG(log::Level::Warn, "server") << "рукопожатие не удалось: " << error;
         return;
     }
 
     // Токен можно передать сразу в заголовке рукопожатия.
     Json authPayload;
     if (authorize(session, tokenFromSession(session), authPayload)) {
-        AURA_LOG(log::Level::Info, "server")
+        SELFVOY_LOG(log::Level::Info, "server")
             << "сессия " << session->id() << " авторизована как " << session->email();
         Json welcome = protocol::event("session.ready", session->describe());
         welcome.set("auth", authPayload);
@@ -332,7 +332,7 @@ void Server::handleConnection(std::shared_ptr<Session> session) {
 
     connections_.remove(session->id());
     if (session->authenticated()) database_->db().touchUser(session->userId());
-    AURA_LOG(log::Level::Info, "server") << "сессия " << session->id() << " завершена";
+    SELFVOY_LOG(log::Level::Info, "server") << "сессия " << session->id() << " завершена";
 }
 
 Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message) {
@@ -358,7 +358,7 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
                            protocol::isPublicType(request.type);
     if (!protocol::isPublicType(request.type)) {
         // Открытое соединение не живёт дольше своей сессии: отзыв, истечение
-        // срока или блокировка аккаунта видны не позже чем через AURA_AUTH_RECHECK.
+        // срока или блокировка аккаунта видны не позже чем через SELFVOY_AUTH_RECHECK.
         const bool expired = session->authenticated() && !revalidate(session);
         if (!session->authenticated()) {
             // Новый токен в payload (например, auth.token после refresh) — пробуем им.
@@ -377,11 +377,11 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
         return response;
     } catch (const std::exception& exception) {
         // Текст исключения (SQL, пути, внутренности) — только в лог.
-        AURA_LOG(log::Level::Error, "server")
+        SELFVOY_LOG(log::Level::Error, "server")
             << "исключение в обработчике " << request.type << ": " << exception.what();
         return protocol::error(request.id, protocol::code::kInternal, "внутренняя ошибка сервера");
     } catch (...) {
-        AURA_LOG(log::Level::Error, "server") << "неизвестное исключение в обработчике " << request.type;
+        SELFVOY_LOG(log::Level::Error, "server") << "неизвестное исключение в обработчике " << request.type;
         return protocol::error(request.id, protocol::code::kInternal, "внутренняя ошибка сервера");
     }
 }
@@ -419,7 +419,7 @@ void Server::registerHandlers() {
         if (!session->authenticated()) {
             Json payload = Json::object();
             payload.set("status", Json("ok"));
-            payload.set("service", Json("aura-server"));
+            payload.set("service", Json("selfvoy-server"));
             payload.set("version", Json("0.1"));
             return protocol::ok(request.id, payload);
         }
@@ -584,7 +584,7 @@ void Server::registerHandlers() {
                         if (notifications_) {
                             Json payload = Json::object();
                             payload.set("device", Json(request.payload.getString("device", "qt-client")));
-                            notifications_->create(result.userId, "login.new", "Новый вход в Aura",
+                            notifications_->create(result.userId, "login.new", "Новый вход в Selfvoy",
                                                    session->remoteAddr(), payload);
                         }
                         return protocol::ok(request.id,
@@ -611,7 +611,7 @@ void Server::registerHandlers() {
                             Json payload = Json::object();
                             payload.set("device", Json(request.payload.getString("device", "qt-client")));
                             payload.set("two_factor", Json(true));
-                            notifications_->create(result.userId, "login.new", "Новый вход в Aura (2FA)",
+                            notifications_->create(result.userId, "login.new", "Новый вход в Selfvoy (2FA)",
                                                    session->remoteAddr(), payload);
                         }
                         return protocol::ok(request.id,
@@ -788,7 +788,7 @@ void Server::registerHandlers() {
 
     registerHandler("chat.send", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
         // Клиент шлёт только обычный текст: kind agent_*/system ставит сервер
-        // (Аура, подтверждённые действия), иначе их можно подделать.
+        // (Selfvoy, подтверждённые действия), иначе их можно подделать.
         const std::string kind = request.payload.getString("kind", "text");
         if (kind != "text") {
             return protocol::error(request.id, protocol::code::kBadRequest,
@@ -803,7 +803,7 @@ void Server::registerHandlers() {
             return protocol::error(request.id, protocol::code::kBadRequest, "payload должен быть объектом");
         }
         if (extra.isObject()) {
-            // Служебные поля Ауры (origin, proposal, confirmed, tool) — только от сервера.
+            // Служебные поля Selfvoy (origin, proposal, confirmed, tool) — только от сервера.
             for (const char* reserved : {"origin", "proposal", "confirmed", "tool"}) {
                 if (extra.contains(reserved)) {
                     return protocol::error(request.id, protocol::code::kBadRequest,
@@ -878,7 +878,7 @@ void Server::registerHandlers() {
             notifyPayload.set("initiator_id", Json(session->userId()));
             notifyPayload.set("topic", Json(request.payload.getString("topic", "встреча")));
             notifications_->create(peer->id, "a2a.proposal",
-                                   "Аура начала переговоры",
+                                   "Selfvoy начал переговоры",
                                    "Тема: " + request.payload.getString("topic", "встреча"),
                                    notifyPayload);
         }
@@ -1061,7 +1061,7 @@ void Server::registerHandlers() {
 
     registerHandler("tool.run", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
         // Прямой вызов инструмента проходит тот же барьер tool_permissions, что и
-        // действия Ауры: deny — отказ, ask — отложенное действие с подтверждением.
+        // действия Selfvoy: deny — отказ, ask — отложенное действие с подтверждением.
         const std::string tool = request.payload.getString("tool");
         if (!ToolManager::isKnownTool(tool)) {
             return protocol::error(request.id, protocol::code::kBadRequest, "неизвестный инструмент: " + tool);
@@ -1310,4 +1310,4 @@ void Server::registerHandlers() {
     });
 }
 
-}  // namespace aura
+}  // namespace selfvoy

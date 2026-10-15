@@ -1,17 +1,17 @@
-// aura/adminmanager.cpp — роли, блокировка пользователей, журнал аудита.
-#include "aura/adminmanager.h"
+// selfvoy/adminmanager.cpp — роли, блокировка пользователей, журнал аудита.
+#include "selfvoy/adminmanager.h"
 
 #include <algorithm>
 #include <cctype>
 #include <map>
 
-#include "aura/config.h"
-#include "aura/databasemanager.h"
-#include "aura/idatabase.h"
-#include "aura/log.h"
-#include "aura/protocol.h"
+#include "selfvoy/config.h"
+#include "selfvoy/databasemanager.h"
+#include "selfvoy/idatabase.h"
+#include "selfvoy/log.h"
+#include "selfvoy/protocol.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -85,7 +85,7 @@ void AdminManager::bootstrapAll() {
         if (const auto user = database_.db().findUserByEmail(email)) bootstrap(*user, "");
     }
     if (!bootstrapEmails_.empty()) {
-        AURA_LOG(log::Level::Info, "admin") << "AURA_ADMIN_EMAILS: адресов " << bootstrapEmails_.size();
+        SELFVOY_LOG(log::Level::Info, "admin") << "SELFVOY_ADMIN_EMAILS: адресов " << bootstrapEmails_.size();
     }
 }
 
@@ -98,7 +98,7 @@ void AdminManager::bootstrap(const UserRecord& user, const std::string& remoteAd
         Json detail = Json::object();
         detail.set("role", Json("admin"));
         audit(user.id, "role_bootstrap", detail, remoteAddr);
-        AURA_LOG(log::Level::Info, "admin") << user.email << " назначен администратором (AURA_ADMIN_EMAILS)";
+        SELFVOY_LOG(log::Level::Info, "admin") << user.email << " назначен администратором (SELFVOY_ADMIN_EMAILS)";
     }
 }
 
@@ -142,7 +142,7 @@ Json AdminManager::adminUserJson(const UserRecord& user) {
 
 void AdminManager::audit(long long userId, const std::string& kind, const Json& detail, const std::string& remoteAddr) {
     const DatabaseError stored = database_.db().insertAudit(userId, kind, detail, remoteAddr);
-    if (!stored.ok) AURA_LOG(log::Level::Warn, "admin") << "audit(" << kind << "): " << stored.message;
+    if (!stored.ok) SELFVOY_LOG(log::Level::Warn, "admin") << "audit(" << kind << "): " << stored.message;
 }
 
 AdminManager::Result AdminManager::stats(long long actorId, std::size_t onlineNow) {
@@ -342,4 +342,4 @@ AdminManager::Result AdminManager::audit(long long actorId, const Json& payload)
     return result;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

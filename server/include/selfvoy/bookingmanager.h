@@ -22,6 +22,7 @@
 #include <condition_variable>
 #include <deque>
 #include <ctime>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -33,6 +34,7 @@
 
 #include "selfvoy/json.h"
 #include "selfvoy/mailprovider.h"
+#include "selfvoy/payments.h"
 
 namespace selfvoy {
 
@@ -158,6 +160,23 @@ public:
     // {show, text, url}: show — пока владелец не скрыл подпись при действующем Pro.
     Json branding(const BookingPageRecord& page);
 
+    // --- F4: цена, предоплата, политика отмены (S2a) -------------------------
+    // Оплата записи (selfvoy/payments.h). nullptr — оплата не настроена (тесты без сервера).
+    void setPayments(PaymentManager* payments) { payments_ = payments; }
+    static constexpr int kPaymentGraceSec = 3600;  // ЮKassa не отвечает — не дольше часа сверх срока
+    // «Я оплатил(а)» (гость, способ link): {token} → {booking}; pending → claimed,
+    // владельцу — booking.payment {booking_id, status: claimed}. claimed не истекает.
+    Result paymentClaim(const Json& payload, const std::string& remoteAddr);
+    // Владелец: {booking_id, status: paid|waived|refunded} → {booking}.
+    Result paymentSet(long long ownerId, const Json& payload);
+    // Планировщик: ожидающие оплаты — опрос ЮKassa (не чаще раза в 30 с на платёж),
+    // succeeded → paid, canceled или срок due_at прошёл (pending) → запись отменяется
+    // (cancelled_by: system), оплата expired. now — параметр (юнит-тесты). Возвращает
+    // число просмотренных оплат.
+    std::size_t paymentTick(int limit, std::time_t now);
+    // Поздняя отмена: до начала встречи меньше cancel_hours часов (0 — никогда не поздно).
+    static bool lateFor(const BookingPageRecord& page, std::time_t start, std::time_t now);
+
 private:
     struct Offer {
         std::time_t start = 0;
@@ -227,6 +246,30 @@ private:
     // changed — confirmed_at поставлен этим вызовом (тогда же — уведомление владельцу).
     Result confirmOccurrence(long long bookingId, const std::string& hash, std::time_t start, bool& changed,
                              std::optional<BookingRecord>& out);
+    // F4: проверка и запись полей цены/предоплаты/политики из payload в page (создание —
+    // creating). Ошибка — failure с понятным текстом; ok — поля применены.
+    Result applyPaymentFields(long long ownerId, const Json& payload, bool creating, BookingPageRecord& page);
+    // Изменение записи под блокировкой расписания владельца: перечитать, change() (false —
+    // ничего не менять), сохранить. false — записи нет, блокировка не взята, нечего менять
+    // или сохранение не удалось. out — запись после изменения.
+    bool mutateBooking(long long bookingId, const std::function<bool(BookingRecord&)>& change,
+                       std::optional<BookingRecord>& out);
+    // Опросить ЮKassa по оплате записи и применить ответ: pending — succeeded → paid,
+    // canceled → отмена записи; expired (запись уже отменена), но гость всё же оплатил —
+    // автоматический возврат. minInterval — не чаще (0 — сразу).
+    PaymentManager::Remote syncPayment(const BookingRecord& booking, std::time_t now, int minInterval);
+    // Оплата получена (ЮKassa или владелец): уведомление владельцу и извещение гостю.
+    void announcePaid(const BookingRecord& booking, bool notifyOwner);
+    // Оплата не поступила к сроку (или ЮKassa отменила платёж): отмена записи системой.
+    bool expireUnpaid(long long bookingId, std::time_t now);
+    // Возврат после отмены записи: ЮKassa — POST /refunds (rf-<id>), иначе (или ошибка) —
+    // владельцу «верните оплату вручную». provider — вернуть через ЮKassa.
+    void refundAfterCancel(const BookingRecord& booking, bool provider);
+    // Уведомление владельцу booking.payment {booking_id, page_id, status, amount, currency, guest_name}.
+    void notifyOwnerPayment(const BookingRecord& booking, const std::string& status, const std::string& title,
+                            const std::string& body);
+    // Строки письма о записи с предоплатой: сумма, срок, ссылка или реквизиты.
+    std::vector<std::string> paymentLines(const BookingPageRecord& page, const Json& payment, std::time_t now) const;
     void mailLoop();
     std::string sealManageToken(const std::string& token) const;
     std::string manageUrl(const std::string& token) const;
@@ -259,6 +302,7 @@ private:
     bool mailStop_ = false;
     std::thread mailThread_;  // запускается при первом извещении
     TelegramBot* telegram_ = nullptr;
+    PaymentManager* payments_ = nullptr;
 };
 
 }  // namespace selfvoy

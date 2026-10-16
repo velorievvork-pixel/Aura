@@ -58,6 +58,7 @@ KINDS = {
     "referral.joined",
     "referral.reward",
     "booking.confirmed",
+    "booking.payment",
 }
 
 

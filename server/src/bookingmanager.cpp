@@ -14,11 +14,13 @@
 #include "selfvoy/mailprovider.h"
 #include "selfvoy/memorymanager.h"
 #include "selfvoy/net.h"
+#include "selfvoy/payments.h"
 #include "selfvoy/plan.h"
 #include "selfvoy/protocol.h"
 #include "selfvoy/referralmanager.h"
 #include "selfvoy/schedulelock.h"
 #include "selfvoy/session.h"
+#include "selfvoy/slotspost.h"
 #include "selfvoy/telegrambot.h"
 #include "notificationsmanager.h"
 
@@ -192,6 +194,51 @@ std::string relativeWhen(std::time_t start, std::time_t now, long long offset) {
     return std::to_string(startParts.tm_mday) + " " + kMonths[startParts.tm_mon] + " в " + clock;
 }
 
+// ------------------------------------------------------------ оплата (F4)
+
+// Ссылка оплаты владельца: только https://, без пробелов и управляющих символов, ≤ 500.
+bool validPaymentUrl(const std::string& url) {
+    if (url.size() > 500 || url.size() <= 8 || url.rfind("https://", 0) != 0) return false;
+    return std::none_of(url.begin(), url.end(), [](unsigned char ch) {
+        return ch <= 0x20 || ch == 0x7F || ch == '"' || ch == '<' || ch == '>' || ch == '\\';
+    });
+}
+
+// Первые maxChars символов UTF-8 (без разрыва многобайтового символа).
+std::string utf8Prefix(const std::string& value, std::size_t maxChars) {
+    std::size_t chars = 0;
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if ((static_cast<unsigned char>(value[i]) & 0xC0) != 0x80) {
+            if (chars == maxChars) return value.substr(0, i);
+            ++chars;
+        }
+    }
+    return value;
+}
+
+std::string lateMessage(const BookingPageRecord& page) {
+    return "до встречи меньше " + std::to_string(page.cancelHours) + " ч — свяжитесь со специалистом";
+}
+
+// Политика отмены для гостя: {cancel_hours, late_cancel, text}.
+Json policyJson(const BookingPageRecord& page) {
+    Json json = Json::object();
+    json.set("cancel_hours", Json(static_cast<long long>(page.cancelHours)));
+    json.set("late_cancel", Json(page.lateCancel));
+    json.set("text", Json(page.policyText));
+    return json;
+}
+
+std::string moneyOf(const Json& payment) {
+    return slotspost::moneyLabel(payment.getInt("amount"), payment.getString("currency", "RUB"));
+}
+
+Json withStatus(const Json& payment, const std::string& status) {
+    Json updated = payment;
+    updated.set("status", Json(status));
+    return updated;
+}
+
 }  // namespace
 
 BookingManager::BookingManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
@@ -346,7 +393,8 @@ void BookingManager::notifyGuest(const BookingRecord& booking, const BookingPage
     if (!link.empty()) {
         mail.linkUrl = link;
         mail.linkText = "Перенести или отменить";
-    } else if (kind == "booking.owner_cancelled" && page.status == "active" && !config_.publicUrl.empty()) {
+    } else if ((kind == "booking.owner_cancelled" || kind == "booking.payment_expired") && page.status == "active" &&
+               !config_.publicUrl.empty()) {
         mail.linkUrl = config_.publicUrl + "/#/b/" + page.slug;
         mail.linkText = "Выбрать другое время";
     }
@@ -714,6 +762,16 @@ Json BookingManager::pageJson(const BookingPageRecord& page) {
     json.set("status", Json(page.status));
     json.set("guest_reminders", Json(page.guestReminders));
     json.set("hide_branding", Json(page.hideBranding));
+    json.set("price", Json(page.price));
+    json.set("currency", Json(page.currency));
+    json.set("prepay", Json(page.prepay));
+    json.set("deposit", Json(page.deposit));
+    json.set("payment_url", Json(page.paymentUrl));
+    json.set("payment_note", Json(page.paymentNote));
+    json.set("pay_within_minutes", Json(static_cast<long long>(page.payWithinMinutes)));
+    json.set("cancel_hours", Json(static_cast<long long>(page.cancelHours)));
+    json.set("late_cancel", Json(page.lateCancel));
+    json.set("policy_text", Json(page.policyText));
     json.set("upcoming", Json(upcoming));
     json.set("created_at", Json(page.createdAt));
     json.set("updated_at", Json(page.updatedAt));
@@ -747,6 +805,7 @@ Json BookingManager::bookingJson(const BookingRecord& booking, const std::string
         }
     }
     json.set("reminders", reminders);
+    json.set("payment", booking.payment.isObject() ? booking.payment : Json());  // F4: целиком
     json.set("created_at", Json(booking.createdAt));
     json.set("updated_at", Json(booking.updatedAt));
     return json;
@@ -769,9 +828,21 @@ Json BookingManager::guestBookingJson(const BookingRecord& booking, const Bookin
         }
     }
     const int left = std::max(0, kMaxReschedules - booking.reschedules);
+    // F4: поздно ли менять ближайшую встречу (до начала меньше cancel_hours).
+    bool late = false;
+    if (booking.status == "active") {
+        const int nearest = findOccurrence(booking, "", now);
+        std::time_t nearestStart = 0;
+        late = nearest >= 0 &&
+               parseIsoUtc(booking.occurrences.items()[static_cast<std::size_t>(nearest)].getString("start"),
+                           nearestStart) &&
+               lateFor(page, nearestStart, now);
+    }
+    const bool blocked = late && page.lateCancel == "block";
     // Отменить можно всегда, пока есть предстоящая встреча (и на паузе, и после удаления
     // страницы); перенести — только пока запись на странице открыта и переносы остались.
-    const bool canCancel = booking.status == "active" && upcoming;
+    // При late_cancel=block позже срока — ни то, ни другое.
+    const bool canCancel = booking.status == "active" && upcoming && !blocked;
     const bool canReschedule = canCancel && page.status == "active" && left > 0;
     Json json = Json::object();
     json.set("page_title", Json(page.title));
@@ -815,6 +886,11 @@ Json BookingManager::guestBookingJson(const BookingRecord& booking, const Bookin
     // Telegram (F2): ссылка подписки на напоминания и подключён ли уже чат.
     json.set("telegram_url", Json(telegram_ ? telegram_->guestUrl(booking) : std::string()));
     json.set("telegram_linked", Json(booking.id > 0 && !database_.db().bookingTelegramChats(booking.id).empty()));
+    // F4: оплата (без provider_id), поздно ли менять ближайшую встречу, политика отмены.
+    json.set("payment", payments::guestView(booking.payment));
+    json.set("late", Json(late));
+    json.set("policy", policyJson(page));
+    json.set("payment_note", Json(page.paymentNote));
     return json;
 }
 
@@ -1043,6 +1119,9 @@ BookingManager::Result BookingManager::pageCreate(long long ownerId, const Json&
     if (page.hideBranding && !plan::proAllowed(database_.db(), ownerId)) {
         return Result::failure(protocol::code::kProRequired, "скрыть подпись Selfvoy можно на тарифе Pro");
     }
+    // F4: цена, предоплата и политика отмены.
+    const Result paymentFields = applyPaymentFields(ownerId, payload, true, page);
+    if (!paymentFields.ok) return paymentFields;
     page.durationMinutes = static_cast<int>(duration);
     page.daysAhead = static_cast<int>(daysAhead);
     page.maxPerDay = static_cast<int>(maxPerDay);
@@ -1146,6 +1225,8 @@ BookingManager::Result BookingManager::pageUpdate(long long ownerId, const Json&
         }
         page->hideBranding = hide;
     }
+    const Result paymentFields = applyPaymentFields(ownerId, payload, false, *page);
+    if (!paymentFields.ok) return paymentFields;
     if (payload.contains("status")) {
         const std::string status = payload.getString("status");
         if (status != "active" && status != "paused") {
@@ -1296,12 +1377,32 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
         return Result::failure(protocol::code::kConflict, "предстоящих встреч нет");
     }
     if (booking->status == "cancelled") booking->cancelledBy = "owner";
+    // F4: владелец отменил запись целиком — ожидаемая оплата не нужна, полученная
+    // возвращается всегда (ЮKassa — POST /refunds, иначе — напоминание вернуть вручную).
+    bool refundProvider = false;
+    bool refundManual = false;
+    if (booking->status == "cancelled" && booking->payment.isObject()) {
+        if (payments::awaiting(booking->payment)) {
+            booking->payment = withStatus(booking->payment, "expired");
+        } else if (payments::settled(booking->payment)) {
+            refundProvider = booking->payment.getString("method") == "yookassa" &&
+                             booking->payment.getString("status") == "paid";
+            refundManual = !refundProvider;
+        }
+    }
     if (!database_.db().updateBooking(*booking).ok) {
         return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
     }
     lock.release();
     for (const long long task : tasks) deleteOwnTask(booking->ownerId, task);
     dropInactiveReminders(*booking);
+    std::vector<std::string> footer;
+    if (refundProvider || refundManual) {
+        refundAfterCancel(*booking, refundProvider);
+        footer.push_back(refundProvider ? "Оплата " + moneyOf(booking->payment) + " будет возвращена тем же способом."
+                                        : "Организатор вернёт оплату " + moneyOf(booking->payment) + ".");
+        if (auto fresh = database_.db().findBooking(booking->id)) booking = std::move(fresh);
+    }
     const auto page = database_.db().findBookingPage(booking->pageId);
     if (page) {
         std::string ownerName;
@@ -1311,7 +1412,7 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
                     "Организатор отменил встречу",
                     ownerName + (booking->status == "cancelled" ? " отменил(а) запись. Встречи:"
                                                                 : " отменил(а) одну встречу. Расписание:"),
-                    "", booking->status != "cancelled");
+                    "", booking->status != "cancelled", false, footer);
     }
     Result result;
     result.ok = true;
@@ -1363,6 +1464,15 @@ BookingManager::Result BookingManager::get(const Json& payload, const std::strin
     view.set("slots_unavailable", Json(unavailable));
     view.set("ref", Json(referrals_.codeFor(page->ownerId)));
     view.set("branding", branding(*page));
+    // F4: цена, предоплата и политика отмены.
+    view.set("price", Json(page->price));
+    view.set("currency", Json(page->currency));
+    view.set("prepay", Json(page->prepay));
+    view.set("deposit", Json(page->deposit));
+    view.set("payment_note", Json(page->paymentNote));
+    view.set("payment_url", Json(page->paymentUrl));
+    view.set("pay_within_minutes", Json(static_cast<long long>(page->payWithinMinutes)));
+    view.set("policy", policyJson(*page));
     Result result;
     result.ok = true;
     result.payload.set("page", view);
@@ -1457,6 +1567,21 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         occurrences.push(occurrence);
     }
 
+    // F4: предоплата — сумма (full: цена × встречи, deposit: депозит один раз), срок оплаты
+    // (не позже начала первой встречи), способ: ЮKassa владельца или ссылка/реквизиты.
+    if (page->prepay != "none" && page->price > 0 && payments_) {
+        const long long amount = page->prepay == "deposit" ? page->deposit : page->price * count;
+        const std::time_t due = std::min(std::time(nullptr) + static_cast<std::time_t>(page->payWithinMinutes) * 60,
+                                         plan.front().start);
+        Json payment = payments_->begin(page->ownerId, page->prepay, amount, page->currency, due, page->paymentUrl);
+        if (payment.getString("method") == "yookassa" || !page->paymentUrl.empty() || !page->paymentNote.empty()) {
+            booking.payment = payment;
+        } else {
+            SELFVOY_LOG(log::Level::Warn, "booking")
+                << "страница " << page->id << ": предоплата без способа оплаты (ЮKassa отключена) — запись без оплаты";
+        }
+    }
+
     std::string token;
     long long id = 0;
     booking.occurrences = occurrences;
@@ -1488,7 +1613,46 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     if (!database_.db().updateBooking(booking).ok) {
         SELFVOY_LOG(log::Level::Warn, "booking") << "id задач записи " << id << " не сохранены";
     }
-    lock.release();  // дальше — уведомление и письмо, расписание владельца не держим
+    lock.release();  // дальше — платёж, уведомление и письмо, расписание владельца не держим
+
+    // F4: платёж в ЮKassa (Idempotence-Key bk-<id>; гость вернётся на ссылку управления).
+    if (booking.payment.isObject() && booking.payment.getString("method") == "yookassa") {
+        std::string ownerName;
+        std::string ownerTimezone;
+        ownerInfo(page->ownerId, ownerName, ownerTimezone);
+        Json payment = booking.payment;
+        Json metadata = Json::object();
+        metadata.set("booking_id", Json(std::to_string(id)));
+        const std::string description =
+            utf8Prefix(page->title + ", " + whenText(booking.occurrences.items().front(), ownerTimezone), 128);
+        std::string error;
+        if (!payments_->submit(page->ownerId, payment, description, manageUrl(token) + "?paid=1",
+                               "bk-" + std::to_string(id), metadata, error)) {
+            // Платёж не создан — время не держим: запись отменяется системой, гостю — ошибка.
+            std::vector<long long> tasks;
+            std::optional<BookingRecord> cancelled;
+            mutateBooking(id, [&](BookingRecord& record) {
+                if (record.status != "active") return false;
+                cancelOccurrences(record, -1, std::time(nullptr), tasks);
+                record.status = "cancelled";
+                record.cancelledBy = "system";
+                if (record.payment.isObject()) record.payment = withStatus(record.payment, "expired");
+                return true;
+            }, cancelled);
+            for (const long long task : tasks) deleteOwnTask(page->ownerId, task);
+            return Result::failure(protocol::code::kUpstream, "не удалось создать платёж — попробуйте позже");
+        }
+        std::optional<BookingRecord> updated;
+        mutateBooking(id, [&](BookingRecord& record) {
+            if (!record.payment.isObject() || !record.payment.getString("provider_id").empty()) return false;
+            Json stored = record.payment;
+            stored.set("provider_id", payment.get("provider_id"));
+            stored.set("action_url", payment.get("action_url"));
+            record.payment = stored;
+            return true;
+        }, updated);
+        booking.payment = updated ? updated->payment : payment;
+    }
     scheduleReminders(booking, std::time(nullptr));
 
     if (notifications_) {
@@ -1508,7 +1672,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         std::string ownerName;
         std::string ownerTimezone;
         ownerInfo(page->ownerId, ownerName, ownerTimezone);
-        std::vector<std::string> footer;
+        std::vector<std::string> footer = paymentLines(*page, booking.payment, std::time(nullptr));
         const std::string telegramUrl = telegram_ ? telegram_->guestUrl(booking) : std::string();
         if (!telegramUrl.empty()) footer.push_back("Напоминания в Telegram: " + telegramUrl);
         notifyGuest(booking, *page, "booking.created", "Selfvoy: вы записаны", "Вы записаны",
@@ -1530,9 +1694,18 @@ BookingManager::Result BookingManager::manage(const Json& payload, const std::st
         return Result::failure(protocol::code::kForbidden, "слишком много запросов, попробуйте через минуту");
     }
     const std::string hash = tokenHash(payload.getString("token"));
-    const auto booking = hash.empty() ? std::nullopt : database_.db().findBookingByToken(hash);
+    auto booking = hash.empty() ? std::nullopt : database_.db().findBookingByToken(hash);
     const auto page = booking ? database_.db().findBookingPage(booking->pageId) : std::nullopt;
     if (!booking || !page) return Result::failure(protocol::code::kNotFound, "запись не найдена");
+    // F4: оплата через ЮKassa — статус проверяется при каждом открытии ссылки управления
+    // (гость вернулся со страницы оплаты с ?paid=1).
+    if (booking->payment.isObject() && booking->payment.getString("method") == "yookassa") {
+        const bool waiting = payments::awaiting(booking->payment);
+        if (syncPayment(*booking, std::time(nullptr), waiting ? 0 : PaymentManager::kPollIntervalSec) !=
+            PaymentManager::Remote::Throttled) {
+            if (auto fresh = database_.db().findBooking(booking->id)) booking = std::move(fresh);
+        }
+    }
     Result result;
     result.ok = true;
     result.payload.set("booking", guestBookingJson(*booking, *page, true));
@@ -1569,6 +1742,13 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
     if (index < 0) return Result::failure(protocol::code::kBadRequest, "нет такой предстоящей встречи");
     Json occurrence = booking->occurrences.items()[static_cast<std::size_t>(index)];
     const std::string from = occurrence.getString("start");
+    {
+        // F4: позже срока (cancel_hours) при late_cancel=block гость не переносит.
+        std::time_t fromAt = 0;
+        if (page->lateCancel == "block" && parseIsoUtc(from, fromAt) && lateFor(*page, fromAt, now)) {
+            return Result::failure(protocol::code::kConflict, lateMessage(*page));
+        }
+    }
 
     const auto free = available(*page, candidates, booking->id, from);
     const auto chosen = std::find_if(free.begin(), free.end(), [wanted](const Offer& o) { return o.start == wanted; });
@@ -1659,16 +1839,53 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
         index = findOccurrence(*booking, payload.getString("occurrence"), now);
         if (index < 0) return Result::failure(protocol::code::kBadRequest, "нет такой предстоящей встречи");
     }
+    // F4: поздняя отмена — по ближайшей из отменяемых встреч (до начала меньше cancel_hours).
+    bool late = false;
+    {
+        const int target = index >= 0 ? index : findOccurrence(*booking, "", now);
+        std::time_t targetStart = 0;
+        late = target >= 0 &&
+               parseIsoUtc(booking->occurrences.items()[static_cast<std::size_t>(target)].getString("start"),
+                           targetStart) &&
+               lateFor(*page, targetStart, now);
+    }
+    if (late && page->lateCancel == "block") return Result::failure(protocol::code::kConflict, lateMessage(*page));
     std::vector<long long> tasks;
     const int cancelled = cancelOccurrences(*booking, index, now, tasks);
     if (cancelled == 0) return Result::failure(protocol::code::kConflict, "предстоящих встреч нет");
     if (booking->status == "cancelled") booking->cancelledBy = "guest";
+    // Оплата: запись отменена целиком — ожидаемая оплата больше не нужна (expired);
+    // полученная возвращается, если отмена не позже срока (ЮKassa — автоматически,
+    // иначе — владельцу «верните оплату вручную»); позже срока — остаётся специалисту.
+    bool refundProvider = false;
+    bool refundManual = false;
+    bool kept = false;
+    if (booking->status == "cancelled" && booking->payment.isObject()) {
+        if (payments::awaiting(booking->payment)) {
+            booking->payment = withStatus(booking->payment, "expired");
+        } else if (payments::settled(booking->payment)) {
+            refundProvider = !late && booking->payment.getString("method") == "yookassa" &&
+                             booking->payment.getString("status") == "paid";
+            refundManual = !late && !refundProvider;
+            kept = late;
+        }
+    }
     if (!database_.db().updateBooking(*booking).ok) {
         return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
     }
     lock.release();
     for (const long long task : tasks) deleteOwnTask(booking->ownerId, task);
     dropInactiveReminders(*booking);
+    std::vector<std::string> footer;
+    if (refundProvider || refundManual) {
+        refundAfterCancel(*booking, refundProvider);
+        footer.push_back(refundProvider ? "Оплата " + moneyOf(booking->payment) + " будет возвращена тем же способом."
+                                        : "Организатор вернёт оплату " + moneyOf(booking->payment) + ".");
+        if (auto fresh = database_.db().findBooking(booking->id)) booking = std::move(fresh);
+    } else if (kept) {
+        footer.push_back("Отмена позже чем за " + std::to_string(page->cancelHours) +
+                         " ч до встречи — оплата не возвращается.");
+    }
     if (notifications_) {
         Json notify = Json::object();
         notify.set("booking_id", Json(booking->id));
@@ -1684,7 +1901,7 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
                 booking->status == "cancelled" ? "Запись отменена" : "Встреча отменена",
                 booking->status == "cancelled" ? "Организатор получил уведомление. Встречи записи:"
                                                : "Организатор получил уведомление. Остальные встречи в силе:",
-                "", booking->status != "cancelled");
+                "", booking->status != "cancelled", false, footer);
     Result result;
     result.ok = true;
     result.payload.set("booking", guestBookingJson(*booking, *page, true));
@@ -1727,6 +1944,353 @@ BookingManager::Result BookingManager::resendLink(const Json& payload, const std
         notifyGuest(booking, *page, "booking.link", "Selfvoy: ссылка на вашу запись", "Ваша запись",
                     "Вы просили прислать ссылку заново — прежняя больше не действует. Встречи:", token, true, true);
     }
+    return result;
+}
+
+// ------------------------------------------------------------ оплата (F4)
+
+bool BookingManager::lateFor(const BookingPageRecord& page, std::time_t start, std::time_t now) {
+    return page.cancelHours > 0 && start - now < static_cast<std::time_t>(page.cancelHours) * 3600;
+}
+
+BookingManager::Result BookingManager::applyPaymentFields(long long ownerId, const Json& payload, bool creating,
+                                                          BookingPageRecord& page) {
+    const std::string wasPrepay = creating ? std::string("none") : page.prepay;
+    long long price = page.price;
+    long long deposit = page.deposit;
+    long long within = page.payWithinMinutes;
+    long long hours = page.cancelHours;
+    if (!intField(payload, "price", 0, payments::kMaxPrice, price)) {
+        return Result::failure(protocol::code::kBadRequest,
+                               "цена — целое число в минимальных единицах (копейках) от 0 до 100 000 000");
+    }
+    if (!intField(payload, "deposit", 0, payments::kMaxPrice, deposit)) {
+        return Result::failure(protocol::code::kBadRequest, "депозит — целое число в минимальных единицах");
+    }
+    if (!intField(payload, "pay_within_minutes", 15, 1440, within)) {
+        return Result::failure(protocol::code::kBadRequest, "срок оплаты — от 15 до 1440 минут");
+    }
+    if (!intField(payload, "cancel_hours", 0, 168, hours)) {
+        return Result::failure(protocol::code::kBadRequest, "срок бесплатной отмены — от 0 до 168 часов");
+    }
+    const auto text = [&](const char* key, std::string& out) {
+        if (!payload.contains(key)) return true;
+        if (!payload.get(key).isString()) return false;
+        out = trim(payload.getString(key));
+        return true;
+    };
+    std::string currency = page.currency;
+    std::string prepay = page.prepay;
+    std::string url = page.paymentUrl;
+    std::string note = page.paymentNote;
+    std::string late = page.lateCancel;
+    std::string policy = page.policyText;
+    if (!text("currency", currency) || !payments::validCurrency(currency)) {
+        return Result::failure(protocol::code::kBadRequest, "валюта — RUB, USD, EUR, KZT или BYN");
+    }
+    if (!text("prepay", prepay) || (prepay != "none" && prepay != "full" && prepay != "deposit")) {
+        return Result::failure(protocol::code::kBadRequest, "предоплата — none, full или deposit");
+    }
+    if (!text("payment_url", url) || (!url.empty() && !validPaymentUrl(url))) {
+        return Result::failure(protocol::code::kBadRequest, "ссылка оплаты — адрес https:// не длиннее 500 символов");
+    }
+    if (!text("payment_note", note) || !validText(note, 300, false)) {
+        return Result::failure(protocol::code::kBadRequest, "реквизиты оплаты — до 300 символов в одну строку");
+    }
+    if (!text("late_cancel", late) || (late != "allow" && late != "block")) {
+        return Result::failure(protocol::code::kBadRequest, "поздняя отмена — allow или block");
+    }
+    if (!text("policy_text", policy) || !validText(policy, 500, true)) {
+        return Result::failure(protocol::code::kBadRequest, "текст политики отмены — не больше 500 символов");
+    }
+    if (prepay == "deposit" && (deposit < 1 || deposit > price)) {
+        return Result::failure(protocol::code::kBadRequest, "депозит — от 1 до цены записи (в минимальных единицах)");
+    }
+    // Предоплата: нужна цена, способ оплаты и Pro. Способ проверяется при создании и
+    // при правке полей оплаты (страницу без них можно поставить на паузу и после
+    // отключения ЮKassa).
+    const bool touched = creating || payload.contains("prepay") || payload.contains("price") ||
+                         payload.contains("deposit") || payload.contains("payment_url") ||
+                         payload.contains("payment_note");
+    if (prepay != "none") {
+        if (price <= 0) return Result::failure(protocol::code::kBadRequest, "для предоплаты укажите цену");
+        if (touched && url.empty() && note.empty() && !(payments_ && payments_->connected(ownerId))) {
+            return Result::failure(protocol::code::kBadRequest,
+                                   "для предоплаты нужен способ оплаты: ссылка, реквизиты или подключённая ЮKassa");
+        }
+        if (wasPrepay == "none" && !plan::proAllowed(database_.db(), ownerId)) {
+            return Result::failure(protocol::code::kProRequired, "предоплата доступна на тарифе Pro");
+        }
+    }
+    page.price = price;
+    page.currency = currency;
+    page.prepay = prepay;
+    page.deposit = deposit;
+    page.paymentUrl = url;
+    page.paymentNote = note;
+    page.payWithinMinutes = static_cast<int>(within);
+    page.cancelHours = static_cast<int>(hours);
+    page.lateCancel = late;
+    page.policyText = policy;
+    Result result;
+    result.ok = true;
+    return result;
+}
+
+bool BookingManager::mutateBooking(long long bookingId, const std::function<bool(BookingRecord&)>& change,
+                                   std::optional<BookingRecord>& out) {
+    const auto first = bookingId > 0 ? database_.db().findBooking(bookingId) : std::nullopt;
+    if (!first) return false;
+    auto lock = schedule_.acquire(first->ownerId);
+    if (!lock.ok()) return false;
+    auto booking = database_.db().findBooking(bookingId);  // перечитываем под блокировкой
+    if (!booking || !change(*booking)) return false;
+    if (!database_.db().updateBooking(*booking).ok) {
+        SELFVOY_LOG(log::Level::Warn, "booking") << "запись " << bookingId << " не сохранена";
+        return false;
+    }
+    out = std::move(booking);
+    return true;
+}
+
+std::vector<std::string> BookingManager::paymentLines(const BookingPageRecord& page, const Json& payment,
+                                                      std::time_t now) const {
+    std::vector<std::string> lines;
+    if (!payments::awaiting(payment)) return lines;
+    std::time_t due = 0;
+    long long minutes = page.payWithinMinutes;
+    if (parseIsoUtc(payment.getString("due_at"), due)) minutes = std::max<long long>(1, (due - now + 59) / 60);
+    lines.push_back(std::string(payment.getString("kind") == "deposit" ? "Депозит" : "Предоплата") + ": " +
+                    moneyOf(payment) + " — оплатите в течение " + slotspost::durationLabel(static_cast<int>(minutes)) +
+                    ", иначе запись отменится.");
+    const std::string action = payment.getString("action_url");
+    if (!action.empty()) lines.push_back("Оплатить: " + action);
+    if (payment.getString("method") == "link") {
+        if (!page.paymentNote.empty()) lines.push_back("Как оплатить: " + page.paymentNote);
+        lines.push_back("После оплаты нажмите «Я оплатил(а)» на странице записи.");
+    }
+    return lines;
+}
+
+void BookingManager::notifyOwnerPayment(const BookingRecord& booking, const std::string& status,
+                                        const std::string& title, const std::string& body) {
+    if (!notifications_) return;
+    Json notify = Json::object();
+    notify.set("booking_id", Json(booking.id));
+    notify.set("page_id", Json(booking.pageId));
+    notify.set("status", Json(status));
+    notify.set("amount", Json(booking.payment.getInt("amount")));
+    notify.set("currency", Json(booking.payment.getString("currency", "RUB")));
+    notify.set("guest_name", Json(booking.guestName));
+    notifications_->create(booking.ownerId, "booking.payment", title, body, notify);
+}
+
+void BookingManager::announcePaid(const BookingRecord& booking, bool notifyOwner) {
+    const auto page = database_.db().findBookingPage(booking.pageId);
+    const std::string pageTitle = page ? page->title : std::string();
+    if (notifyOwner) {
+        notifyOwnerPayment(booking, "paid", booking.guestName + " оплатил(а) запись",
+                           moneyOf(booking.payment) + (pageTitle.empty() ? "" : " · " + pageTitle));
+    }
+    if (!page || booking.status != "active") return;
+    std::string ownerName;
+    std::string ownerTimezone;
+    ownerInfo(page->ownerId, ownerName, ownerTimezone);
+    notifyGuest(booking, *page, "booking.paid", "Selfvoy: оплата получена", "Оплата получена",
+                moneyOf(booking.payment) + " — спасибо! " + ownerName + " ждёт вас:", manageTokenOf(booking), true);
+}
+
+bool BookingManager::expireUnpaid(long long bookingId, std::time_t now) {
+    std::vector<long long> tasks;
+    int cancelled = 0;
+    std::optional<BookingRecord> booking;
+    const bool changed = mutateBooking(bookingId, [&](BookingRecord& record) {
+        if (!payments::awaiting(record.payment)) return false;  // оплачено или уже решено
+        record.payment = withStatus(record.payment, "expired");
+        if (record.status == "active") {
+            cancelled = cancelOccurrences(record, -1, now, tasks);
+            if (record.status == "cancelled") record.cancelledBy = "system";
+        }
+        return true;
+    }, booking);
+    if (!changed || !booking) return false;
+    for (const long long task : tasks) deleteOwnTask(booking->ownerId, task);
+    dropInactiveReminders(*booking);
+    if (cancelled == 0) return true;  // запись уже была отменена — только статус оплаты
+    const auto page = database_.db().findBookingPage(booking->pageId);
+    if (notifications_) {
+        Json notify = Json::object();
+        notify.set("booking_id", Json(booking->id));
+        notify.set("page_id", Json(booking->pageId));
+        notify.set("cancelled", Json(static_cast<long long>(cancelled)));
+        notify.set("guest_name", Json(booking->guestName));
+        notify.set("reason", Json(std::string("оплата не поступила")));
+        notify.set("cancelled_by", Json(std::string("system")));
+        notifications_->create(booking->ownerId, "booking.cancelled",
+                               booking->guestName + ": оплата не поступила — запись отменена",
+                               page ? page->title : std::string(), notify);
+    }
+    if (page) {
+        notifyGuest(*booking, *page, "booking.payment_expired", "Selfvoy: оплата не поступила — запись отменена",
+                    "Запись отменена",
+                    "Оплата " + moneyOf(booking->payment) + " не поступила вовремя, поэтому время освобождено. Встречи:",
+                    "", false);
+    }
+    SELFVOY_LOG(log::Level::Info, "booking") << "запись " << booking->id << " отменена: оплата не поступила";
+    return true;
+}
+
+void BookingManager::refundAfterCancel(const BookingRecord& booking, bool provider) {
+    const std::string money = moneyOf(booking.payment);
+    if (provider && payments_) {
+        std::string error;
+        if (payments_->refund(booking.ownerId, booking.payment, "rf-" + std::to_string(booking.id), error)) {
+            const std::string at = isoUtc(std::time(nullptr));
+            std::optional<BookingRecord> updated;
+            mutateBooking(booking.id, [&](BookingRecord& record) {
+                if (!record.payment.isObject() || record.payment.getString("status") == "refunded") return false;
+                Json payment = withStatus(record.payment, "refunded");
+                payment.set("refunded_at", Json(at));
+                record.payment = payment;
+                return true;
+            }, updated);
+            notifyOwnerPayment(updated ? *updated : booking, "refunded", "Оплата возвращена: " + booking.guestName,
+                               money + " — возврат через ЮKassa");
+            return;
+        }
+        notifyOwnerPayment(booking, "refund_due", "Верните оплату вручную: " + booking.guestName,
+                           "ЮKassa не приняла возврат " + money + " — верните его в личном кабинете ЮKassa");
+        return;
+    }
+    notifyOwnerPayment(booking, "refund_due", "Верните оплату вручную: " + booking.guestName,
+                       money + " — запись отменена, оплату нужно вернуть гостю");
+}
+
+PaymentManager::Remote BookingManager::syncPayment(const BookingRecord& booking, std::time_t now, int minInterval) {
+    const Json& payment = booking.payment;
+    if (!payments_ || !payment.isObject() || payment.getString("method") != "yookassa" ||
+        payment.getString("provider_id").empty()) {
+        return PaymentManager::Remote::Error;
+    }
+    const std::string status = payment.getString("status");
+    // expired с возвратом уже решён; paid/refunded/waived не опрашиваются.
+    if (status != "pending" && !(status == "expired" && payment.getString("refunded_at").empty())) {
+        return PaymentManager::Remote::Error;
+    }
+    std::string error;
+    const PaymentManager::Remote remote = payments_->poll(booking.ownerId, payment, now, minInterval, error);
+    if (status == "pending") {
+        if (remote == PaymentManager::Remote::Succeeded) {
+            std::optional<BookingRecord> updated;
+            const bool changed = mutateBooking(booking.id, [&](BookingRecord& record) {
+                if (!payments::awaiting(record.payment)) return false;
+                Json paid = withStatus(record.payment, "paid");
+                paid.set("paid_at", Json(isoUtc(now)));
+                record.payment = paid;
+                return true;
+            }, updated);
+            if (changed && updated) announcePaid(*updated, true);
+        } else if (remote == PaymentManager::Remote::Canceled) {
+            expireUnpaid(booking.id, now);
+        }
+        return remote;
+    }
+    // Время уже освобождено (оплата истекла или запись отменили), а гость всё же
+    // заплатил — деньги возвращаются автоматически.
+    if (remote == PaymentManager::Remote::Succeeded) {
+        SELFVOY_LOG(log::Level::Info, "booking") << "запись " << booking.id << ": оплата после отмены — возврат";
+        refundAfterCancel(booking, true);
+    }
+    return remote;
+}
+
+std::size_t BookingManager::paymentTick(int limit, std::time_t now) {
+    const auto awaiting = database_.db().listAwaitingPayments(limit);
+    for (const auto& booking : awaiting) {
+        const Json& payment = booking.payment;
+        std::time_t due = 0;
+        const bool hasDue = parseIsoUtc(payment.getString("due_at"), due);
+        const bool overdue = !hasDue || now >= due;
+        if (payment.getString("method") == "yookassa" && !payment.getString("provider_id").empty() && payments_) {
+            // К сроку — последний опрос без ограничения: оплата могла пройти в последнюю минуту.
+            const auto remote = syncPayment(booking, now, overdue ? 0 : PaymentManager::kPollIntervalSec);
+            if (remote == PaymentManager::Remote::Succeeded || remote == PaymentManager::Remote::Canceled) continue;
+            // ЮKassa не ответила — не отменяем оплаченную, возможно, запись: ждём до часа сверх срока.
+            if (remote == PaymentManager::Remote::Error && overdue && hasDue && now < due + kPaymentGraceSec) continue;
+        }
+        if (overdue) expireUnpaid(booking.id, now);
+    }
+    return awaiting.size();
+}
+
+BookingManager::Result BookingManager::paymentClaim(const Json& payload, const std::string& remoteAddr) {
+    if (limited("booking.change:" + Session::ipOf(remoteAddr), kChangePerMinute)) {
+        return Result::failure(protocol::code::kForbidden, "слишком много попыток, попробуйте через минуту");
+    }
+    const std::string hash = tokenHash(payload.getString("token"));
+    const auto found = hash.empty() ? std::nullopt : database_.db().findBookingByToken(hash);
+    if (!found) return Result::failure(protocol::code::kNotFound, "запись не найдена");
+    Result failure;
+    bool changed = false;
+    std::optional<BookingRecord> booking;
+    mutateBooking(found->id, [&](BookingRecord& record) {
+        const Json& payment = record.payment;
+        const std::string status = payment.isObject() ? payment.getString("status") : std::string();
+        if (!payment.isObject()) {
+            failure = Result::failure(protocol::code::kBadRequest, "у записи нет оплаты");
+        } else if (payment.getString("method") != "link") {
+            failure = Result::failure(protocol::code::kBadRequest, "оплата через ЮKassa подтверждается автоматически");
+        } else if (status == "expired" || record.status != "active") {
+            failure = Result::failure(protocol::code::kConflict, "запись отменена — оплата больше не нужна");
+        } else if (status == "pending") {
+            record.payment = withStatus(payment, "claimed");
+            changed = true;
+            return true;
+        }
+        return false;  // claimed / paid / waived / refunded — без изменений
+    }, booking);
+    if (!failure.code.empty()) return failure;
+    if (!booking) booking = database_.db().findBooking(found->id);
+    const auto page = booking ? database_.db().findBookingPage(booking->pageId) : std::nullopt;
+    if (!booking || !page) return Result::failure(protocol::code::kNotFound, "запись не найдена");
+    if (changed) {
+        notifyOwnerPayment(*booking, "claimed", booking->guestName + " отметил(а) оплату — проверьте поступление",
+                           moneyOf(booking->payment) + " · " + page->title);
+    }
+    Result result;
+    result.ok = true;
+    result.payload.set("booking", guestBookingJson(*booking, *page, false));
+    return result;
+}
+
+BookingManager::Result BookingManager::paymentSet(long long ownerId, const Json& payload) {
+    const std::string status = payload.getString("status");
+    if (status != "paid" && status != "waived" && status != "refunded") {
+        return Result::failure(protocol::code::kBadRequest, "status — paid, waived или refunded");
+    }
+    const long long id = payload.getInt("booking_id");
+    const auto found = id > 0 ? database_.db().findBooking(id) : std::nullopt;
+    if (!found || found->ownerId != ownerId) return Result::failure(protocol::code::kNotFound, "запись не найдена");
+    if (!found->payment.isObject()) return Result::failure(protocol::code::kBadRequest, "у записи нет оплаты");
+    const std::string at = isoUtc(std::time(nullptr));
+    bool paidNow = false;
+    std::optional<BookingRecord> booking;
+    mutateBooking(id, [&](BookingRecord& record) {
+        if (!record.payment.isObject() || record.payment.getString("status") == status) return false;
+        paidNow = status == "paid";
+        Json payment = withStatus(record.payment, status);
+        if (status == "paid") payment.set("paid_at", Json(at));
+        if (status == "refunded") payment.set("refunded_at", Json(at));
+        record.payment = payment;
+        return true;
+    }, booking);
+    if (!booking) booking = database_.db().findBooking(id);
+    if (!booking) return Result::failure(protocol::code::kNotFound, "запись не найдена");
+    if (paidNow) announcePaid(*booking, false);  // владелец сам отметил — уведомлять его не нужно
+    const auto page = database_.db().findBookingPage(booking->pageId);
+    Result result;
+    result.ok = true;
+    result.payload.set("booking", bookingJson(*booking, page ? page->title : std::string()));
     return result;
 }
 

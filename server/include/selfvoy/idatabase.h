@@ -298,6 +298,17 @@ struct BookingPageRecord {
     bool guestReminders = true;
     // F3: скрыть подпись «Запись через Selfvoy» (Pro; действует, пока у владельца Pro).
     bool hideBranding = false;
+    // F4: цена (мин. единицы, 0 — не показывать), предоплата и политика отмены.
+    long long price = 0;
+    std::string currency = "RUB";        // RUB | USD | EUR | KZT | BYN
+    std::string prepay = "none";         // none | full | deposit
+    long long deposit = 0;               // мин. единицы (prepay = deposit)
+    std::string paymentUrl;              // https-ссылка оплаты владельца
+    std::string paymentNote;             // реквизиты / СБП (одна строка)
+    int payWithinMinutes = 60;           // слот держится до оплаты (15–1440)
+    int cancelHours = 0;                 // отмена с возвратом — не позже чем за N ч (0 — всегда)
+    std::string lateCancel = "allow";    // allow | block — позже срока
+    std::string policyText;              // текст политики отмены
 };
 
 // Запись гостя на странице. occurrences — встречи (одна или еженедельная серия):
@@ -323,6 +334,18 @@ struct BookingRecord {
     // "selfvoy-manage-token"): напоминания дают гостю ссылку. "" — старая запись.
     // Ключ поиска — по-прежнему только manageHash.
     std::string manageTokenEnc;
+    // F4: оплата записи (selfvoy/payments.h) или null — оплаты нет.
+    Json payment;
+};
+
+// Подключённый владельцем магазин ЮKassa (payment_accounts). secretEnc — секретный
+// ключ, AES-256-GCM (Config::dataKey, AAD "selfvoy-payment-secret").
+struct PaymentAccountRecord {
+    long long userId = 0;
+    std::string provider = "yookassa";
+    std::string shopId;
+    std::string secretEnc;
+    std::string connectedAt;
 };
 
 // Конец последней активной встречи записи (ISO UTC) или "" — активных нет.
@@ -645,9 +668,16 @@ public:
     // текущего момента; в PostgreSQL — колонка ends_at с индексом). Прошедшие записи
     // остаются active навсегда — без этого фильтра они вытесняли бы будущие из лимита.
     virtual std::vector<BookingRecord> listUpcomingBookings(long long ownerId, long long pageId, int limit) = 0;
-    // Перезаписывает occurrences, status, cancelled_by, reschedules и непустой manage_hash
-    // (новая ссылка управления); updated_at = now.
+    // Перезаписывает occurrences, status, cancelled_by, reschedules, payment и непустой
+    // manage_hash (новая ссылка управления); updated_at = now.
     virtual DatabaseError updateBooking(const BookingRecord& record) = 0;
+    // F4: записи с ожидаемой оплатой (payment.status = pending), раньше истекающие — первыми.
+    virtual std::vector<BookingRecord> listAwaitingPayments(int limit) = 0;
+
+    // F4: магазин ЮKassa владельца (payment_accounts). set — вставка или замена.
+    virtual std::optional<PaymentAccountRecord> findPaymentAccount(long long userId) = 0;
+    virtual DatabaseError setPaymentAccount(const PaymentAccountRecord& record) = 0;
+    virtual DatabaseError deletePaymentAccount(long long userId) = 0;
 
     // Рефералы (referral.*). Код — 8 символов [A-Z0-9], один на пользователя.
     virtual std::string referralCode(long long userId) = 0;

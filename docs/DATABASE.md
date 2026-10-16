@@ -9,7 +9,7 @@ e2e — на реальном PostgreSQL.
 изменения — файлами `schema/migrations/` (применяются по порядку имени).
 Демо-данные: `schema/seed.sql`.
 
-## 31 таблица по доменам
+## 30 таблиц и 2 представления по доменам
 
 ### Аутентификация и безопасность
 | таблица | назначение |
@@ -86,6 +86,7 @@ advisory lock'ов (их берут и отпускают в одной сесс
 | --- | --- |
 | `booking_telegram` | Telegram-чаты гостя записи (напоминания и извещения): `booking_id` (ON DELETE CASCADE), `chat_id`, `linked_at`; PK (booking_id, chat_id), индекс по `chat_id` (отвязка `/stop` и при 403); не больше 3 чатов на запись — проверяет сервер |
 | `server_state` | служебное состояние сервера ключ → значение (`telegram.offset` — смещение `getUpdates`), `updated_at` |
+| `payment_accounts` | магазин ЮKassa владельца (F4): `user_id` PK (ON DELETE CASCADE), `provider` CHECK (`yookassa`), `shop_id`, `secret_enc` (AES-256-GCM, AAD `selfvoy-payment-secret`), `connected_at` |
 | `booking_reminders` | напоминания гостю о встрече (F1): `booking_id` (ON DELETE CASCADE), `owner_id`, `occurrence_start`, `kind` CHECK (`24h`/`2h`), `due_at`, `sent_at` (NULL — не отправлено); UNIQUE (booking_id, occurrence_start, kind), частичный индекс `due_at WHERE sent_at IS NULL`. Создаются при записи/переносе, неотправленные удаляются при отмене/переносе встречи; планировщик захватывает наступившие одним `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING` |
 
 Миграция `2026_10_16_telegram_pro.sql` (то же — блоком в конце таблиц `schema.sql`):
@@ -105,6 +106,23 @@ Selfvoy», Pro), таблица `booking_reminders`, `referrals.rewarded_at` (н
 +30 дней Pro обоим начислена; один раз). `confirmed_at` встречи («Приду») —
 поле внутри `bookings.occurrences` JSONB, отдельной колонки нет. Во встроенном
 хранилище — массив `booking_reminders` с теми же полями; захват — под мьютексом.
+
+Миграция `2026_10_16_payments.sql` (S2a, F4; то же — блоком в конце таблиц
+`schema.sql`): поля страницы записи `booking_pages.price` (BIGINT, минимальные
+единицы валюты, 0–100 000 000), `currency` (`RUB`/`USD`/`EUR`/`KZT`/`BYN`),
+`prepay` (`none`/`full`/`deposit`), `deposit`, `payment_url`, `payment_note`,
+`pay_within_minutes` (15–1440, 60), `cancel_hours` (0–168, 0), `late_cancel`
+(`allow`/`block`), `policy_text` — все с CHECK и значениями по умолчанию;
+`bookings.payment` JSONB (NULL — оплаты нет; `{status, amount, currency, kind,
+method, provider_id, action_url, due_at, paid_at, refunded_at}`, см.
+PROTOCOL.md) с частичным индексом `bookings_payment_pending_idx` по
+`payment->>'due_at' WHERE payment->>'status' = 'pending'` (планировщик истечения
+и опроса ЮKassa); таблица `payment_accounts` — магазин ЮKassa владельца:
+`user_id` PK (ON DELETE CASCADE), `provider` CHECK (`yookassa`), `shop_id`,
+`secret_enc` (секретный ключ, AES-256-GCM ключом `SELFVOY_2FA_KEY`, AAD
+`selfvoy-payment-secret`), `connected_at`. `bookings.cancelled_by` получает
+значение `system` (оплата не поступила). Во встроенном хранилище — поля в тех же
+записях и массив `payment_accounts`.
 
 Миграция `2026_10_15_audit_fixes.sql`: `users.email_verified DEFAULT FALSE`
 (новый аккаунт без явного значения не считается подтверждённым), `bookings.ends_at`

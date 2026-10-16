@@ -1907,6 +1907,16 @@ private:
         entry.set("status", Json(record.status));
         entry.set("guest_reminders", Json(record.guestReminders));
         entry.set("hide_branding", Json(record.hideBranding));
+        entry.set("price", Json(record.price));
+        entry.set("currency", Json(record.currency));
+        entry.set("prepay", Json(record.prepay));
+        entry.set("deposit", Json(record.deposit));
+        entry.set("payment_url", Json(record.paymentUrl));
+        entry.set("payment_note", Json(record.paymentNote));
+        entry.set("pay_within_minutes", Json(static_cast<long long>(record.payWithinMinutes)));
+        entry.set("cancel_hours", Json(static_cast<long long>(record.cancelHours)));
+        entry.set("late_cancel", Json(record.lateCancel));
+        entry.set("policy_text", Json(record.policyText));
         entry.set("updated_at", Json(isoNow()));
     }
 
@@ -1928,6 +1938,16 @@ private:
         record.updatedAt = entry.getString("updated_at");
         record.guestReminders = entry.getBool("guest_reminders", true);
         record.hideBranding = entry.getBool("hide_branding", false);
+        record.price = entry.getInt("price", 0);
+        record.currency = entry.getString("currency", "RUB");
+        record.prepay = entry.getString("prepay", "none");
+        record.deposit = entry.getInt("deposit", 0);
+        record.paymentUrl = entry.getString("payment_url");
+        record.paymentNote = entry.getString("payment_note");
+        record.payWithinMinutes = static_cast<int>(entry.getInt("pay_within_minutes", 60));
+        record.cancelHours = static_cast<int>(entry.getInt("cancel_hours", 0));
+        record.lateCancel = entry.getString("late_cancel", "allow");
+        record.policyText = entry.getString("policy_text");
         return record;
     }
 
@@ -2114,6 +2134,7 @@ private:
         entry.set("status", Json(record.status));
         entry.set("cancelled_by", Json(record.cancelledBy));
         entry.set("reschedules", Json(static_cast<long long>(record.reschedules)));
+        entry.set("payment", record.payment.isObject() ? record.payment : Json());
         entry.set("updated_at", Json(isoNow()));
     }
 
@@ -2133,7 +2154,69 @@ private:
         record.createdAt = entry.getString("created_at");
         record.updatedAt = entry.getString("updated_at");
         record.manageTokenEnc = entry.getString("manage_token_enc");
+        if (entry.get("payment").isObject()) record.payment = entry.get("payment");
         return record;
+    }
+
+    std::vector<BookingRecord> listAwaitingPayments(int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingRecord> result;
+        for (const auto& entry : table("bookings").items()) {
+            const Json payment = entry.get("payment");
+            if (payment.isObject() && payment.getString("status") == "pending") result.push_back(toBooking(entry));
+        }
+        std::stable_sort(result.begin(), result.end(), [](const BookingRecord& a, const BookingRecord& b) {
+            return a.payment.getString("due_at") < b.payment.getString("due_at");
+        });
+        if (limit > 0 && static_cast<int>(result.size()) > limit) result.resize(static_cast<std::size_t>(limit));
+        return result;
+    }
+
+    // ------------------------------------------------------- payment_accounts
+    std::optional<PaymentAccountRecord> findPaymentAccount(long long userId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("payment_accounts").items()) {
+            if (entry.getInt("user_id") != userId) continue;
+            PaymentAccountRecord record;
+            record.userId = userId;
+            record.provider = entry.getString("provider", "yookassa");
+            record.shopId = entry.getString("shop_id");
+            record.secretEnc = entry.getString("secret_enc");
+            record.connectedAt = entry.getString("connected_at");
+            return record;
+        }
+        return std::nullopt;
+    }
+
+    DatabaseError setPaymentAccount(const PaymentAccountRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.provider != "yookassa" || record.shopId.empty() || record.secretEnc.empty()) {
+            return DatabaseError::failure("некорректное подключение оплаты");
+        }
+        auto& rows = mutableTable("payment_accounts");
+        rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                  [&](const Json& entry) { return entry.getInt("user_id") == record.userId; }),
+                   rows.end());
+        Json entry = Json::object();
+        entry.set("user_id", Json(record.userId));
+        entry.set("provider", Json(record.provider));
+        entry.set("shop_id", Json(record.shopId));
+        entry.set("secret_enc", Json(record.secretEnc));
+        entry.set("connected_at", Json(isoNow()));
+        rows.push_back(entry);
+        flush();
+        return DatabaseError::success();
+    }
+
+    DatabaseError deletePaymentAccount(long long userId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& rows = mutableTable("payment_accounts");
+        const auto before = rows.size();
+        rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                  [&](const Json& entry) { return entry.getInt("user_id") == userId; }),
+                   rows.end());
+        if (rows.size() != before) flush();
+        return DatabaseError::success();
     }
 
     // ------------------------------------------------------------- referrals

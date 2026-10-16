@@ -116,6 +116,9 @@ struct Config {
     std::string telegramBotUsername;                     // SELFVOY_TELEGRAM_BOT_USERNAME
     std::string telegramApiUrl = "https://api.telegram.org";  // SELFVOY_TELEGRAM_API_URL (e2e — http-мок)
     bool telegramPoll = true;                            // SELFVOY_TELEGRAM_POLL (0 — только отправка)
+    // --- Рост (S2a): оплата записи (F4) ---
+    // API ЮKassa (владелец подключает свой магазин; в e2e — http-мок).
+    std::string yookassaApiUrl = "https://api.yookassa.ru/v3";  // SELFVOY_YOOKASSA_API_URL
 
     bool telegramEnabled() const { return !telegramBotToken.empty() && !telegramBotUsername.empty(); }
     // Ключ AES-256-GCM для шифруемых полей БД (TOTP-секреты, токен ссылки управления):

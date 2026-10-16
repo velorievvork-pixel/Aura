@@ -33,6 +33,7 @@ set(SELFVOY_SOURCES
     src/bookingmanager.cpp
     src/calendarfeed.cpp
     src/slotspost.cpp
+    src/payments.cpp
     src/referralmanager.cpp
     src/schedulelock.cpp
     src/agentmanager.cpp

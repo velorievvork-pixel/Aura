@@ -48,7 +48,8 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 `auth.resendCode`, `auth.forgotPassword`, `auth.resetPassword`,
 `auth.refresh`, `ping`, `server.info`, `invite.get`, `invite.respond`,
 `booking.get`, `booking.book`, `booking.manage`, `booking.reschedule`,
-`booking.cancel`, `booking.resendLink`, `booking.confirm`, требуют авторизации.
+`booking.cancel`, `booking.resendLink`, `booking.confirm`, `booking.paymentClaim`,
+требуют авторизации.
 
 ## Коды ошибок
 
@@ -341,7 +342,12 @@ Access-токен автоматически обновляется по `refres
 (изменение 2FA), `invite.accepted` / `invite.declined` (гость ответил на
 приглашение по ссылке), `booking.created` / `booking.rescheduled` /
 `booking.cancelled` (гость записался, перенёс или отменил встречу на
-странице записи), `booking.confirmed` (гость нажал «Приду»), `referral.joined`
+странице записи; `payload.cancelled_by: "system"` — запись отменена, потому что
+оплата не поступила), `booking.confirmed` (гость нажал «Приду»), `booking.payment`
+(оплата записи: `{booking_id, page_id, status, amount, currency, guest_name}`,
+`status` — `claimed` гость отметил «Я оплатил(а)», `paid` оплата через ЮKassa
+прошла, `refunded` деньги возвращены через ЮKassa, `refund_due` — верните оплату
+гостю вручную), `referral.joined`
 (приглашённый по реферальной ссылке подтвердил email), `referral.reward`
 (приглашённому начислен месяц Pro). Push-доставка — через устройства в `push_devices`
 (платформы `apns` | `fcm` | `webhook` | `dev`); платформенный конверт
@@ -452,23 +458,28 @@ guest_name, comment}`).
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `booking.pageCreate` | `{title (1–120, одна строка), description? (≤ 1000), duration_minutes? (15–240, 30), days_ahead? (1–60, 14), max_per_day? (1–16, 4), notice_hours? (0–168, 2), max_series? (1–12, 1), weekends? (bool, false), guest_reminders? (bool, true), hide_branding? (bool, false)}` | `{page}`; больше 10 страниц → `forbidden`; `hide_branding: true` без Pro при `SELFVOY_PLANS_ENFORCED=1` → `pro_required` |
+| `booking.pageCreate` | `{title (1–120, одна строка), description? (≤ 1000), duration_minutes? (15–240, 30), days_ahead? (1–60, 14), max_per_day? (1–16, 4), notice_hours? (0–168, 2), max_series? (1–12, 1), weekends? (bool, false), guest_reminders? (bool, true), hide_branding? (bool, false), …поля цены и политики отмены (F4, ниже)}` | `{page}`; больше 10 страниц → `forbidden`; `hide_branding: true` или `prepay` ≠ `none` без Pro при `SELFVOY_PLANS_ENFORCED=1` → `pro_required` |
 | `booking.pageList` | — | `{pages: [page]}` — новые сверху, без удалённых |
-| `booking.pageUpdate` | `{page_id, …любые поля pageCreate, status? (active \| paused)}` | `{page}` — меняются только переданные поля; включить `hide_branding` без Pro (при `SELFVOY_PLANS_ENFORCED=1`) → `pro_required`, выключить можно всегда |
+| `booking.pageUpdate` | `{page_id, …любые поля pageCreate, status? (active \| paused)}` | `{page}` — меняются только переданные поля; включить `hide_branding` или предоплату (`prepay` из `none`) без Pro (при `SELFVOY_PLANS_ENFORCED=1`) → `pro_required`, выключить можно всегда |
 | `booking.pageDelete` | `{page_id}` | `{deleted: true}` — ссылка перестаёт работать, сделанные записи остаются |
 | `booking.list` | `{page_id? (0 — все), active_only?, limit? (1–200, 50)}` | `{bookings: [booking]}` — новые сверху |
-| `booking.ownerCancel` | `{booking_id, occurrence? (start одной встречи)}` | `{booking}`; без `occurrence` — все предстоящие встречи |
+| `booking.ownerCancel` | `{booking_id, occurrence? (start одной встречи)}` | `{booking}`; без `occurrence` — все предстоящие встречи; оплаченная запись, отменённая целиком, — возврат (см. «Цена, предоплата и политика отмены») |
+| `booking.paymentSet` | `{booking_id, status: paid \| waived \| refunded}` | `{booking}` — отметка оплаты владельцем (`paid_at` / `refunded_at` = сейчас); у записи нет оплаты → `bad_request`; `paid` — гостю письмо «Оплата получена» |
 
 `page`: `{id, slug, url, title, description, duration_minutes, days_ahead,
 max_per_day, notice_hours, max_series, weekends, status (active | paused),
-guest_reminders, hide_branding, upcoming, created_at, updated_at}`; `url` пуст
+guest_reminders, hide_branding, price, currency, prepay, deposit, payment_url,
+payment_note, pay_within_minutes, cancel_hours, late_cancel, policy_text, upcoming,
+created_at, updated_at}`; `url` пуст
 без `SELFVOY_PUBLIC_URL`. `guest_reminders` — напоминать гостю о встрече
 (бесплатно), `hide_branding` — скрыть подпись «Запись через Selfvoy» (Pro).
 `booking` (вид владельца): `{id, page_id, page_title, guest_name, guest_email,
 guest_comment, status (active | cancelled), cancelled_by ("" | guest | owner),
 reschedules, occurrences: [{start, end, local, status (active | cancelled),
 confirmed_at}], reminders: [{start, kind (24h | 2h), due_at, sent_at}],
-created_at, updated_at}`; `confirmed_at` — когда гость нажал «Приду» ("" — не
+payment (объект оплаты целиком или null), created_at, updated_at}`;
+`cancelled_by` у отменённой записи — `guest`, `owner` или `system` (оплата не
+поступила к сроку); `confirmed_at` — когда гость нажал «Приду» ("" — не
 подтверждал), `reminders` — запланированные и отправленные напоминания гостю
 (`sent_at` "" — ещё не отправлено).
 
@@ -486,6 +497,7 @@ created_at, updated_at}`; `confirmed_at` — когда гость нажал «
 | `booking.cancel` | `{token, occurrence?, reason? (≤ 500)}` | `{booking}`; без `occurrence` — все предстоящие встречи |
 | `booking.resendLink` | `{slug, email}` | `{sent: true}` — всегда одинаково (нельзя узнать, есть ли запись); если на странице есть активная запись с этим email, ссылка управления перевыпускается (прежняя перестаёт работать) и уходит письмом |
 | `booking.confirm` | `{token, occurrence? (start встречи; по умолчанию ближайшая предстоящая активная)}` | `{booking}` (вид гостя, `slots` пуст) — у встречи ставится `confirmed_at`; повтор ничего не меняет и не уведомляет владельца второй раз; лимит — как у переноса/отмены |
+| `booking.paymentClaim` | `{token}` | `{booking}` (вид гостя, `slots` пуст) — «Я оплатил(а)» для оплаты по ссылке: `pending` → `claimed`, владельцу — `booking.payment` (`claimed`); повтор и уже `paid`/`waived` — без изменений; оплата через ЮKassa → `bad_request`; нет оплаты → `bad_request`; запись отменена (оплата `expired`) → `conflict`; лимит — как у переноса/отмены |
 
 Письма гостю (если при записи указан email; драйвер почты — как у кодов
 подтверждения, `SELFVOY_MAIL_DRIVER`): подтверждение записи со ссылкой управления
@@ -500,7 +512,9 @@ https); лимит — 10 в час на адрес и на чат, 200 в ча�
 
 Вид страницы для гостя: `{slug, title, description, duration_minutes,
 max_series, owner_name, owner_timezone, status, slots: [{start, end, day}],
-slots_unavailable, ref, branding}` — без email владельца и чужих записей; `day` —
+slots_unavailable, ref, branding, price, currency, prepay, deposit, payment_note,
+payment_url, pay_within_minutes, policy: {cancel_hours, late_cancel, text}}` —
+без email владельца и чужих записей; `day` —
 местная дата владельца; `slots_unavailable: true` — AI-сервис недоступен
 (страница видна, время не подобрано); `ref` — реферальный код владельца для
 ссылки «Заведите свой Selfvoy». Вид записи для гостя: `{page_title, page_slug
@@ -508,13 +522,16 @@ slots_unavailable, ref, branding}` — без email владельца и чуж
 duration_minutes, guest_name, status, cancelled_by, occurrences, can_cancel,
 can_reschedule, can_change, reschedules_left, slots (свободное время для
 переноса ближайшей встречи), slots_unavailable, ref, branding, telegram_url,
-telegram_linked}`, у каждой встречи в `occurrences` — `confirmed_at` ("" — не
+telegram_linked, payment (без `provider_id`; null — оплаты нет), late, policy,
+payment_note}`, у каждой встречи в `occurrences` — `confirmed_at` ("" — не
 подтверждена); `telegram_url` — ссылка подписки на напоминания в Telegram
 ("" — бот не настроен или запись отменена; после `booking.resendLink` прежняя
 ссылка перестаёт работать), `telegram_linked` — к записи уже подключён чат. `can_cancel` — есть
 предстоящая встреча (отменить можно и на паузе, и после удаления страницы);
 `can_reschedule` — к тому же страница открыта и переносы не исчерпаны;
-`can_change` — устаревший синоним `can_reschedule`.
+`can_change` — устаревший синоним `can_reschedule`. `late` — до ближайшей встречи
+меньше `cancel_hours` часов; при `late_cancel: block` тогда `can_cancel` и
+`can_reschedule` — `false`.
 
 Подпись (F3): `branding: {show, text: "Запись через Selfvoy", url}`, `url` —
 `<SELFVOY_PUBLIC_URL>/#/signup?ref=<код владельца>&src=booking` ("" без
@@ -561,10 +578,96 @@ cancelled, guest_name, reason}`). Запись без предстоящих в�
 
 Ошибки: `not_found` — неизвестный/удалённый slug или токен, чужая запись;
 `conflict` — время заняли, запись на паузе, запись уже отменена, переносы
-исчерпаны, подтверждаемой встречи нет (прошла или отменена); `bad_request` — слот не из свободных, неверные поля; `upstream_error` —
-AI-сервис недоступен при записи/переносе; `forbidden` — лимиты по IP
+исчерпаны, подтверждаемой встречи нет (прошла или отменена), до встречи меньше
+`cancel_hours` при `late_cancel: block` («до встречи меньше N ч — свяжитесь со
+специалистом»); `bad_request` — слот не из свободных, неверные поля; `upstream_error` —
+AI-сервис недоступен при записи/переносе, ЮKassa не создала платёж; `forbidden` — лимиты по IP
 (30 `booking.get`/`booking.manage` в минуту, 10 записей в минуту и 30 в час,
 10 переносов/отмен в минуту).
+
+### Цена, предоплата и политика отмены (F4)
+
+Поля страницы записи (`booking.pageCreate` / `booking.pageUpdate`; в
+`pageUpdate` меняются только переданные):
+
+| поле | значение |
+| --- | --- |
+| `price` | цена в минимальных единицах валюты (копейки), целое 0–100 000 000; 0 — не показывать |
+| `currency` | `RUB` (по умолчанию) \| `USD` \| `EUR` \| `KZT` \| `BYN` |
+| `prepay` | `none` (по умолчанию) \| `full` (вся сумма: `price × число встреч`) \| `deposit` (депозит один раз на запись) |
+| `deposit` | депозит в минимальных единицах; при `prepay: deposit` — от 1 до `price` |
+| `payment_url` | ссылка оплаты владельца: только `https://`, ≤ 500 символов, без пробелов |
+| `payment_note` | реквизиты / СБП — одна строка, ≤ 300 символов |
+| `pay_within_minutes` | сколько держится время до оплаты: 15–1440, 60 |
+| `cancel_hours` | отмена с возвратом — не позже чем за N часов: 0–168, 0 (отменять можно всегда) |
+| `late_cancel` | `allow` (по умолчанию: поздняя отмена разрешена, без возврата) \| `block` (позже срока гость не отменяет и не переносит) |
+| `policy_text` | текст политики отмены для гостя, ≤ 500 символов |
+
+`prepay` ≠ `none` требует `price > 0` и способ оплаты: `payment_url`,
+`payment_note` или подключённую ЮKassa (иначе `bad_request`), а при
+`SELFVOY_PLANS_ENFORCED=1` — действующий Pro для включения (`pro_required`; уже
+включённую предоплату можно править и после окончания Pro). Цена без
+предоплаты и политика отмены — бесплатно. Способ оплаты проверяется при
+создании страницы и при правке полей оплаты (`prepay`, `price`, `deposit`,
+`payment_url`, `payment_note`). Цена страницы попадает и в пост «свободные
+окна» (`booking.slotsPost`).
+
+Подключение ЮKassa владельцем (свой магазин — деньги гостей идут ему напрямую,
+Selfvoy их не касается):
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `payments.status` | — | `{connected, provider ("yookassa" \| ""), shop_id, connected_at}` |
+| `payments.connect` | `{provider: "yookassa", shop_id (цифры, ≤ 20), secret_key (секретный ключ магазина live_…/test_…)}` | `{connected: true, provider, shop_id, connected_at}`; ключи проверяются запросом `GET /me` (Basic `shop_id:secret_key`): неверные ключи или ключ другого магазина → `bad_request`, ЮKassa не отвечает → `upstream_error`; без Pro при `SELFVOY_PLANS_ENFORCED=1` → `pro_required`; без `SELFVOY_PUBLIC_URL` на сервере → `bad_request` (гостю некуда вернуться после оплаты); 10 попыток в час |
+| `payments.disconnect` | — | `{connected: false}` |
+
+Секретный ключ хранится зашифрованным (AES-256-GCM, ключ — как у TOTP-секретов,
+AAD `selfvoy-payment-secret`), наружу и в журнал не попадает. Адрес API —
+`SELFVOY_YOOKASSA_API_URL` (по умолчанию `https://api.yookassa.ru/v3`). Чеки
+54-ФЗ (объект `receipt`) сервер не отправляет: самозанятый формирует чек в «Мой
+налог», ИП/организация — настройками магазина в личном кабинете ЮKassa.
+
+Оплата записи — объект `payment` (`bookings.payment`; тот же формат у пакетов F5):
+`{status, amount, currency, kind (full | deposit | package), method (link |
+yookassa), provider_id (id платежа ЮKassa; гостю не отдаётся), action_url
+(куда отправить гостя платить; "" — только реквизиты), due_at, paid_at,
+refunded_at}`; `status`: `pending` (ждём оплату) → `paid` / `claimed` (гость
+сказал, что оплатил) / `expired` (не оплачено к сроку или запись отменена до
+оплаты); владелец может поставить `paid`, `waived` (без оплаты) или `refunded`.
+
+- `booking.book` на странице с предоплатой создаёт оплату `pending` на
+  `price × count` (`full`) или `deposit`; `due_at` = сейчас + `pay_within_minutes`
+  (не позже начала первой встречи). ЮKassa подключена — `POST /payments`
+  (`Idempotence-Key: bk-<booking_id>`, `capture: true`, `confirmation: {type:
+  redirect, return_url: <ссылка управления>?paid=1}`, `description` ≤ 128
+  символов «<страница>, <дата>», `metadata.booking_id`), `action_url` —
+  `confirmation_url` ЮKassa; платёж не создался → запись отменяется
+  (`cancelled_by: system`), ответ `upstream_error`. Иначе способ `link`:
+  `action_url` = `payment_url`, гость платит сам и нажимает «Я оплатил(а)»
+  (`booking.paymentClaim`). Письмо о записи — с суммой, сроком, ссылкой оплаты
+  и реквизитами. Если к моменту записи способа оплаты нет (ЮKassa отключена, а
+  ссылки и реквизитов нет), запись создаётся без оплаты.
+- Время держится до `due_at`. Не оплачено (`pending`; `claimed` не истекает) —
+  планировщик отменяет запись (`cancelled_by: system`), оплата `expired`;
+  гостю — письмо/Telegram «Selfvoy: оплата не поступила — запись отменена» со
+  ссылкой «Выбрать другое время», владельцу — `booking.cancelled`
+  (`cancelled_by: "system"`).
+- ЮKassa: статус платежа проверяется в планировщике (не чаще раза в 30 с на
+  платёж; к сроку — ещё раз) и при каждом `booking.manage`: `succeeded` →
+  `paid` (владельцу `booking.payment`, гостю письмо «Оплата получена»),
+  `canceled` → `expired` и отмена записи. ЮKassa не отвечает к сроку — запись
+  ждёт до часа сверх срока. Гость заплатил уже после отмены — деньги
+  возвращаются автоматически (при `booking.manage`).
+- Возвраты (запись отменена целиком): владелец отменил оплаченную через ЮKassa
+  запись — `POST /refunds` на всю сумму (`Idempotence-Key: rf-<booking_id>`),
+  оплата `refunded`; оплаченную по ссылке (`paid`/`claimed`) — владельцу
+  `booking.payment` `refund_due` «верните оплату вручную». Гость отменил не
+  позже чем за `cancel_hours` — так же полный возврат (ЮKassa — автоматически,
+  по ссылке — `refund_due` владельцу); позже — без возврата (депозит остаётся у
+  специалиста, в письме об отмене — «оплата не возвращается»), а при
+  `late_cancel: block` гость не может ни отменить, ни перенести встречу
+  (`conflict` «до встречи меньше N ч — свяжитесь со специалистом»). Отмена одной
+  встречи серии оплату не меняет. ЮKassa не приняла возврат — `refund_due`.
 
 ### Пост «свободные окна» (F6)
 

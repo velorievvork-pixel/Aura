@@ -25,6 +25,7 @@
 #include "selfvoy/invitemanager.h"
 #include "selfvoy/bookingmanager.h"
 #include "selfvoy/calendarfeed.h"
+#include "selfvoy/payments.h"
 #include "selfvoy/referralmanager.h"
 #include "selfvoy/schedulelock.h"
 #include "selfvoy/telegrambot.h"
@@ -68,6 +69,7 @@ public:
     AdminManager& admin() { return *admin_; }
     TelegramBot& telegram() { return *telegram_; }
     BookingManager& bookings() { return *bookings_; }
+    PaymentManager& payments() { return *payments_; }  // F4: ЮKassa владельцев
     // Pro-функция доступна пользователю: !SELFVOY_PLANS_ENFORCED или действующий Pro.
     bool proAllowed(long long userId);
     CalendarFeed& calendarFeed() { return *calendarFeed_; }
@@ -117,6 +119,7 @@ private:
     // Бот объявлен раньше bookings_: разрушается позже — очередь извещений гостям
     // (поток BookingManager) до конца может ставить сообщения боту.
     std::unique_ptr<TelegramBot> telegram_;
+    std::unique_ptr<PaymentManager> payments_;  // раньше bookings_: записи пользуются им до конца
     std::unique_ptr<BookingManager> bookings_;
     std::unique_ptr<CalendarFeed> calendarFeed_;  // ICS-подписка (F6)
     std::unique_ptr<Listener> listener_;

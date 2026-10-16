@@ -2152,15 +2152,20 @@ private:
         Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("INSERT INTO booking_pages (owner_id, slug, title, description, duration_minutes, days_ahead, "
-                     "max_per_day, notice_hours, max_series, weekends, status, guest_reminders, hide_branding) "
+                     "max_per_day, notice_hours, max_series, weekends, status, guest_reminders, hide_branding, "
+                     "price, currency, prepay, deposit, payment_url, payment_note, pay_within_minutes, cancel_hours, "
+                     "late_cancel, policy_text) "
                      "VALUES ($1, $2, $3, $4, $5::int, $6::int, $7::int, $8::int, $9::int, $10::bool, $11, "
-                     "$12::bool, $13::bool) "
+                     "$12::bool, $13::bool, $14::bigint, $15, $16, $17::bigint, $18, $19, $20::int, $21::int, $22, $23) "
                      "RETURNING id",
                      {std::to_string(record.ownerId), record.slug, record.title, record.description,
                       std::to_string(record.durationMinutes), std::to_string(record.daysAhead),
                       std::to_string(record.maxPerDay), std::to_string(record.noticeHours),
                       std::to_string(record.maxSeries), record.weekends ? "true" : "false", record.status,
-                      record.guestReminders ? "true" : "false", record.hideBranding ? "true" : "false"},
+                      record.guestReminders ? "true" : "false", record.hideBranding ? "true" : "false",
+                      std::to_string(record.price), record.currency, record.prepay, std::to_string(record.deposit),
+                      record.paymentUrl, record.paymentNote, std::to_string(record.payWithinMinutes),
+                      std::to_string(record.cancelHours), record.lateCancel, record.policyText},
                      &result)) {
             PQclear(result);
             return DatabaseError::failure(lastError());
@@ -2198,12 +2203,17 @@ private:
         if (!execute("UPDATE booking_pages SET title = $2, description = $3, duration_minutes = $4::int, "
                      "days_ahead = $5::int, max_per_day = $6::int, notice_hours = $7::int, max_series = $8::int, "
                      "weekends = $9::bool, status = $10, guest_reminders = $11::bool, hide_branding = $12::bool, "
-                     "updated_at = now() WHERE id = $1",
+                     "price = $13::bigint, currency = $14, prepay = $15, deposit = $16::bigint, payment_url = $17, "
+                     "payment_note = $18, pay_within_minutes = $19::int, cancel_hours = $20::int, late_cancel = $21, "
+                     "policy_text = $22, updated_at = now() WHERE id = $1",
                      {std::to_string(record.id), record.title, record.description,
                       std::to_string(record.durationMinutes), std::to_string(record.daysAhead),
                       std::to_string(record.maxPerDay), std::to_string(record.noticeHours),
                       std::to_string(record.maxSeries), record.weekends ? "true" : "false", record.status,
-                      record.guestReminders ? "true" : "false", record.hideBranding ? "true" : "false"},
+                      record.guestReminders ? "true" : "false", record.hideBranding ? "true" : "false",
+                      std::to_string(record.price), record.currency, record.prepay, std::to_string(record.deposit),
+                      record.paymentUrl, record.paymentNote, std::to_string(record.payWithinMinutes),
+                      std::to_string(record.cancelHours), record.lateCancel, record.policyText},
                      &result)) {
             return DatabaseError::failure(lastError());
         }
@@ -2217,7 +2227,8 @@ private:
                "notice_hours, max_series, weekends, status, "
                "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
-               "guest_reminders, hide_branding "
+               "guest_reminders, hide_branding, price, currency, prepay, deposit, payment_url, payment_note, "
+               "pay_within_minutes, cancel_hours, late_cancel, policy_text "
                "FROM booking_pages";
     }
 
@@ -2249,6 +2260,16 @@ private:
         record.updatedAt = value_(result, row, 13);
         record.guestReminders = value_(result, row, 14) != "f";
         record.hideBranding = value_(result, row, 15) == "t";
+        record.price = std::atoll(value_(result, row, 16).c_str());
+        record.currency = value_(result, row, 17);
+        record.prepay = value_(result, row, 18);
+        record.deposit = std::atoll(value_(result, row, 19).c_str());
+        record.paymentUrl = value_(result, row, 20);
+        record.paymentNote = value_(result, row, 21);
+        record.payWithinMinutes = std::atoi(value_(result, row, 22).c_str());
+        record.cancelHours = std::atoi(value_(result, row, 23).c_str());
+        record.lateCancel = value_(result, row, 24);
+        record.policyText = value_(result, row, 25);
         return record;
     }
 
@@ -2333,15 +2354,15 @@ private:
         Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("INSERT INTO bookings (page_id, owner_id, manage_hash, guest_name, guest_email, guest_comment, "
-                     "occurrences, status, cancelled_by, reschedules, ends_at, manage_token_enc) "
+                     "occurrences, status, cancelled_by, reschedules, ends_at, manage_token_enc, payment) "
                      "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::int, NULLIF($11, '')::timestamptz, "
-                     "NULLIF($12, '')) "
+                     "NULLIF($12, ''), NULLIF($13, '')::jsonb) "
                      "RETURNING id",
                      {std::to_string(record.pageId), std::to_string(record.ownerId), record.manageHash,
                       record.guestName, record.guestEmail, record.guestComment,
                       record.occurrences.isArray() ? record.occurrences.dump() : std::string("[]"), record.status,
                       record.cancelledBy, std::to_string(record.reschedules), bookingEndsAt(record.occurrences),
-                      record.manageTokenEnc},
+                      record.manageTokenEnc, record.payment.isObject() ? record.payment.dump() : std::string()},
                      &result)) {
             PQclear(result);
             return DatabaseError::failure(lastError());
@@ -2400,11 +2421,13 @@ private:
         if (!execute("UPDATE bookings SET occurrences = $2::jsonb, status = $3, cancelled_by = $4, "
                      "reschedules = $5::int, manage_hash = COALESCE(NULLIF($6, ''), manage_hash), "
                      "ends_at = NULLIF($7, '')::timestamptz, "
-                     "manage_token_enc = COALESCE(NULLIF($8, ''), manage_token_enc), updated_at = now() WHERE id = $1",
+                     "manage_token_enc = COALESCE(NULLIF($8, ''), manage_token_enc), "
+                     "payment = NULLIF($9, '')::jsonb, updated_at = now() WHERE id = $1",
                      {std::to_string(record.id),
                       record.occurrences.isArray() ? record.occurrences.dump() : std::string("[]"), record.status,
                       record.cancelledBy, std::to_string(record.reschedules), record.manageHash,
-                      bookingEndsAt(record.occurrences), record.manageTokenEnc},
+                      bookingEndsAt(record.occurrences), record.manageTokenEnc,
+                      record.payment.isObject() ? record.payment.dump() : std::string()},
                      &result)) {
             return DatabaseError::failure(lastError());
         }
@@ -2418,8 +2441,64 @@ private:
                "occurrences::text, status, cancelled_by, reschedules, "
                "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
-               "COALESCE(manage_token_enc, '') "
+               "COALESCE(manage_token_enc, ''), COALESCE(payment::text, '') "
                "FROM bookings";
+    }
+
+    std::vector<BookingRecord> listAwaitingPayments(int limit) override {
+        Lease lease(pool_);
+        std::vector<BookingRecord> bookings;
+        PGresult* result = nullptr;
+        if (!execute(bookingSelect() + " WHERE payment->>'status' = 'pending' ORDER BY payment->>'due_at', id LIMIT $1",
+                     {std::to_string(limit > 0 ? limit : 100)}, &result)) {
+            return bookings;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) bookings.push_back(readBooking(result, row));
+        PQclear(result);
+        return bookings;
+    }
+
+    // ------------------------------------------------------- payment_accounts
+    std::optional<PaymentAccountRecord> findPaymentAccount(long long userId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT user_id, provider, shop_id, secret_enc, "
+                     "to_char(connected_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+                     "FROM payment_accounts WHERE user_id = $1",
+                     {std::to_string(userId)}, &result)) {
+            return std::nullopt;
+        }
+        std::optional<PaymentAccountRecord> record;
+        if (PQntuples(result) > 0) {
+            PaymentAccountRecord item;
+            item.userId = std::atoll(value_(result, 0, 0).c_str());
+            item.provider = value_(result, 0, 1);
+            item.shopId = value_(result, 0, 2);
+            item.secretEnc = value_(result, 0, 3);
+            item.connectedAt = value_(result, 0, 4);
+            record = item;
+        }
+        PQclear(result);
+        return record;
+    }
+
+    DatabaseError setPaymentAccount(const PaymentAccountRecord& record) override {
+        Lease lease(pool_);
+        if (!execute("INSERT INTO payment_accounts (user_id, provider, shop_id, secret_enc) VALUES ($1, $2, $3, $4) "
+                     "ON CONFLICT (user_id) DO UPDATE SET provider = EXCLUDED.provider, shop_id = EXCLUDED.shop_id, "
+                     "secret_enc = EXCLUDED.secret_enc, connected_at = now()",
+                     {std::to_string(record.userId), record.provider, record.shopId, record.secretEnc}, nullptr)) {
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
+    }
+
+    DatabaseError deletePaymentAccount(long long userId) override {
+        Lease lease(pool_);
+        if (!execute("DELETE FROM payment_accounts WHERE user_id = $1", {std::to_string(userId)}, nullptr)) {
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
     }
 
     std::optional<BookingRecord> findBookingWhere(const std::string& condition, const std::string& value) {
@@ -2449,6 +2528,10 @@ private:
         record.createdAt = value_(result, row, 11);
         record.updatedAt = value_(result, row, 12);
         if (PQnfields(result) > 13) record.manageTokenEnc = value_(result, row, 13);
+        if (PQnfields(result) > 14 && !value_(result, row, 14).empty()) {
+            const Json payment = Json::parse(value_(result, row, 14));
+            if (payment.isObject()) record.payment = payment;
+        }
         return record;
     }
 

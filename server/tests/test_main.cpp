@@ -6563,3 +6563,823 @@ TEST(referral_reward_both_idempotent_and_cap) {
     CHECK(std::llabs(static_cast<long long>(untilOf(capper) - (now + (12LL * 30 + 1) * 86400))) < 120);
     CHECK(!db.extendUserPlanDays(capper, 0).ok);
 }
+
+// ------------------------------------- рост (S2a): цена, предоплата, политика отмены (F4)
+namespace payments_test {
+
+using booking_test::bookPayload;
+using booking_test::daySlot;
+using booking_test::pagePayload;
+using booking_test::settledOutbox;
+using booking_test::slugPayload;
+using booking_test::tokenPayload;
+
+constexpr const char* kShop = "100500";
+constexpr const char* kSecret = "test_Fh8hUAVVBGUGbjmlzba6TB0iyUbos_lueTHE-axOwM0";
+
+// Поддельный API ЮKassa: /me (Basic shop:secret), POST /payments (Idempotence-Key →
+// тот же платёж), GET /payments/<id>, POST /refunds. Записывает все вызовы.
+struct FakeYooKassa : selfvoy::PaymentManager::Transport {
+    struct Call {
+        std::string method;
+        std::string path;
+        std::map<std::string, std::string> headers;
+        Json body;
+    };
+    std::mutex mutex;
+    std::vector<Call> calls;
+    std::map<std::string, std::string> statuses;  // id → pending | succeeded | canceled
+    std::map<std::string, std::string> byKey;     // Idempotence-Key → id
+    bool failCreate = false;
+    bool down = false;  // транспортная ошибка (ЮKassa недоступна)
+    int next = 1;
+
+    selfvoy::net::HttpResponse request(const std::string& method, const std::string& url,
+                                       const std::map<std::string, std::string>& headers, const std::string& body,
+                                       int, std::string& error) override {
+        std::lock_guard<std::mutex> lock(mutex);
+        const std::string base = "http://yookassa.test/v3";
+        const std::string path = url.rfind(base, 0) == 0 ? url.substr(base.size()) : url;
+        calls.push_back({method, path, headers, body.empty() ? Json() : Json::parse(body)});
+        selfvoy::net::HttpResponse response;
+        if (down) {
+            error = "не удалось подключиться";
+            return response;
+        }
+        const auto auth = headers.find("Authorization");
+        const std::string expected =
+            "Basic " + selfvoy::crypto::base64Encode(std::string(kShop) + ":" + std::string(kSecret));
+        if (auth == headers.end() || auth->second != expected) {
+            response.status = 401;
+            response.body = R"({"type":"error","id":"e1","code":"invalid_credentials","description":"Authentication by given credentials failed"})";
+            return response;
+        }
+        response.status = 200;
+        if (method == "GET" && path == "/me") {
+            response.body = R"({"account_id":"100500","test":true,"status":"enabled"})";
+        } else if (method == "POST" && path == "/payments") {
+            if (failCreate) {
+                response.status = 500;
+                response.body = R"({"type":"error","code":"internal_server_error","description":"try later"})";
+                return response;
+            }
+            const std::string key = headers.count("Idempotence-Key") ? headers.at("Idempotence-Key") : "";
+            std::string id = byKey[key];
+            if (id.empty()) {
+                id = "pay-" + std::to_string(next++);
+                byKey[key] = id;
+                statuses[id] = "pending";
+            }
+            response.body = R"({"id":")" + id + R"(","status":")" + statuses[id] +
+                            R"(","paid":false,"confirmation":{"type":"redirect","confirmation_url":"https://yoomoney.example/checkout/)" +
+                            id + R"("}})";
+        } else if (method == "GET" && path.rfind("/payments/", 0) == 0) {
+            const std::string id = path.substr(10);
+            if (!statuses.count(id)) {
+                response.status = 404;
+                response.body = R"({"type":"error","code":"not_found"})";
+            } else {
+                response.body = R"({"id":")" + id + R"(","status":")" + statuses[id] + R"("})";
+            }
+        } else if (method == "POST" && path == "/refunds") {
+            response.body = R"({"id":"rf-1","status":"succeeded"})";
+        } else {
+            response.status = 404;
+        }
+        return response;
+    }
+
+    std::vector<Call> of(const std::string& method, const std::string& path) {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<Call> out;
+        for (const auto& call : calls) {
+            if (call.method == method && call.path.rfind(path, 0) == 0) out.push_back(call);
+        }
+        return out;
+    }
+    void set(const std::string& id, const std::string& status) {
+        std::lock_guard<std::mutex> lock(mutex);
+        statuses[id] = status;
+    }
+};
+
+// Перезапуск сервера: поддельный AI, PUBLIC_URL, адрес ЮKassa; транспорт ЮKassa — фейк.
+FakeYooKassa* enablePayments(Fixture& fixture, const std::string& aiUrl, bool enforced = false) {
+    fixture.config.aiServiceUrl = aiUrl.empty() ? fixture.config.aiServiceUrl : aiUrl;
+    fixture.config.publicUrl = "https://selfvoy.example.com";
+    fixture.config.yookassaApiUrl = "http://yookassa.test/v3";
+    fixture.config.plansEnforced = enforced;
+    fixture.server->stop();
+    fixture.server = std::make_unique<selfvoy::Server>(fixture.config);
+    std::string error;
+    if (!fixture.server->start(error)) std::cout << "  не удалось перезапустить сервер: " << error << "\n";
+    auto fake = std::make_unique<FakeYooKassa>();
+    FakeYooKassa* raw = fake.get();
+    fixture.server->payments().setTransport(std::move(fake));
+    return raw;
+}
+
+// AI отдаёт слоты на указанные моменты (60 минут, местная дата = дата UTC).
+std::string slotsBody(const std::vector<std::time_t>& starts) {
+    Json slots = Json::array();
+    for (const std::time_t at : starts) slots.push(daySlot(at, 60, selfvoy::isoUtc(at).substr(0, 10)));
+    Json body = Json::object();
+    body.set("slots", slots);
+    return body.dump();
+}
+
+Json payPage(const std::string& title) {
+    Json payload = pagePayload(title);
+    payload.set("max_per_day", Json(8LL));
+    payload.set("max_series", Json(1LL));
+    return payload;
+}
+
+std::vector<selfvoy::MailNotice> mails(const std::string& to, const std::string& kind) {
+    std::vector<selfvoy::MailNotice> out;
+    for (const auto& mail : settledOutbox()) {
+        if (mail.to == to && mail.kind == kind) out.push_back(mail);
+    }
+    return out;
+}
+
+bool hasFooter(const selfvoy::MailNotice& mail, const std::string& prefix) {
+    return std::any_of(mail.footer.begin(), mail.footer.end(),
+                       [&](const std::string& line) { return line.rfind(prefix, 0) == 0; });
+}
+
+// Уведомления владельца вида kind (по статусу payload.status, если задан).
+std::size_t ownerNotices(selfvoy::IDatabase& db, long long ownerId, const std::string& kind,
+                         const std::string& status = "") {
+    std::size_t count = 0;
+    for (const auto& item : db.listNotifications(ownerId, false, 200)) {
+        if (item.kind == kind && (status.empty() || item.payload.getString("status") == status)) ++count;
+    }
+    return count;
+}
+
+Json connectPayload(const std::string& shop, const std::string& secret) {
+    Json payload = Json::object();
+    payload.set("provider", Json("yookassa"));
+    payload.set("shop_id", Json(shop));
+    payload.set("secret_key", Json(secret));
+    return payload;
+}
+
+}  // namespace payments_test
+
+// F4: поля страницы — проверка диапазонов и форматов, виды владельца и гостя.
+TEST(payments_page_fields_validation) {
+    using namespace payments_test;
+    Fixture fixture;
+    enablePayments(fixture, "");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "pay-fields-owner");
+    fixture.registerUser(owner, "payfields@example.com", "Ольга");
+    const auto code = [&](const std::string& key, const Json& value, const Json& base = Json()) {
+        Json payload = base.isObject() ? base : payPage("Проверка");
+        payload.set(key, value);
+        return fixture.call(owner, "booking.pageCreate", payload).getString("code");
+    };
+    const std::string bad = "bad_request";
+    CHECK_EQ(code("price", Json(-1LL)), bad);
+    CHECK_EQ(code("price", Json(100000001LL)), bad);
+    CHECK_EQ(code("price", Json(2.5)), bad);
+    CHECK_EQ(code("price", Json("2500")), bad);
+    CHECK_EQ(code("currency", Json("GBP")), bad);
+    CHECK_EQ(code("currency", Json("rub")), bad);
+    CHECK_EQ(code("prepay", Json("half")), bad);
+    CHECK_EQ(code("pay_within_minutes", Json(14LL)), bad);
+    CHECK_EQ(code("pay_within_minutes", Json(1441LL)), bad);
+    CHECK_EQ(code("cancel_hours", Json(-1LL)), bad);
+    CHECK_EQ(code("cancel_hours", Json(169LL)), bad);
+    CHECK_EQ(code("late_cancel", Json("maybe")), bad);
+    CHECK_EQ(code("policy_text", Json(std::string(501, 'a'))), bad);
+    CHECK_EQ(code("payment_url", Json("http://pay.example/coach")), bad);
+    CHECK_EQ(code("payment_url", Json("https://pay.example/a b")), bad);
+    CHECK_EQ(code("payment_url", Json("https://pay.example/" + std::string(481, 'a'))), bad);
+    CHECK_EQ(code("payment_url", Json("javascript:alert(1)")), bad);
+    CHECK_EQ(code("payment_note", Json("строка\nвторая")), bad);
+    CHECK_EQ(code("payment_note", Json(std::string(301, 'x'))), bad);
+    // Предоплата: нужна цена, способ оплаты; депозит — 1..price.
+    Json prepaid = payPage("Предоплата");
+    prepaid.set("prepay", Json("full"));
+    CHECK_EQ(code("price", Json(0LL), prepaid), bad);
+    CHECK_EQ(code("price", Json(250000LL), prepaid), bad);  // нет ни ссылки, ни реквизитов, ни ЮKassa
+    prepaid.set("price", Json(250000LL));
+    prepaid.set("prepay", Json("deposit"));
+    prepaid.set("payment_url", Json("https://pay.example/coach"));
+    CHECK_EQ(code("deposit", Json(0LL), prepaid), bad);
+    CHECK_EQ(code("deposit", Json(250001LL), prepaid), bad);
+    // Цена без предоплаты — бесплатно и без способа оплаты.
+    CHECK_EQ(fixture.call(owner, "booking.pageCreate", [] {
+                 Json p = payPage("Только цена");
+                 p.set("price", Json(150000LL));
+                 return p;
+             }()).getString("type"),
+             std::string("ok"));
+
+    Json valid = payPage("Консультация");
+    valid.set("price", Json(250000LL));
+    valid.set("currency", Json("RUB"));
+    valid.set("prepay", Json("deposit"));
+    valid.set("deposit", Json(50000LL));
+    valid.set("payment_url", Json("https://pay.example/coach"));
+    valid.set("payment_note", Json("  СБП: +7 900 000-00-00 (Ольга)  "));
+    valid.set("pay_within_minutes", Json(30LL));
+    valid.set("cancel_hours", Json(24LL));
+    valid.set("late_cancel", Json("block"));
+    valid.set("policy_text", Json("Отмена позже чем за сутки — депозит не возвращается."));
+    const Json created = fixture.call(owner, "booking.pageCreate", valid);
+    CHECK_EQ(created.getString("type"), std::string("ok"));
+    const Json page = integration::payloadOf(created).get("page");
+    CHECK_EQ(page.getInt("price"), 250000LL);
+    CHECK_EQ(page.getString("currency"), std::string("RUB"));
+    CHECK_EQ(page.getString("prepay"), std::string("deposit"));
+    CHECK_EQ(page.getInt("deposit"), 50000LL);
+    CHECK_EQ(page.getString("payment_url"), std::string("https://pay.example/coach"));
+    CHECK_EQ(page.getString("payment_note"), std::string("СБП: +7 900 000-00-00 (Ольга)"));  // обрезаны пробелы
+    CHECK_EQ(page.getInt("pay_within_minutes"), 30LL);
+    CHECK_EQ(page.getInt("cancel_hours"), 24LL);
+    CHECK_EQ(page.getString("late_cancel"), std::string("block"));
+    CHECK(page.getString("policy_text").find("депозит") != std::string::npos);
+    const long long pageId = page.getInt("id");
+
+    // Вид гостя: цена, предоплата, способ и политика.
+    auto guest = sockets.open(fixture, "pay-fields-guest");
+    const Json view = integration::payloadOf(fixture.call(guest, "booking.get", slugPayload(page.getString("slug"))))
+                          .get("page");
+    CHECK_EQ(view.getInt("price"), 250000LL);
+    CHECK_EQ(view.getString("prepay"), std::string("deposit"));
+    CHECK_EQ(view.getInt("deposit"), 50000LL);
+    CHECK_EQ(view.getString("payment_url"), std::string("https://pay.example/coach"));
+    CHECK_EQ(view.getInt("pay_within_minutes"), 30LL);
+    CHECK_EQ(view.get("policy").getInt("cancel_hours"), 24LL);
+    CHECK_EQ(view.get("policy").getString("late_cancel"), std::string("block"));
+    CHECK(!view.get("policy").getString("text").empty());
+
+    // Правка: цена 0 при предоплате — нельзя; выключить предоплату — можно; название
+    // без полей оплаты меняется и без способа оплаты.
+    Json update = Json::object();
+    update.set("page_id", Json(pageId));
+    update.set("price", Json(0LL));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", update).getString("code"), bad);
+    update = Json::object();
+    update.set("page_id", Json(pageId));
+    update.set("deposit", Json(300000LL));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", update).getString("code"), bad);
+    update = Json::object();
+    update.set("page_id", Json(pageId));
+    update.set("prepay", Json("none"));
+    update.set("cancel_hours", Json(0LL));
+    const Json updated = integration::payloadOf(fixture.call(owner, "booking.pageUpdate", update)).get("page");
+    CHECK_EQ(updated.getString("prepay"), std::string("none"));
+    CHECK_EQ(updated.getInt("cancel_hours"), 0LL);
+    CHECK_EQ(updated.getInt("price"), 250000LL);  // не переданные поля не меняются
+    auto stored = fixture.server->database().db().findBookingPage(pageId);
+    CHECK(stored && stored->lateCancel == "block" && stored->payWithinMinutes == 30);
+
+    // Сумма для ЮKassa — «2500.00».
+    CHECK_EQ(selfvoy::payments::amountText(250000), std::string("2500.00"));
+    CHECK_EQ(selfvoy::payments::amountText(5), std::string("0.05"));
+    CHECK_EQ(selfvoy::payments::amountText(100000000), std::string("1000000.00"));
+    // Поздняя отмена.
+    selfvoy::BookingPageRecord policy;
+    policy.cancelHours = 24;
+    const std::time_t now = std::time(nullptr);
+    CHECK(selfvoy::BookingManager::lateFor(policy, now + 23 * 3600, now));
+    CHECK(!selfvoy::BookingManager::lateFor(policy, now + 25 * 3600, now));
+    policy.cancelHours = 0;
+    CHECK(!selfvoy::BookingManager::lateFor(policy, now + 60, now));
+}
+
+// F4: при SELFVOY_PLANS_ENFORCED=1 предоплата и подключение ЮKassa — только Pro;
+// цена и политика отмены — бесплатно.
+TEST(payments_pro_gating_enforced) {
+    using namespace payments_test;
+    Fixture fixture;
+    FakeYooKassa* fake = enablePayments(fixture, "", true);
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "pay-pro-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "paypro@example.com", "Пётр"));
+    Json prepaid = payPage("Предоплата");
+    prepaid.set("price", Json(100000LL));
+    prepaid.set("prepay", Json("full"));
+    prepaid.set("payment_url", Json("https://pay.example/p"));
+    CHECK_EQ(fixture.call(owner, "booking.pageCreate", prepaid).getString("code"), std::string("pro_required"));
+    Json free = payPage("Бесплатно");
+    free.set("price", Json(100000LL));
+    free.set("cancel_hours", Json(12LL));
+    free.set("late_cancel", Json("block"));
+    const Json freePage = fixture.call(owner, "booking.pageCreate", free);
+    CHECK_EQ(freePage.getString("type"), std::string("ok"));
+    Json enable = Json::object();
+    enable.set("page_id", Json(integration::payloadOf(freePage).get("page").getInt("id")));
+    enable.set("prepay", Json("full"));
+    enable.set("payment_url", Json("https://pay.example/p"));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", enable).getString("code"), std::string("pro_required"));
+    CHECK_EQ(fixture.call(owner, "payments.connect", connectPayload(kShop, kSecret)).getString("code"),
+             std::string("pro_required"));
+    CHECK(fake->of("GET", "/me").empty());  // без Pro ключи никуда не уходят
+
+    CHECK(fixture.server->database().db().setUserPlanDays(ownerId, 30).ok);
+    CHECK_EQ(fixture.call(owner, "booking.pageCreate", prepaid).getString("type"), std::string("ok"));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", enable).getString("type"), std::string("ok"));
+    CHECK_EQ(fixture.call(owner, "payments.connect", connectPayload(kShop, kSecret)).getString("type"),
+             std::string("ok"));
+    // Pro закончился: уже включённую предоплату можно править (например, сумму).
+    CHECK(fixture.server->database().db().setUserPlanDays(ownerId, 0).ok);
+    Json change = enable;
+    change.erase("prepay");
+    change.set("price", Json(120000LL));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", change).getString("type"), std::string("ok"));
+    selfvoy::plan::setEnforced(false);
+}
+
+// F4: ЮKassa — подключение (GET /me), платёж при записи (POST /payments с Idempotence-Key
+// bk-<id>), succeeded → paid в планировщике (не чаще раза в 30 с), canceled → отмена,
+// возвраты (rf-<id>) при отмене гостем до срока и владельцем, ошибка создания платежа.
+TEST(payments_yookassa_flows) {
+    using namespace payments_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    const std::time_t slotC = invite_test::future(78);
+    const std::time_t slotD = invite_test::future(102);
+    invite_test::FakeAi ai([&] { return slotsBody({slotA, slotB, slotC, slotD}); });
+    Fixture fixture;
+    FakeYooKassa* fake = enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "yk-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "ykowner@example.com", "Ольга"));
+    auto& db = fixture.server->database().db();
+    auto& bookings = fixture.server->bookings();
+
+    CHECK(!integration::payloadOf(fixture.call(owner, "payments.status")).getBool("connected", true));
+    // Неверный ключ — bad_request (ЮKassa ответила 401); формат shop_id проверяется до запроса.
+    CHECK_EQ(fixture.call(owner, "payments.connect", connectPayload(kShop, "test_wrong_secret_value")).getString("code"),
+             std::string("bad_request"));
+    CHECK_EQ(fake->of("GET", "/me").size(), std::size_t(1));
+    CHECK_EQ(fixture.call(owner, "payments.connect", connectPayload("shop-1", kSecret)).getString("code"),
+             std::string("bad_request"));
+    CHECK_EQ(fixture.call(owner, "payments.connect", connectPayload(kShop, "short")).getString("code"),
+             std::string("bad_request"));
+    CHECK_EQ(fake->of("GET", "/me").size(), std::size_t(1));
+    // ЮKassa недоступна — upstream_error.
+    fake->down = true;
+    CHECK_EQ(fixture.call(owner, "payments.connect", connectPayload(kShop, kSecret)).getString("code"),
+             std::string("upstream_error"));
+    fake->down = false;
+    const Json connected = fixture.call(owner, "payments.connect", connectPayload(kShop, kSecret));
+    CHECK_EQ(connected.getString("type"), std::string("ok"));
+    CHECK(integration::payloadOf(connected).getBool("connected"));
+    CHECK_EQ(integration::payloadOf(connected).getString("shop_id"), std::string(kShop));
+    CHECK_EQ(integration::payloadOf(connected).getString("provider"), std::string("yookassa"));
+    const auto account = db.findPaymentAccount(ownerId);
+    CHECK(account && account->secretEnc.find(kSecret) == std::string::npos);
+    std::string opened;
+    CHECK(account && selfvoy::crypto::openField(fixture.config.dataKey(), account->secretEnc,
+                                                selfvoy::payments::kSecretAad, opened) &&
+          opened == kSecret);
+    const Json status = integration::payloadOf(fixture.call(owner, "payments.status"));
+    CHECK(status.getBool("connected") && !status.getString("connected_at").empty());
+    CHECK(!status.contains("secret_key"));
+
+    // Страница с полной предоплатой: способ — подключённая ЮKassa.
+    Json pageReq = payPage("Разбор");
+    pageReq.set("price", Json(250000LL));
+    pageReq.set("prepay", Json("full"));
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageReq)).get("page");
+    CHECK_EQ(page.getString("prepay"), std::string("full"));
+    const std::string slug = page.getString("slug");
+    // Цена страницы — в заголовке поста «свободные окна» (F6).
+    Json post = Json::object();
+    post.set("page_id", Json(page.getInt("id")));
+    const std::string postText = integration::payloadOf(fixture.call(owner, "booking.slotsPost", post)).getString("text");
+    CHECK(postText.find("Разбор (1 ч, 2 500 ₽)") != std::string::npos);
+    auto guest = sockets.open(fixture, "yk-guest");
+    const auto book = [&](std::time_t at, const std::string& email) {
+        Json payload = bookPayload(slug, at, "Гость");
+        payload.set("guest_email", Json(email));
+        return fixture.call(guest, "booking.book", payload);
+    };
+    const std::time_t before = std::time(nullptr);
+    const Json bookedA = book(slotA, "yk-a@example.com");
+    CHECK_EQ(bookedA.getString("type"), std::string("ok"));
+    const std::string tokenA = integration::payloadOf(bookedA).getString("token");
+    const Json paymentA = integration::payloadOf(bookedA).get("booking").get("payment");
+    CHECK_EQ(paymentA.getString("status"), std::string("pending"));
+    CHECK_EQ(paymentA.getString("method"), std::string("yookassa"));
+    CHECK_EQ(paymentA.getString("kind"), std::string("full"));
+    CHECK_EQ(paymentA.getInt("amount"), 250000LL);
+    CHECK_EQ(paymentA.getString("action_url"), std::string("https://yoomoney.example/checkout/pay-1"));
+    CHECK(!paymentA.contains("provider_id"));  // гостю — без id платежа
+    std::time_t due = 0;
+    CHECK(selfvoy::parseIsoUtc(paymentA.getString("due_at"), due) && due >= before + 3600 &&
+          due <= std::time(nullptr) + 3600);
+    const long long idA = db.findBookingByToken(selfvoy::BookingManager::tokenHash(tokenA))->id;
+    const auto created = fake->of("POST", "/payments");
+    CHECK_EQ(created.size(), std::size_t(1));
+    if (!created.empty()) {
+        const auto& call = created.front();
+        CHECK_EQ(call.headers.at("Idempotence-Key"), "bk-" + std::to_string(idA));
+        CHECK_EQ(call.body.get("amount").getString("value"), std::string("2500.00"));
+        CHECK_EQ(call.body.get("amount").getString("currency"), std::string("RUB"));
+        CHECK(call.body.getBool("capture"));
+        CHECK_EQ(call.body.get("confirmation").getString("type"), std::string("redirect"));
+        CHECK_EQ(call.body.get("confirmation").getString("return_url"),
+                 "https://selfvoy.example.com/#/m/" + tokenA + "?paid=1");
+        CHECK_EQ(call.body.get("metadata").getString("booking_id"), std::to_string(idA));
+        CHECK(call.body.getString("description").rfind("Разбор, ", 0) == 0);
+        CHECK(!call.body.contains("receipt"));  // чеки 54-ФЗ — «Мой налог» / настройки магазина
+    }
+    CHECK_EQ(db.findBooking(idA)->payment.getString("provider_id"), std::string("pay-1"));
+    // Владелец видит оплату целиком.
+    const Json listed = integration::payloadOf(fixture.call(owner, "booking.list")).get("bookings");
+    CHECK(listed.size() == 1 && listed.at(0).get("payment").getString("provider_id") == "pay-1");
+    // Письмо о записи — со ссылкой оплаты.
+    const auto createdMails = mails("yk-a@example.com", "booking.created");
+    CHECK_EQ(createdMails.size(), std::size_t(1));
+    if (!createdMails.empty()) {
+        CHECK(hasFooter(createdMails.front(), "Оплатить: https://yoomoney.example/checkout/pay-1"));
+        CHECK(hasFooter(createdMails.front(), "Предоплата: 2 500 ₽ — оплатите в течение"));
+    }
+
+    // Планировщик: pending → ничего; повтор раньше 30 с — без запроса; succeeded → paid.
+    const std::time_t now = std::time(nullptr);
+    CHECK_EQ(bookings.paymentTick(100, now), std::size_t(1));
+    CHECK_EQ(fake->of("GET", "/payments/pay-1").size(), std::size_t(1));
+    CHECK_EQ(bookings.paymentTick(100, now + 10), std::size_t(1));
+    CHECK_EQ(fake->of("GET", "/payments/pay-1").size(), std::size_t(1));
+    fake->set("pay-1", "succeeded");
+    CHECK_EQ(bookings.paymentTick(100, now + 31), std::size_t(1));
+    CHECK_EQ(fake->of("GET", "/payments/pay-1").size(), std::size_t(2));
+    auto stored = db.findBooking(idA);
+    CHECK(stored && stored->payment.getString("status") == "paid" && !stored->payment.getString("paid_at").empty());
+    CHECK_EQ(ownerNotices(db, ownerId, "booking.payment", "paid"), std::size_t(1));
+    CHECK_EQ(mails("yk-a@example.com", "booking.paid").size(), std::size_t(1));
+    CHECK_EQ(bookings.paymentTick(100, now + 62), std::size_t(0));  // оплачено — больше не опрашивается
+    // «Я оплатил(а)» — только для оплаты по ссылке.
+    CHECK_EQ(fixture.call(guest, "booking.paymentClaim", tokenPayload(tokenA)).getString("code"),
+             std::string("bad_request"));
+
+    // Гость отменяет до срока (cancel_hours = 0 — всегда) → возврат через ЮKassa.
+    const Json cancelledA = fixture.call(guest, "booking.cancel", tokenPayload(tokenA));
+    CHECK_EQ(cancelledA.getString("type"), std::string("ok"));
+    const auto refunds = fake->of("POST", "/refunds");
+    CHECK_EQ(refunds.size(), std::size_t(1));
+    if (!refunds.empty()) {
+        CHECK_EQ(refunds.front().headers.at("Idempotence-Key"), "rf-" + std::to_string(idA));
+        CHECK_EQ(refunds.front().body.getString("payment_id"), std::string("pay-1"));
+        CHECK_EQ(refunds.front().body.get("amount").getString("value"), std::string("2500.00"));
+    }
+    stored = db.findBooking(idA);
+    CHECK(stored && stored->payment.getString("status") == "refunded" &&
+          !stored->payment.getString("refunded_at").empty());
+    CHECK_EQ(integration::payloadOf(cancelledA).get("booking").get("payment").getString("status"),
+             std::string("refunded"));
+    CHECK_EQ(ownerNotices(db, ownerId, "booking.payment", "refunded"), std::size_t(1));
+    const auto cancelMails = mails("yk-a@example.com", "booking.cancelled");
+    CHECK(!cancelMails.empty() && hasFooter(cancelMails.back(), "Оплата 2 500 ₽ будет возвращена"));
+
+    // ЮKassa отменила платёж (canceled) → booking.manage видит это сразу: запись отменена системой.
+    const Json bookedB = book(slotB, "yk-b@example.com");
+    const std::string tokenB = integration::payloadOf(bookedB).getString("token");
+    fake->set("pay-2", "canceled");
+    const Json managedB = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(tokenB))).get("booking");
+    CHECK_EQ(managedB.getString("status"), std::string("cancelled"));
+    CHECK_EQ(managedB.getString("cancelled_by"), std::string("system"));
+    CHECK_EQ(managedB.get("payment").getString("status"), std::string("expired"));
+    CHECK_EQ(mails("yk-b@example.com", "booking.payment_expired").size(), std::size_t(1));
+
+    // Оплачено (manage после succeeded) → владелец отменяет → возврат rf-<id>.
+    const Json bookedC = book(slotC, "yk-c@example.com");
+    const std::string tokenC = integration::payloadOf(bookedC).getString("token");
+    const long long idC = db.findBookingByToken(selfvoy::BookingManager::tokenHash(tokenC))->id;
+    fake->set("pay-3", "succeeded");
+    const Json managedC = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(tokenC))).get("booking");
+    CHECK_EQ(managedC.get("payment").getString("status"), std::string("paid"));
+    Json ownerCancel = Json::object();
+    ownerCancel.set("booking_id", Json(idC));
+    const Json cancelledC = integration::payloadOf(fixture.call(owner, "booking.ownerCancel", ownerCancel));
+    CHECK_EQ(cancelledC.get("booking").get("payment").getString("status"), std::string("refunded"));
+    const auto refundsC = fake->of("POST", "/refunds");
+    CHECK(refundsC.size() == 2 && refundsC.back().headers.at("Idempotence-Key") == "rf-" + std::to_string(idC));
+
+    // ЮKassa не создала платёж — запись не держит время: отмена системой, гостю upstream_error.
+    fake->failCreate = true;
+    const Json failed = book(slotD, "yk-d@example.com");
+    CHECK_EQ(failed.getString("code"), std::string("upstream_error"));
+    bool systemCancelled = false;
+    for (const auto& item : db.listBookings(ownerId, 0, false, 50)) {
+        if (item.guestEmail == "yk-d@example.com") {
+            systemCancelled = item.status == "cancelled" && item.cancelledBy == "system" &&
+                              item.payment.getString("status") == "expired";
+        }
+    }
+    CHECK(systemCancelled);
+    CHECK(mails("yk-d@example.com", "booking.created").empty());
+    fake->failCreate = false;
+
+    CHECK(!integration::payloadOf(fixture.call(owner, "payments.disconnect")).getBool("connected", true));
+    CHECK(!db.findPaymentAccount(ownerId));
+}
+
+// F4: оплата по ссылке — «Я оплатил(а)» (claimed не истекает), отметка владельцем,
+// истечение срока оплаты → отмена системой (тик планировщика с подставленным now).
+TEST(payments_link_claim_set_and_expiry) {
+    using namespace payments_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    const std::time_t slotC = invite_test::future(78);
+    invite_test::FakeAi ai([&] { return slotsBody({slotA, slotB, slotC}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "link-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "linkowner@example.com", "Ирина"));
+    auto& db = fixture.server->database().db();
+    auto& bookings = fixture.server->bookings();
+    Json pageReq = payPage("Сессия");
+    pageReq.set("price", Json(200000LL));
+    pageReq.set("prepay", Json("deposit"));
+    pageReq.set("deposit", Json(50000LL));
+    pageReq.set("payment_url", Json("https://pay.example/irina"));
+    pageReq.set("payment_note", Json("СБП по номеру +7 900 000-00-00"));
+    pageReq.set("pay_within_minutes", Json(15LL));
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageReq)).get("page");
+    const std::string slug = page.getString("slug");
+    auto guest = sockets.open(fixture, "link-guest");
+    const auto book = [&](std::time_t at, const std::string& email) {
+        Json payload = bookPayload(slug, at, "Гость");
+        payload.set("guest_email", Json(email));
+        return integration::payloadOf(fixture.call(guest, "booking.book", payload));
+    };
+    const Json bookedA = book(slotA, "link-a@example.com");
+    const std::string tokenA = bookedA.getString("token");
+    const Json paymentA = bookedA.get("booking").get("payment");
+    CHECK_EQ(paymentA.getString("method"), std::string("link"));
+    CHECK_EQ(paymentA.getString("kind"), std::string("deposit"));
+    CHECK_EQ(paymentA.getInt("amount"), 50000LL);  // депозит — один раз на запись
+    CHECK_EQ(paymentA.getString("action_url"), std::string("https://pay.example/irina"));
+    CHECK_EQ(bookedA.get("booking").getString("payment_note"), std::string("СБП по номеру +7 900 000-00-00"));
+    const long long idA = db.findBookingByToken(selfvoy::BookingManager::tokenHash(tokenA))->id;
+    const auto createdMails = mails("link-a@example.com", "booking.created");
+    CHECK(!createdMails.empty() && hasFooter(createdMails.front(), "Депозит: 500 ₽ — оплатите в течение 15 мин") &&
+          hasFooter(createdMails.front(), "Оплатить: https://pay.example/irina") &&
+          hasFooter(createdMails.front(), "Как оплатить: СБП по номеру") &&
+          hasFooter(createdMails.front(), "После оплаты нажмите «Я оплатил(а)»"));
+
+    // «Я оплатил(а)»: pending → claimed, владельцу — booking.payment (claimed) один раз.
+    const Json claimed = integration::payloadOf(fixture.call(guest, "booking.paymentClaim", tokenPayload(tokenA)));
+    CHECK_EQ(claimed.get("booking").get("payment").getString("status"), std::string("claimed"));
+    CHECK_EQ(fixture.call(guest, "booking.paymentClaim", tokenPayload(tokenA)).getString("type"), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "booking.payment", "claimed"), std::size_t(1));
+    CHECK_EQ(fixture.call(guest, "booking.paymentClaim", tokenPayload(growth_test::newToken())).getString("code"),
+             std::string("not_found"));
+
+    // Истечение: B не оплачена к сроку → отмена системой; claimed A не истекает.
+    const Json bookedB = book(slotB, "link-b@example.com");
+    const std::string tokenB = bookedB.getString("token");
+    const long long idB = db.findBookingByToken(selfvoy::BookingManager::tokenHash(tokenB))->id;
+    const std::time_t now = std::time(nullptr);
+    CHECK_EQ(bookings.paymentTick(100, now + 5 * 60), std::size_t(1));  // ещё в сроке
+    CHECK_EQ(db.findBooking(idB)->status, std::string("active"));
+    CHECK_EQ(bookings.paymentTick(100, now + 16 * 60), std::size_t(1));
+    auto expired = db.findBooking(idB);
+    CHECK(expired && expired->status == "cancelled" && expired->cancelledBy == "system" &&
+          expired->payment.getString("status") == "expired");
+    CHECK(db.listBookingReminders(idB).empty());
+    CHECK_EQ(db.findBooking(idA)->status, std::string("active"));
+    CHECK_EQ(db.findBooking(idA)->payment.getString("status"), std::string("claimed"));
+    const auto expiredMails = mails("link-b@example.com", "booking.payment_expired");
+    CHECK_EQ(expiredMails.size(), std::size_t(1));
+    if (!expiredMails.empty()) {
+        CHECK_EQ(expiredMails.front().subject, std::string("Selfvoy: оплата не поступила — запись отменена"));
+        CHECK_EQ(expiredMails.front().linkUrl, "https://selfvoy.example.com/#/b/" + slug);
+    }
+    std::size_t systemCancels = 0;
+    for (const auto& item : db.listNotifications(ownerId, false, 200)) {
+        if (item.kind == "booking.cancelled" && item.payload.getString("cancelled_by") == "system") ++systemCancels;
+    }
+    CHECK_EQ(systemCancels, std::size_t(1));
+    CHECK_EQ(bookings.paymentTick(100, now + 3600), std::size_t(0));  // повторно не отменяется
+    CHECK_EQ(fixture.call(guest, "booking.paymentClaim", tokenPayload(tokenB)).getString("code"),
+             std::string("conflict"));
+    const Json managedB = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(tokenB))).get("booking");
+    CHECK_EQ(managedB.getString("cancelled_by"), std::string("system"));
+
+    // Владелец отмечает оплату: paid (гостю — «оплата получена»), неверный статус, чужая запись.
+    Json set = Json::object();
+    set.set("booking_id", Json(idA));
+    set.set("status", Json("paid"));
+    const Json paid = integration::payloadOf(fixture.call(owner, "booking.paymentSet", set)).get("booking");
+    CHECK_EQ(paid.get("payment").getString("status"), std::string("paid"));
+    CHECK(!paid.get("payment").getString("paid_at").empty());
+    CHECK_EQ(mails("link-a@example.com", "booking.paid").size(), std::size_t(1));
+    CHECK_EQ(ownerNotices(db, ownerId, "booking.payment", "paid"), std::size_t(0));  // сам отметил
+    Json badSet = set;
+    badSet.set("status", Json("pending"));
+    CHECK_EQ(fixture.call(owner, "booking.paymentSet", badSet).getString("code"), std::string("bad_request"));
+    auto stranger = sockets.open(fixture, "link-stranger");
+    fixture.registerUser(stranger, "linkstranger@example.com", "Чужой");
+    CHECK_EQ(fixture.call(stranger, "booking.paymentSet", set).getString("code"), std::string("not_found"));
+
+    // Отмена гостем до срока (cancel_hours = 0) оплаченной по ссылке — владельцу «верните вручную».
+    CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(tokenA)).getString("type"), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "booking.payment", "refund_due"), std::size_t(1));
+    CHECK_EQ(db.findBooking(idA)->payment.getString("status"), std::string("paid"));  // вернёт — отметит refunded
+    set.set("status", Json("refunded"));
+    const Json refunded = integration::payloadOf(fixture.call(owner, "booking.paymentSet", set)).get("booking");
+    CHECK(refunded.get("payment").getString("status") == "refunded" &&
+          !refunded.get("payment").getString("refunded_at").empty());
+
+    // waived: запись без оплаты — больше не истекает.
+    const Json bookedC = book(slotC, "link-c@example.com");
+    const long long idC = db.findBookingByToken(selfvoy::BookingManager::tokenHash(bookedC.getString("token")))->id;
+    set.set("booking_id", Json(idC));
+    set.set("status", Json("waived"));
+    CHECK_EQ(fixture.call(owner, "booking.paymentSet", set).getString("type"), std::string("ok"));
+    CHECK_EQ(bookings.paymentTick(100, now + 3600), std::size_t(0));
+    CHECK_EQ(db.findBooking(idC)->status, std::string("active"));
+}
+
+// F4: политика отмены — late_cancel=block запрещает отмену и перенос позже срока;
+// решение о возврате: до срока — возврат, позже — оплата остаётся специалисту.
+TEST(payments_late_cancel_block_and_refund_decision) {
+    using namespace payments_test;
+    const std::time_t soon = invite_test::future(30);   // меньше 48 ч — поздно
+    const std::time_t later = invite_test::future(60);  // больше 48 ч
+    const std::time_t soon2 = invite_test::future(31);
+    const std::time_t later2 = invite_test::future(61);
+    invite_test::FakeAi ai([&] { return slotsBody({soon, soon2, later, later2}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "late-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "lateowner@example.com", "Анна"));
+    auto& db = fixture.server->database().db();
+    Json blockReq = payPage("Строго");
+    blockReq.set("cancel_hours", Json(48LL));
+    blockReq.set("late_cancel", Json("block"));
+    const std::string blockSlug =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", blockReq)).get("page").getString("slug");
+    auto guest = sockets.open(fixture, "late-guest");
+    const auto book = [&](const std::string& slug, std::time_t at, const std::string& email) {
+        Json payload = bookPayload(slug, at, "Гость");
+        payload.set("guest_email", Json(email));
+        return integration::payloadOf(fixture.call(guest, "booking.book", payload)).getString("token");
+    };
+    const std::string lateToken = book(blockSlug, soon, "late-1@example.com");
+    const Json lateView = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(lateToken))).get("booking");
+    CHECK(lateView.getBool("late"));
+    CHECK(!lateView.getBool("can_cancel", true));
+    CHECK(!lateView.getBool("can_reschedule", true));
+    CHECK_EQ(lateView.get("policy").getInt("cancel_hours"), 48LL);
+    CHECK(lateView.get("payment").isNull());  // без предоплаты оплаты нет
+    const Json refused = fixture.call(guest, "booking.cancel", tokenPayload(lateToken));
+    CHECK_EQ(refused.getString("code"), std::string("conflict"));
+    CHECK_EQ(refused.getString("message"), std::string("до встречи меньше 48 ч — свяжитесь со специалистом"));
+    Json move = tokenPayload(lateToken);
+    move.set("start", Json(selfvoy::isoUtc(later2)));
+    CHECK_EQ(fixture.call(guest, "booking.reschedule", move).getString("code"), std::string("conflict"));
+    CHECK_EQ(db.findBookingByToken(selfvoy::BookingManager::tokenHash(lateToken))->status, std::string("active"));
+    // Владелец отменяет всегда.
+    Json ownerCancel = Json::object();
+    ownerCancel.set("booking_id", Json(db.findBookingByToken(selfvoy::BookingManager::tokenHash(lateToken))->id));
+    CHECK_EQ(fixture.call(owner, "booking.ownerCancel", ownerCancel).getString("type"), std::string("ok"));
+    const std::string earlyToken = book(blockSlug, later, "late-2@example.com");
+    const Json earlyView = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(earlyToken))).get("booking");
+    CHECK(!earlyView.getBool("late", true));
+    CHECK(earlyView.getBool("can_cancel"));
+    CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(earlyToken)).getString("type"), std::string("ok"));
+
+    // late_cancel=allow + оплата по ссылке: поздняя отмена разрешена, но без возврата.
+    Json allowReq = payPage("Мягко");
+    allowReq.set("cancel_hours", Json(48LL));
+    allowReq.set("price", Json(300000LL));
+    allowReq.set("prepay", Json("full"));
+    allowReq.set("payment_note", Json("Перевод на карту 2200 0000 0000 0000"));
+    const std::string allowSlug =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", allowReq)).get("page").getString("slug");
+    const auto paidBooking = [&](std::time_t at, const std::string& email) {
+        const std::string token = book(allowSlug, at, email);
+        const long long id = db.findBookingByToken(selfvoy::BookingManager::tokenHash(token))->id;
+        Json set = Json::object();
+        set.set("booking_id", Json(id));
+        set.set("status", Json("paid"));
+        fixture.call(owner, "booking.paymentSet", set);
+        return token;
+    };
+    const std::string keptToken = paidBooking(soon2, "late-3@example.com");
+    const Json keptView = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(keptToken))).get("booking");
+    CHECK(keptView.getBool("late") && keptView.getBool("can_cancel"));
+    CHECK_EQ(keptView.get("payment").getString("action_url"), std::string());  // реквизиты — в payment_note
+    CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(keptToken)).getString("type"), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "booking.payment", "refund_due"), std::size_t(0));
+    const auto keptMails = mails("late-3@example.com", "booking.cancelled");
+    CHECK(!keptMails.empty() && hasFooter(keptMails.back(), "Отмена позже чем за 48 ч до встречи — оплата не возвращается."));
+    CHECK_EQ(db.findBookingByToken(selfvoy::BookingManager::tokenHash(keptToken))->payment.getString("status"),
+             std::string("paid"));
+    const std::string refundToken = paidBooking(later2, "late-4@example.com");
+    CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(refundToken)).getString("type"), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "booking.payment", "refund_due"), std::size_t(1));
+    const auto refundMails = mails("late-4@example.com", "booking.cancelled");
+    CHECK(!refundMails.empty() && hasFooter(refundMails.back(), "Организатор вернёт оплату 3 000 ₽."));
+}
+
+// PostgreSQL (S2a): поля страницы F4, оплата записи, ожидающие оплаты, магазин ЮKassa.
+TEST(pg_payments_methods) {
+    const char* url = std::getenv("SELFVOY_TEST_PG_URL");
+    if (url == nullptr || *url == '\0') {
+        std::cout << "  (пропущен: SELFVOY_TEST_PG_URL не задан)\n";
+        return;
+    }
+    auto db = selfvoy::makePostgresDatabase(url);
+    std::string error;
+    CHECK(db && db->connect(error));
+    if (!db) return;
+    long long owner = 0;
+    const std::string suffix = selfvoy::crypto::randomHex(4);
+    CHECK(db->createUser("pg-pay-" + suffix + "@example.com", "argon2id$x", "Оплата", owner).ok);
+    selfvoy::BookingPageRecord page;
+    page.ownerId = owner;
+    page.slug = "pay" + suffix + "00";
+    page.slug.resize(10, '0');
+    page.title = "Оплата";
+    page.price = 250000;
+    page.currency = "EUR";
+    page.prepay = "deposit";
+    page.deposit = 1000;
+    page.paymentUrl = "https://pay.example/x";
+    page.paymentNote = "СБП";
+    page.payWithinMinutes = 45;
+    page.cancelHours = 24;
+    page.lateCancel = "block";
+    page.policyText = "Политика";
+    long long pageId = 0;
+    CHECK(db->createBookingPage(page, pageId).ok);
+    auto stored = db->findBookingPage(pageId);
+    CHECK(stored && stored->price == 250000 && stored->currency == "EUR" && stored->prepay == "deposit" &&
+          stored->deposit == 1000 && stored->paymentUrl == "https://pay.example/x" && stored->paymentNote == "СБП" &&
+          stored->payWithinMinutes == 45 && stored->cancelHours == 24 && stored->lateCancel == "block" &&
+          stored->policyText == "Политика");
+    if (stored) {
+        stored->prepay = "none";
+        stored->cancelHours = 0;
+        CHECK(db->updateBookingPage(*stored).ok);
+        CHECK_EQ(db->findBookingPage(pageId)->prepay, std::string("none"));
+    }
+    stored->currency = "GBP";  // CHECK в схеме
+    CHECK(!db->updateBookingPage(*stored).ok);
+
+    const auto makeBooking = [&](const std::string& dueAt) {
+        selfvoy::BookingRecord booking;
+        booking.pageId = pageId;
+        booking.ownerId = owner;
+        booking.manageHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+        booking.guestName = "Гость";
+        Json payment = Json::object();
+        payment.set("status", Json("pending"));
+        payment.set("amount", Json(1000LL));
+        payment.set("due_at", Json(dueAt));
+        booking.payment = payment;
+        long long id = 0;
+        CHECK(db->createBooking(booking, id).ok);
+        return id;
+    };
+    const long long later = makeBooking("2099-01-02T00:00:00Z");
+    const long long sooner = makeBooking("2000-01-01T00:00:00Z");
+    auto awaiting = db->listAwaitingPayments(1000);
+    std::vector<long long> order;
+    for (const auto& item : awaiting) {
+        if (item.id == later || item.id == sooner) order.push_back(item.id);
+    }
+    CHECK(order.size() == 2 && order.front() == sooner);
+    auto record = db->findBooking(sooner);
+    CHECK(record && record->payment.getInt("amount") == 1000);
+    if (record) {
+        Json payment = record->payment;
+        payment.set("status", Json("paid"));
+        record->payment = payment;
+        CHECK(db->updateBooking(*record).ok);
+        CHECK_EQ(db->findBooking(sooner)->payment.getString("status"), std::string("paid"));
+        record->payment = Json();
+        CHECK(db->updateBooking(*record).ok);
+        CHECK(db->findBooking(sooner)->payment.isNull());
+    }
+    for (const auto& item : db->listAwaitingPayments(1000)) CHECK(item.id != sooner);
+
+    CHECK(!db->findPaymentAccount(owner));
+    selfvoy::PaymentAccountRecord account;
+    account.userId = owner;
+    account.shopId = "100500";
+    account.secretEnc = "sealed-1";
+    CHECK(db->setPaymentAccount(account).ok);
+    account.secretEnc = "sealed-2";
+    CHECK(db->setPaymentAccount(account).ok);
+    const auto found = db->findPaymentAccount(owner);
+    CHECK(found && found->shopId == "100500" && found->secretEnc == "sealed-2" && found->provider == "yookassa" &&
+          !found->connectedAt.empty());
+    CHECK(db->deletePaymentAccount(owner).ok);
+    CHECK(!db->findPaymentAccount(owner));
+}

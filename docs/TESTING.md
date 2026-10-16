@@ -62,6 +62,12 @@ SELFVOY_E2E_ADMIN_EMAIL=root@example.com SELFVOY_E2E_ADMIN_PASSWORD=... python3 
 # по умолчанию 9083); сервер — с SELFVOY_TELEGRAM_BOT_TOKEN=e2e:token,
 # SELFVOY_TELEGRAM_BOT_USERNAME=selfvoy_e2e_bot, SELFVOY_TELEGRAM_API_URL=http://127.0.0.1:9083:
 SELFVOY_E2E_TELEGRAM_MOCK=1 python3 tools/e2e.py
+
+# Оплата записи и ЮKassa (§5a+): мок API ЮKassa поднимает сам e2e (порт
+# SELFVOY_E2E_YOOKASSA_MOCK_PORT, по умолчанию 9084; служебный /__succeed/<id> — «гость
+# оплатил»); сервер — с SELFVOY_YOOKASSA_API_URL=http://127.0.0.1:9084. Гость этого
+# сценария подключается с адреса 127.0.0.2 (свои лимиты гостевых методов по IP).
+SELFVOY_E2E_YOOKASSA_MOCK=1 python3 tools/e2e.py
 ```
 
 Покрытие: регистрация → email-код → вход → JWT → сессии; чат между
@@ -71,7 +77,9 @@ push-конверт в webhook-шлюз; STT через AI-сервис; 2FA (TO
 резервные коды, доверенные устройства); Google OAuth 2.0 + PKCE (календарь,
 Gmail, авто-refresh, отзыв); Telegram-бот (привязка владельца и гостя по
 подписанным ссылкам, отказ поддельной/просроченной, уведомление о записи, извещение
-гостю, «Приду» из чужого чата, `/stop`, отвязка при 403, `telegram.unlink`); тариф
+гостю, «Приду» из чужого чата, `/stop`, отвязка при 403, `telegram.unlink`); цена,
+предоплата и политика отмены (ЮKassa: подключение, платёж, оплата, возврат; оплата по
+ссылке: «Я оплатил(а)», отметка владельцем; `late_cancel=block`); тариф
 (`admin.setPlan`, `user.plan`); сценарии безопасности; server.info.
 
 ### 4. Статические проверки без платформенных инструментов

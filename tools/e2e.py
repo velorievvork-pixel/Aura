@@ -72,15 +72,23 @@ class Client:
     по id в очередь, push-события — в self.events (как сигналы Qt-модели).
     """
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, source: str | None = None):
         self.name = name
+        self.source = source  # локальный адрес соединения (другой адрес петли — свои лимиты по IP)
         self.ws: Any = None
         self.events: list[Dict[str, Any]] = []
         self._replies: Dict[str, asyncio.Queue] = {}
         self._reader: Any = None
 
     async def connect(self) -> None:
-        self.ws = await websockets.connect(SERVER_URL, max_size=8 * 1024 * 1024)
+        if self.source and "://127.0.0.1:" in SERVER_URL:
+            try:
+                self.ws = await websockets.connect(SERVER_URL, max_size=8 * 1024 * 1024,
+                                                   local_addr=(self.source, 0))
+            except OSError:
+                self.ws = None  # адрес недоступен — соединяемся как остальные клиенты
+        if self.ws is None:
+            self.ws = await websockets.connect(SERVER_URL, max_size=8 * 1024 * 1024)
         self._reader = asyncio.create_task(self._pump())
 
     async def _pump(self) -> None:
@@ -441,6 +449,113 @@ class TelegramMock:
             pass
         finally:
             writer.close()
+
+
+class YooKassaMock:
+    """Мок API ЮKassa (F4).
+
+    Поднимается при SELFVOY_E2E_YOOKASSA_MOCK=1; C++-сервер должен быть запущен с
+    SELFVOY_YOOKASSA_API_URL=http://127.0.0.1:<порт>. Принимает Basic SHOP:SECRET
+    (иначе 401 invalid_credentials): GET /me, POST /payments (Idempotence-Key
+    обязателен; повтор ключа — тот же платёж), GET /payments/<id>, POST /refunds.
+    Служебный /__succeed/<id> переводит платёж в succeeded (гость «оплатил»).
+    """
+
+    SHOP = "100500"
+    SECRET = "test_e2e_Fh8hUAVVBGUGbjmlzba6TB0iyUbos"
+
+    def __init__(self, port: int):
+        self.port = port
+        self.calls: list[Dict[str, Any]] = []
+        self.payments: Dict[str, Dict[str, Any]] = {}
+        self.by_key: Dict[str, str] = {}
+        self._server: asyncio.AbstractServer | None = None
+
+    async def start(self) -> None:
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", self.port)
+
+    async def stop(self) -> None:
+        if self._server:
+            self._server.close()
+            await self._server.wait_closed()
+
+    def calls_of(self, method: str, path: str) -> list[Dict[str, Any]]:
+        return [c for c in self.calls if c["method"] == method and c["path"].startswith(path)]
+
+    def _route(self, method: str, path: str, headers: Dict[str, str], body: Dict[str, Any]) -> tuple[int, Any]:
+        if path.startswith("/__succeed/"):
+            payment = self.payments.get(path[len("/__succeed/"):])
+            if payment is None:
+                return 404, {"type": "error", "code": "not_found"}
+            payment["status"], payment["paid"] = "succeeded", True
+            return 200, {"ok": True}
+        self.calls.append({"method": method, "path": path, "headers": headers, "body": body})
+        token = base64.b64encode(f"{self.SHOP}:{self.SECRET}".encode()).decode()
+        if headers.get("authorization") != f"Basic {token}":
+            return 401, {"type": "error", "id": uuid.uuid4().hex, "code": "invalid_credentials",
+                         "description": "Authentication by given credentials failed"}
+        if method == "GET" and path == "/me":
+            return 200, {"account_id": self.SHOP, "test": True, "status": "enabled"}
+        if method == "POST" and path == "/payments":
+            key = headers.get("idempotence-key", "")
+            if not key:
+                return 400, {"type": "error", "code": "invalid_request", "description": "Idempotence-Key required"}
+            payment_id = self.by_key.get(key)
+            if payment_id is None:
+                payment_id = str(uuid.uuid4())
+                self.by_key[key] = payment_id
+                self.payments[payment_id] = {
+                    "id": payment_id, "status": "pending", "paid": False, "amount": body.get("amount", {}),
+                    "description": body.get("description", ""), "metadata": body.get("metadata", {}),
+                    "confirmation": {"type": "redirect",
+                                     "confirmation_url": f"https://yoomoney.example/checkout/{payment_id}",
+                                     "return_url": body.get("confirmation", {}).get("return_url", "")}}
+            return 200, self.payments[payment_id]
+        if method == "GET" and path.startswith("/payments/"):
+            payment = self.payments.get(path[len("/payments/"):])
+            return (200, payment) if payment else (404, {"type": "error", "code": "not_found"})
+        if method == "POST" and path == "/refunds":
+            payment = self.payments.get(body.get("payment_id", ""))
+            if payment is None or payment["status"] != "succeeded":
+                return 400, {"type": "error", "code": "invalid_request", "description": "payment not succeeded"}
+            return 200, {"id": str(uuid.uuid4()), "status": "succeeded", "payment_id": payment["id"],
+                         "amount": body.get("amount", {})}
+        return 404, {"type": "error", "code": "not_found"}
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            request_line = (await reader.readline()).decode("latin-1").strip()
+            if not request_line:
+                return
+            headers: Dict[str, str] = {}
+            while True:
+                line = await reader.readline()
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                key, _, value = line.decode("latin-1").partition(":")
+                headers[key.strip().lower()] = value.strip()
+            raw = b""
+            if headers.get("content-length"):
+                raw = await reader.readexactly(int(headers["content-length"]))
+            try:
+                body = json.loads(raw.decode("utf-8")) if raw else {}
+            except json.JSONDecodeError:
+                body = {}
+            parts = request_line.split(" ")
+            method, target = parts[0], (parts[1] if len(parts) > 1 else "/")
+            status, result = self._route(method, target, headers, body)
+            payload = json.dumps(result).encode("utf-8")
+            reason = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 404: "Not Found"}.get(status, "OK")
+            head = (f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n"
+                    f"Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n")
+            writer.write(head.encode("latin-1") + payload)
+            await writer.drain()
+        except (ConnectionResetError, asyncio.IncompleteReadError, BrokenPipeError):
+            pass
+        finally:
+            writer.close()
+
+
 async def http_get(path: str, method: str = "GET") -> tuple[int, Dict[str, str], str]:
     """HTTP-запрос к порту C++-сервера (тот же, что WebSocket): ws://h:p → http://h:p."""
     base = SERVER_URL.replace("wss://", "https://", 1).replace("ws://", "http://", 1).rstrip("/")
@@ -674,6 +789,188 @@ async def s1b_reminders_confirm_branding(anna: "Client", telegram_mock: "Telegra
     await anna.call("booking.pageDelete", {"page_id": page_id})
 
 
+async def s2a_payments(anna: "Client", yookassa: "YooKassaMock | None") -> None:
+    """F4: цена, предоплата, политика отмены; ЮKassa (мок) и оплата по ссылке."""
+    print("\n5a+. Цена, предоплата, политика отмены и ЮKassa (F4)")
+
+    def at(value: str) -> float:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (AttributeError, ValueError):
+            return 0.0
+
+    def payment_events(status: str) -> int:
+        return len([e for e in anna.events_of("notification.new")
+                    if e.get("payload", {}).get("kind") == "booking.payment"
+                    and e.get("payload", {}).get("payload", {}).get("status") == status])
+
+    base = {"duration_minutes": 30, "days_ahead": 14, "max_per_day": 4, "notice_hours": 1}
+    status = (await anna.call("payments.status")).get("payload", {})
+    check(status.get("connected") is False and status.get("shop_id") == "",
+          "payments.status: ЮKassa не подключена", status)
+    no_method = await anna.call("booking.pageCreate", dict(base, title=f"Предоплата {RUN}", price=250000,
+                                                           prepay="full"))
+    check(no_method.get("code") == "bad_request", "предоплата без способа оплаты — bad_request", no_method)
+    bad_deposit = await anna.call("booking.pageCreate", dict(base, title=f"Депозит {RUN}", price=1000,
+                                                             prepay="deposit", deposit=2000,
+                                                             payment_url="https://pay.example/e2e"))
+    check(bad_deposit.get("code") == "bad_request", "депозит больше цены — bad_request", bad_deposit)
+    # Гость — с другого адреса петли (127.0.0.2): лимиты гостевых методов считаются по IP,
+    # а все сценарии выше уже записывались с 127.0.0.1 в ту же минуту.
+    guest = Client("s2a-guest", "127.0.0.2")
+    await guest.connect()
+    pages: list[int] = []
+
+    if yookassa is None:
+        print("  — пропуск сценария ЮKassa: нужны SELFVOY_E2E_YOOKASSA_MOCK=1 и SELFVOY_YOOKASSA_API_URL у сервера")
+    else:
+        yk = yookassa
+        wrong = await anna.call("payments.connect", {"provider": "yookassa", "shop_id": yk.SHOP,
+                                                     "secret_key": "test_wrong_secret_value"})
+        check(wrong.get("code") == "bad_request" and len(yk.calls_of("GET", "/me")) == 1,
+              "payments.connect с неверным ключом — bad_request (ЮKassa ответила 401)", wrong)
+        connected = await anna.call("payments.connect", {"provider": "yookassa", "shop_id": yk.SHOP,
+                                                         "secret_key": yk.SECRET})
+        info = connected.get("payload", {})
+        check(info.get("connected") is True and info.get("shop_id") == yk.SHOP and info.get("provider") == "yookassa"
+              and "secret_key" not in info, "payments.connect: магазин подключён (GET /me)", connected)
+        created = await anna.call("booking.pageCreate", dict(base, title=f"ЮKassa {RUN}", price=250000,
+                                                             prepay="full", cancel_hours=0,
+                                                             policy_text="Отмена в любое время — полный возврат"))
+        page = created.get("payload", {}).get("page", {})
+        pages.append(page.get("id", 0))
+        check(page.get("price") == 250000 and page.get("prepay") == "full" and page.get("currency") == "RUB",
+              "страница с ценой и полной предоплатой (способ — ЮKassa)", page)
+        view = (await guest.call("booking.get", {"slug": page.get("slug", "")}, timeout=40)).get("payload", {}) \
+            .get("page", {})
+        check(view.get("price") == 250000 and view.get("prepay") == "full"
+              and view.get("policy", {}).get("cancel_hours") == 0
+              and view.get("policy", {}).get("text") == "Отмена в любое время — полный возврат",
+              "booking.get: цена, предоплата и политика отмены", {k: view.get(k) for k in ("price", "prepay", "policy")})
+        slots = [s.get("start", "") for s in view.get("slots", [])]
+        check(len(slots) >= 1, "есть свободное время на странице с предоплатой", view.get("slots", [])[:2])
+        if slots:
+            booked = await guest.call("booking.book", {"slug": page.get("slug", ""), "start": slots[0],
+                                                       "guest_name": "Платон",
+                                                       "guest_email": f"platon.{RUN}@example.com"}, timeout=40)
+            token = booked.get("payload", {}).get("token", "")
+            payment = booked.get("payload", {}).get("booking", {}).get("payment") or {}
+            action = payment.get("action_url", "")
+            check(booked.get("type") == "ok" and payment.get("status") == "pending"
+                  and payment.get("method") == "yookassa" and payment.get("amount") == 250000
+                  and action.startswith("https://yoomoney.example/checkout/") and "provider_id" not in payment
+                  and at(payment.get("due_at", "")) > time.time(),
+                  "booking.book: оплата pending, ссылка оплаты ЮKassa", booked)
+            owned = (await anna.call("booking.list", {"page_id": page.get("id", 0)})).get("payload", {}) \
+                .get("bookings", [])
+            booking_id = owned[0].get("id", 0) if owned else 0
+            payment_id = action.rsplit("/", 1)[-1]
+            created_calls = yk.calls_of("POST", "/payments")
+            last = created_calls[-1] if created_calls else {"headers": {}, "body": {}}
+            check(bool(owned) and owned[0].get("payment", {}).get("provider_id") == payment_id
+                  and last["headers"].get("idempotence-key") == f"bk-{booking_id}"
+                  and last["body"].get("amount") == {"value": "2500.00", "currency": "RUB"}
+                  and last["body"].get("capture") is True and "receipt" not in last["body"]
+                  and last["body"].get("confirmation", {}).get("return_url", "").endswith(f"/#/m/{token}?paid=1"),
+                  "POST /payments: Idempotence-Key bk-<id>, сумма 2500.00, возврат на ссылку управления",
+                  {"headers": last["headers"].get("idempotence-key"), "body": last["body"]})
+            before_paid = payment_events("paid")
+
+            def succeed() -> int:
+                request = urllib.request.Request(f"http://127.0.0.1:{yk.port}/__succeed/{payment_id}",
+                                                 method="POST", data=b"")
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    return response.status
+
+            check(await asyncio.to_thread(succeed) == 200, "мок ЮKassa: платёж оплачен (/__succeed)")
+            managed = (await guest.call("booking.manage", {"token": token}, timeout=40)).get("payload", {}) \
+                .get("booking", {})
+            check(managed.get("payment", {}).get("status") == "paid" and bool(managed.get("payment", {}).get("paid_at")),
+                  "booking.manage после оплаты: payment.status = paid", managed.get("payment"))
+            await asyncio.sleep(0.5)
+            check(payment_events("paid") - before_paid == 1, "владелец получил booking.payment (paid)",
+                  payment_events("paid") - before_paid)
+            cancelled = await guest.call("booking.cancel", {"token": token})
+            refunds = yk.calls_of("POST", "/refunds")
+            refund = refunds[-1] if refunds else {"headers": {}, "body": {}}
+            check(cancelled.get("type") == "ok"
+                  and cancelled.get("payload", {}).get("booking", {}).get("payment", {}).get("status") == "refunded"
+                  and refund["body"].get("payment_id") == payment_id
+                  and refund["headers"].get("idempotence-key") == f"rf-{booking_id}",
+                  "отмена до срока — возврат через ЮKassa (POST /refunds rf-<id>)",
+                  {"cancel": cancelled.get("payload", {}).get("booking", {}).get("payment"), "refund": refund})
+        disconnected = await anna.call("payments.disconnect")
+        check(disconnected.get("payload", {}).get("connected") is False, "payments.disconnect", disconnected)
+
+    # Оплата по ссылке: «Я оплатил(а)» → владелец отмечает оплату.
+    link_page = (await anna.call("booking.pageCreate", dict(
+        base, title=f"По ссылке {RUN}", price=200000, prepay="deposit", deposit=50000,
+        payment_url="https://pay.example/e2e", payment_note="СБП по номеру +7 900 000-00-00",
+        pay_within_minutes=30))).get("payload", {}).get("page", {})
+    pages.append(link_page.get("id", 0))
+    check(link_page.get("prepay") == "deposit" and link_page.get("deposit") == 50000,
+          "страница с депозитом и оплатой по ссылке", link_page)
+    link_view = (await guest.call("booking.get", {"slug": link_page.get("slug", "")}, timeout=40)) \
+        .get("payload", {}).get("page", {})
+    link_slots = [s.get("start", "") for s in link_view.get("slots", [])]
+    if link_slots:
+        link_booked = await guest.call("booking.book", {"slug": link_page.get("slug", ""), "start": link_slots[0],
+                                                        "guest_name": "Лиля"}, timeout=40)
+        link_token = link_booked.get("payload", {}).get("token", "")
+        link_payment = link_booked.get("payload", {}).get("booking", {}).get("payment") or {}
+        check(link_payment.get("method") == "link" and link_payment.get("kind") == "deposit"
+              and link_payment.get("amount") == 50000 and link_payment.get("action_url") == "https://pay.example/e2e",
+              "booking.book: депозит по ссылке владельца", link_booked)
+        before_claim = payment_events("claimed")
+        claimed = await guest.call("booking.paymentClaim", {"token": link_token})
+        check(claimed.get("payload", {}).get("booking", {}).get("payment", {}).get("status") == "claimed",
+              "booking.paymentClaim: «Я оплатил(а)» → claimed", claimed)
+        await asyncio.sleep(0.5)
+        check(payment_events("claimed") - before_claim == 1, "владелец получил booking.payment (claimed)",
+              payment_events("claimed") - before_claim)
+        owned = (await anna.call("booking.list", {"page_id": link_page.get("id", 0)})).get("payload", {}) \
+            .get("bookings", [])
+        link_id = owned[0].get("id", 0) if owned else 0
+        set_paid = await anna.call("booking.paymentSet", {"booking_id": link_id, "status": "paid"})
+        check(set_paid.get("payload", {}).get("booking", {}).get("payment", {}).get("status") == "paid",
+              "booking.paymentSet: владелец отметил оплату", set_paid)
+        bad_status = await anna.call("booking.paymentSet", {"booking_id": link_id, "status": "pending"})
+        check(bad_status.get("code") == "bad_request", "booking.paymentSet: неверный статус — bad_request", bad_status)
+        await anna.call("booking.ownerCancel", {"booking_id": link_id})
+    else:
+        check(False, "есть свободное время на странице с оплатой по ссылке", link_view.get("slots", [])[:2])
+
+    # late_cancel=block: позже срока гость не отменяет и не переносит.
+    strict = (await anna.call("booking.pageCreate", dict(base, title=f"Строго {RUN}", cancel_hours=168,
+                                                         late_cancel="block"))).get("payload", {}).get("page", {})
+    pages.append(strict.get("id", 0))
+    strict_view = (await guest.call("booking.get", {"slug": strict.get("slug", "")}, timeout=40)) \
+        .get("payload", {}).get("page", {})
+    near = [s.get("start", "") for s in strict_view.get("slots", []) if at(s.get("start", "")) < time.time() + 160 * 3600]
+    if near:
+        strict_booked = await guest.call("booking.book", {"slug": strict.get("slug", ""), "start": near[0],
+                                                          "guest_name": "Стас"}, timeout=40)
+        strict_token = strict_booked.get("payload", {}).get("token", "")
+        strict_managed = (await guest.call("booking.manage", {"token": strict_token}, timeout=40)) \
+            .get("payload", {}).get("booking", {})
+        check(strict_managed.get("late") is True and strict_managed.get("can_cancel") is False
+              and strict_managed.get("can_reschedule") is False
+              and strict_managed.get("policy", {}).get("late_cancel") == "block",
+              "late_cancel=block: позже срока can_cancel/can_reschedule = false", strict_managed)
+        refused = await guest.call("booking.cancel", {"token": strict_token})
+        check(refused.get("code") == "conflict" and "меньше 168 ч" in refused.get("message", ""),
+              "late_cancel=block: отмена гостем позже срока — conflict", refused)
+        owned = (await anna.call("booking.list", {"page_id": strict.get("id", 0)})).get("payload", {}) \
+            .get("bookings", [])
+        if owned:
+            await anna.call("booking.ownerCancel", {"booking_id": owned[0].get("id", 0)})
+    else:
+        check(False, "есть свободное время в ближайшие 7 дней", strict_view.get("slots", [])[:2])
+    await guest.close()
+    for page_id in pages:
+        await anna.call("booking.pageDelete", {"page_id": page_id})
+
+
 async def main() -> int:
     print(f"Selfvoy E2E → {SERVER_URL} (прогон {RUN})\n")
 
@@ -695,6 +992,12 @@ async def main() -> int:
     if os.environ.get("SELFVOY_E2E_TELEGRAM_MOCK") == "1":
         telegram_mock = TelegramMock(int(os.environ.get("SELFVOY_E2E_TELEGRAM_MOCK_PORT", "9083")))
         await telegram_mock.start()
+
+    # ЮKassa mock (F4): API магазинов владельцев.
+    yookassa_mock: YooKassaMock | None = None
+    if os.environ.get("SELFVOY_E2E_YOOKASSA_MOCK") == "1":
+        yookassa_mock = YooKassaMock(int(os.environ.get("SELFVOY_E2E_YOOKASSA_MOCK_PORT", "9084")))
+        await yookassa_mock.start()
 
     anna = Client("anna")
     anya = Client("anya")
@@ -2029,6 +2332,8 @@ async def main() -> int:
               "admin.audit: смена тарифа в журнале", plan_journal.get("payload", {}).get("entries", [])[:3])
         await admin.close()
 
+    await s2a_payments(anna, yookassa_mock)
+
     # -------------------------------------------------------------- итоги
     # ---------------------------------------- безопасность (этап 14)
     print("\n5b. Сценарии безопасности (этап 14)")
@@ -2090,6 +2395,8 @@ async def main() -> int:
         await push_mock.stop()
     if telegram_mock is not None:
         await telegram_mock.stop()
+    if yookassa_mock is not None:
+        await yookassa_mock.stop()
 
     print(f"\nпроверок: {checks}, ошибок: {len(failures)}")
     if failures:

@@ -150,6 +150,8 @@ Config Config::fromEnv() {
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         config.telegramPoll = !(poll == "0" || poll == "false" || poll == "no" || poll == "off");
     }
+    config.yookassaApiUrl = envOr("SELFVOY_YOOKASSA_API_URL", config.yookassaApiUrl, legacy);
+    while (!config.yookassaApiUrl.empty() && config.yookassaApiUrl.back() == '/') config.yookassaApiUrl.pop_back();
     config.serverPublicUrl = envOr("SELFVOY_SERVER_PUBLIC_URL", "", legacy);
     while (!config.serverPublicUrl.empty() && config.serverPublicUrl.back() == '/') config.serverPublicUrl.pop_back();
     return config;
@@ -254,6 +256,13 @@ bool Config::validate(std::string& error, std::vector<std::string>& warnings) {
     if (telegramEnabled() && telegramApiUrl.rfind("https://", 0) != 0 && telegramApiUrl.rfind("http://", 0) != 0) {
         error = "SELFVOY_TELEGRAM_API_URL: адрес Bot API вида https://api.telegram.org";
         return false;
+    }
+    if (yookassaApiUrl.rfind("https://", 0) != 0 && yookassaApiUrl.rfind("http://", 0) != 0) {
+        error = "SELFVOY_YOOKASSA_API_URL: адрес API ЮKassa вида https://api.yookassa.ru/v3";
+        return false;
+    }
+    if (yookassaApiUrl.rfind("http://", 0) == 0 && !devMode) {
+        warnings.push_back("SELFVOY_YOOKASSA_API_URL — http: ключи магазинов ЮKassa уйдут без TLS (допустимо только для мока)");
     }
     if (!serverPublicUrl.empty() && serverPublicUrl.rfind("https://", 0) != 0 &&
         serverPublicUrl.rfind("http://", 0) != 0) {

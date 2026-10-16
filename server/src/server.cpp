@@ -171,6 +171,13 @@ bool Server::start(std::string& error) {
     telegram_ = std::make_unique<TelegramBot>(*database_, config_);
     telegram_->setBookings(bookings_.get());
     bookings_->setTelegram(telegram_.get());
+    // Оплата записи (F4): ЮKassa владельца (SELFVOY_YOOKASSA_API_URL) или оплата по ссылке.
+    payments_ = std::make_unique<PaymentManager>(*database_, config_);
+    bookings_->setPayments(payments_.get());
+    if (config_.yookassaApiUrl.rfind("https://", 0) == 0 && !tls::available()) {
+        SELFVOY_LOG(log::Level::Warn, "server") << "ЮKassa: SELFVOY_YOOKASSA_API_URL — https, а сервер собран без "
+                                                   "OpenSSL — онлайн-оплата работать не будет";
+    }
     notifications_->setTelegram(telegram_.get());
     if (config_.telegramEnabled() && config_.telegramApiUrl.rfind("https://", 0) == 0 && !tls::available()) {
         SELFVOY_LOG(log::Level::Warn, "server") << "Telegram-бот: SELFVOY_TELEGRAM_API_URL — https, а сервер собран "
@@ -222,6 +229,9 @@ void Server::schedulerLoop() {
             for (int batch = 0; batch < 100 && !stopping_.load(); ++batch) {
                 if (bookings_->reminderTick(100, std::time(nullptr)) < 100) break;
             }
+            // F4: ожидающие оплаты — опрос ЮKassa (не чаще раза в 30 с на платёж) и отмена
+            // неоплаченных к сроку записей.
+            if (!stopping_.load()) bookings_->paymentTick(500, std::time(nullptr));
         }
     }
 }
@@ -1019,6 +1029,32 @@ void Server::registerHandlers() {
     registerHandler("booking.resendLink", [this, bookingReply](std::shared_ptr<Session> session,
                                                                const protocol::Request& request) {
         return bookingReply(request, bookings_->resendLink(request.payload, session->remoteAddr()));
+    });
+    // F4: «Я оплатил(а)» (гость) и отметка оплаты владельцем.
+    registerHandler("booking.paymentClaim", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                 const protocol::Request& request) {
+        return bookingReply(request, bookings_->paymentClaim(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.paymentSet", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->paymentSet(session->userId(), request.payload));
+    });
+    // F4: магазин ЮKassa владельца.
+    const auto paymentsReply = [](const protocol::Request& request, const PaymentManager::Result& result) {
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    };
+    registerHandler("payments.status", [this, paymentsReply](std::shared_ptr<Session> session,
+                                                             const protocol::Request& request) {
+        return paymentsReply(request, payments_->status(session->userId()));
+    });
+    registerHandler("payments.connect", [this, paymentsReply](std::shared_ptr<Session> session,
+                                                              const protocol::Request& request) {
+        return paymentsReply(request, payments_->connect(session->userId(), request.payload));
+    });
+    registerHandler("payments.disconnect", [this, paymentsReply](std::shared_ptr<Session> session,
+                                                                 const protocol::Request& request) {
+        return paymentsReply(request, payments_->disconnect(session->userId()));
     });
     // F1: «Приду» по ссылке из напоминания (#/m/<токен>?confirm=<start>).
     registerHandler("booking.confirm", [this, bookingReply](std::shared_ptr<Session> session,

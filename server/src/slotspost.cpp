@@ -153,7 +153,8 @@ BookingManager::Result BookingManager::slotsPost(long long ownerId, const Json& 
     slotspost::Input input;
     input.title = page->title;
     input.durationMinutes = page->durationMinutes;
-    input.price = 0;  // цена страницы (F4) — когда появится поле price
+    input.price = page->price;  // цена страницы (F4); 0 — в заголовке не показывается
+    input.currency = page->currency.empty() ? std::string("RUB") : page->currency;
     input.days = static_cast<int>(days);
     input.format = format;
     input.url = config_.publicUrl.empty() ? std::string() : config_.publicUrl + "/#/b/" + page->slug;

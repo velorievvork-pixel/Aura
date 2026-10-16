@@ -11,6 +11,7 @@ import {
   Ellipsis,
   Handshake,
   Megaphone,
+  Package,
   Plus,
   Settings,
   Shield,
@@ -36,6 +37,7 @@ const TABS = [
 const SIDE = [
   { to: '/', label: 'Сегодня', icon: CalendarDays, end: true },
   { to: '/booking', label: 'Запись', icon: CalendarClock },
+  { to: '/packages', label: 'Абонементы', icon: Package },
   { to: '/selfvoy', label: 'Ассистент', icon: Sparkles },
   { to: '/negotiations', label: 'Переговоры', icon: Handshake },
   { to: '/tasks', label: 'Задачи', icon: CheckSquare },
@@ -45,6 +47,7 @@ const SIDE = [
 /** Быстрые действия кнопки «+». */
 const QUICK = [
   { to: '/booking?new=1', label: 'Новая страница записи', hint: 'Ссылка, по которой клиенты записываются сами', icon: CalendarClock, tone: 'accent' },
+  { to: '/packages?new=1', label: 'Выдать абонемент', hint: 'Пакет занятий клиенту — со ссылкой на остаток', icon: Package, tone: 'pink' },
   { to: '/booking?post=1', label: 'Пост со свободными окнами', hint: 'Готовый текст для Telegram или VK', icon: Megaphone, tone: 'amber' },
   { to: '/negotiations?new=1', label: 'Договориться о встрече', hint: 'Selfvoy согласует время с другим Selfvoy', icon: Handshake, tone: 'green' },
   { to: '/tasks?new=1', label: 'Новая задача', hint: 'Напоминание или дело со сроком', icon: CheckSquare, tone: 'violet' },

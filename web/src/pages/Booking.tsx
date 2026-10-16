@@ -8,13 +8,15 @@
   паузу и видит записи гостей с подтверждением и оплатой. Список обновляется по
   уведомлениям booking.*.
 
-  Пакеты и абонементы (F5) добавятся отдельной группой формы («Пакеты») и
-  разделом списка — место отмечено комментариями «F5».
+  Пакеты и абонементы (F5): группа формы «Пакеты и абонементы» (до 5 предложений,
+  Pro) и переход на экран «Абонементы» (pages/Packages.tsx); у записи по пакету —
+  отметка «Абонемент».
 */
-import { CalendarClock, Copy, Megaphone, Pause, Pencil, Play, Share2, Trash2 } from 'lucide-react';
+import { CalendarClock, Copy, Megaphone, Package, Pause, Pencil, Play, Plus, Share2, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { BookingSheet } from '../components/BookingSheet';
+import { MoneyInput } from '../components/MoneyInput';
 import { Avatar, Empty, Group, Logo, ProBadge, Segmented, Sheet, Spinner, StatusPill, Switch } from '../components/ui';
 import {
   bookingOwnerErrorText,
@@ -40,10 +42,12 @@ import { canShare, copyText } from '../lib/clipboard';
 import { plural, when } from '../lib/format';
 import { isProRequired, planView } from '../lib/integrations';
 import { hasErrors } from '../lib/invite';
-import { CURRENCIES, currencySymbol, formatMoney, moneyInputValue, parseMoneyInput } from '../lib/money';
+import { CURRENCIES, formatMoney } from '../lib/money';
+import { cleanOffers, newOffer, OFFER_TITLE_MAX, OFFERS_MAX, offersError, perSessionLabel, sessionsLabel } from '../lib/packages';
 import { paymentLabel } from '../lib/payment';
 import { makeIntegrationsApi } from '../net/integrationsApi';
 import type { Booking, BookingApi, BookingPage as Page, PageForm as Form, PostFormat } from '../net/bookingApi';
+import type { PackageOffer } from '../net/packageApi';
 import { useData } from '../state/data';
 import { useOwnerBookings } from '../state/owner';
 import { useSession } from '../state/session';
@@ -133,9 +137,15 @@ export function BookingPage() {
           <div className="sub">Постоянная ссылка: клиенты сами выбирают свободное время в вашем расписании.</div>
         </div>
         {pages !== null && (
-          <button className="btn btn-primary" onClick={() => setEditing('new')}>
-            <CalendarClock size={17} /> Новая страница
-          </button>
+          <div className="row" style={{ gap: 8 }}>
+            <Link className="btn btn-secondary" to="/packages">
+              <Package size={17} /> Абонементы
+            </Link>
+            <button className="btn btn-primary" onClick={() => setEditing('new')}>
+              <CalendarClock size={17} /> <span className="hide-phone">Новая страница</span>
+              <span className="hide-desktop">Новая</span>
+            </button>
+          </div>
         )}
       </header>
 
@@ -225,6 +235,8 @@ function pageFacts(page: Page): string {
   if (page.cancel_hours) facts.push(`отмена за ${page.cancel_hours} ч`);
   facts.push(page.weekends ? 'и в выходные' : 'будни');
   if (page.max_series > 1) facts.push(`серия до ${page.max_series}`);
+  const offers = page.packages?.length ?? 0;
+  if (offers) facts.push(`${offers} ${plural(offers, 'пакет', 'пакета', 'пакетов')}`);
   return facts.join(' · ');
 }
 
@@ -388,32 +400,6 @@ function SwitchCell({ label, hint, on, onChange, badge }: { label: string; hint?
   );
 }
 
-function MoneyInput({ value, currency, onChange, label, invalid }: { value: number; currency: string; onChange: (minor: number) => void; label: string; invalid?: boolean }) {
-  const [text, setText] = useState(moneyInputValue(value));
-  useEffect(() => {
-    // Внешнее изменение (сброс формы) — показать новое значение; свой ввод не трогаем.
-    if (parseMoneyInput(text) !== value) setText(moneyInputValue(value));
-  }, [value]); // eslint-disable-line react-hooks/exhaustive-deps
-  return (
-    <span className="input-affix" style={{ width: 150 }}>
-      <input
-        className={`input num ${invalid ? 'invalid' : ''}`}
-        inputMode="decimal"
-        aria-label={label}
-        placeholder="0"
-        style={{ height: 38, textAlign: 'right' }}
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          const minor = parseMoneyInput(e.target.value);
-          onChange(minor === null ? Number.NaN : minor);
-        }}
-      />
-      <span className="affix">{currencySymbol(currency)}</span>
-    </span>
-  );
-}
-
 function PageFormSheet({ api, page, open, onSaved, onClose }: { api: BookingApi; page: Page | null; open: boolean; onSaved: (page: Page) => void; onClose: () => void }) {
   const { socket, user } = useSession();
   const integrations = useMemo(() => makeIntegrationsApi(socket), [socket]);
@@ -458,6 +444,7 @@ function PageFormSheet({ api, page, open, onSaved, onClose }: { api: BookingApi;
         payment_note: form.payment_note.trim(),
         policy_text: form.policy_text.trim(),
         deposit: form.prepay === 'deposit' ? form.deposit : initial.deposit,
+        packages: cleanOffers(form.packages),
       };
       const reply = page ? await api.updatePage(page.id, changedFields(initial, clean)) : await api.createPage(clean);
       onSaved(reply.page);
@@ -580,7 +567,13 @@ function PageFormSheet({ api, page, open, onSaved, onClose }: { api: BookingApi;
           />
         </Group>
 
-        {/* F5: здесь появится группа «Пакеты и абонементы» (packages[] страницы). */}
+        <OffersGroup
+          offers={form.packages}
+          currency={form.currency}
+          error={errors.packages}
+          proLocked={proLocked && (initial.packages ?? []).length === 0}
+          onChange={(packages) => set('packages', packages)}
+        />
 
         {errors.form && (
           <div className={`notice ${errors.pro ? 'accent' : 'error'}`} role="alert">
@@ -599,6 +592,99 @@ function PageFormSheet({ api, page, open, onSaved, onClose }: { api: BookingApi;
         </button>
       </form>
     </Sheet>
+  );
+}
+
+// ------------------------------------------------------------------ пакеты (F5)
+
+/**
+  Предложения пакетов страницы: название, занятий, цена (вводится в рублях, хранится
+  в копейках), срок. id сохранённых предложений не трогаем — сервер узнаёт их по id.
+*/
+function OffersGroup({ offers, currency, error, proLocked, onChange }: { offers: PackageOffer[]; currency: string; error?: string; proLocked: boolean; onChange: (offers: PackageOffer[]) => void }) {
+  const bad = offersError(offers)?.index ?? -2;
+  const update = (i: number, patch: Partial<PackageOffer>) => onChange(offers.map((o, j) => (j === i ? { ...o, ...patch } : o)));
+  const foot = error ? (
+    <span className="field-error">{error}</span>
+  ) : proLocked ? (
+    'Пакеты доступны на тарифе Pro. Пригласите коллегу — вы оба получите месяц Pro.'
+  ) : offers.length ? (
+    'Клиент выбирает пакет при записи и платит за него сразу; остаток и ссылка абонемента — в «Абонементах».'
+  ) : (
+    'Например, «8 занятий со скидкой» — клиент купит пакет при записи. Изменения уже купленных пакетов не касаются.'
+  );
+  return (
+    <Group
+      head={
+        <span className="row" style={{ gap: 8 }}>
+          Пакеты и абонементы <ProBadge />
+        </span>
+      }
+      foot={foot}
+    >
+      {offers.map((o, i) => (
+        <div key={o.id ?? `new-${i}`} className="cell stacked offer-edit" aria-label={`Пакет ${i + 1}`} role="group">
+          <div className="row" style={{ gap: 8 }}>
+            <input
+              className={`input ${bad === i && !o.title.trim() ? 'invalid' : ''}`}
+              placeholder="Название, например «8 занятий»"
+              aria-label={`Название пакета ${i + 1}`}
+              value={o.title}
+              maxLength={OFFER_TITLE_MAX}
+              onChange={(e) => update(i, { title: e.target.value })}
+            />
+            <button type="button" className="icon-btn" style={{ color: 'var(--danger)' }} aria-label={`Удалить пакет ${i + 1}`} onClick={() => onChange(offers.filter((_, j) => j !== i))}>
+              <Trash2 size={16} />
+            </button>
+          </div>
+          <div className="offer-grid">
+            <label className="offer-field">
+              <span className="small muted">Занятий</span>
+              <input
+                className={`input num ${bad === i && !(o.sessions >= 2 && o.sessions <= 100) ? 'invalid' : ''}`}
+                type="number"
+                inputMode="numeric"
+                min={2}
+                max={100}
+                value={Number.isNaN(o.sessions) ? '' : o.sessions}
+                onChange={(e) => update(i, { sessions: e.target.value === '' ? Number.NaN : Number(e.target.value) })}
+              />
+            </label>
+            <label className="offer-field">
+              <span className="small muted">Цена</span>
+              <MoneyInput width="100%" label={`Цена пакета ${i + 1}`} value={o.price} currency={currency} invalid={bad === i && !(o.price > 0)} onChange={(v) => update(i, { price: v })} />
+            </label>
+            <label className="offer-field">
+              <span className="small muted">Срок, дней</span>
+              <input
+                className="input num"
+                type="number"
+                inputMode="numeric"
+                min={7}
+                max={365}
+                value={o.valid_days === undefined || Number.isNaN(o.valid_days) ? '' : o.valid_days}
+                onChange={(e) => update(i, { valid_days: e.target.value === '' ? Number.NaN : Number(e.target.value) })}
+              />
+            </label>
+          </div>
+          {o.price > 0 && o.sessions >= 2 && (
+            <span className="small muted">
+              {sessionsLabel(o.sessions)} · {perSessionLabel(o.price, o.sessions, currency)}
+            </span>
+          )}
+        </div>
+      ))}
+      {offers.length < OFFERS_MAX && (
+        <button type="button" className="cell has-ico" onClick={() => onChange([...offers, newOffer()])}>
+          <span className="ico accent">
+            <Plus size={17} />
+          </span>
+          <span className="lab" style={{ color: 'var(--accent)' }}>
+            Добавить пакет<small>{offers.length ? `ещё ${OFFERS_MAX - offers.length} из ${OFFERS_MAX}` : `до ${OFFERS_MAX} предложений`}</small>
+          </span>
+        </button>
+      )}
+    </Group>
   );
 }
 
@@ -724,6 +810,7 @@ function BookingRow({ booking, onOpen }: { booking: Booking; onOpen: () => void 
           {booking.status === 'active' && next?.confirmed_at && <StatusPill status={{ label: `Подтвердил(а) ${when(next.confirmed_at)}`, tone: 'green', icon: 'check' }} />}
           {booking.status === 'active' && next && !next.confirmed_at && <StatusPill status={{ label: 'Ждём «Приду»', tone: '', icon: 'clock' }} />}
           {pay && <StatusPill status={{ ...pay, label: `${pay.label} · ${formatMoney(booking.payment!.amount, booking.payment!.currency)}` }} />}
+          {Boolean(booking.package_id) && <StatusPill status={{ label: 'Абонемент', tone: 'accent', icon: 'calendar' }} />}
         </div>
       </div>
     </button>

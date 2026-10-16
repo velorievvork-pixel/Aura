@@ -9,6 +9,8 @@ import { plural } from './format';
 import { PRO_REQUIRED_TEXT } from './integrations';
 import { foldIcsLine, icsEscape, icsUtc, isPublicWebOrigin, type LocationLike } from './invite';
 import { PRICE_MAX } from './money';
+import { cleanOffers, offersEqual, offersError } from './packages';
+import type { PackageOffer } from '../net/packageApi';
 
 // ------------------------------------------------------------------ ссылки
 
@@ -107,6 +109,7 @@ export const PAGE_DEFAULTS: PageForm = {
   guest_reminders: true,
   hide_branding: false,
   ...PRICE_DEFAULTS,
+  packages: [],
 };
 
 export interface PageFormErrors {
@@ -116,6 +119,8 @@ export interface PageFormErrors {
   price?: string;
   payment?: string;
   policy?: string;
+  /** Пакеты и абонементы (F5). */
+  packages?: string;
 }
 
 const length = (s: string) => [...s].length;
@@ -125,7 +130,7 @@ const inRange = (n: number, min: number, max: number) => Number.isInteger(n) && 
   Те же пределы, что на сервере (BookingManager::pageCreate). `yookassa` — у владельца
   подключена ЮKassa: тогда предоплате не нужны ни ссылка, ни реквизиты.
 */
-export function pageFormErrors(form: PageFields & Partial<PriceFields>, options: { yookassa?: boolean } = {}): PageFormErrors {
+export function pageFormErrors(form: PageFields & Partial<PriceFields> & { packages?: PackageOffer[] }, options: { yookassa?: boolean } = {}): PageFormErrors {
   const errors: PageFormErrors = {};
   const title = form.title.trim();
   if (!title) errors.title = 'Назовите страницу — например, «Консультация»';
@@ -153,14 +158,21 @@ export function pageFormErrors(form: PageFields & Partial<PriceFields>, options:
   else if (prepay !== 'none' && !url && !note && !options.yookassa) errors.payment = 'Укажите, как платить: ссылку оплаты, реквизиты или подключите ЮKassa';
   if (!inRange(form.cancel_hours ?? 0, 0, 168)) errors.policy = 'Срок отмены — от 0 до 168 часов';
   else if (length((form.policy_text ?? '').trim()) > POLICY_MAX) errors.policy = `Текст политики — до ${POLICY_MAX} символов`;
+  const offers = offersError(form.packages);
+  if (offers) errors.packages = offers.text;
   return errors;
 }
 
-/** Только изменённые поля — pageUpdate меняет переданные (включение Pro-функций проверяется отдельно). */
+/**
+  Только изменённые поля — pageUpdate меняет переданные (включение Pro-функций проверяется
+  отдельно). Пакеты сравниваются по содержимому и уходят целым массивом (F5).
+*/
 export function changedFields(before: PageForm, after: PageForm): Partial<PageForm> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(after) as (keyof PageForm)[]) {
-    if (after[key] !== before[key]) out[key] = after[key];
+    if (key === 'packages') {
+      if (!offersEqual(before.packages, after.packages)) out.packages = cleanOffers(after.packages);
+    } else if (after[key] !== before[key]) out[key] = after[key];
   }
   return out as Partial<PageForm>;
 }
@@ -187,6 +199,7 @@ export const pageFields = (page: BookingPage): PageForm => ({
   cancel_hours: page.cancel_hours ?? PRICE_DEFAULTS.cancel_hours,
   late_cancel: page.late_cancel ?? PRICE_DEFAULTS.late_cancel,
   policy_text: page.policy_text ?? '',
+  packages: (page.packages ?? []).map((o) => ({ ...o })),
 });
 
 // ------------------------------------------------------------------ ссылка управления

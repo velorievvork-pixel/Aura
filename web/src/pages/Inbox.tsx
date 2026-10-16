@@ -1,6 +1,8 @@
-import { Bell, Check, CheckCheck, ShieldAlert, X } from 'lucide-react';
+import { Bell, Check, CheckCheck, ChevronRight, Package, ShieldAlert, X } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { Empty } from '../components/ui';
 import { toolTitle, when } from '../lib/format';
+import { isPackageNotice, packageNoticeDetail } from '../lib/packages';
 import type { Notice } from '../net/api';
 import { useData } from '../state/data';
 
@@ -10,6 +12,8 @@ function detail(n: Notice): string {
     const device = (n.payload as { device?: string } | undefined)?.device;
     return device ? `Устройство: ${device}` : '';
   }
+  // Абонементы (F5): сервер присылает текст; старый или пустой — собираем из payload.
+  if (isPackageNotice(n.kind)) return n.body || packageNoticeDetail(n.kind, n.payload);
   return n.body;
 }
 
@@ -60,16 +64,30 @@ export function Inbox() {
           <h2 className="title-sm section-title">Уведомления</h2>
           <div className="card flush list">
             {notices.length === 0 && <Empty>Уведомлений нет.</Empty>}
-            {notices.map((n) => (
-              <div key={n.id} className="list-row">
-                {n.read ? <Bell size={16} className="faint" /> : <span className="dot accent" style={{ margin: '0 4px' }} />}
-                <div className="body">
-                  <div style={{ fontWeight: n.read ? 400 : 500 }}>{n.title}</div>
-                  {detail(n) && <div className="small muted">{detail(n)}</div>}
+            {notices.map((n) => {
+              const pkg = isPackageNotice(n.kind);
+              const content = (
+                <>
+                  {!n.read ? <span className="dot accent" style={{ margin: '0 4px' }} /> : pkg ? <Package size={16} className="faint" /> : <Bell size={16} className="faint" />}
+                  <div className="body">
+                    <div style={{ fontWeight: n.read ? 400 : 500 }}>{n.title}</div>
+                    {detail(n) && <div className="small muted">{detail(n)}</div>}
+                  </div>
+                  <span className="meta">{when(n.created_at)}</span>
+                  {pkg && <ChevronRight size={16} className="chev" aria-hidden="true" />}
+                </>
+              );
+              const id = Number((n.payload as { package_id?: unknown } | undefined)?.package_id ?? 0);
+              return pkg ? (
+                <Link key={n.id} to={id > 0 ? `/packages?id=${id}` : '/packages'} className="list-row">
+                  {content}
+                </Link>
+              ) : (
+                <div key={n.id} className="list-row">
+                  {content}
                 </div>
-                <span className="meta">{when(n.created_at)}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       </div>

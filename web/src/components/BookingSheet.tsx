@@ -2,10 +2,12 @@
   Карточка записи владельца — окно снизу: кто, когда, сколько стоит, история
   (запись → оплата → напоминания → «Приду»), действия: написать, отменить
   встречу или всю серию, отметить оплату / «без оплаты» / возврат
-  (booking.ownerCancel, booking.paymentSet).
+  (booking.ownerCancel, booking.paymentSet). F5: копия напоминаний (cc_email) и
+  отметка «По абонементу» со ссылкой на экран абонементов.
 */
 import { Ban, Check, Mail, X } from 'lucide-react';
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { bookingOwnerErrorText, bookingStatus, isUpcoming, sortedOccurrences } from '../lib/booking';
 import { when } from '../lib/format';
 import { formatMoney } from '../lib/money';
@@ -100,7 +102,7 @@ export function BookingSheet({
               </small>
             </span>
             <span className="val">
-              {payment ? <span className="num">{formatMoney(payment.amount, payment.currency)}</span> : page?.price ? <span className="num">{formatMoney(page.price, page.currency)}</span> : null}
+              {payment ? <span className="num">{formatMoney(payment.amount, payment.currency)}</span> : page?.price && !booking.package_id ? <span className="num">{formatMoney(page.price, page.currency)}</span> : null}
             </span>
           </div>
           <div className="cell">
@@ -116,6 +118,14 @@ export function BookingSheet({
               {payView && payView.label !== occurrenceStatus(booking, focus).label && <StatusPill status={payView} />}
             </span>
           </div>
+          {Boolean(booking.package_id) && (
+            <Link to={`/packages?id=${booking.package_id}`} className="cell" onClick={close}>
+              <span className="lab">
+                Оплата<small>занятие списано с абонемента клиента</small>
+              </span>
+              <StatusPill status={{ label: 'По абонементу', tone: 'accent', icon: 'calendar' }} />
+            </Link>
+          )}
         </div>
       )}
 
@@ -197,13 +207,21 @@ export function BookingSheet({
         </div>
       )}
 
-      {(booking.guest_email || booking.guest_comment) && (
+      {(booking.guest_email || booking.guest_comment || booking.cc_email) && (
         <div className="group-body">
           {booking.guest_email && (
             <div className="cell">
               <span className="lab">Email</span>
               <span className="val ellipsis" style={{ maxWidth: '65%' }}>
                 {booking.guest_email}
+              </span>
+            </div>
+          )}
+          {booking.cc_email && (
+            <div className="cell">
+              <span className="lab">Копия</span>
+              <span className="val ellipsis" style={{ maxWidth: '72%' }} title="Копия напоминаний: получает все письма о записи">
+                {booking.cc_email}
               </span>
             </div>
           )}

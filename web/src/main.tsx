@@ -17,7 +17,7 @@ import './styles/global.css';
 migrateLegacyStorage();
 initPlatform();
 
-// Страницы — отдельными чанками: гостевые ссылки (#/i, #/b, #/m) не тянут код приложения,
+// Страницы — отдельными чанками: гостевые ссылки (#/i, #/b, #/m, #/p) не тянут код приложения,
 // а настройки (QR-код) и админка грузятся, только когда их открыли. Вход — в основном чанке.
 const Admin = lazyNamed(() => import('./pages/Admin'), 'Admin');
 const Chat = lazyNamed(() => import('./pages/Chat'), 'Chat');
@@ -30,6 +30,8 @@ const BookingPage = lazyNamed(() => import('./pages/Booking'), 'BookingPage');
 const BookingGuest = lazyNamed(() => import('./pages/BookingGuest'), 'BookingGuest');
 const BookingManage = lazyNamed(() => import('./pages/BookingGuest'), 'BookingManage');
 const InviteGuest = lazyNamed(() => import('./pages/InviteGuest'), 'InviteGuest');
+const PackageGuest = lazyNamed(() => import('./pages/PackageGuest'), 'PackageGuest');
+const Packages = lazyNamed(() => import('./pages/Packages'), 'Packages');
 const Negotiations = lazyNamed(() => import('./pages/Negotiation'), 'Negotiations');
 const NegotiationView = lazyNamed(() => import('./pages/Negotiation'), 'NegotiationView');
 const Settings = lazyNamed(() => import('./pages/Settings'), 'Settings');
@@ -37,13 +39,14 @@ const Tasks = lazyNamed(() => import('./pages/Tasks'), 'Tasks');
 
 /*
   Публичные страницы гостя: и без входа, и со входом, вне оболочки и без
-  переадресаций на вход; о связи сообщают сами. F5: сюда же — '/p/:token'
-  (страница пакета занятий), когда появится её экран.
+  переадресаций на вход; о связи сообщают сами. '/p/:token' — страница пакета
+  занятий (абонемента) гостя, F5.
 */
 const GUEST_ROUTES = [
   { path: '/i/:token', element: <InviteGuest /> },
   { path: '/b/:slug', element: <BookingGuest /> },
   { path: '/m/:token', element: <BookingManage /> },
+  { path: '/p/:token', element: <PackageGuest /> },
 ] as const;
 
 function useGuestRoute(): boolean {
@@ -104,6 +107,7 @@ function Root() {
             <Route path="negotiations" element={<Negotiations />} />
             <Route path="negotiations/:id" element={<NegotiationView />} />
             <Route path="booking" element={<BookingPage />} />
+            <Route path="packages" element={<Packages />} />
             <Route path="tasks" element={<Tasks />} />
             <Route path="contacts" element={<Contacts />} />
             <Route path="contacts/:chatId" element={<ContactChat />} />

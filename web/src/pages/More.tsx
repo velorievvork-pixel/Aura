@@ -2,7 +2,7 @@
   «Ещё» — четвёртая вкладка на телефоне: профиль и тариф, остальные разделы
   приложения и настройки. На десктопе то же самое есть в боковой панели.
 */
-import { Bell, CalendarDays, CheckSquare, ChevronRight, CreditCard, Gift, Handshake, Settings, Shield, Users } from 'lucide-react';
+import { Bell, CalendarDays, CheckSquare, ChevronRight, CreditCard, Gift, Handshake, Package, Settings, Shield, Users } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Avatar, Group, ProBadge } from '../components/ui';
 import { planView } from '../lib/integrations';
@@ -48,6 +48,7 @@ export function More() {
         )}
         <Group>
           {cell('/inbox', 'Входящие', Bell, 'accent', inbox > 0 ? String(inbox) : undefined)}
+          {cell('/packages', 'Абонементы', Package, 'amber')}
           {cell('/negotiations', 'Переговоры', Handshake, 'green')}
           {cell('/tasks', 'Задачи', CheckSquare, 'violet')}
           {cell('/contacts', 'Контакты', Users, 'pink')}

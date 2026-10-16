@@ -14,10 +14,13 @@
   сразу переводим на #/m/<токен> — именно её он сохранит в закладки. Файл .ics
   собирается здесь же, в браузере.
 
-  F5 (пакеты): страница пакета #/p/<токен> и выбор пакета при записи добавятся рядом —
-  блоки оплаты и подписи (components/guest.tsx) для них уже общие.
+  F5 (пакеты): если у страницы есть предложения пакетов, гость выбирает «Разовое
+  занятие» или пакет — booking.book с package_id; после записи — ссылка пакета
+  #/p/<токен> (один раз) и оплата пакета. Со страницы пакета гость приходит сюда с
+  ?pkg=<токен> — запись по абонементу (package_token), имя и email берутся из пакета.
+  Необязательная «Копия напоминаний» — cc_email (≠ email гостя).
 */
-import { CalendarPlus, Check, Copy, RefreshCw, WifiOff } from 'lucide-react';
+import { CalendarPlus, Check, Copy, ExternalLink, Package, RefreshCw, WifiOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { BrandingLink, GuestHead, GuestShell, MonthCalendar, PaymentBlock, TelegramBlock } from '../components/guest';
@@ -59,8 +62,10 @@ import {
 } from '../lib/invite';
 import { formatMoney } from '../lib/money';
 import { shortDay } from '../lib/monthCalendar';
+import { canBookByPackage, ccEmailError, leftLabel, packageBlockReason, packagePath, packageTokenFrom, perSessionLabel, sessionsLabel } from '../lib/packages';
 import { policyLines, prepayLabel } from '../lib/payment';
 import { makeBookingApi, type Booked, type GuestBooking, type GuestPage } from '../net/bookingApi';
+import { makePackageApi, type GuestPackage, type PackageOffer } from '../net/packageApi';
 import type { InviteSlot } from '../net/inviteApi';
 import { useSession } from '../state/session';
 import { copyText } from '../lib/clipboard';
@@ -145,7 +150,7 @@ function ZoneHint({ zone, ownerZone, ownerName }: { zone: string; ownerZone: str
 }
 
 /** Нет связи / ошибка загрузки / ожидание — общие экраны обеих страниц. */
-function guestScreens(conn: string, connError: unknown, retry: () => void) {
+export function guestScreens(conn: string, connError: unknown, retry: () => void) {
   return (loadError: string, reload: () => void, waiting: string): ReactNode => {
     if (loadError) {
       return (
@@ -262,10 +267,12 @@ function ServiceCard({ title, minutes, description, price, currency }: { title: 
   );
 }
 
-/** Условия: предоплата и политика отмены. */
-function Terms({ page, count }: { page: GuestPage; count: number }) {
-  const prepay = prepayLabel(page, count);
-  const lines = policyLines(page.policy, page.prepay);
+/** Условия: предоплата и политика отмены. С пакетом предоплата страницы не применяется. */
+function Terms({ page, count, packaged }: { page: GuestPage; count: number; packaged?: boolean }) {
+  const prepay = packaged ? '' : prepayLabel(page, count);
+  const lines = policyLines(page.policy, packaged ? 'none' : page.prepay);
+  // По пакету поздняя отмена не возвращает занятие (F5).
+  if (packaged && page.policy && page.policy.cancel_hours > 0 && page.policy.late_cancel !== 'block' && lines.length > 1) lines[1] = 'Позже — занятие спишется с абонемента';
   if (!prepay && lines.length === 0) return null;
   return (
     <div className="group">
@@ -293,13 +300,87 @@ function Terms({ page, count }: { page: GuestPage; count: number }) {
   );
 }
 
+/** Выгода пакета относительно разовых занятий: «−25%» или "" (нет цены занятия или выгоды нет). */
+function savings(offer: PackageOffer, single: number | undefined): string {
+  if (!single || offer.sessions < 2) return '';
+  const full = single * offer.sessions;
+  const pct = Math.floor(((full - offer.price) / full) * 100);
+  return pct >= 3 ? `−${pct}%` : '';
+}
+
+/** «Разовое занятие» или пакет занятий (F5): радиогруппа карточек. 0 — разовое. */
+function PlanChoice({ page, value, onChange }: { page: GuestPage; value: number; onChange: (offerId: number) => void }) {
+  const offers = (page.packages ?? []).filter((o) => typeof o.id === 'number');
+  const currency = page.currency || 'RUB';
+  return (
+    <div className="group">
+      <div className="group-head">Как записаться</div>
+      <div className="plan-list" role="radiogroup" aria-label="Как записаться">
+        <button type="button" role="radio" aria-checked={value === 0} className="plan-opt" onClick={() => onChange(0)}>
+          <span className="radio" aria-hidden="true" />
+          <span className="lab">
+            <b>Разовое занятие</b>
+            <small>{page.duration_minutes} мин</small>
+          </span>
+          {page.price ? <span className="pr num">{formatMoney(page.price, currency)}</span> : null}
+        </button>
+        {offers.map((o) => {
+          const off = savings(o, page.price);
+          return (
+            <button key={o.id} type="button" role="radio" aria-checked={value === o.id} className="plan-opt" onClick={() => onChange(o.id as number)}>
+              <span className="radio" aria-hidden="true" />
+              <span className="lab">
+                <b>{o.title}</b>
+                <small>
+                  {sessionsLabel(o.sessions)} · {perSessionLabel(o.price, o.sessions, currency)}
+                  {o.valid_days ? ` · ${o.valid_days} дн.` : ''}
+                </small>
+              </span>
+              <span className="pr num">
+                {formatMoney(o.price, currency)}
+                {off && <span className="badge green">{off}</span>}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** Карточка «Запись по абонементу» над календарём (?pkg=<токен>). */
+function PackageBanner({ pkg }: { pkg: GuestPackage }) {
+  const blocked = packageBlockReason(pkg);
+  return (
+    <div className="card pkg-banner">
+      <span className="ico amber" aria-hidden="true">
+        <Package size={18} />
+      </span>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <b>Запись по абонементу</b>
+        <small>
+          {pkg.title} · {leftLabel(pkg)}
+          {pkg.guest_name ? ` · на имя ${pkg.guest_name}` : ''}
+        </small>
+        {blocked && <small className="field-error">{blocked}</small>}
+      </div>
+    </div>
+  );
+}
+
 // ================================================================ #/b/<slug>
 
 export function BookingGuest() {
   const { slug } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { socket, conn, connError, retry } = useSession();
   const api = useMemo(() => makeBookingApi(socket), [socket]);
+  const packages = useMemo(() => makePackageApi(socket), [socket]);
+  // Запись по абонементу: пришли со страницы пакета (#/b/<slug>?pkg=<токен>).
+  const pkgToken = useMemo(() => packageTokenFrom(location.search), [location.search]);
+  const [byPkg, setByPkg] = useState<GuestPackage | null>(null);
+  const [pkgError, setPkgError] = useState('');
   const zone = useMemo(browserTimeZone, []);
   const screens = guestScreens(conn, connError, retry);
 
@@ -319,7 +400,9 @@ export function BookingGuest() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [comment, setComment] = useState('');
-  const [errors, setErrors] = useState<GuestFormErrors & { form?: string }>({});
+  const [cc, setCc] = useState('');
+  const [plan, setPlan] = useState(0); // 0 — разовое занятие, иначе id предложения пакета
+  const [errors, setErrors] = useState<GuestFormErrors & { form?: string; cc?: string }>({});
   const [busy, setBusy] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -349,6 +432,26 @@ export function BookingGuest() {
     if (conn === 'open' && !doneRef.current) void load();
   }, [conn, load]);
 
+  useEffect(() => {
+    if (!pkgToken || conn !== 'open' || doneRef.current) return;
+    packages
+      .get(pkgToken)
+      .then((r) => {
+        setByPkg(r.package);
+        setPkgError('');
+      })
+      .catch((e) => {
+        if (guestErrorKind(e) === 'notFound') setPkgError('Ссылка абонемента не найдена — можно записаться как обычно.');
+        else if (guestErrorKind(e) !== 'network') setPkgError(guestErrorText(e));
+      });
+  }, [pkgToken, conn, packages]);
+
+  // Пакет этой страницы и по нему можно записаться — иначе обычная запись.
+  const viaPkg = Boolean(pkgToken && byPkg && canBookByPackage(byPkg) && (!page || !byPkg.page_slug || byPkg.page_slug === page.slug));
+  const offer = !viaPkg && plan ? (page?.packages ?? []).find((o) => o.id === plan) ?? null : null;
+  const maxCount = Math.max(1, Math.min(page?.max_series ?? 1, viaPkg && byPkg ? byPkg.sessions_left : offer ? offer.sessions : Number.POSITIVE_INFINITY));
+  const shownCount = Math.min(count, maxCount);
+
   const groups = useMemo(() => (page ? groupSlotsByDay(page.slots ?? [], zone) : []), [page, zone]);
   const freeDays = useMemo(() => groups.map((g) => g.key), [groups]);
   // Выбранный день пропал (время заняли) — первый свободный.
@@ -358,7 +461,11 @@ export function BookingGuest() {
 
   const book = async () => {
     if (!page || !slug) return;
-    const next = guestFormErrors({ name, email, comment, slot: selected }, 'accept');
+    const next: GuestFormErrors & { cc?: string } = guestFormErrors({ name, email, comment, slot: selected }, 'accept');
+    // По абонементу имя и email берутся из пакета — поля можно не заполнять.
+    if (viaPkg && !name.trim()) delete next.name;
+    const ccError = viaPkg ? null : ccEmailError(cc, email);
+    if (ccError) next.cc = ccError;
     setErrors(next);
     if (hasErrors(next) || !selected) {
       if (next.name) nameRef.current?.focus();
@@ -368,16 +475,20 @@ export function BookingGuest() {
     try {
       const reply = await api.book(slug, {
         start: selected,
-        guest_name: name.trim(),
+        guest_name: name.trim() || undefined,
         guest_email: email.trim() || undefined,
+        cc_email: viaPkg ? undefined : cc.trim() || undefined,
         comment: comment.trim() || undefined,
-        count,
+        count: shownCount,
+        package_id: offer?.id,
+        package_token: viaPkg && pkgToken ? pkgToken : undefined,
       });
       seq.current += 1;
-      if (!publicLink(managePath(reply.token), reply.url, here())) {
+      // Купили пакет — ссылку пакета показываем здесь же (она одна на экране «Вы записаны»).
+      if (!reply.package_token && !publicLink(managePath(reply.token), reply.url, here())) {
         // Ссылку управления не собрать — переходим на страницу записи (#/m/<токен>) вместо
         // #/b/<slug>: «сохранить в закладки» тогда сохраняет именно её, токен не теряется.
-        navigate(managePath(reply.token), { replace: true, state: { booked: true, telegram_url: reply.telegram_url ?? '' } });
+        navigate(managePath(reply.token), { replace: true, state: { booked: true, telegram_url: reply.telegram_url ?? '', package: pkgToken ?? '' } });
         return;
       }
       setDone(reply);
@@ -409,7 +520,17 @@ export function BookingGuest() {
   }
 
   if (done) {
-    return <BookedView booked={done} zone={zone} api={api} onBooking={(booking) => setDone((d) => (d ? { ...d, booking } : d))} />;
+    return (
+      <BookedView
+        booked={done}
+        zone={zone}
+        api={api}
+        packageApi={packages}
+        backToPackage={viaPkg ? pkgToken : null}
+        onBooking={(booking) => setDone((d) => (d ? { ...d, booking } : d))}
+        onPackage={(pkg) => setDone((d) => (d ? { ...d, package: pkg } : d))}
+      />
+    );
   }
 
   if (page) {
@@ -428,8 +549,10 @@ export function BookingGuest() {
         </GuestShell>
       );
     }
-    const seriesOptions = Array.from({ length: Math.max(1, page.max_series) }, (_, i) => i + 1);
-    const prepay = prepayLabel(page, count);
+    const seriesOptions = Array.from({ length: maxCount }, (_, i) => i + 1);
+    const packaged = viaPkg || Boolean(offer);
+    const prepay = packaged ? '' : prepayLabel(page, shownCount);
+    const ctaHint = viaPkg && byPkg ? `Спишется ${sessionsLabel(shownCount)} из ${byPkg.sessions_left}` : offer ? `Пакет ${formatMoney(offer.price, page.currency)} · оплата после записи` : prepay ? `${prepay} · после записи` : '';
     const today = dayKey(new Date(), zone);
     const slotTitle = selectedSlot ? `${dayKey(new Date(selectedSlot.start), zone) === today ? 'сегодня' : shortDay(dayKey(new Date(selectedSlot.start), zone))}, ${timeIn(new Date(selectedSlot.start), zone)}` : '';
     const hasSlots = !page.slots_unavailable && groups.length > 0;
@@ -438,16 +561,29 @@ export function BookingGuest() {
         <button className="btn btn-primary btn-lg btn-block" type="submit" form="guest-book" disabled={busy || !selectedSlot}>
           {busy ? <Spinner small /> : selectedSlot ? `Записаться на ${slotTitle}` : 'Выберите время'}
         </button>
-        {prepay ? <small>{prepay} · после записи</small> : <BrandingLink branding={page.branding} refCode={page.ref} compact />}
+        {ctaHint ? <small>{ctaHint}</small> : <BrandingLink branding={page.branding} refCode={page.ref} compact />}
       </>
     ) : undefined;
 
     return (
-      <GuestShell cta={cta} footer={prepay || !hasSlots ? <BrandingLink branding={page.branding} refCode={page.ref} /> : undefined}>
-        <GuestHead owner={page.owner_name} subtitle="Онлайн-запись" />
-        <ServiceCard title={page.title} minutes={page.duration_minutes} description={page.description} price={page.price} currency={page.currency} />
+      <GuestShell cta={cta} footer={ctaHint || !hasSlots ? <BrandingLink branding={page.branding} refCode={page.ref} /> : undefined}>
+        <GuestHead owner={page.owner_name} subtitle={viaPkg ? 'Запись по абонементу' : 'Онлайн-запись'} />
+        <ServiceCard title={page.title} minutes={page.duration_minutes} description={page.description} price={viaPkg ? undefined : page.price} currency={page.currency} />
         {page.description && page.description.includes('\n') && <div className="notice invite-note">{page.description}</div>}
-        <Terms page={page} count={count} />
+        {pkgToken && byPkg && <PackageBanner pkg={byPkg} />}
+        {pkgToken && byPkg && byPkg.page_slug && byPkg.page_slug !== page.slug && <div className="notice warn">Этот абонемент — для другой страницы записи.</div>}
+        {pkgError && <div className="notice warn">{pkgError}</div>}
+        {!viaPkg && (page.packages ?? []).length > 0 && (
+          <PlanChoice
+            page={page}
+            value={offer ? plan : 0}
+            onChange={(id) => {
+              setPlan(id);
+              setErrors((e) => ({ ...e, form: undefined }));
+            }}
+          />
+        )}
+        <Terms page={page} count={shownCount} packaged={packaged} />
         {conn !== 'open' && <div className="notice warn">Нет связи с сервером Selfvoy — переподключаемся…</div>}
 
         {page.slots_unavailable ? (
@@ -500,9 +636,9 @@ export function BookingGuest() {
                 <div className="group-head">Ваши данные</div>
                 <div className="group-body">
                   <div className="cell stacked">
-                    {page.max_series > 1 && (
+                    {maxCount > 1 && (
                       <Field label="Сколько встреч" hint="Та же встреча каждую неделю в это же время">
-                        <select className="input" value={count} onChange={(e) => setCount(Number(e.target.value))}>
+                        <select className="input" value={shownCount} onChange={(e) => setCount(Number(e.target.value))}>
                           {seriesOptions.map((n) => (
                             <option key={n} value={n}>
                               {seriesLabel(n)}
@@ -511,16 +647,36 @@ export function BookingGuest() {
                         </select>
                       </Field>
                     )}
-                    <Field label="Ваше имя" error={errors.name}>
+                    <Field label="Ваше имя" error={errors.name} hint={viaPkg && byPkg?.guest_name ? `Необязательно — запишем на имя ${byPkg.guest_name}` : undefined}>
                       <input ref={nameRef} className={`input ${errors.name ? 'invalid' : ''}`} autoComplete="name" value={name} maxLength={GUEST_NAME_MAX} onChange={(e) => setName(e.target.value)} />
                     </Field>
-                    <Field label="Email" error={errors.email} hint={page.prepay && page.prepay !== 'none' ? 'Пришлём подтверждение, ссылку оплаты и напоминания' : 'Необязательно — для подтверждения и напоминаний'}>
+                    <Field
+                      label="Email"
+                      error={errors.email}
+                      hint={viaPkg ? 'Необязательно — возьмём из абонемента' : offer || (page.prepay && page.prepay !== 'none') ? 'Пришлём подтверждение, ссылку оплаты и напоминания' : 'Необязательно — для подтверждения и напоминаний'}
+                    >
                       <input className={`input ${errors.email ? 'invalid' : ''}`} type="email" inputMode="email" autoComplete="email" placeholder="you@example.com" value={email} maxLength={EMAIL_MAX} onChange={(e) => setEmail(e.target.value)} />
                     </Field>
+                    {!viaPkg && (
+                      <Field label="Копия напоминаний (например, родителю)" error={errors.cc} hint="Необязательно — сюда придут те же письма: подтверждение, напоминания, перенос">
+                        <input
+                          className={`input ${errors.cc ? 'invalid' : ''}`}
+                          type="email"
+                          inputMode="email"
+                          autoComplete="off"
+                          placeholder="parent@example.com"
+                          value={cc}
+                          maxLength={EMAIL_MAX}
+                          onChange={(e) => {
+                            setCc(e.target.value);
+                            setErrors((x) => (x.cc ? { ...x, cc: undefined } : x));
+                          }}
+                        />
+                      </Field>
+                    )}
                     <Field label="Комментарий" error={errors.comment} hint="Необязательно">
                       <textarea className="textarea" style={{ minHeight: 64 }} value={comment} maxLength={COMMENT_MAX} onChange={(e) => setComment(e.target.value)} />
                     </Field>
-                    {/* F5: здесь появятся пакеты занятий и второй получатель напоминаний (cc_email). */}
                   </div>
                 </div>
               </div>
@@ -540,19 +696,97 @@ export function BookingGuest() {
   return screens(loadError, () => void load(), 'Открываем страницу записи…');
 }
 
-/** «Вы записаны»: встречи, оплата (если нужна), Telegram, календарь, ссылка управления. */
-function BookedView({ booked, zone, api, onBooking }: { booked: Booked; zone: string; api: ReturnType<typeof makeBookingApi>; onBooking: (booking: GuestBooking) => void }) {
+/** Ссылка пакета (F5): показывается один раз — сразу после покупки. */
+function PackageLink({ token, url, pkg }: { token: string; url: string; pkg?: GuestPackage }) {
+  const link = publicLink(packagePath(token), url, here());
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="group">
+      <div className="group-head">Ваш абонемент</div>
+      <div className="group-body">
+        <div className="cell has-ico">
+          <span className="ico amber">
+            <Package size={17} />
+          </span>
+          <span className="lab">
+            {pkg?.title || 'Пакет занятий'}
+            <small>{pkg ? `${leftLabel(pkg)} · по ссылке — остаток и запись` : 'По ссылке — остаток занятий и запись'}</small>
+          </span>
+        </div>
+        <div className="cell">
+          <span className="lab">
+            <span className="mono small ellipsis" style={{ display: 'block' }}>
+              {link ?? `#${packagePath(token)}`}
+            </span>
+            <small>Сохраните ссылку — она же в письме</small>
+          </span>
+          <span className="row" style={{ gap: 6 }}>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={async () => {
+                const ok = await copyText(link ?? `${location.origin}${location.pathname}#${packagePath(token)}`);
+                setCopied(ok);
+                if (ok) setTimeout(() => setCopied(false), 2000);
+              }}
+            >
+              <Copy size={15} /> {copied ? 'Готово' : 'Копировать'}
+            </button>
+            <Link className="icon-btn" to={packagePath(token)} aria-label="Открыть абонемент">
+              <ExternalLink size={16} />
+            </Link>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** «Вы записаны»: встречи, оплата (если нужна), пакет (F5), Telegram, календарь, ссылка управления. */
+function BookedView({
+  booked,
+  zone,
+  api,
+  packageApi,
+  backToPackage,
+  onBooking,
+  onPackage,
+}: {
+  booked: Booked;
+  zone: string;
+  api: ReturnType<typeof makeBookingApi>;
+  packageApi: ReturnType<typeof makePackageApi>;
+  /** Записались по абонементу — токен его ссылки (вернуться к остатку). */
+  backToPackage: string | null;
+  onBooking: (booking: GuestBooking) => void;
+  onPackage: (pkg: GuestPackage) => void;
+}) {
   const booking = booked.booking;
   const owner = booking.owner_name;
-  const payment = booking.payment;
+  const pkg = booked.package;
+  // Оплата пакета живёт у пакета; у записи её дубль (kind: package) не показываем.
+  const pkgPayment = booked.package_token ? (pkg?.payment ?? null) : null;
+  const payment = pkgPayment || booking.payment?.kind === 'package' ? null : booking.payment;
   const [claiming, setClaiming] = useState(false);
   const [error, setError] = useState('');
-  const mustPay = payment?.status === 'pending';
+  const mustPay = payment?.status === 'pending' || pkgPayment?.status === 'pending';
   const claim = async () => {
     setClaiming(true);
     setError('');
     try {
       onBooking((await api.paymentClaim(booked.token)).booking);
+    } catch (e) {
+      setError(guestErrorText(e));
+    } finally {
+      setClaiming(false);
+    }
+  };
+  const claimPackage = async () => {
+    if (!booked.package_token) return;
+    setClaiming(true);
+    setError('');
+    try {
+      onPackage((await packageApi.paymentClaim(booked.package_token)).package);
     } catch (e) {
       setError(guestErrorText(e));
     } finally {
@@ -575,8 +809,23 @@ function BookedView({ booked, zone, api, onBooking }: { booked: Booked; zone: st
         <OccurrenceList booking={booking} zone={zone} />
         <div className="group-foot">{timeZoneLabel(zone)}</div>
       </div>
+      {pkgPayment && <PaymentBlock payment={pkgPayment} note={pkg?.payment_note || booking.payment_note} onClaim={claimPackage} claiming={claiming} />}
       {payment && <PaymentBlock payment={payment} note={booking.payment_note} onClaim={claim} claiming={claiming} />}
       {error && <div className="notice error">{error}</div>}
+      {booked.package_token && <PackageLink token={booked.package_token} url={booked.package_url ?? ''} pkg={pkg} />}
+      {!booked.package_token && pkg && (
+        <div className="notice ok">
+          <Package size={16} />
+          <span>
+            Списано с абонемента «{pkg.title}»: {leftLabel(pkg)}.{' '}
+            {backToPackage && (
+              <Link className="link" to={packagePath(backToPackage)}>
+                К абонементу
+              </Link>
+            )}
+          </span>
+        </div>
+      )}
       <TelegramBlock url={booked.telegram_url || booking.telegram_url} linked={booking.telegram_linked} />
       <CalendarButton booking={booking} icsKey={booked.token} />
       <ManageLink token={booked.token} url={booked.url} />
@@ -647,7 +896,7 @@ export function BookingManage() {
   const zone = useMemo(browserTimeZone, []);
   const screens = guestScreens(conn, connError, retry);
   const query = useMemo(() => parseManageQuery(location.search), [location.search]);
-  const navState = location.state as { booked?: boolean; telegram_url?: string } | null;
+  const navState = location.state as { booked?: boolean; telegram_url?: string; package?: string } | null;
 
   const [booking, setBooking] = useState<GuestBooking | null>(null);
   const [missing, setMissing] = useState(!isPlausibleToken(token));
@@ -813,6 +1062,11 @@ export function BookingManage() {
             </p>
           </div>
           {notice && <div className="notice ok">{notice}</div>}
+          {booking.by_package && (
+            <div className="notice">
+              <Package size={16} /> Запись была по абонементу{booking.cancelled_by === 'owner' ? ' — занятие вернулось на абонемент.' : '.'}
+            </div>
+          )}
           <OccurrenceList booking={booking} zone={zone} />
           {booking.payment && <PaymentBlock payment={booking.payment} />}
           {againLink}
@@ -866,6 +1120,7 @@ export function BookingManage() {
             <span className="title-md">{slotPhrase(next, zone)}</span>
             <span className="row wrap" style={{ gap: 6, marginTop: 4 }}>
               {confirmedNext ? <StatusPill status={{ label: 'Вы подтвердили', tone: 'green', icon: 'check' }} /> : <StatusPill status={{ label: 'Ждём подтверждения', tone: 'new', icon: 'clock' }} />}
+              {booking.by_package && <StatusPill status={{ label: 'по абонементу', tone: 'accent', icon: 'calendar' }} />}
               <span className="small faint">{timeZoneLabel(zone)}</span>
             </span>
             {!confirmedNext && awaitingPay && step === 'view' && (
@@ -884,6 +1139,24 @@ export function BookingManage() {
         )}
 
         {upcoming === 0 && <div className="notice">Все встречи этой записи уже прошли.</div>}
+
+        {booking.cc_email && (
+          <div className="group-body">
+            <div className="cell">
+              <span className="lab">
+                Копия напоминаний<small>сюда приходят те же письма</small>
+              </span>
+              <span className="val ellipsis" style={{ maxWidth: '55%' }}>
+                {booking.cc_email}
+              </span>
+            </div>
+          </div>
+        )}
+        {navState?.package && (
+          <Link className="btn btn-secondary btn-lg btn-block" to={packagePath(navState.package)}>
+            <Package size={18} /> К абонементу
+          </Link>
+        )}
 
         {booking.payment && (
           <PaymentBlock payment={booking.payment} note={booking.payment_note} onClaim={claim} claiming={busy === 'claim'} checking={checking} />
@@ -979,6 +1252,7 @@ export function BookingManage() {
               <textarea className="textarea" style={{ minHeight: 56 }} value={reason} maxLength={COMMENT_MAX} onChange={(e) => setReason(e.target.value)} />
             </Field>
             {booking.late && paid && <span className="hint">Оплата за позднюю отмену не возвращается.</span>}
+            {booking.late && booking.by_package && <span className="hint">Поздняя отмена — занятие спишется с абонемента.</span>}
             <div className="grid-2">
               <button
                 className="btn btn-danger btn-lg"

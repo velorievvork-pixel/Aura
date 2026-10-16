@@ -244,12 +244,22 @@ describe('цена, предоплата и политика (F4)', () => {
   it('форма страницы старого сервера получает значения по умолчанию', () => {
     const page = { id: 1, slug: 'abc123def4', url: '', title: 'Урок', description: '', duration_minutes: 60, days_ahead: 14, max_per_day: 4, notice_hours: 2, max_series: 1, weekends: false, status: 'active' as const, upcoming: 0, created_at: '', updated_at: '' };
     expect(pageFields(page)).toMatchObject({ price: 0, prepay: 'none', guest_reminders: true, hide_branding: false });
+    expect(pageFields(page).packages).toEqual([]);
+    expect(pageFormErrors({ ...pageFields(page), packages: [{ title: '', sessions: 8, price: 100 }] }).packages).toMatch(/Пакет 1/);
     expect(pageFields({ ...page, price: 250000, prepay: 'full', hide_branding: true })).toMatchObject({ price: 250000, prepay: 'full', hide_branding: true });
   });
 
   it('в pageUpdate уходят только изменённые поля', () => {
     expect(changedFields(ok, { ...ok, price: 200000, guest_reminders: false })).toEqual({ price: 200000, guest_reminders: false });
     expect(changedFields(ok, ok)).toEqual({});
+    // Пакеты (F5): по содержимому, целым массивом, id сохранённых — на месте.
+    const offer = { id: 1, title: '8 занятий', sessions: 8, price: 1200000, valid_days: 90 };
+    const withOffer = { ...ok, packages: [offer] };
+    expect(changedFields(withOffer, { ...withOffer, packages: [{ ...offer }] })).toEqual({});
+    expect(changedFields(withOffer, { ...withOffer, packages: [{ ...offer, price: 1000000 }, { title: ' Месяц ', sessions: 4, price: 500000 }] })).toEqual({
+      packages: [{ ...offer, price: 1000000 }, { title: 'Месяц', sessions: 4, price: 500000, valid_days: 90 }],
+    });
+    expect(changedFields(withOffer, { ...withOffer, packages: [] })).toEqual({ packages: [] });
   });
 
   it('pro_required — понятный текст', () => {

@@ -33,6 +33,10 @@ describe('makeBookingApi', () => {
     await api.slotsPost(3);
     await api.slotsPost(3, { days: 14, format: 'vk' });
     await api.updatePage(3, { price: 250000, currency: 'RUB', prepay: 'deposit', deposit: 50000, guest_reminders: false, hide_branding: true });
+    await api.book('abcdefghij', { start: '2026-10-20T07:00:00Z', guest_name: 'Аня', guest_email: 'a@b.ru', cc_email: 'mama@b.ru', package_id: 2, count: 2 });
+    await api.book('abcdefghij', { start: '2026-10-20T07:00:00Z', package_token: 'ptok' });
+    await api.book('abcdefghij', { start: '2026-10-20T07:00:00Z', package_token: 'ptok', package_id: 2, guest_name: 'Аня' });
+    await api.updatePage(3, { packages: [{ id: 1, title: '8 занятий', sessions: 8, price: 1200000, valid_days: 90 }] });
     expect(request.mock.calls).toEqual([
       ['booking.pageCreate', PAGE],
       ['booking.pageList', {}],
@@ -59,6 +63,11 @@ describe('makeBookingApi', () => {
       ['booking.slotsPost', { page_id: 3 }, 60_000],
       ['booking.slotsPost', { page_id: 3, days: 14, format: 'vk' }, 60_000],
       ['booking.pageUpdate', { page_id: 3, price: 250000, currency: 'RUB', prepay: 'deposit', deposit: 50000, guest_reminders: false, hide_branding: true }],
+      ['booking.book', { slug: 'abcdefghij', start: '2026-10-20T07:00:00Z', guest_name: 'Аня', guest_email: 'a@b.ru', cc_email: 'mama@b.ru', count: 2, package_id: 2 }, 60_000],
+      // По абонементу имя можно не передавать; package_id и package_token вместе не уходят.
+      ['booking.book', { slug: 'abcdefghij', start: '2026-10-20T07:00:00Z', package_token: 'ptok' }, 60_000],
+      ['booking.book', { slug: 'abcdefghij', start: '2026-10-20T07:00:00Z', guest_name: 'Аня', package_token: 'ptok' }, 60_000],
+      ['booking.pageUpdate', { page_id: 3, packages: [{ id: 1, title: '8 занятий', sessions: 8, price: 1200000, valid_days: 90 }] }],
     ]);
   });
 });

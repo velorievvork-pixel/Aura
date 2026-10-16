@@ -235,13 +235,17 @@ export function DataProvider({ children }: { children: ReactNode }) {
             loadTasks().catch(() => undefined);
             loadNotices().catch(() => undefined);
             break;
-          case 'notification.new':
+          case 'notification.new': {
             loadNotices().catch(() => undefined);
-            if ((event.payload as { kind?: string }).kind === 'confirmation.requested') loadConfirmations().catch(() => undefined);
+            const notice = event.payload as { kind?: string; title?: unknown };
+            if (notice.kind === 'confirmation.requested') loadConfirmations().catch(() => undefined);
+            // Абонементы (F5): покупка, оплата, «осталось мало занятий» — сразу всплывающей строкой.
+            if (notice.kind?.startsWith('package.') && typeof notice.title === 'string' && notice.title) notify(notice.title);
             break;
+          }
         }
       }),
-    [socket, loadChats, loadTasks, loadNotices, loadConfirmations],
+    [socket, loadChats, loadTasks, loadNotices, loadConfirmations, notify],
   );
 
   const contacts = useMemo<Contact[]>(() => {

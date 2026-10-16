@@ -3151,3 +3151,255 @@ button.dl-row:hover .dl-text b {
   align-items: center;
   gap: 12px;
 }
+
+/* ------------------------------------------------- Пакеты и абонементы (F5) */
+.offer-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.3fr) minmax(0, 0.9fr);
+  gap: 8px;
+}
+
+.offer-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.offer-field .input {
+  height: 38px;
+  width: 100%;
+}
+
+.pkg-bar {
+  height: 6px;
+  margin: 6px 0 4px;
+  border-radius: 3px;
+  background: var(--field);
+  overflow: hidden;
+}
+
+.pkg-bar > span {
+  display: block;
+  height: 100%;
+  min-width: 0;
+  border-radius: 3px;
+  background: var(--accent-fill);
+  transition: width 0.3s;
+}
+
+.pkg-left {
+  flex: none;
+  font-size: 17px;
+  font-weight: 750;
+}
+
+.pkg-left small {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+.pkg-kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pkg-kpis .card {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px;
+}
+
+.pkg-kpis b {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+.pkg-kpis small {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.pkg-meter {
+  display: grid;
+  gap: 6px;
+}
+
+.pkg-meter .big {
+  font-size: 44px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+.icon-btn.stepper {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--field);
+  color: var(--accent);
+}
+
+.icon-btn.stepper:disabled {
+  opacity: 0.4;
+}
+
+/* Выбор «разовое / пакет» у гостя: карточки-радио. */
+.plan-list {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-opt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 14px;
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  text-align: left;
+  box-shadow: inset 0 0 0 1.5px transparent;
+  transition: box-shadow 0.15s, background 0.15s;
+}
+
+.plan-opt:hover {
+  background: var(--surface-2);
+}
+
+.plan-opt[aria-checked='true'] {
+  box-shadow: inset 0 0 0 2px var(--accent-fill);
+}
+
+.plan-opt .radio {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px var(--ter);
+}
+
+.plan-opt[aria-checked='true'] .radio {
+  box-shadow: inset 0 0 0 6px var(--accent-fill);
+}
+
+.plan-opt .lab {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.plan-opt .lab b {
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.plan-opt .lab small {
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+
+.plan-opt .pr {
+  flex: none;
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  font-size: 16px;
+  font-weight: 750;
+}
+
+.pkg-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+}
+
+.pkg-banner b {
+  display: block;
+  font-size: 15.5px;
+  font-weight: 650;
+}
+
+.pkg-banner small {
+  display: block;
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+
+.pkg-hero {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 22px 16px 18px;
+  text-align: center;
+}
+
+.pkg-hero-text {
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+}
+
+.pkg-hero-text b {
+  font-size: 20px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.pkg-ring {
+  position: relative;
+  width: 168px;
+  height: 168px;
+}
+
+.pkg-ring circle {
+  fill: none;
+  stroke-width: 14;
+}
+
+.pkg-ring .track {
+  stroke: var(--field);
+}
+
+.pkg-ring .arc {
+  stroke: var(--accent-fill);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s;
+}
+
+.pkg-ring .center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+}
+
+.pkg-ring .center b {
+  font-size: 54px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.pkg-ring .center small {
+  margin-top: 2px;
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+a.list-row {
+  color: inherit;
+  text-decoration: none;
+}
+
+@media (max-width: 420px) {
+  .pkg-kpis b {
+    font-size: 22px;
+  }
+}

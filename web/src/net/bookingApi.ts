@@ -9,12 +9,14 @@
   reschedule / cancel / confirm (F1) / paymentClaim (F4) — по токену ссылки
   управления: сервер отдаёт его один раз, в ответе booking.book; в БД только хэш.
 
-  Пакеты и второй получатель (F5: package.*, cc_email, #/p/<токен>) — следующим
-  шагом: объект оплаты Payment уже допускает kind: 'package'.
+  Пакеты и второй получатель (F5): предложения пакетов — поле страницы `packages`,
+  гость покупает пакет при записи (package_id) или записывается по ссылке пакета
+  (package_token); копия напоминаний — cc_email. Методы package.* — в packageApi.ts.
 */
 import type { Plan } from './api';
 import type { SelfvoySocket } from './socket';
 import type { InviteSlot } from './inviteApi';
+import type { GuestPackage, PackageOffer } from './packageApi';
 
 export type BookingPageStatus = 'active' | 'paused' | 'archived';
 export type BookingStatus = 'active' | 'cancelled';
@@ -95,6 +97,8 @@ export interface BookingPage extends Partial<PriceFields> {
   guest_reminders?: boolean;
   /** Скрыть подпись «Запись через Selfvoy» (F3, Pro). */
   hide_branding?: boolean;
+  /** Предложения пакетов занятий (F5, до 5, Pro). Старый сервер — нет поля. */
+  packages?: PackageOffer[];
   /** Предстоящих встреч по этой странице. */
   upcoming: number;
   created_at: string;
@@ -125,6 +129,10 @@ export interface Booking {
   guest_name: string;
   guest_email: string;
   guest_comment: string;
+  /** Второй получатель извещений (F5): "" — нет. Владелец видит адрес целиком. */
+  cc_email?: string;
+  /** Пакет, по которому сделана запись (F5): 0 — без пакета. */
+  package_id?: number;
   status: BookingStatus;
   cancelled_by: CancelledBy;
   reschedules: number;
@@ -165,6 +173,8 @@ export interface GuestPage {
   payment_url?: string;
   pay_within_minutes?: number;
   policy?: Policy;
+  /** Предложения пакетов (F5): гость может купить пакет при записи. */
+  packages?: PackageOffer[];
 }
 
 /** Запись глазами гостя (ссылка управления #/m/<токен>). */
@@ -176,6 +186,10 @@ export interface GuestBooking {
   owner_timezone: string;
   duration_minutes: number;
   guest_name: string;
+  /** Копия извещений (F5), замаскирована: «m***@example.com»; "" — нет. */
+  cc_email?: string;
+  /** Запись по пакету занятий (F5). */
+  by_package?: boolean;
   status: BookingStatus;
   cancelled_by: CancelledBy;
   occurrences: Occurrence[];
@@ -219,16 +233,23 @@ export interface PageFields {
   hide_branding?: boolean;
 }
 
-/** Всё, что редактирует форма страницы: основные поля + цена и политика отмены. */
-export type PageForm = PageFields & PriceFields & { guest_reminders: boolean; hide_branding: boolean };
+/** Всё, что редактирует форма страницы: основные поля, цена и политика отмены, пакеты (F5). */
+export type PageForm = PageFields & PriceFields & { guest_reminders: boolean; hide_branding: boolean; packages: PackageOffer[] };
 
 export interface BookRequest {
   start: string;
-  guest_name: string;
+  /** С пакетом (package_token) можно не передавать — сервер возьмёт имя из пакета. */
+  guest_name?: string;
   guest_email?: string;
+  /** Копия напоминаний (F5): ≠ guest_email. */
+  cc_email?: string;
   comment?: string;
   /** Встреч в еженедельной серии (1 — одна встреча). */
   count?: number;
+  /** Купить пакет при записи: id предложения страницы (F5). */
+  package_id?: number;
+  /** Записаться по ссылке пакета (F5). Вместе с package_id нельзя. */
+  package_token?: string;
 }
 
 export interface Booked {
@@ -239,6 +260,12 @@ export interface Booked {
   url: string;
   /** Ссылка на бота для напоминаний или "" (F2). */
   telegram_url?: string;
+  /** Купили пакет (package_id): токен ссылки пакета — показывается один раз (F5). */
+  package_token?: string;
+  /** Готовая ссылка пакета #/p/<токен> или "" (нет SELFVOY_PUBLIC_URL). */
+  package_url?: string;
+  /** Пакет глазами гостя — при покупке и при записи по пакету. */
+  package?: GuestPackage;
 }
 
 export interface ReferralInfo {
@@ -296,10 +323,14 @@ export function makeBookingApi(socket: SelfvoySocket) {
     // -------- гость (публичные методы)
     get: (slug: string) => call<{ page: GuestPage }>('booking.get', { slug }, SLOTS_TIMEOUT_MS),
     book: (slug: string, request: BookRequest) => {
-      const payload: Record<string, unknown> = { slug, start: request.start, guest_name: request.guest_name };
+      const payload: Record<string, unknown> = { slug, start: request.start };
+      if (request.guest_name || !request.package_token) payload.guest_name = request.guest_name ?? '';
       if (request.guest_email) payload.guest_email = request.guest_email;
+      if (request.cc_email) payload.cc_email = request.cc_email;
       if (request.comment) payload.comment = request.comment;
       if (request.count && request.count > 1) payload.count = request.count;
+      if (request.package_token) payload.package_token = request.package_token;
+      else if (request.package_id) payload.package_id = request.package_id;
       return call<Booked>('booking.book', payload, SLOTS_TIMEOUT_MS);
     },
     manage: (token: string) => call<{ booking: GuestBooking }>('booking.manage', { token }, SLOTS_TIMEOUT_MS),

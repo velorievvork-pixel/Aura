@@ -1886,6 +1886,41 @@ public:
         return touched;
     }
 
+    // ------------------------------------------------------------- ics feed
+    std::string icsTokenHash(long long userId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT COALESCE(ics_token_hash, '') FROM users WHERE id = $1", {std::to_string(userId)},
+                     &result)) {
+            return "";
+        }
+        const std::string hash = PQntuples(result) > 0 ? value_(result, 0, 0) : std::string();
+        PQclear(result);
+        return hash;
+    }
+
+    DatabaseError setIcsTokenHash(long long userId, const std::string& tokenHash) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE users SET ics_token_hash = NULLIF($2, '') WHERE id = $1",
+                     {std::to_string(userId), tokenHash}, &result)) {
+            return DatabaseError::failure(lastError());
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched ? DatabaseError::success() : DatabaseError::failure("пользователь не найден");
+    }
+
+    long long findUserByIcsToken(const std::string& tokenHash) override {
+        Lease lease(pool_);
+        if (tokenHash.empty()) return 0;
+        PGresult* result = nullptr;
+        if (!execute("SELECT id FROM users WHERE ics_token_hash = $1", {tokenHash}, &result)) return 0;
+        const long long id = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return id;
+    }
+
 private:
     // ----------------------------------------------------------- rate_limits
     bool sharedRateLimits() const override { return true; }

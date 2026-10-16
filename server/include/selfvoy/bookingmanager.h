@@ -93,6 +93,12 @@ public:
     // одинаковый — по нему нельзя узнать, записан ли кто-то с этим адресом.
     Result resendLink(const Json& payload, const std::string& remoteAddr);
 
+    // Пост «свободные окна» (F6, владелец): {page_id, days? (1–14, 7), format?
+    // (telegram|vk|plain)} → {text, slots, url}. Окна — те же, что гость видит в
+    // booking.get. Реализация — slotspost.cpp (текст — selfvoy/slotspost.h).
+    static constexpr int kSlotsPostPerHour = 30;
+    Result slotsPost(long long ownerId, const Json& payload);
+
     // Токен ссылки управления → ключ поиска в БД (hex sha256); "" — заведомо неверный.
     static std::string tokenHash(const std::string& token);
     // Адрес страницы: 10 символов [a-z0-9].

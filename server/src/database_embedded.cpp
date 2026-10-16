@@ -1664,6 +1664,51 @@ public:
         return false;
     }
 
+    // ------------------------------------------------------------- ics feed
+    // Во встроенной БД — отдельная таблица ics_feeds {user_id, token_hash}
+    // (в PostgreSQL — колонка users.ics_token_hash).
+    std::string icsTokenHash(long long userId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("ics_feeds").items()) {
+            if (entry.getInt("user_id") == userId) return entry.getString("token_hash");
+        }
+        return "";
+    }
+
+    DatabaseError setIcsTokenHash(long long userId, const std::string& tokenHash) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto& users = table("users").items();
+        if (std::none_of(users.begin(), users.end(), [&](const Json& user) { return user.getInt("id") == userId; })) {
+            return DatabaseError::failure("пользователь не найден");
+        }
+        Json kept = Json::array();
+        for (const auto& entry : table("ics_feeds").items()) {
+            if (!tokenHash.empty() && entry.getString("token_hash") == tokenHash && entry.getInt("user_id") != userId) {
+                return DatabaseError::failure("токен уже занят");
+            }
+            if (entry.getInt("user_id") != userId) kept.push(entry);
+        }
+        if (!tokenHash.empty()) {
+            Json entry = Json::object();
+            entry.set("user_id", Json(userId));
+            entry.set("token_hash", Json(tokenHash));
+            entry.set("updated_at", Json(isoNow()));
+            kept.push(entry);
+        }
+        table("ics_feeds") = kept;
+        flush();
+        return DatabaseError::success();
+    }
+
+    long long findUserByIcsToken(const std::string& tokenHash) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (tokenHash.empty()) return 0;
+        for (const auto& entry : table("ics_feeds").items()) {
+            if (entry.getString("token_hash") == tokenHash) return entry.getInt("user_id");
+        }
+        return 0;
+    }
+
 private:
     // --------------------------------------------------------- booking_pages
     DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) override {

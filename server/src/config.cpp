@@ -134,6 +134,8 @@ Config Config::fromEnv() {
     // здесь — только чтобы устаревшее AURA_DB_POOL_SIZE попало в предупреждение.
     envOr("SELFVOY_DB_POOL_SIZE", "", legacy);
     while (!config.publicUrl.empty() && config.publicUrl.back() == '/') config.publicUrl.pop_back();
+    config.serverPublicUrl = envOr("SELFVOY_SERVER_PUBLIC_URL", "", legacy);
+    while (!config.serverPublicUrl.empty() && config.serverPublicUrl.back() == '/') config.serverPublicUrl.pop_back();
     return config;
 }
 
@@ -206,6 +208,12 @@ bool Config::validate(std::string& error, std::vector<std::string>& warnings) {
     }
     if (publicUrl.rfind("http://", 0) == 0 && !devMode) {
         warnings.push_back("SELFVOY_PUBLIC_URL без https: ссылки-приглашения уйдут гостям по открытому каналу");
+    }
+
+    if (!serverPublicUrl.empty() && serverPublicUrl.rfind("https://", 0) != 0 &&
+        serverPublicUrl.rfind("http://", 0) != 0) {
+        error = "SELFVOY_SERVER_PUBLIC_URL: нужен внешний адрес сервера вида https://api.example.com";
+        return false;
     }
 
     if (resetTtlSeconds <= 0 || resetTtlSeconds > 3600) {

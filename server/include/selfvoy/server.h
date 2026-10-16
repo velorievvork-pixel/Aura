@@ -24,6 +24,7 @@
 #include "selfvoy/toolmanager.h"
 #include "selfvoy/invitemanager.h"
 #include "selfvoy/bookingmanager.h"
+#include "selfvoy/calendarfeed.h"
 #include "selfvoy/referralmanager.h"
 #include "selfvoy/schedulelock.h"
 
@@ -64,6 +65,7 @@ public:
     NotificationsManager& notifications() { return *notifications_; }
     ConnectionManager& connections() { return connections_; }
     AdminManager& admin() { return *admin_; }
+    CalendarFeed& calendarFeed() { return *calendarFeed_; }
 
     // Один проход планировщика напоминаний (публично для тестов).
     // userId = 0 — все пользователи; иначе только напоминания этого пользователя.
@@ -107,6 +109,7 @@ private:
     std::unique_ptr<InviteManager> invites_;
     std::unique_ptr<ReferralManager> referrals_;
     std::unique_ptr<BookingManager> bookings_;
+    std::unique_ptr<CalendarFeed> calendarFeed_;  // ICS-подписка (F6)
     std::unique_ptr<Listener> listener_;
     ConnectionManager connections_;
 

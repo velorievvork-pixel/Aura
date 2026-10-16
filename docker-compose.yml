@@ -99,6 +99,7 @@ services:
       SELFVOY_ADMIN_EMAILS: ${SELFVOY_ADMIN_EMAILS:-}
       SELFVOY_TRUSTED_PROXIES: ${SELFVOY_TRUSTED_PROXIES:-}
       SELFVOY_PUBLIC_URL: ${SELFVOY_PUBLIC_URL:-}
+      SELFVOY_SERVER_PUBLIC_URL: ${SELFVOY_SERVER_PUBLIC_URL:-}
     healthcheck:
       # Порт 9000 принимает соединения (в образе есть bash, curl — нет).
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"]

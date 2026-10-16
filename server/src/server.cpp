@@ -162,6 +162,7 @@ bool Server::start(std::string& error) {
                                                scheduleLock_.get());
     bookings_ = std::make_unique<BookingManager>(*database_, *memory_, notifications_.get(), *referrals_,
                                                  *scheduleLock_, config_);
+    calendarFeed_ = std::make_unique<CalendarFeed>(*database_, config_);
     admin_->bootstrapAll();
 
     registerHandlers();
@@ -303,9 +304,26 @@ bool Server::revalidate(const std::shared_ptr<Session>& session) {
 }
 
 void Server::handleConnection(std::shared_ptr<Session> session) {
+    // Обычные HTTP-запросы на порт WebSocket: проверка живости и ICS-подписка (F6).
+    session->setHttpHandler([this](const std::string& method, const std::string& target, const std::string& ip) {
+        if (target == "/healthz" || target.rfind("/healthz?", 0) == 0) {
+            if (method != "GET") {
+                return httpResponse(405, "Method Not Allowed", "text/plain; charset=utf-8", "method not allowed\n",
+                                    "Cache-Control: no-store\r\nAllow: GET\r\n");
+            }
+            // Только факт работы: адреса, статистика и бэкенды посторонним не нужны.
+            return httpResponse(200, "OK", "application/json", "{\"status\":\"ok\"}",
+                                "Cache-Control: no-store\r\n");
+        }
+        return calendarFeed_ ? calendarFeed_->serveHttp(method, target, ip) : std::string();
+    });
     std::string error;
     if (!session->performHandshake(error)) {
-        SELFVOY_LOG(log::Level::Warn, "server") << "рукопожатие не удалось: " << error;
+        if (session->servedHttp()) {
+            SELFVOY_LOG(log::Level::Debug, "server") << "HTTP-запрос обслужен: " << error;
+        } else {
+            SELFVOY_LOG(log::Level::Warn, "server") << "рукопожатие не удалось: " << error;
+        }
         return;
     }
 
@@ -972,6 +990,28 @@ void Server::registerHandlers() {
     registerHandler("booking.resendLink", [this, bookingReply](std::shared_ptr<Session> session,
                                                                const protocol::Request& request) {
         return bookingReply(request, bookings_->resendLink(request.payload, session->remoteAddr()));
+    });
+
+    // ---------------------------------------------------- F6: окна и ICS
+    registerHandler("booking.slotsPost", [this, bookingReply](std::shared_ptr<Session> session,
+                                                              const protocol::Request& request) {
+        return bookingReply(request, bookings_->slotsPost(session->userId(), request.payload));
+    });
+    const auto feedReply = [](const protocol::Request& request, const CalendarFeed::Result& result) {
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    };
+    registerHandler("calendar.feed", [this, feedReply](std::shared_ptr<Session> session,
+                                                       const protocol::Request& request) {
+        return feedReply(request, calendarFeed_->feed(session->userId()));
+    });
+    registerHandler("calendar.feedReset", [this, feedReply](std::shared_ptr<Session> session,
+                                                            const protocol::Request& request) {
+        return feedReply(request, calendarFeed_->reset(session->userId()));
+    });
+    registerHandler("calendar.feedDisable", [this, feedReply](std::shared_ptr<Session> session,
+                                                              const protocol::Request& request) {
+        return feedReply(request, calendarFeed_->disable(session->userId()));
     });
 
     // ----------------------------------------------------------- referral

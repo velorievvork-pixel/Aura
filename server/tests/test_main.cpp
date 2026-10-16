@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "selfvoy/authmanager.h"
+#include "selfvoy/calendarfeed.h"
 #include "selfvoy/crypto.h"
 #include "selfvoy/databasemanager.h"
 #include "selfvoy/idatabase.h"
@@ -40,6 +41,7 @@
 #include "selfvoy/protocol.h"
 #include "selfvoy/schedulelock.h"
 #include "selfvoy/server.h"
+#include "selfvoy/slotspost.h"
 #include "selfvoy/smtp.h"
 #include "selfvoy/toolmanager.h"
 #include "selfvoy/totp.h"
@@ -4611,4 +4613,397 @@ TEST(referral_register_and_verify) {
     CHECK_EQ(fixture.call(other, "auth.register", payload).getString("type"), std::string("ok"));
     CHECK_EQ(integration::payloadOf(fixture.call(host, "referral.get")).getInt("joined"), 1LL);
     CHECK_EQ(fixture.call(other, "referral.get").getString("code"), std::string("unauthorized"));
+}
+
+// ------------------------------------------- F6: пост «свободные окна» и ICS-подписка
+namespace feed_test {
+
+// Склеить сложенные строки RFC 5545 обратно (CRLF + пробел — продолжение).
+std::string unfold(const std::string& text) {
+    std::string out;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text.compare(i, 3, "\r\n ") == 0) {
+            i += 2;
+            continue;
+        }
+        out.push_back(text[i]);
+    }
+    return out;
+}
+
+// Каждая физическая строка не длиннее 75 октетов, заканчивается CRLF и не начинается
+// с продолжающего байта UTF-8 (символ не разорван).
+bool foldedWell(const std::string& text) {
+    if (text.size() < 2 || text.compare(text.size() - 2, 2, "\r\n") != 0) return false;
+    std::size_t start = 0;
+    while (start < text.size()) {
+        const std::size_t end = text.find("\r\n", start);
+        if (end == std::string::npos) return false;
+        if (end - start > 75) return false;
+        if (text.find('\n', start) < end || text.find('\r', start) < end) return false;
+        std::size_t first = start;
+        if (start != 0 && first < end && text[first] == ' ') ++first;
+        if (first < end && (static_cast<unsigned char>(text[first]) & 0xC0) == 0x80) return false;
+        start = end + 2;
+    }
+    return true;
+}
+
+// Слот AI с местным временем владельца (UTC+3, как Europe/Moscow).
+Json localSlot(std::time_t start, int minutes) {
+    Json json = invite_test::slot(start, minutes);
+    const std::string local = selfvoy::isoUtc(start + 3 * 3600).substr(0, 16);
+    json.set("day", Json(local.substr(0, 10)));
+    json.set("local", Json(local));
+    return json;
+}
+
+std::string httpGet(Fixture& fixture, const std::string& path, selfvoy::net::HttpResponse& response,
+                    const std::string& method = "GET") {
+    std::string error;
+    response = selfvoy::net::httpRequest(method, "http://127.0.0.1:" + std::to_string(fixture.server->port()) + path,
+                                         {}, "", 3000, error);
+    return error;
+}
+
+}  // namespace feed_test
+
+TEST(ics_escape_fold_and_stamp) {
+    using selfvoy::ics::escapeText;
+    using selfvoy::ics::foldLine;
+    CHECK_EQ(escapeText("a\\b;c,d"), std::string("a\\\\b\\;c\\,d"));
+    CHECK_EQ(escapeText("строка 1\nстрока 2\r\nстрока 3\rконец"),
+             std::string("строка 1\\nстрока 2\\nстрока 3\\nконец"));
+    CHECK_EQ(escapeText(std::string("x\x01y\x7Fz\tw")), std::string("xyz\tw"));
+    CHECK_EQ(escapeText("Иван: «привет»"), std::string("Иван: «привет»"));  // «:» в TEXT не экранируется
+
+    CHECK_EQ(foldLine("SUMMARY:коротко"), std::string("SUMMARY:коротко\r\n"));
+    CHECK_EQ(foldLine(""), std::string("\r\n"));
+    const std::string ascii = "DESCRIPTION:" + std::string(200, 'a');
+    const std::string foldedAscii = foldLine(ascii);
+    CHECK(feed_test::foldedWell(foldedAscii));
+    CHECK_EQ(foldedAscii.substr(0, 77), ascii.substr(0, 75) + "\r\n");
+    CHECK_EQ(foldedAscii.substr(77, 1), std::string(" "));
+    CHECK_EQ(feed_test::unfold(foldedAscii), ascii + "\r\n");
+    // Кириллица (2 октета), «€» (3), эмодзи (4) и сдвиг на нечётную позицию: граница
+    // строки не попадает внутрь символа, склейка возвращает исходную строку.
+    for (const std::string& unit : {std::string("я"), std::string("€"), std::string("\xF0\x9F\x99\x82")}) {
+        for (int shift = 0; shift < 4; ++shift) {
+            std::string line = "SUMMARY:" + std::string(static_cast<std::size_t>(shift), 'x');
+            for (int i = 0; i < 60; ++i) line += unit;
+            const std::string folded = foldLine(line);
+            CHECK(feed_test::foldedWell(folded));
+            CHECK_EQ(feed_test::unfold(folded), line + "\r\n");
+            CHECK(folded.find("\r\n ") != std::string::npos);
+        }
+    }
+    CHECK_EQ(selfvoy::ics::utcStamp(0), std::string("19700101T000000Z"));
+    std::time_t moment = 0;
+    CHECK(selfvoy::parseIsoUtc("2026-10-21T07:30:05Z", moment));
+    CHECK_EQ(selfvoy::ics::utcStamp(moment), std::string("20261021T073005Z"));
+    CHECK_EQ(selfvoy::CalendarFeed::tokenHashFromPath("/ics/short.ics"), std::string());
+    CHECK_EQ(selfvoy::CalendarFeed::tokenHashFromPath("/ics/" + std::string(43, '/') + ".ics"), std::string());
+    CHECK_EQ(selfvoy::CalendarFeed::tokenHashFromPath("/ics/" + std::string(43, 'A') + ".ics").size(), std::size_t(64));
+    CHECK_EQ(selfvoy::CalendarFeed::tokenHashFromPath("/ics/" + std::string(43, 'A') + ".ics?x=1"),
+             selfvoy::CalendarFeed::tokenHashFromPath("/ics/" + std::string(43, 'A') + ".ics"));
+}
+
+TEST(slotspost_render_text) {
+    namespace sp = selfvoy::slotspost;
+    CHECK_EQ(sp::dayLabel("2026-10-19"), std::string("Пн, 19 окт"));
+    CHECK_EQ(sp::dayLabel("2026-12-31"), std::string("Чт, 31 дек"));
+    CHECK_EQ(sp::dayLabel("2026-13-01"), std::string());
+    CHECK_EQ(sp::durationLabel(50), std::string("50 мин"));
+    CHECK_EQ(sp::durationLabel(60), std::string("1 ч"));
+    CHECK_EQ(sp::durationLabel(90), std::string("1 ч 30 мин"));
+    CHECK_EQ(sp::moneyLabel(250000, "RUB"), std::string("2 500 ₽"));
+    CHECK_EQ(sp::moneyLabel(123456789, "USD"), std::string("1 234 567,89 $"));
+    CHECK_EQ(sp::moneyLabel(50000, "EUR"), std::string("500 €"));
+    CHECK_EQ(sp::moneyLabel(0, "RUB"), std::string());
+
+    sp::Input input;
+    input.title = "Консультация";
+    input.durationMinutes = 50;
+    input.price = 250000;
+    input.locals = {"2026-10-19T10:00", "2026-10-19T11:30", "2026-10-19T15:00", "2026-10-20T12:00"};
+    input.url = "https://selfvoy.example.com/#/b/abcdefghij";
+    CHECK_EQ(sp::render(input), std::string("Свободные окна: Консультация (50 мин, 2 500 ₽)\n"
+                                            "\n"
+                                            "Пн, 19 окт: 10:00, 11:30, 15:00\n"
+                                            "Вт, 20 окт: 12:00\n"
+                                            "\n"
+                                            "Записаться: https://selfvoy.example.com/#/b/abcdefghij"));
+    input.price = 0;  // цена не задана — в заголовке только длительность
+    input.format = "vk";
+    CHECK_EQ(sp::render(input), std::string("Свободные окна: Консультация (50 мин)\n"
+                                            "\n"
+                                            "Пн, 19 окт: 10:00, 11:30, 15:00\n"
+                                            "Вт, 20 окт: 12:00\n"
+                                            "\n"
+                                            "Запись онлайн: https://selfvoy.example.com/#/b/abcdefghij"));
+    input.format = "plain";
+    CHECK_EQ(sp::render(input), std::string("Свободные окна: Консультация (50 мин)\n"
+                                            "Пн, 19 окт: 10:00, 11:30, 15:00\n"
+                                            "Вт, 20 окт: 12:00\n"
+                                            "Записаться: https://selfvoy.example.com/#/b/abcdefghij"));
+    // Больше 8 времён в дне — «и ещё N».
+    input.format = "telegram";
+    input.locals.clear();
+    for (int hour = 8; hour < 19; ++hour) {
+        input.locals.push_back("2026-10-19T" + std::to_string(hour / 10) + std::to_string(hour % 10) + ":00");
+    }
+    const std::string many = sp::render(input);
+    CHECK(many.find("Пн, 19 окт: 08:00, 09:00, 10:00, 11:00, 12:00, 13:00, 14:00, 15:00 и ещё 3\n") !=
+          std::string::npos);
+    // Окон нет.
+    input.locals.clear();
+    CHECK_EQ(sp::render(input), std::string("Свободные окна: Консультация (50 мин)\n"
+                                            "\n"
+                                            "На ближайшие 7 дней свободных окон нет\n"
+                                            "\n"
+                                            "Записаться: https://selfvoy.example.com/#/b/abcdefghij"));
+    input.days = 3;
+    CHECK(sp::render(input).find("На ближайшие 3 дня свободных окон нет") != std::string::npos);
+    input.days = 1;
+    CHECK(sp::render(input).find("На ближайший день свободных окон нет") != std::string::npos);
+    input.days = 11;
+    input.url.clear();
+    CHECK_EQ(sp::render(input), std::string("Свободные окна: Консультация (50 мин)\n\n"
+                                            "На ближайшие 11 дней свободных окон нет"));
+}
+
+TEST(booking_slots_post_flow) {
+    using namespace booking_test;
+    const std::time_t first = future(26);
+    const std::time_t second = first + 2 * 3600;
+    const std::time_t far = first + 10 * 86400;  // за пределами days=7
+    FakeAi ai([&] {
+        Json slots = Json::array();
+        slots.push(feed_test::localSlot(first, 60));
+        slots.push(feed_test::localSlot(second, 60));
+        slots.push(feed_test::localSlot(far, 60));
+        Json body = Json::object();
+        body.set("slots", slots);
+        return body.dump();
+    });
+    Fixture fixture;
+    invite_test::useAi(fixture, ai.url(), "https://selfvoy.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "post-owner");
+    fixture.registerUser(owner, "post@example.com", "Ольга");
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pagePayload("Консультация")))
+                          .get("page");
+    const long long pageId = page.getInt("id");
+    const std::string slug = page.getString("slug");
+
+    Json request = Json::object();
+    request.set("page_id", Json(pageId));
+    const Json posted = fixture.call(owner, "booking.slotsPost", request);
+    CHECK_EQ(posted.getString("type"), std::string("ok"));
+    const Json post = integration::payloadOf(posted);
+    const std::string text = post.getString("text");
+    CHECK_EQ(post.getInt("slots"), 2LL);
+    CHECK_EQ(post.getString("url"), "https://selfvoy.example.com/#/b/" + slug);
+    CHECK(text.rfind("Свободные окна: Консультация (1 ч)\n\n", 0) == 0);
+    CHECK(text.find("Записаться: https://selfvoy.example.com/#/b/" + slug) != std::string::npos);
+    const std::string firstLocal = selfvoy::isoUtc(first + 3 * 3600);
+    const std::string secondLocal = selfvoy::isoUtc(second + 3 * 3600);
+    CHECK(text.find(selfvoy::slotspost::dayLabel(firstLocal.substr(0, 10)) + ": " + firstLocal.substr(11, 5)) !=
+          std::string::npos);
+    CHECK(text.find(selfvoy::slotspost::dayLabel(selfvoy::isoUtc(far + 3 * 3600).substr(0, 10))) ==
+          std::string::npos);
+
+    // Занятое гостем окно в пост не попадает (та же логика, что booking.get).
+    auto guest = sockets.open(fixture, "post-guest");
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, second, "Пётр")).getString("type"),
+             std::string("ok"));
+    const Json afterBook = integration::payloadOf(fixture.call(owner, "booking.slotsPost", request));
+    CHECK_EQ(afterBook.getInt("slots"), 1LL);
+    CHECK(afterBook.getString("text").find(secondLocal.substr(11, 5)) == std::string::npos ||
+          secondLocal.substr(11, 5) == firstLocal.substr(11, 5));
+    request.set("days", Json(14LL));
+    request.set("format", Json("plain"));
+    const Json wide = integration::payloadOf(fixture.call(owner, "booking.slotsPost", request));
+    CHECK_EQ(wide.getInt("slots"), 2LL);
+    CHECK(wide.getString("text").find("\n\n") == std::string::npos);
+
+    // Проверка ввода и владельца.
+    Json bad = request;
+    bad.set("days", Json(15LL));
+    CHECK_EQ(fixture.call(owner, "booking.slotsPost", bad).getString("code"), std::string("bad_request"));
+    bad.set("days", Json(2.5));
+    CHECK_EQ(fixture.call(owner, "booking.slotsPost", bad).getString("code"), std::string("bad_request"));
+    bad = request;
+    bad.set("format", Json("html"));
+    CHECK_EQ(fixture.call(owner, "booking.slotsPost", bad).getString("code"), std::string("bad_request"));
+    CHECK_EQ(fixture.call(guest, "booking.slotsPost", request).getString("code"), std::string("unauthorized"));
+    auto stranger = sockets.open(fixture, "post-stranger");
+    fixture.registerUser(stranger, "stranger@example.com", "Чужой");
+    CHECK_EQ(fixture.call(stranger, "booking.slotsPost", request).getString("code"), std::string("not_found"));
+
+    // Лимит — 30 постов в час на владельца.
+    int limitedAt = 0;
+    for (int i = 0; i < 40 && limitedAt == 0; ++i) {
+        if (fixture.call(owner, "booking.slotsPost", request).getString("code") == "forbidden") limitedAt = i + 1;
+    }
+    CHECK(limitedAt > 0 && limitedAt <= selfvoy::BookingManager::kSlotsPostPerHour);
+}
+
+TEST(booking_slots_post_ai_unavailable) {
+    using namespace booking_test;
+    Fixture fixture;  // AI-сервис недоступен (порт 1)
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "post-owner");
+    fixture.registerUser(owner, "post2@example.com", "Ольга");
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pagePayload("Созвон")))
+                          .get("page");
+    Json request = Json::object();
+    request.set("page_id", Json(page.getInt("id")));
+    CHECK_EQ(fixture.call(owner, "booking.slotsPost", request).getString("code"), std::string("upstream_error"));
+}
+
+TEST(calendar_feed_ics_over_http) {
+    using namespace booking_test;
+    const std::time_t first = future(26);
+    FakeAi ai([&] {
+        Json slots = Json::array();
+        slots.push(feed_test::localSlot(first, 60));
+        Json body = Json::object();
+        body.set("slots", slots);
+        return body.dump();
+    });
+    Fixture fixture;
+    fixture.config.serverPublicUrl = "https://api.example.com";
+    invite_test::useAi(fixture, ai.url(), "https://selfvoy.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "feed-owner");
+    fixture.registerUser(owner, "feed@example.com", "Ольга");
+    const long long ownerId = fixture.server->database().db().findUserByEmail("feed@example.com")->id;
+    const std::string slug =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", pagePayload("Разбор; проекта, v2")))
+            .get("page")
+            .getString("slug");
+    auto guest = sockets.open(fixture, "feed-guest");
+    Json book = bookPayload(slug, first, "Пётр");
+    book.set("comment", Json("Про стартап, деньги; планы\nи команду"));
+    const Json booked = fixture.call(guest, "booking.book", book);
+    CHECK_EQ(booked.getString("type"), std::string("ok"));
+    const auto ownBookings = fixture.server->database().db().listBookings(ownerId, 0, true, 10);
+    CHECK_EQ(ownBookings.size(), std::size_t(1));
+    const long long bookingId = ownBookings.empty() ? 0 : ownBookings.front().id;
+
+    // Принятое приглашение тоже попадает в календарь, открытое — нет.
+    selfvoy::InviteRecord invite;
+    invite.ownerId = ownerId;
+    invite.tokenHash = std::string(64, 'c');
+    invite.topic = "Созвон";
+    invite.expiresAt = selfvoy::isoUtc(std::time(nullptr) + 86400);
+    long long inviteId = 0;
+    CHECK(fixture.server->database().db().createInvite(invite, inviteId).ok);
+    selfvoy::InviteRecord response;
+    response.guestName = "Анна";
+    response.chosen = Json::object();
+    response.chosen.set("start", Json(selfvoy::isoUtc(first + 86400)));
+    response.chosen.set("end", Json(selfvoy::isoUtc(first + 86400 + 1800)));
+    CHECK(fixture.server->database().db().closeInvite(inviteId, "accepted", response));
+    invite.tokenHash = std::string(64, 'd');
+    long long openId = 0;
+    CHECK(fixture.server->database().db().createInvite(invite, openId).ok);
+
+    // До первой ссылки подписка выключена.
+    Json feed = integration::payloadOf(fixture.call(owner, "calendar.feed"));
+    CHECK(!feed.getBool("enabled", true));
+    CHECK_EQ(feed.getString("path"), std::string());
+    CHECK_EQ(fixture.call(guest, "calendar.feed").getString("code"), std::string("unauthorized"));
+
+    const Json reset = integration::payloadOf(fixture.call(owner, "calendar.feedReset"));
+    CHECK(reset.getBool("enabled"));
+    const std::string path = reset.getString("path");
+    CHECK_EQ(path.size(), std::string("/ics/").size() + 43 + 4);
+    CHECK(path.rfind("/ics/", 0) == 0);
+    CHECK_EQ(reset.getString("url"), "https://api.example.com" + path);
+    // В БД — только хэш токена; повторный calendar.feed ссылку не показывает.
+    const std::string token = path.substr(5, 43);
+    CHECK_EQ(fixture.server->database().db().icsTokenHash(ownerId),
+             selfvoy::crypto::toHex(selfvoy::crypto::sha256(token)));
+    feed = integration::payloadOf(fixture.call(owner, "calendar.feed"));
+    CHECK(feed.getBool("enabled"));
+    CHECK_EQ(feed.getString("url"), std::string());
+    CHECK_EQ(feed.getString("path"), std::string());
+
+    selfvoy::net::HttpResponse http;
+    CHECK_EQ(feed_test::httpGet(fixture, path, http), std::string());
+    CHECK_EQ(http.status, 200);
+    CHECK_EQ(http.header("content-type"), std::string("text/calendar; charset=utf-8"));
+    CHECK_EQ(http.header("cache-control"), std::string("no-store"));
+    const std::string body = http.body;
+    CHECK(body.rfind("BEGIN:VCALENDAR\r\nVERSION:2.0\r\n", 0) == 0);
+    CHECK(body.find("X-WR-CALNAME:Selfvoy\r\n") != std::string::npos);
+    CHECK(body.size() >= 15 && body.compare(body.size() - 15, 15, "END:VCALENDAR\r\n") == 0);
+    CHECK(feed_test::foldedWell(body));
+    const std::string ics = feed_test::unfold(body);
+    CHECK(ics.find("UID:booking-" + std::to_string(bookingId) + "-" + std::to_string(first) + "@selfvoy\r\n") !=
+          std::string::npos);
+    CHECK(ics.find("DTSTART:" + selfvoy::ics::utcStamp(first) + "\r\n") != std::string::npos);
+    CHECK(ics.find("DTEND:" + selfvoy::ics::utcStamp(first + 3600) + "\r\n") != std::string::npos);
+    CHECK(ics.find("SUMMARY:Разбор\\; проекта\\, v2: Пётр\r\n") != std::string::npos);
+    CHECK(ics.find("DESCRIPTION:Про стартап\\, деньги\\; планы\\nи команду\r\n") != std::string::npos);
+    CHECK(ics.find("STATUS:CONFIRMED\r\n") != std::string::npos);
+    CHECK(ics.find("DTSTAMP:") != std::string::npos);
+    CHECK(ics.find("UID:invite-" + std::to_string(inviteId) + "-" + std::to_string(first + 86400) + "@selfvoy") !=
+          std::string::npos);
+    CHECK(ics.find("SUMMARY:Созвон: Анна\r\n") != std::string::npos);
+    CHECK(ics.find("invite-" + std::to_string(openId) + "-") == std::string::npos);
+    CHECK(ics.find("feed@example.com") == std::string::npos);
+
+    // Отменённая встреча из календаря пропадает.
+    Json cancel = Json::object();
+    cancel.set("booking_id", Json(bookingId));
+    CHECK_EQ(fixture.call(owner, "booking.ownerCancel", cancel).getString("type"), std::string("ok"));
+    CHECK(fixture.server->calendarFeed().render(ownerId, std::time(nullptr)).find("UID:booking-") ==
+          std::string::npos);
+
+    // Только GET; неизвестный и старый токен — 404; /healthz отвечает.
+    CHECK_EQ(feed_test::httpGet(fixture, path, http, "POST"), std::string());
+    CHECK_EQ(http.status, 405);
+    CHECK_EQ(http.header("allow"), std::string("GET"));
+    CHECK_EQ(feed_test::httpGet(fixture, "/ics/" + std::string(43, 'A') + ".ics", http), std::string());
+    CHECK_EQ(http.status, 404);
+    CHECK_EQ(http.header("cache-control"), std::string("no-store"));
+    CHECK_EQ(feed_test::httpGet(fixture, "/ics/../../etc/passwd", http), std::string());
+    CHECK_EQ(http.status, 404);
+    const std::string newPath = integration::payloadOf(fixture.call(owner, "calendar.feedReset")).getString("path");
+    CHECK(newPath != path);
+    CHECK_EQ(feed_test::httpGet(fixture, path, http), std::string());
+    CHECK_EQ(http.status, 404);
+    CHECK_EQ(feed_test::httpGet(fixture, newPath, http), std::string());
+    CHECK_EQ(http.status, 200);
+    CHECK_EQ(feed_test::httpGet(fixture, "/healthz", http), std::string());
+    CHECK_EQ(http.status, 200);
+    CHECK_EQ(http.body, std::string("{\"status\":\"ok\"}"));
+    feed_test::httpGet(fixture, "/other", http);
+    CHECK_EQ(http.status, 400);  // прочие HTTP-запросы — как раньше
+
+    // Заблокированный владелец — 404; выключенная подписка — 404.
+    CHECK(fixture.server->database().db().setUserActive(ownerId, false).ok);
+    CHECK_EQ(feed_test::httpGet(fixture, newPath, http), std::string());
+    CHECK_EQ(http.status, 404);
+    CHECK(fixture.server->database().db().setUserActive(ownerId, true).ok);
+    const Json disabled = integration::payloadOf(fixture.call(owner, "calendar.feedDisable"));
+    CHECK(!disabled.getBool("enabled", true));
+    CHECK(!integration::payloadOf(fixture.call(owner, "calendar.feed")).getBool("enabled", true));
+    CHECK_EQ(feed_test::httpGet(fixture, newPath, http), std::string());
+    CHECK_EQ(http.status, 404);
+
+    // Лимит по IP: 60 запросов в минуту, дальше 429 (до поиска токена).
+    auto& calendar = fixture.server->calendarFeed();
+    const std::string probe = "/ics/" + std::string(43, 'B') + ".ics";
+    std::string last;
+    for (int i = 0; i < selfvoy::CalendarFeed::kFetchPerMinute; ++i) last = calendar.serveHttp("GET", probe, "203.0.113.9");
+    CHECK(last.rfind("HTTP/1.1 404", 0) == 0);
+    last = calendar.serveHttp("GET", probe, "203.0.113.9");
+    CHECK(last.rfind("HTTP/1.1 429", 0) == 0);
+    CHECK(last.find("Cache-Control: no-store\r\n") != std::string::npos);
+    CHECK(calendar.serveHttp("GET", probe, "203.0.113.10").rfind("HTTP/1.1 404", 0) == 0);
+    CHECK_EQ(calendar.serveHttp("GET", "/healthz", "203.0.113.9"), std::string());  // не маршрут ICS
 }

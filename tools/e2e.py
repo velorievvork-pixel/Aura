@@ -553,6 +553,127 @@ async def f6_slots_post_and_ics(anna: "Client", anya: "Client") -> None:
     await anna.call("booking.pageDelete", {"page_id": page_id})
 
 
+async def s1b_reminders_confirm_branding(anna: "Client", telegram_mock: "TelegramMock | None") -> None:
+    """F1 + F3: напоминания гостю в виде владельца, booking.confirm, «Приду» из Telegram, подпись Selfvoy."""
+    print("\n3b+. Напоминания гостю, подтверждение «Приду» и подпись Selfvoy (F1, F3)")
+
+    def at(value: str) -> float:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (AttributeError, ValueError):
+            return 0.0
+
+    created = await anna.call("booking.pageCreate", {
+        "title": f"Напоминания {RUN}", "duration_minutes": 30, "days_ahead": 14, "max_per_day": 4,
+        "notice_hours": 1,
+    })
+    page = created.get("payload", {}).get("page", {})
+    page_id, slug = page.get("id", 0), page.get("slug", "")
+    check(page.get("guest_reminders") is True and page.get("hide_branding") is False,
+          "booking.pageCreate: guest_reminders=true, hide_branding=false по умолчанию", page)
+    ref_code = (await anna.call("referral.get")).get("payload", {}).get("code", "")
+
+    guest = Client("s1b-guest")
+    await guest.connect()
+    view = (await guest.call("booking.get", {"slug": slug}, timeout=40)).get("payload", {}).get("page", {})
+    branding = view.get("branding", {})
+    check(branding.get("show") is True and branding.get("text") == "Запись через Selfvoy"
+          and branding.get("url") == f"https://selfvoy.example.com/#/signup?ref={ref_code}&src=booking"
+          and view.get("ref") == ref_code, "booking.get: подпись Selfvoy со ссылкой регистрации", branding)
+    # Встречи не раньше чем через 26 ч — у них оба напоминания (за сутки и за 2 часа).
+    far = [s.get("start", "") for s in view.get("slots", []) if at(s.get("start", "")) >= time.time() + 26 * 3600]
+    check(len(far) >= 2, "есть свободное время дальше суток", view.get("slots", [])[:3])
+    if len(far) < 2:
+        await guest.close()
+        return
+    booked = await guest.call("booking.book", {"slug": slug, "start": far[0], "guest_name": "Роза",
+                                               "guest_email": f"roza.{RUN}@example.com"}, timeout=40)
+    token = booked.get("payload", {}).get("token", "")
+    check(booked.get("type") == "ok" and bool(token), "запись на время через сутки", booked)
+    owned = (await anna.call("booking.list", {"page_id": page_id})).get("payload", {}).get("bookings", [])
+    reminders = owned[0].get("reminders", []) if owned else []
+    kinds = sorted(r.get("kind") for r in reminders)
+    due = {r.get("kind"): at(r.get("due_at", "")) - at(r.get("start", "")) for r in reminders}
+    check(kinds == ["24h", "2h"] and due.get("24h") == -86400 and due.get("2h") == -7200
+          and all(r.get("sent_at") == "" and at(r.get("start", "")) == at(far[0]) for r in reminders),
+          "владелец видит запланированные напоминания за сутки и за 2 часа", reminders)
+    managed = (await guest.call("booking.manage", {"token": token}, timeout=40)).get("payload", {}).get("booking", {})
+    check(managed.get("branding", {}).get("show") is True
+          and managed.get("occurrences", [{}])[0].get("confirmed_at") == "",
+          "booking.manage: подпись и встреча ещё не подтверждена", managed)
+
+    # booking.confirm: confirmed_at у встречи; уведомление booking.confirmed — один раз.
+    def confirmed_events() -> int:
+        return len([e for e in anna.events_of("notification.new")
+                    if e.get("payload", {}).get("kind") == "booking.confirmed"])
+
+    before = confirmed_events()
+    first = await guest.call("booking.confirm", {"token": token})
+    confirmed_at = first.get("payload", {}).get("booking", {}).get("occurrences", [{}])[0].get("confirmed_at", "")
+    check(first.get("type") == "ok" and bool(confirmed_at), "booking.confirm: встреча подтверждена", first)
+    again = await guest.call("booking.confirm", {"token": token, "occurrence": far[0]})
+    check(again.get("payload", {}).get("booking", {}).get("occurrences", [{}])[0].get("confirmed_at") == confirmed_at,
+          "повторный booking.confirm ничего не меняет", again)
+    await asyncio.sleep(0.5)
+    check(confirmed_events() - before == 1, "владелец получил booking.confirmed ровно один раз",
+          confirmed_events() - before)
+    owned = (await anna.call("booking.list", {"page_id": page_id})).get("payload", {}).get("bookings", [])
+    check(bool(owned) and owned[0].get("occurrences", [{}])[0].get("confirmed_at") == confirmed_at,
+          "booking.list: confirmed_at у встречи", owned[:1])
+    wrong = await guest.call("booking.confirm", {"token": "A" * 43})
+    check(wrong.get("code") == "not_found", "booking.confirm с чужим токеном — not_found", wrong)
+
+    # «Приду» из Telegram: только из чата, привязанного к записи.
+    if telegram_mock is not None and booked.get("payload", {}).get("telegram_url"):
+        tg = telegram_mock
+        guest_chat, stranger_chat = 5551001, 5551009
+        second = await guest.call("booking.book", {"slug": slug, "start": far[1], "guest_name": "Савва"}, timeout=40)
+        second_token = second.get("payload", {}).get("token", "")
+        second_url = second.get("payload", {}).get("telegram_url", "")
+        mark = len(tg.sent)
+        tg.text(guest_chat, "/start " + second_url.split("?start=", 1)[-1])
+        await tg.wait_for("sendMessage", guest_chat, mark)
+        second_id = 0
+        for item in (await anna.call("booking.list", {"page_id": page_id})).get("payload", {}).get("bookings", []):
+            if item.get("guest_name") == "Савва":
+                second_id = item.get("id", 0)
+        data = f"cf:{second_id}:{int(at(far[1]))}"
+        mark = len(tg.sent)
+        tg.callback(stranger_chat, data)
+        foreign = await tg.wait_for("answerCallbackQuery", None, mark)
+        view2 = (await guest.call("booking.manage", {"token": second_token}, timeout=40)) \
+            .get("payload", {}).get("booking", {})
+        check(foreign is not None and "не для этого чата" in foreign.get("text", "")
+              and view2.get("occurrences", [{}])[0].get("confirmed_at") == "",
+              "«Приду» из чужого чата не подтверждает", foreign)
+        mark = len(tg.sent)
+        tg.callback(guest_chat, data, message_id=42)
+        answer = await tg.wait_for("answerCallbackQuery", None, mark)
+        edited = await tg.wait_for("editMessageReplyMarkup", guest_chat, mark)
+        view2 = (await guest.call("booking.manage", {"token": second_token}, timeout=40)) \
+            .get("payload", {}).get("booking", {})
+        check(answer is not None and answer.get("text") == "Спасибо, ждём вас" and edited is not None
+              and edited.get("message_id") == 42 and bool(view2.get("occurrences", [{}])[0].get("confirmed_at")),
+              "«Приду» из привязанного чата подтверждает встречу и убирает кнопки", {"answer": answer, "view": view2})
+
+    # hide_branding при SELFVOY_PLANS_ENFORCED=0 сохраняется и скрывает подпись.
+    hidden = await anna.call("booking.pageUpdate", {"page_id": page_id, "hide_branding": True})
+    check(hidden.get("payload", {}).get("page", {}).get("hide_branding") is True,
+          "booking.pageUpdate: hide_branding сохранён (тарифы не включены)", hidden)
+    view = (await guest.call("booking.get", {"slug": slug}, timeout=40)).get("payload", {}).get("page", {})
+    managed = (await guest.call("booking.manage", {"token": token}, timeout=40)).get("payload", {}).get("booking", {})
+    check(view.get("branding", {}).get("show") is False and managed.get("branding", {}).get("show") is False,
+          "подпись скрыта в booking.get и booking.manage", {"page": view.get("branding"),
+                                                             "booking": managed.get("branding")})
+    cancelled = await guest.call("booking.cancel", {"token": token})
+    owned = (await anna.call("booking.list", {"page_id": page_id})).get("payload", {}).get("bookings", [])
+    target = [b for b in owned if b.get("guest_name") == "Роза"]
+    check(cancelled.get("type") == "ok" and bool(target) and target[0].get("reminders") == [],
+          "отмена записи удаляет неотправленные напоминания", target[:1])
+    await guest.close()
+    await anna.call("booking.pageDelete", {"page_id": page_id})
+
+
 async def main() -> int:
     print(f"Selfvoy E2E → {SERVER_URL} (прогон {RUN})\n")
 
@@ -1051,6 +1172,36 @@ async def main() -> int:
                      if e.get("payload", {}).get("kind") == "referral.joined"]
     check(bool(joined_events), "Анна получила notification.new referral.joined",
           [e.get("payload", {}).get("kind") for e in anna.events_of("notification.new")])
+    # Награда (F3): обоим +30 дней Pro, один раз.
+    month_later = time.time() + 30 * 86400
+
+    def near_month(plan: Dict[str, Any]) -> bool:
+        until = instant(plan.get("until", ""))
+        return plan.get("name") == "pro" and until is not None and abs(until.timestamp() - month_later) < 600
+
+    check("+1 месяц Pro" in (joined_events[-1].get("payload", {}).get("body", "") if joined_events else ""),
+          "referral.joined: «+1 месяц Pro» в тексте", joined_events[-1:] if joined_events else [])
+    anna_plan = (await anna.call("auth.me")).get("payload", {}).get("plan", {})
+    friend_login = await newcomer.call("auth.login", {"email": friend_email, "password": "selfvoy1234"})
+    friend_plan = friend_login.get("payload", {}).get("user", {}).get("plan", {})
+    check(near_month(anna_plan) and near_month(friend_plan), "награда: у обоих Pro примерно на 30 дней",
+          {"anna": anna_plan, "friend": friend_plan})
+    check(done_ref.get("rewarded") == 1 and done_ref.get("reward_days") == 30 and done_ref.get("reward_cap") == 12
+          and done_ref.get("plan", {}).get("name") == "pro", "referral.get: rewarded=1, reward_days, reward_cap, plan",
+          done_ref)
+    await asyncio.sleep(0.3)
+    reward_events = [e for e in newcomer.events_of("notification.new")
+                     if e.get("payload", {}).get("kind") == "referral.reward"]
+    friend_notes = (await newcomer.call("notifications.list")).get("payload", {}).get("notifications", [])
+    check(any(n.get("kind") == "referral.reward" and n.get("title") == "Месяц Pro в подарок" for n in friend_notes),
+          "приглашённый получил referral.reward «Месяц Pro в подарок»", friend_notes[:3] or reward_events)
+    await newcomer.call("auth.verifyEmail", {"email": friend_email,
+                                             "code": friend.get("payload", {}).get("email_code", "")})
+    again_ref = (await anna.call("referral.get")).get("payload", {})
+    again_plan = (await anna.call("auth.me")).get("payload", {}).get("plan", {})
+    check(again_ref.get("rewarded") == 1 and again_plan.get("until") == anna_plan.get("until"),
+          "повторная верификация не начисляет награду дважды", {"ref": again_ref.get("rewarded"),
+                                                               "until": again_plan.get("until")})
     await newcomer.close()
 
     # ------------------------------------------------------ Telegram-бот (F2)
@@ -1208,6 +1359,8 @@ async def main() -> int:
         check(not tg.bad_token and tg.polls >= 1, "бот опрашивает getUpdates с верным токеном",
               {"polls": tg.polls, "bad": tg.bad_token[:2]})
         await anna.call("booking.pageDelete", {"page_id": tg_page.get("id", 0)})
+
+    await s1b_reminders_confirm_branding(anna, telegram_mock)
 
     # ------------------------------------- разрешения и барьер подтверждения
     print("\n3c. Разрешения и барьер подтверждения (этап 8)")

@@ -8,6 +8,7 @@
 #include "selfvoy/crypto.h"
 #include "selfvoy/databasemanager.h"
 #include "selfvoy/log.h"
+#include "selfvoy/plan.h"
 #include "selfvoy/protocol.h"
 #include "notificationsmanager.h"
 
@@ -67,9 +68,11 @@ ReferralManager::Result ReferralManager::get(long long userId, const Json& paylo
     limit = std::max(1LL, std::min(100LL, limit));
     const auto referrals = database_.db().listReferrals(userId, 1000);
     long long verified = 0;
+    long long rewarded = 0;
     Json users = Json::array();
     for (const auto& referral : referrals) {
         if (!referral.verifiedAt.empty()) ++verified;
+        if (!referral.rewardedAt.empty()) ++rewarded;
         if (static_cast<long long>(users.items().size()) >= limit) continue;
         Json user = Json::object();
         // Только имя: email и id приглашённых пригласившему не раскрываются.
@@ -86,6 +89,12 @@ ReferralManager::Result ReferralManager::get(long long userId, const Json& paylo
     result.payload.set("joined", Json(static_cast<long long>(referrals.size())));
     result.payload.set("verified", Json(verified));
     result.payload.set("referrals", users);
+    // Награды пригласившему: первые kRewardCap подтверждённых (дальше — только счётчик).
+    result.payload.set("rewarded", Json(std::min<long long>(rewarded, kRewardCap)));
+    result.payload.set("reward_days", Json(static_cast<long long>(kRewardDays)));
+    result.payload.set("reward_cap", Json(static_cast<long long>(kRewardCap)));
+    const auto user = database_.db().findUserById(userId);
+    result.payload.set("plan", user ? plan::toJson(*user) : Json::object());
     return result;
 }
 
@@ -101,15 +110,31 @@ void ReferralManager::attach(long long referredId, const std::string& rawCode, c
 
 void ReferralManager::verified(long long userId) {
     const long long referrerId = database_.db().markReferralVerified(userId);
-    if (referrerId <= 0 || !notifications_) return;
-    std::string name = "Новый пользователь";
-    if (const auto user = database_.db().findUserById(userId)) {
-        if (!user->displayName.empty()) name = user->displayName;
+    // Награда — отдельным атомарным шагом: rewarded_at не даёт начислить дважды (в том
+    // числе если подтверждение уже было отмечено, а начисление тогда не записалось).
+    bool referrerRewarded = false;
+    const bool rewarded = database_.db().rewardReferral(userId, kRewardDays, kRewardCap, referrerRewarded) > 0;
+    if (!notifications_) return;
+    if (referrerId > 0) {
+        std::string name = "Новый пользователь";
+        if (const auto user = database_.db().findUserById(userId)) {
+            if (!user->displayName.empty()) name = user->displayName;
+        }
+        Json notify = Json::object();
+        notify.set("display_name", Json(name));
+        notify.set("reward_days", Json(static_cast<long long>(rewarded && referrerRewarded ? kRewardDays : 0)));
+        notifications_->create(referrerId, "referral.joined", name + " теперь с Selfvoy",
+                               std::string("по вашей ссылке-приглашению") +
+                                   (rewarded && referrerRewarded ? " · +1 месяц Pro" : ""),
+                               notify);
     }
-    Json notify = Json::object();
-    notify.set("display_name", Json(name));
-    notifications_->create(referrerId, "referral.joined", name + " теперь с Selfvoy", "по вашей ссылке-приглашению",
-                           notify);
+    if (rewarded) {
+        Json notify = Json::object();
+        notify.set("days", Json(static_cast<long long>(kRewardDays)));
+        if (const auto user = database_.db().findUserById(userId)) notify.set("until", Json(user->planUntil));
+        notifications_->create(userId, "referral.reward", "Месяц Pro в подарок",
+                               "Вы зарегистрировались по приглашению — 30 дней Pro уже действуют", notify);
+    }
 }
 
 }  // namespace selfvoy

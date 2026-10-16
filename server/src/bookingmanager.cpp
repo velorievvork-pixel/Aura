@@ -14,6 +14,7 @@
 #include "selfvoy/mailprovider.h"
 #include "selfvoy/memorymanager.h"
 #include "selfvoy/net.h"
+#include "selfvoy/plan.h"
 #include "selfvoy/protocol.h"
 #include "selfvoy/referralmanager.h"
 #include "selfvoy/schedulelock.h"
@@ -158,7 +159,37 @@ Json occurrenceView(const Json& occurrence) {
     json.set("end", Json(occurrence.getString("end")));
     json.set("status", Json(occurrence.getString("status")));
     json.set("local", Json(occurrence.getString("local")));
+    json.set("confirmed_at", Json(occurrence.getString("confirmed_at")));
     return json;
+}
+
+// Сдвиг местного времени владельца от UTC по полю local встречи (проверено checkLocal
+// при записи); false — local неизвестен.
+bool localOffset(const Json& occurrence, std::time_t start, long long& offset) {
+    const std::string local = occurrence.getString("local");
+    std::time_t asUtc = 0;
+    if (!validLocal(local) || !parseIsoUtc(local + ":00Z", asUtc)) return false;
+    offset = static_cast<long long>(asUtc - start);
+    return std::llabs(offset) <= 14 * 3600;
+}
+
+// «завтра в 15:00» / «сегодня в 15:00» / «21 октября в 15:00» — относительно now в том же
+// поясе (местное время владельца или UTC).
+std::string relativeWhen(std::time_t start, std::time_t now, long long offset) {
+    static const char* const kMonths[] = {"января", "февраля", "марта",    "апреля",  "мая",    "июня",
+                                          "июля",   "августа", "сентября", "октября", "ноября", "декабря"};
+    const std::time_t localStart = start + static_cast<std::time_t>(offset);
+    const std::time_t localNow = now + static_cast<std::time_t>(offset);
+    std::tm startParts{};
+    std::tm nowParts{};
+    gmtime_r(&localStart, &startParts);
+    gmtime_r(&localNow, &nowParts);
+    char clock[8];
+    std::snprintf(clock, sizeof clock, "%02d:%02d", startParts.tm_hour, startParts.tm_min);
+    const long long days = static_cast<long long>(localStart / 86400) - static_cast<long long>(localNow / 86400);
+    if (days == 0) return std::string("сегодня в ") + clock;
+    if (days == 1) return std::string("завтра в ") + clock;
+    return std::to_string(startParts.tm_mday) + " " + kMonths[startParts.tm_mon] + " в " + clock;
 }
 
 }  // namespace
@@ -228,11 +259,8 @@ std::string BookingManager::manageUrl(const std::string& token) const {
     return config_.publicUrl.empty() || token.empty() ? std::string() : config_.publicUrl + "/#/m/" + token;
 }
 
-void BookingManager::notifyGuest(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
-                                 const std::string& subject, const std::string& title, const std::string& lead,
-                                 const std::string& token, bool onlyActive, bool reserved,
-                                 const std::vector<std::string>& footer) {
-    GuestNotice notice;
+bool BookingManager::guestRecipients(const BookingRecord& booking, const BookingPageRecord& page,
+                                     const std::string& kind, bool reserved, GuestNotice& notice) {
     // Лимиты на адрес/чат и на владельца: форма записи не должна превращаться в
     // рассылку на чужой email, а страница — в канал рассылки от имени Selfvoy.
     if (!booking.guestEmail.empty() && mail_) {
@@ -254,11 +282,50 @@ void BookingManager::notifyGuest(const BookingRecord& booking, const BookingPage
             notice.chats.push_back(chat);
         }
     }
-    if (notice.emails.empty() && notice.chats.empty()) return;
+    if (notice.emails.empty() && notice.chats.empty()) return false;
     if (limited("booking.mail.owner:" + std::to_string(page.ownerId), kMailPerOwnerHour, 3600)) {
         SELFVOY_LOG(log::Level::Warn, "booking") << "лимит писем владельца " << page.ownerId << " исчерпан";
-        return;
+        return false;
     }
+    return true;
+}
+
+void BookingManager::enqueueNotice(GuestNotice notice) {
+    std::lock_guard<std::mutex> lock(mailMutex_);
+    if (mailStop_) return;
+    mailQueue_.push_back(std::move(notice));
+    if (!mailThread_.joinable()) mailThread_ = std::thread([this] { mailLoop(); });
+    mailCv_.notify_all();
+}
+
+Json BookingManager::branding(const BookingPageRecord& page) {
+    // Скрытие действует, только пока у владельца Pro (или тарифы не включены).
+    const bool show = !page.hideBranding || !plan::proAllowed(database_.db(), page.ownerId);
+    std::string url;
+    if (!config_.publicUrl.empty()) {
+        const std::string code = referrals_.codeFor(page.ownerId);
+        url = config_.publicUrl + "/#/signup" + (code.empty() ? std::string("?src=booking")
+                                                               : "?ref=" + code + "&src=booking");
+    }
+    Json json = Json::object();
+    json.set("show", Json(show));
+    json.set("text", Json(std::string("Запись через Selfvoy")));
+    json.set("url", Json(url));
+    return json;
+}
+
+std::string BookingManager::brandingLine(const BookingPageRecord& page) {
+    const Json info = branding(page);
+    if (!info.getBool("show") || info.getString("url").empty()) return "";
+    return "Запись через Selfvoy — заведите свой бесплатно: " + info.getString("url");
+}
+
+void BookingManager::notifyGuest(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
+                                 const std::string& subject, const std::string& title, const std::string& lead,
+                                 const std::string& token, bool onlyActive, bool reserved,
+                                 const std::vector<std::string>& footer) {
+    GuestNotice notice;
+    if (!guestRecipients(booking, page, kind, reserved, notice)) return;
     std::string ownerName;
     std::string ownerTimezone;
     ownerInfo(page.ownerId, ownerName, ownerTimezone);
@@ -284,6 +351,9 @@ void BookingManager::notifyGuest(const BookingRecord& booking, const BookingPage
         mail.linkText = "Выбрать другое время";
     }
     mail.footer = footer;
+    // F3: последняя строка — подпись Selfvoy (если владелец её не скрыл).
+    const std::string signature = brandingLine(page);
+    if (!signature.empty()) mail.footer.push_back(signature);
     mail.note = "Письмо пришло, потому что этот адрес указали при записи на странице «" + page.title +
                 "» (" + ownerName + ") в Selfvoy." + (link.empty() ? "" : " Ссылка — только для вас, не пересылайте её.");
 
@@ -306,14 +376,11 @@ void BookingManager::notifyGuest(const BookingRecord& booking, const BookingPage
                 text += "\n\n" + mail.linkText + ": " + mail.linkUrl;
             }
         }
+        // Строки footer (ссылка Telegram и т.п.) в бот не уходят — только подпись.
+        if (!signature.empty()) text += "\n\n" + signature;
         notice.telegramText = text;
     }
-
-    std::lock_guard<std::mutex> lock(mailMutex_);
-    if (mailStop_) return;
-    mailQueue_.push_back(std::move(notice));
-    if (!mailThread_.joinable()) mailThread_ = std::thread([this] { mailLoop(); });
-    mailCv_.notify_all();
+    enqueueNotice(std::move(notice));
 }
 
 std::string BookingManager::sealManageToken(const std::string& token) const {
@@ -342,13 +409,236 @@ std::string BookingManager::telegramGreeting(const BookingRecord& booking) {
         text += "\nБлижайшая встреча: " +
                 whenText(booking.occurrences.items()[static_cast<std::size_t>(nearest)], ownerTimezone) + ".";
     }
-    return text + "\nНапомню за сутки и за 2 часа. Отписаться — /stop";
+    text += "\nНапомню за сутки и за 2 часа. Отписаться — /stop";
+    if (page) {
+        const std::string signature = brandingLine(*page);
+        if (!signature.empty()) text += "\n\n" + signature;
+    }
+    return text;
 }
 
 BookingManager::Result BookingManager::telegramConfirm(long long bookingId, std::time_t start) {
-    (void)bookingId;
-    (void)start;
-    return Result::failure(protocol::code::kConflict, "Подтверждение пока недоступно");
+    if (bookingId <= 0 || start <= 0) return Result::failure(protocol::code::kBadRequest, "Кнопка устарела");
+    bool changed = false;
+    std::optional<BookingRecord> booking;
+    return confirmOccurrence(bookingId, "", start, changed, booking);
+}
+
+BookingManager::Result BookingManager::confirmOccurrence(long long bookingId, const std::string& hash,
+                                                         std::time_t start, bool& changed,
+                                                         std::optional<BookingRecord>& out) {
+    changed = false;
+    const auto lookup = [&]() {
+        return bookingId > 0 ? database_.db().findBooking(bookingId)
+                             : (hash.empty() ? std::nullopt : database_.db().findBookingByToken(hash));
+    };
+    auto booking = lookup();
+    if (!booking) return Result::failure(protocol::code::kNotFound, "запись не найдена");
+    // confirmed_at — часть occurrences: запись перезаписывается целиком, поэтому под той же
+    // блокировкой расписания, что перенос и отмена (иначе одно из изменений потерялось бы).
+    auto lock = schedule_.acquire(booking->ownerId);
+    if (!lock.ok()) return Result::failure(protocol::code::kConflict, "сервер занят — попробуйте ещё раз");
+    booking = lookup();
+    if (!booking) return Result::failure(protocol::code::kNotFound, "запись не найдена");
+    if (booking->status != "active") return Result::failure(protocol::code::kConflict, "запись отменена");
+    const std::time_t now = std::time(nullptr);
+    const int index = findOccurrence(*booking, start > 0 ? isoUtc(start) : std::string(), now);
+    if (index < 0) {
+        return start > 0 ? Result::failure(protocol::code::kConflict, "встреча уже прошла или отменена")
+                         : Result::failure(protocol::code::kConflict, "предстоящих встреч нет");
+    }
+    const auto& items = booking->occurrences.items();
+    Json occurrence = items[static_cast<std::size_t>(index)];
+    if (occurrence.getString("confirmed_at").empty()) {
+        occurrence.set("confirmed_at", Json(isoUtc(now)));
+        Json updated = Json::array();
+        for (std::size_t i = 0; i < items.size(); ++i) updated.push(static_cast<int>(i) == index ? occurrence : items[i]);
+        booking->occurrences = updated;
+        if (!database_.db().updateBooking(*booking).ok) {
+            return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
+        }
+        changed = true;
+    }
+    lock.release();
+    if (changed && notifications_) {
+        const auto page = database_.db().findBookingPage(booking->pageId);
+        Json notify = Json::object();
+        notify.set("booking_id", Json(booking->id));
+        notify.set("page_id", Json(booking->pageId));
+        notify.set("start", Json(occurrence.getString("start")));
+        notify.set("guest_name", Json(booking->guestName));
+        notifications_->create(booking->ownerId, "booking.confirmed", booking->guestName + " подтвердил(а) встречу",
+                               page ? page->title : std::string(), notify);
+    }
+    out = std::move(booking);
+    Result result;
+    result.ok = true;
+    return result;
+}
+
+BookingManager::Result BookingManager::confirm(const Json& payload, const std::string& remoteAddr) {
+    if (limited("booking.change:" + Session::ipOf(remoteAddr), kChangePerMinute)) {
+        return Result::failure(protocol::code::kForbidden, "слишком много попыток, попробуйте через минуту");
+    }
+    const std::string hash = tokenHash(payload.getString("token"));
+    if (hash.empty()) return Result::failure(protocol::code::kNotFound, "запись не найдена");
+    std::time_t start = 0;
+    const std::string occurrence = payload.getString("occurrence");
+    if (!occurrence.empty() && !parseIsoUtc(occurrence, start)) {
+        return Result::failure(protocol::code::kBadRequest, "occurrence — время встречи (ISO 8601)");
+    }
+    bool changed = false;
+    std::optional<BookingRecord> booking;
+    Result result = confirmOccurrence(0, hash, start, changed, booking);
+    if (!result.ok) return result;
+    const auto page = booking ? database_.db().findBookingPage(booking->pageId) : std::nullopt;
+    if (!booking || !page) return Result::failure(protocol::code::kNotFound, "запись не найдена");
+    result.payload.set("booking", guestBookingJson(*booking, *page, false));
+    return result;
+}
+
+// ------------------------------------------------------------ напоминания (F1)
+
+void BookingManager::scheduleReminders(const BookingRecord& booking, std::time_t now) {
+    if (booking.id <= 0 || booking.status != "active") return;
+    std::vector<BookingReminderRecord> reminders;
+    for (const auto& occurrence : booking.occurrences.items()) {
+        std::time_t start = 0;
+        if (occurrence.getString("status") != "active" || !parseIsoUtc(occurrence.getString("start"), start)) continue;
+        const long long lead = static_cast<long long>(start - now);
+        BookingReminderRecord reminder;
+        reminder.bookingId = booking.id;
+        reminder.ownerId = booking.ownerId;
+        reminder.occurrenceStart = isoUtc(start);
+        if (lead >= kReminder24hMinLeadSec) {
+            reminder.kind = "24h";
+            reminder.dueAt = isoUtc(start - kReminder24hSec);
+            reminders.push_back(reminder);
+        }
+        if (lead >= kReminder2hMinLeadSec) {
+            reminder.kind = "2h";
+            reminder.dueAt = isoUtc(start - kReminder2hSec);
+            reminders.push_back(reminder);
+        }
+    }
+    if (reminders.empty()) return;
+    const DatabaseError saved = database_.db().addBookingReminders(reminders);
+    if (!saved.ok) SELFVOY_LOG(log::Level::Warn, "booking") << "напоминания записи " << booking.id << " не сохранены";
+}
+
+void BookingManager::dropInactiveReminders(const BookingRecord& booking) {
+    if (booking.id <= 0) return;
+    if (booking.status != "active") {
+        database_.db().deleteBookingReminders(booking.id, "");
+        return;
+    }
+    for (const auto& occurrence : booking.occurrences.items()) {
+        std::time_t start = 0;
+        if (occurrence.getString("status") == "active" || !parseIsoUtc(occurrence.getString("start"), start)) continue;
+        database_.db().deleteBookingReminders(booking.id, isoUtc(start));
+    }
+}
+
+std::size_t BookingManager::reminderTick(int limit, std::time_t now) {
+    const auto claimed = database_.db().claimDueReminders(isoUtc(now), limit);
+    for (const auto& reminder : claimed) {
+        if (!sendReminder(reminder, now)) {
+            SELFVOY_LOG(log::Level::Debug, "booking") << "напоминание " << reminder.id << " пропущено";
+        }
+    }
+    return claimed.size();
+}
+
+bool BookingManager::sendReminder(const BookingReminderRecord& reminder, std::time_t now) {
+    const auto booking = database_.db().findBooking(reminder.bookingId);
+    if (!booking || booking->status != "active") return false;
+    std::time_t start = 0;
+    if (!parseIsoUtc(reminder.occurrenceStart, start) || start <= now) return false;  // встреча уже началась
+    // Сервер стоял и пропустил «за сутки» — достаточно «за 2 часа».
+    if (reminder.kind == "24h" && start - now <= kReminder2hSec) return false;
+    const Json* found = nullptr;
+    for (const auto& occurrence : booking->occurrences.items()) {
+        std::time_t at = 0;
+        if (occurrence.getString("status") == "active" && parseIsoUtc(occurrence.getString("start"), at) &&
+            at == start) {
+            found = &occurrence;
+            break;
+        }
+    }
+    if (!found) return false;  // встречу отменили или перенесли
+    const auto page = database_.db().findBookingPage(booking->pageId);
+    if (!page || !page->guestReminders) return false;
+    const auto owner = database_.db().findUserById(booking->ownerId);
+    if (!owner || !owner->active) return false;
+
+    GuestNotice notice;
+    if (!guestRecipients(*booking, *page, "booking.reminder", false, notice)) return false;
+    std::string ownerName;
+    std::string ownerTimezone;
+    ownerInfo(page->ownerId, ownerName, ownerTimezone);
+    long long offset = 0;
+    std::string zone = ownerTimezone;
+    if (!localOffset(*found, start, offset)) {
+        offset = 0;
+        zone = "UTC";
+    }
+    const std::string when = relativeWhen(start, now, offset);
+
+    // Ссылки: «Приду» и «Перенести или отменить» — только с токеном (старые записи его не
+    // хранят) и адресом веб-клиента.
+    const std::string token = manageTokenOf(*booking);
+    const std::string manage = manageUrl(token);
+    const std::string confirmLink = manage.empty() ? std::string() : manage + "?confirm=" + isoUtc(start);
+    const std::string fallback = "Перенести или отменить можно по ссылке из письма о записи";
+    const std::string signature = brandingLine(*page);
+
+    MailNotice& mail = notice.mail;
+    mail.kind = "booking.reminder";
+    mail.subject = "Напоминание: " + when + " — " + page->title;
+    mail.title = "Напоминание о встрече";
+    mail.lead = ownerName + " ждёт вас " + when + " (" + zone + ").";
+    mail.lines.push_back(whenText(*found, ownerTimezone));
+    if (!confirmLink.empty()) {
+        mail.linkUrl = confirmLink;
+        mail.linkText = "Приду";
+        mail.footer.push_back("Перенести или отменить: " + manage);
+    } else {
+        mail.footer.push_back(fallback);
+    }
+    if (!signature.empty()) mail.footer.push_back(signature);
+    mail.note = "Письмо пришло, потому что этот адрес указали при записи на странице «" + page->title + "» (" +
+                ownerName + ") в Selfvoy." + (manage.empty() ? "" : " Ссылка — только для вас, не пересылайте её.");
+
+    if (!notice.chats.empty()) {
+        std::string text = mail.title + "\n«" + page->title + "» — " + ownerName + "\n\n" + mail.lead;
+        for (const auto& line : mail.lines) text += "\n• " + line;
+        Json confirmButton = Json::object();
+        confirmButton.set("text", Json(std::string("Приду")));
+        confirmButton.set("callback_data",
+                          Json("cf:" + std::to_string(booking->id) + ":" + std::to_string(static_cast<long long>(start))));
+        Json firstRow = Json::array();
+        firstRow.push(confirmButton);
+        Json keyboard = Json::array();
+        keyboard.push(firstRow);
+        if (manage.rfind("https://", 0) == 0) {
+            Json manageButton = Json::object();
+            manageButton.set("text", Json(std::string("Перенести или отменить")));
+            manageButton.set("url", Json(manage));
+            Json secondRow = Json::array();
+            secondRow.push(manageButton);
+            keyboard.push(secondRow);
+        } else if (!manage.empty()) {
+            text += "\n\nПеренести или отменить: " + manage;
+        } else {
+            text += "\n\n" + fallback;
+        }
+        if (!signature.empty()) text += "\n\n" + signature;
+        notice.telegramText = text;
+        notice.telegramMarkup = Json::object();
+        notice.telegramMarkup.set("inline_keyboard", keyboard);
+    }
+    enqueueNotice(std::move(notice));
+    return true;
 }
 
 std::string BookingManager::tokenHash(const std::string& token) {
@@ -422,6 +712,8 @@ Json BookingManager::pageJson(const BookingPageRecord& page) {
     json.set("max_series", Json(static_cast<long long>(page.maxSeries)));
     json.set("weekends", Json(page.weekends));
     json.set("status", Json(page.status));
+    json.set("guest_reminders", Json(page.guestReminders));
+    json.set("hide_branding", Json(page.hideBranding));
     json.set("upcoming", Json(upcoming));
     json.set("created_at", Json(page.createdAt));
     json.set("updated_at", Json(page.updatedAt));
@@ -442,6 +734,19 @@ Json BookingManager::bookingJson(const BookingRecord& booking, const std::string
     json.set("cancelled_by", Json(booking.cancelledBy));
     json.set("reschedules", Json(static_cast<long long>(booking.reschedules)));
     json.set("occurrences", occurrences);
+    // F1: запланированные и отправленные напоминания гостю (для прозрачности).
+    Json reminders = Json::array();
+    if (booking.id > 0) {
+        for (const auto& reminder : database_.db().listBookingReminders(booking.id)) {
+            Json item = Json::object();
+            item.set("start", Json(reminder.occurrenceStart));
+            item.set("kind", Json(reminder.kind));
+            item.set("due_at", Json(reminder.dueAt));
+            item.set("sent_at", Json(reminder.sentAt));
+            reminders.push(item);
+        }
+    }
+    json.set("reminders", reminders);
     json.set("created_at", Json(booking.createdAt));
     json.set("updated_at", Json(booking.updatedAt));
     return json;
@@ -506,6 +811,7 @@ Json BookingManager::guestBookingJson(const BookingRecord& booking, const Bookin
     json.set("slots", slots);
     json.set("slots_unavailable", Json(slotsUnavailable));
     json.set("ref", Json(referrals_.codeFor(page.ownerId)));
+    json.set("branding", branding(page));
     // Telegram (F2): ссылка подписки на напоминания и подключён ли уже чат.
     json.set("telegram_url", Json(telegram_ ? telegram_->guestUrl(booking) : std::string()));
     json.set("telegram_linked", Json(booking.id > 0 && !database_.db().bookingTelegramChats(booking.id).empty()));
@@ -726,6 +1032,17 @@ BookingManager::Result BookingManager::pageCreate(long long ownerId, const Json&
     if (payload.contains("weekends") && !payload.get("weekends").isBool()) {
         return Result::failure(protocol::code::kBadRequest, "weekends — true или false");
     }
+    if (payload.contains("guest_reminders") && !payload.get("guest_reminders").isBool()) {
+        return Result::failure(protocol::code::kBadRequest, "guest_reminders — true или false");
+    }
+    if (payload.contains("hide_branding") && !payload.get("hide_branding").isBool()) {
+        return Result::failure(protocol::code::kBadRequest, "hide_branding — true или false");
+    }
+    page.guestReminders = payload.getBool("guest_reminders", true);
+    page.hideBranding = payload.getBool("hide_branding", false);
+    if (page.hideBranding && !plan::proAllowed(database_.db(), ownerId)) {
+        return Result::failure(protocol::code::kProRequired, "скрыть подпись Selfvoy можно на тарифе Pro");
+    }
     page.durationMinutes = static_cast<int>(duration);
     page.daysAhead = static_cast<int>(daysAhead);
     page.maxPerDay = static_cast<int>(maxPerDay);
@@ -812,6 +1129,22 @@ BookingManager::Result BookingManager::pageUpdate(long long ownerId, const Json&
             return Result::failure(protocol::code::kBadRequest, "weekends — true или false");
         }
         page->weekends = payload.getBool("weekends");
+    }
+    if (payload.contains("guest_reminders")) {
+        if (!payload.get("guest_reminders").isBool()) {
+            return Result::failure(protocol::code::kBadRequest, "guest_reminders — true или false");
+        }
+        page->guestReminders = payload.getBool("guest_reminders");
+    }
+    if (payload.contains("hide_branding")) {
+        if (!payload.get("hide_branding").isBool()) {
+            return Result::failure(protocol::code::kBadRequest, "hide_branding — true или false");
+        }
+        const bool hide = payload.getBool("hide_branding");
+        if (hide && !page->hideBranding && !plan::proAllowed(database_.db(), ownerId)) {
+            return Result::failure(protocol::code::kProRequired, "скрыть подпись Selfvoy можно на тарифе Pro");
+        }
+        page->hideBranding = hide;
     }
     if (payload.contains("status")) {
         const std::string status = payload.getString("status");
@@ -968,6 +1301,7 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
     }
     lock.release();
     for (const long long task : tasks) deleteOwnTask(booking->ownerId, task);
+    dropInactiveReminders(*booking);
     const auto page = database_.db().findBookingPage(booking->pageId);
     if (page) {
         std::string ownerName;
@@ -1028,6 +1362,7 @@ BookingManager::Result BookingManager::get(const Json& payload, const std::strin
     view.set("slots", slots);
     view.set("slots_unavailable", Json(unavailable));
     view.set("ref", Json(referrals_.codeFor(page->ownerId)));
+    view.set("branding", branding(*page));
     Result result;
     result.ok = true;
     result.payload.set("page", view);
@@ -1154,6 +1489,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         SELFVOY_LOG(log::Level::Warn, "booking") << "id задач записи " << id << " не сохранены";
     }
     lock.release();  // дальше — уведомление и письмо, расписание владельца не держим
+    scheduleReminders(booking, std::time(nullptr));
 
     if (notifications_) {
         Json notify = Json::object();
@@ -1260,6 +1596,7 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
     occurrence.set("day", Json(chosen->day));
     occurrence.set("local", Json(chosen->local));
     occurrence.set("task_id", Json(createTask(*booking, page->title, chosen->start)));
+    occurrence.set("confirmed_at", Json(std::string()));  // новое время — подтверждение заново
     Json updated = Json::array();
     for (std::size_t i = 0; i < items.size(); ++i) {
         updated.push(static_cast<int>(i) == index ? occurrence : items[i]);
@@ -1273,6 +1610,12 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
     }
     lock.release();
     deleteOwnTask(booking->ownerId, oldTask);
+    // Напоминания: прежнего времени — удалить (неотправленные), нового — запланировать.
+    {
+        std::time_t fromAt = 0;
+        if (parseIsoUtc(from, fromAt)) database_.db().deleteBookingReminders(booking->id, isoUtc(fromAt));
+        scheduleReminders(*booking, std::time(nullptr));
+    }
 
     if (notifications_) {
         Json notify = Json::object();
@@ -1325,6 +1668,7 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
     }
     lock.release();
     for (const long long task : tasks) deleteOwnTask(booking->ownerId, task);
+    dropInactiveReminders(*booking);
     if (notifications_) {
         Json notify = Json::object();
         notify.set("booking_id", Json(booking->id));

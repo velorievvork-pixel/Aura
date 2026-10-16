@@ -2054,6 +2054,20 @@ private:
         return touched ? DatabaseError::success() : DatabaseError::failure("пользователь не найден");
     }
 
+    DatabaseError extendUserPlanDays(long long userId, int days) override {
+        if (days <= 0) return DatabaseError::failure("срок продления — больше 0 дней");
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE users SET plan_until = greatest(now(), plan_until) + make_interval(days => $2::int) "
+                     "WHERE id = $1",
+                     {std::to_string(userId), std::to_string(days)}, &result)) {
+            return DatabaseError::failure(lastError());
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched ? DatabaseError::success() : DatabaseError::failure("пользователь не найден");
+    }
+
     // Отвязка у прежнего аккаунта и привязка к новому — одной транзакцией на одном
     // соединении (уникальный индекс по telegram_chat_id).
     DatabaseError setUserTelegram(long long userId, long long chatId, const std::string& username) override {
@@ -2138,13 +2152,15 @@ private:
         Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("INSERT INTO booking_pages (owner_id, slug, title, description, duration_minutes, days_ahead, "
-                     "max_per_day, notice_hours, max_series, weekends, status) "
-                     "VALUES ($1, $2, $3, $4, $5::int, $6::int, $7::int, $8::int, $9::int, $10::bool, $11) "
+                     "max_per_day, notice_hours, max_series, weekends, status, guest_reminders, hide_branding) "
+                     "VALUES ($1, $2, $3, $4, $5::int, $6::int, $7::int, $8::int, $9::int, $10::bool, $11, "
+                     "$12::bool, $13::bool) "
                      "RETURNING id",
                      {std::to_string(record.ownerId), record.slug, record.title, record.description,
                       std::to_string(record.durationMinutes), std::to_string(record.daysAhead),
                       std::to_string(record.maxPerDay), std::to_string(record.noticeHours),
-                      std::to_string(record.maxSeries), record.weekends ? "true" : "false", record.status},
+                      std::to_string(record.maxSeries), record.weekends ? "true" : "false", record.status,
+                      record.guestReminders ? "true" : "false", record.hideBranding ? "true" : "false"},
                      &result)) {
             PQclear(result);
             return DatabaseError::failure(lastError());
@@ -2181,11 +2197,13 @@ private:
         PGresult* result = nullptr;
         if (!execute("UPDATE booking_pages SET title = $2, description = $3, duration_minutes = $4::int, "
                      "days_ahead = $5::int, max_per_day = $6::int, notice_hours = $7::int, max_series = $8::int, "
-                     "weekends = $9::bool, status = $10, updated_at = now() WHERE id = $1",
+                     "weekends = $9::bool, status = $10, guest_reminders = $11::bool, hide_branding = $12::bool, "
+                     "updated_at = now() WHERE id = $1",
                      {std::to_string(record.id), record.title, record.description,
                       std::to_string(record.durationMinutes), std::to_string(record.daysAhead),
                       std::to_string(record.maxPerDay), std::to_string(record.noticeHours),
-                      std::to_string(record.maxSeries), record.weekends ? "true" : "false", record.status},
+                      std::to_string(record.maxSeries), record.weekends ? "true" : "false", record.status,
+                      record.guestReminders ? "true" : "false", record.hideBranding ? "true" : "false"},
                      &result)) {
             return DatabaseError::failure(lastError());
         }
@@ -2198,7 +2216,8 @@ private:
         return "SELECT id, owner_id, slug, title, description, duration_minutes, days_ahead, max_per_day, "
                "notice_hours, max_series, weekends, status, "
                "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
-               "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+               "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+               "guest_reminders, hide_branding "
                "FROM booking_pages";
     }
 
@@ -2228,7 +2247,85 @@ private:
         record.status = value_(result, row, 11);
         record.createdAt = value_(result, row, 12);
         record.updatedAt = value_(result, row, 13);
+        record.guestReminders = value_(result, row, 14) != "f";
+        record.hideBranding = value_(result, row, 15) == "t";
         return record;
+    }
+
+    // ------------------------------------------------------ booking_reminders
+    static std::string reminderColumns() {
+        return "id, booking_id, owner_id, "
+               "to_char(occurrence_start AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), kind, "
+               "to_char(due_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+               "COALESCE(to_char(sent_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '')";
+    }
+
+    BookingReminderRecord readReminder(PGresult* result, int row) const {
+        BookingReminderRecord record;
+        record.id = std::atoll(value_(result, row, 0).c_str());
+        record.bookingId = std::atoll(value_(result, row, 1).c_str());
+        record.ownerId = std::atoll(value_(result, row, 2).c_str());
+        record.occurrenceStart = value_(result, row, 3);
+        record.kind = value_(result, row, 4);
+        record.dueAt = value_(result, row, 5);
+        record.sentAt = value_(result, row, 6);
+        return record;
+    }
+
+    DatabaseError addBookingReminders(const std::vector<BookingReminderRecord>& reminders) override {
+        Lease lease(pool_);
+        for (const auto& reminder : reminders) {
+            if (!execute("INSERT INTO booking_reminders (booking_id, owner_id, occurrence_start, kind, due_at) "
+                         "VALUES ($1, $2, $3::timestamptz, $4, $5::timestamptz) "
+                         "ON CONFLICT (booking_id, occurrence_start, kind) DO NOTHING",
+                         {std::to_string(reminder.bookingId), std::to_string(reminder.ownerId),
+                          reminder.occurrenceStart, reminder.kind, reminder.dueAt},
+                         nullptr)) {
+                return DatabaseError::failure(lastError());
+            }
+        }
+        return DatabaseError::success();
+    }
+
+    DatabaseError deleteBookingReminders(long long bookingId, const std::string& occurrenceStart) override {
+        Lease lease(pool_);
+        if (!execute("DELETE FROM booking_reminders WHERE booking_id = $1 AND sent_at IS NULL "
+                     "AND ($2::text = '' OR occurrence_start = NULLIF($2::text, '')::timestamptz)",
+                     {std::to_string(bookingId), occurrenceStart}, nullptr)) {
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
+    }
+
+    std::vector<BookingReminderRecord> listBookingReminders(long long bookingId) override {
+        Lease lease(pool_);
+        std::vector<BookingReminderRecord> reminders;
+        PGresult* result = nullptr;
+        if (!execute("SELECT " + reminderColumns() + " FROM booking_reminders WHERE booking_id = $1 ORDER BY due_at, id",
+                     {std::to_string(bookingId)}, &result)) {
+            return reminders;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) reminders.push_back(readReminder(result, row));
+        PQclear(result);
+        return reminders;
+    }
+
+    // Захват одним UPDATE: строки, уже взятые другим экземпляром, пропускаются (SKIP LOCKED).
+    std::vector<BookingReminderRecord> claimDueReminders(const std::string& nowIso, int limit) override {
+        Lease lease(pool_);
+        std::vector<BookingReminderRecord> reminders;
+        PGresult* result = nullptr;
+        if (!execute("UPDATE booking_reminders SET sent_at = now() WHERE id IN ("
+                     "SELECT id FROM booking_reminders WHERE sent_at IS NULL AND due_at <= $1::timestamptz "
+                     "ORDER BY due_at LIMIT $2 FOR UPDATE SKIP LOCKED) RETURNING " + reminderColumns(),
+                     {nowIso, std::to_string(limit > 0 ? limit : 100)}, &result)) {
+            return reminders;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) reminders.push_back(readReminder(result, row));
+        PQclear(result);
+        std::sort(reminders.begin(), reminders.end(),
+                  [](const BookingReminderRecord& a, const BookingReminderRecord& b) { return a.dueAt < b.dueAt; });
+        return reminders;
     }
 
     // -------------------------------------------------------------- bookings
@@ -2416,13 +2513,61 @@ private:
         return id;
     }
 
+    // Одна транзакция: строка referrals и оба пользователя заблокированы (пользователи —
+    // по возрастанию id, без взаимной блокировки), счётчик наград пригласившего
+    // читается под блокировкой его строки — два подтверждения не превысят cap.
+    long long rewardReferral(long long referredId, int days, int cap, bool& referrerRewarded) override {
+        referrerRewarded = false;
+        if (days <= 0) return 0;
+        Lease lease(pool_);
+        if (!execute("BEGIN", {}, nullptr)) return 0;
+        const auto fail = [this]() {
+            execute("ROLLBACK", {}, nullptr);
+            return 0LL;
+        };
+        PGresult* result = nullptr;
+        if (!execute("SELECT referrer_id FROM referrals WHERE referred_id = $1 AND verified_at IS NOT NULL "
+                     "AND rewarded_at IS NULL FOR UPDATE",
+                     {std::to_string(referredId)}, &result)) {
+            return fail();
+        }
+        const long long referrerId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        if (referrerId <= 0) return fail();
+        const std::string referrer = std::to_string(referrerId);
+        const std::string referred = std::to_string(referredId);
+        if (!execute("SELECT id FROM users WHERE id IN ($1, $2) ORDER BY id FOR UPDATE", {referrer, referred},
+                     nullptr)) {
+            return fail();
+        }
+        result = nullptr;
+        if (!execute("SELECT count(*) FROM referrals WHERE referrer_id = $1 AND rewarded_at IS NOT NULL", {referrer},
+                     &result)) {
+            return fail();
+        }
+        const long long rewarded = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        const std::string extend =
+            "UPDATE users SET plan_until = greatest(now(), plan_until) + make_interval(days => $2::int) WHERE id = $1";
+        if (!execute("UPDATE referrals SET rewarded_at = now() WHERE referred_id = $1", {referred}, nullptr) ||
+            !execute(extend, {referred, std::to_string(days)}, nullptr)) {
+            return fail();
+        }
+        const bool toReferrer = rewarded < cap;
+        if (toReferrer && !execute(extend, {referrer, std::to_string(days)}, nullptr)) return fail();
+        if (!execute("COMMIT", {}, nullptr)) return fail();
+        referrerRewarded = toReferrer;
+        return referrerId;
+    }
+
     std::vector<ReferralRecord> listReferrals(long long referrerId, int limit) override {
         Lease lease(pool_);
         std::vector<ReferralRecord> referrals;
         PGresult* result = nullptr;
         if (!execute("SELECT r.referred_id, u.display_name, r.source, "
                      "to_char(r.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
-                     "to_char(r.verified_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+                     "to_char(r.verified_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+                     "to_char(r.rewarded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
                      "FROM referrals r JOIN users u ON u.id = r.referred_id "
                      "WHERE r.referrer_id = $1 ORDER BY r.id DESC LIMIT $2",
                      {std::to_string(referrerId), std::to_string(limit > 0 ? limit : 50)}, &result)) {
@@ -2436,6 +2581,7 @@ private:
             record.source = value_(result, row, 2);
             record.createdAt = value_(result, row, 3);
             record.verifiedAt = value_(result, row, 4);
+            record.rewardedAt = value_(result, row, 5);
             referrals.push_back(record);
         }
         PQclear(result);

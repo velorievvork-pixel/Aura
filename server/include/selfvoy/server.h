@@ -71,6 +71,7 @@ public:
     // Pro-функция доступна пользователю: !SELFVOY_PLANS_ENFORCED или действующий Pro.
     bool proAllowed(long long userId);
     CalendarFeed& calendarFeed() { return *calendarFeed_; }
+    ReferralManager& referrals() { return *referrals_; }
 
     // Один проход планировщика напоминаний (публично для тестов).
     // userId = 0 — все пользователи; иначе только напоминания этого пользователя.

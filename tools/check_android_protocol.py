@@ -44,6 +44,8 @@ KINDS = {
     "twofactor.enabled",
     "twofactor.disabled",
     "referral.joined",
+    "referral.reward",
+    "booking.confirmed",
 }
 
 

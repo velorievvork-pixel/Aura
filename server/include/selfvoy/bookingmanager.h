@@ -12,9 +12,10 @@
 // (в БД — только sha256): по ней он переносит встречу (booking.reschedule,
 // не больше 3 раз) или отменяет одну встречу серии либо все (booking.cancel).
 // Владельцу — задача с напоминанием на каждую встречу и уведомления
-// booking.created / booking.rescheduled / booking.cancelled. Встречи записей
-// занимают время владельца (MemoryManager::busy) — в переговорах, приглашениях
-// и на других страницах.
+// booking.created / booking.rescheduled / booking.cancelled / booking.confirmed.
+// Встречи записей занимают время владельца (MemoryManager::busy) — в переговорах,
+// приглашениях и на других страницах. Гостю — напоминания за сутки и за 2 часа
+// (booking_reminders, F1) и подпись «Запись через Selfvoy» (F3).
 #pragma once
 
 #include <chrono>
@@ -23,6 +24,7 @@
 #include <ctime>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <string>
 #include <unordered_map>
@@ -42,6 +44,7 @@ class ScheduleLock;
 class TelegramBot;
 struct BookingPageRecord;
 struct BookingRecord;
+struct BookingReminderRecord;
 struct Config;
 
 // Извещение гостю: одно сообщение уходит на все каналы записи — email гостя (и
@@ -52,7 +55,7 @@ struct GuestNotice {
     std::vector<std::string> emails;  // адреса, лимит на каждый уже списан
     std::vector<long long> chats;     // Telegram-чаты, лимит на каждый уже списан
     std::string telegramText;         // простой текст для Telegram
-    Json telegramMarkup;              // reply_markup (url-кнопка) или null
+    Json telegramMarkup;              // reply_markup (inline_keyboard: url- и callback-кнопки) или null
 };
 
 class BookingManager {
@@ -104,6 +107,10 @@ public:
     // уходят письмом на email гостя (старые перестают работать). Ответ всегда
     // одинаковый — по нему нельзя узнать, записан ли кто-то с этим адресом.
     Result resendLink(const Json& payload, const std::string& remoteAddr);
+    // «Приду» (F1): {token, occurrence? (start; по умолчанию ближайшая предстоящая
+    // активная)} → {booking}. Ставит у встречи confirmed_at; повтор — без изменений и
+    // без второго уведомления владельцу (booking.confirmed). Лимиты — как у переноса.
+    Result confirm(const Json& payload, const std::string& remoteAddr);
 
     // Пост «свободные окна» (F6, владелец): {page_id, days? (1–14, 7), format?
     // (telegram|vk|plain)} → {text, slots, url}. Окна — те же, что гость видит в
@@ -132,6 +139,24 @@ public:
     // Кнопка «Приду» из Telegram (callback cf:<booking_id>:<start_unix>): чат уже
     // проверен ботом. Логику booking.confirm подключает стадия F1; пока — «недоступно».
     Result telegramConfirm(long long bookingId, std::time_t start);
+
+    // --- F1: напоминания гостю (S1b) ----------------------------------------
+    static constexpr int kReminder24hSec = 24 * 3600;
+    static constexpr int kReminder2hSec = 2 * 3600;
+    static constexpr int kReminder24hMinLeadSec = 25 * 3600;    // 24h — если до начала ≥ 25 ч
+    static constexpr int kReminder2hMinLeadSec = 150 * 60;      // 2h — если до начала ≥ 2 ч 30 мин
+    // Запланировать напоминания на активные будущие встречи записи (повтор не дублирует).
+    void scheduleReminders(const BookingRecord& booking, std::time_t now);
+    // Удалить неотправленные напоминания неактивных встреч (вся запись отменена — все).
+    void dropInactiveReminders(const BookingRecord& booking);
+    // Планировщик сервера: захватить до limit наступивших напоминаний и отправить гостю
+    // (email + Telegram). now — параметр (юнит-тесты подставляют будущее время).
+    // Возвращает число захваченных (отправленных и пропущенных).
+    std::size_t reminderTick(int limit, std::time_t now);
+
+    // --- F3: подпись «Запись через Selfvoy» ----------------------------------
+    // {show, text, url}: show — пока владелец не скрыл подпись при действующем Pro.
+    Json branding(const BookingPageRecord& page);
 
 private:
     struct Offer {
@@ -187,6 +212,21 @@ private:
                      const std::string& subject, const std::string& title, const std::string& lead,
                      const std::string& token, bool onlyActive, bool reserved = false,
                      const std::vector<std::string>& footer = {});
+    // Получатели извещения (email и Telegram-чаты записи) с лимитами на адрес/чат и на
+    // владельца. false — некому отправлять (или лимит владельца исчерпан).
+    bool guestRecipients(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
+                         bool reserved, GuestNotice& notice);
+    // Строка подписи для писем и бота гостю ("" — подпись скрыта или нет PUBLIC_URL).
+    std::string brandingLine(const BookingPageRecord& page);
+    // Поставить извещение в фоновую очередь отправки.
+    void enqueueNotice(GuestNotice notice);
+    // Отправить одно наступившее напоминание (false — пропущено).
+    bool sendReminder(const BookingReminderRecord& reminder, std::time_t now);
+    // Общая логика «Приду»: запись по id (bookingId > 0) или по хэшу токена, встреча — start
+    // (0 — ближайшая предстоящая активная); чтение и сохранение — под блокировкой расписания.
+    // changed — confirmed_at поставлен этим вызовом (тогда же — уведомление владельцу).
+    Result confirmOccurrence(long long bookingId, const std::string& hash, std::time_t start, bool& changed,
+                             std::optional<BookingRecord>& out);
     void mailLoop();
     std::string sealManageToken(const std::string& token) const;
     std::string manageUrl(const std::string& token) const;

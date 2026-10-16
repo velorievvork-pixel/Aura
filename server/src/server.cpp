@@ -217,6 +217,12 @@ void Server::schedulerLoop() {
         for (int batch = 0; batch < 100 && !stopping_.load(); ++batch) {
             if (runSchedulerTick(100) < 100) break;
         }
+        // F1: напоминания гостям о встречах (атомарный захват — один экземпляр на строку).
+        if (bookings_) {
+            for (int batch = 0; batch < 100 && !stopping_.load(); ++batch) {
+                if (bookings_->reminderTick(100, std::time(nullptr)) < 100) break;
+            }
+        }
     }
 }
 
@@ -1013,6 +1019,11 @@ void Server::registerHandlers() {
     registerHandler("booking.resendLink", [this, bookingReply](std::shared_ptr<Session> session,
                                                                const protocol::Request& request) {
         return bookingReply(request, bookings_->resendLink(request.payload, session->remoteAddr()));
+    });
+    // F1: «Приду» по ссылке из напоминания (#/m/<токен>?confirm=<start>).
+    registerHandler("booking.confirm", [this, bookingReply](std::shared_ptr<Session> session,
+                                                            const protocol::Request& request) {
+        return bookingReply(request, bookings_->confirm(request.payload, session->remoteAddr()));
     });
 
     // ---------------------------------------------------- F6: окна и ICS

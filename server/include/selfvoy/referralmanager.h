@@ -6,6 +6,11 @@
 // после подтверждения email — тогда пригласившему приходит уведомление
 // referral.joined. Неверный или свой код регистрацию не ломает: он молча
 // игнорируется.
+//
+// Награда (F3): за подтверждённого приглашённого обоим +30 дней Pro
+// (plan_until = greatest(now, plan_until) + 30 дней) один раз (referrals.rewarded_at);
+// пригласивший — не больше чем за 12 приглашённых, дальше растёт только счётчик.
+// Приглашённому — уведомление referral.reward.
 #pragma once
 
 #include <string>
@@ -28,6 +33,9 @@ public:
         Json payload = Json::object();
     };
 
+    static constexpr int kRewardDays = 30;
+    static constexpr int kRewardCap = 12;
+
     ReferralManager(DatabaseManager& database, NotificationsManager* notifications, const Config& config);
 
     // Код пользователя; при первом обращении создаётся. "" — сбой БД.
@@ -36,7 +44,7 @@ public:
     Result get(long long userId, const Json& payload);
     // Регистрация с кодом: source — link | booking | invite (иное → link).
     void attach(long long referredId, const std::string& code, const std::string& source);
-    // Email приглашённого подтверждён: отметка и уведомление пригласившему (один раз).
+    // Email приглашённого подтверждён: отметка, награда и уведомления (один раз).
     void verified(long long userId);
 
     // Код в каноническом виде (верхний регистр) или "", если формат неверен.

@@ -9,7 +9,7 @@ e2e — на реальном PostgreSQL.
 изменения — файлами `schema/migrations/` (применяются по порядку имени).
 Демо-данные: `schema/seed.sql`.
 
-## 30 таблиц по доменам
+## 31 таблица по доменам
 
 ### Аутентификация и безопасность
 | таблица | назначение |
@@ -64,7 +64,7 @@ e2e — на реальном PostgreSQL.
 | таблица | назначение |
 | --- | --- |
 | `booking_pages` | постоянная ссылка владельца (`booking.*`): `slug` UNIQUE (10 символов), название, описание, `duration_minutes` CHECK 15–240, `days_ahead` 1–60, `max_per_day` 1–16, `notice_hours` 0–168, `max_series` 1–12, `weekends`, `status` CHECK (`active`/`paused`/`archived`); индекс (owner_id, id DESC) |
-| `bookings` | запись гостя: `page_id`, `owner_id`, `manage_hash` UNIQUE (sha256 токена ссылки управления), `guest_name/email/comment`, `occurrences` JSONB `[{start,end,day,status,task_id}]`, `status` CHECK (`active`/`cancelled`), `cancelled_by`, `reschedules`, `ends_at` (конец последней активной встречи; занятость и лимит в день читают только предстоящие записи); индексы (owner_id, id DESC), (page_id, status), частичные (owner_id, ends_at) и (page_id, ends_at) по активным |
+| `bookings` | запись гостя: `page_id`, `owner_id`, `manage_hash` UNIQUE (sha256 токена ссылки управления), `guest_name/email/comment`, `occurrences` JSONB `[{start,end,day,local,status,task_id,confirmed_at?}]`, `status` CHECK (`active`/`cancelled`), `cancelled_by`, `reschedules`, `ends_at` (конец последней активной встречи; занятость и лимит в день читают только предстоящие записи); индексы (owner_id, id DESC), (page_id, status), частичные (owner_id, ends_at) и (page_id, ends_at) по активным |
 | `referral_codes` | реферальный код пользователя: `user_id` PK, `code` UNIQUE CHECK `^[A-Z0-9]{8}$` |
 | `referrals` | кто кого пригласил: `referrer_id`, `referred_id` UNIQUE (один пригласивший), `source` CHECK (`link`/`booking`/`invite`), `verified_at` (после подтверждения email); индекс (referrer_id, id DESC) |
 
@@ -86,6 +86,7 @@ advisory lock'ов (их берут и отпускают в одной сесс
 | --- | --- |
 | `booking_telegram` | Telegram-чаты гостя записи (напоминания и извещения): `booking_id` (ON DELETE CASCADE), `chat_id`, `linked_at`; PK (booking_id, chat_id), индекс по `chat_id` (отвязка `/stop` и при 403); не больше 3 чатов на запись — проверяет сервер |
 | `server_state` | служебное состояние сервера ключ → значение (`telegram.offset` — смещение `getUpdates`), `updated_at` |
+| `booking_reminders` | напоминания гостю о встрече (F1): `booking_id` (ON DELETE CASCADE), `owner_id`, `occurrence_start`, `kind` CHECK (`24h`/`2h`), `due_at`, `sent_at` (NULL — не отправлено); UNIQUE (booking_id, occurrence_start, kind), частичный индекс `due_at WHERE sent_at IS NULL`. Создаются при записи/переносе, неотправленные удаляются при отмене/переносе встречи; планировщик захватывает наступившие одним `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING` |
 
 Миграция `2026_10_16_telegram_pro.sql` (то же — блоком в конце таблиц `schema.sql`):
 `users.plan_until` (Pro, пока `plan_until > now()`; NULL — Free),
@@ -96,6 +97,14 @@ advisory lock'ов (их берут и отпускают в одной сесс
 таблицы `booking_telegram` и `server_state`. Опрос Telegram ведёт один экземпляр
 сервера: advisory lock с отдельным ключом (`0x53564F59544C47`, не пространство
 расписаний `0x4155…`) на соединении блокировок.
+
+Миграция `2026_10_16_reminders_branding.sql` (S1b; то же — блоком в конце таблиц
+`schema.sql`): `booking_pages.guest_reminders` (BOOLEAN, true — напоминать гостю),
+`booking_pages.hide_branding` (BOOLEAN, false — скрыть подпись «Запись через
+Selfvoy», Pro), таблица `booking_reminders`, `referrals.rewarded_at` (награда
++30 дней Pro обоим начислена; один раз). `confirmed_at` встречи («Приду») —
+поле внутри `bookings.occurrences` JSONB, отдельной колонки нет. Во встроенном
+хранилище — массив `booking_reminders` с теми же полями; захват — под мьютексом.
 
 Миграция `2026_10_15_audit_fixes.sql`: `users.email_verified DEFAULT FALSE`
 (новый аккаунт без явного значения не считается подтверждённым), `bookings.ends_at`

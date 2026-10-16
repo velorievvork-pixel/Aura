@@ -1526,6 +1526,28 @@ public:
         return DatabaseError::failure("пользователь не найден");
     }
 
+    DatabaseError extendUserPlanDays(long long userId, int days) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (days <= 0) return DatabaseError::failure("срок продления — больше 0 дней");
+        if (!extendPlanLocked(userId, days)) return DatabaseError::failure("пользователь не найден");
+        flush();
+        return DatabaseError::success();
+    }
+
+    // plan_until = greatest(now, plan_until) + days; вызывается под mutex_.
+    bool extendPlanLocked(long long userId, int days) {
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("id") != userId) continue;
+            std::time_t base = std::time(nullptr);
+            std::time_t until = 0;
+            const std::string current = item.getString("plan_until");
+            if (!current.empty() && parseIsoUtc(current, until) && until > base) base = until;
+            item.set("plan_until", Json(isoUtc(base + static_cast<std::time_t>(days) * 86400)));
+            return true;
+        }
+        return false;
+    }
+
     DatabaseError setUserTelegram(long long userId, long long chatId, const std::string& username) override {
         std::lock_guard<std::mutex> lock(mutex_);
         bool found = false;
@@ -1883,6 +1905,8 @@ private:
         entry.set("max_series", Json(static_cast<long long>(record.maxSeries)));
         entry.set("weekends", Json(record.weekends));
         entry.set("status", Json(record.status));
+        entry.set("guest_reminders", Json(record.guestReminders));
+        entry.set("hide_branding", Json(record.hideBranding));
         entry.set("updated_at", Json(isoNow()));
     }
 
@@ -1902,7 +1926,100 @@ private:
         record.status = entry.getString("status", "active");
         record.createdAt = entry.getString("created_at");
         record.updatedAt = entry.getString("updated_at");
+        record.guestReminders = entry.getBool("guest_reminders", true);
+        record.hideBranding = entry.getBool("hide_branding", false);
         return record;
+    }
+
+    // ------------------------------------------------------ booking_reminders
+    static BookingReminderRecord toReminder(const Json& entry) {
+        BookingReminderRecord record;
+        record.id = entry.getInt("id");
+        record.bookingId = entry.getInt("booking_id");
+        record.ownerId = entry.getInt("owner_id");
+        record.occurrenceStart = entry.getString("occurrence_start");
+        record.kind = entry.getString("kind");
+        record.dueAt = entry.getString("due_at");
+        record.sentAt = entry.getString("sent_at");
+        return record;
+    }
+
+    DatabaseError addBookingReminders(const std::vector<BookingReminderRecord>& reminders) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        bool added = false;
+        for (const auto& reminder : reminders) {
+            if (reminder.kind != "24h" && reminder.kind != "2h") return DatabaseError::failure("неизвестный вид напоминания");
+            bool exists = false;
+            for (const auto& entry : table("booking_reminders").items()) {
+                if (entry.getInt("booking_id") == reminder.bookingId &&
+                    entry.getString("occurrence_start") == reminder.occurrenceStart &&
+                    entry.getString("kind") == reminder.kind) {
+                    exists = true;  // UNIQUE (booking_id, occurrence_start, kind) — ON CONFLICT DO NOTHING
+                    break;
+                }
+            }
+            if (exists) continue;
+            Json entry = Json::object();
+            entry.set("id", Json(nextId("booking_reminders")));
+            entry.set("booking_id", Json(reminder.bookingId));
+            entry.set("owner_id", Json(reminder.ownerId));
+            entry.set("occurrence_start", Json(reminder.occurrenceStart));
+            entry.set("kind", Json(reminder.kind));
+            entry.set("due_at", Json(reminder.dueAt));
+            entry.set("sent_at", Json(std::string()));
+            table("booking_reminders").push(entry);
+            added = true;
+        }
+        if (added) flush();
+        return DatabaseError::success();
+    }
+
+    DatabaseError deleteBookingReminders(long long bookingId, const std::string& occurrenceStart) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& rows = mutableTable("booking_reminders");
+        const auto before = rows.size();
+        rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                  [&](const Json& entry) {
+                                      return entry.getInt("booking_id") == bookingId &&
+                                             entry.getString("sent_at").empty() &&
+                                             (occurrenceStart.empty() ||
+                                              entry.getString("occurrence_start") == occurrenceStart);
+                                  }),
+                   rows.end());
+        if (rows.size() != before) flush();
+        return DatabaseError::success();
+    }
+
+    std::vector<BookingReminderRecord> listBookingReminders(long long bookingId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingReminderRecord> result;
+        for (const auto& entry : table("booking_reminders").items()) {
+            if (entry.getInt("booking_id") == bookingId) result.push_back(toReminder(entry));
+        }
+        std::stable_sort(result.begin(), result.end(), [](const BookingReminderRecord& a, const BookingReminderRecord& b) {
+            return a.dueAt < b.dueAt;
+        });
+        return result;
+    }
+
+    // Эквивалент UPDATE … FOR UPDATE SKIP LOCKED: выбор и отметка — под одним мьютексом.
+    std::vector<BookingReminderRecord> claimDueReminders(const std::string& nowIso, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<Json*> due;
+        for (auto& entry : mutableTable("booking_reminders")) {
+            if (entry.getString("sent_at").empty() && entry.getString("due_at") <= nowIso) due.push_back(&entry);
+        }
+        std::stable_sort(due.begin(), due.end(),
+                         [](const Json* a, const Json* b) { return a->getString("due_at") < b->getString("due_at"); });
+        if (limit > 0 && static_cast<int>(due.size()) > limit) due.resize(static_cast<std::size_t>(limit));
+        std::vector<BookingReminderRecord> claimed;
+        const std::string sentAt = isoNow();
+        for (Json* entry : due) {
+            entry->set("sent_at", Json(sentAt));
+            claimed.push_back(toReminder(*entry));
+        }
+        if (!claimed.empty()) flush();
+        return claimed;
     }
 
     // -------------------------------------------------------------- bookings
@@ -2082,6 +2199,35 @@ private:
         return 0;
     }
 
+    long long rewardReferral(long long referredId, int days, int cap, bool& referrerRewarded) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        referrerRewarded = false;
+        table("users");  // ключи — до взятия ссылок на таблицы
+        Json* row = nullptr;
+        for (auto& entry : mutableTable("referrals")) {
+            if (entry.getInt("referred_id") == referredId) {
+                row = &entry;
+                break;
+            }
+        }
+        if (!row || row->getString("verified_at").empty() || !row->getString("rewarded_at").empty() || days <= 0) {
+            return 0;
+        }
+        const long long referrerId = row->getInt("referrer_id");
+        int rewarded = 0;
+        for (const auto& entry : table("referrals").items()) {
+            if (entry.getInt("referrer_id") == referrerId && !entry.getString("rewarded_at").empty()) ++rewarded;
+        }
+        row->set("rewarded_at", Json(isoNow()));
+        extendPlanLocked(referredId, days);
+        if (rewarded < cap) {
+            extendPlanLocked(referrerId, days);
+            referrerRewarded = true;
+        }
+        flush();
+        return referrerId;
+    }
+
     std::vector<ReferralRecord> listReferrals(long long referrerId, int limit) override {
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<ReferralRecord> result;
@@ -2094,6 +2240,7 @@ private:
             record.source = it->getString("source");
             record.createdAt = it->getString("created_at");
             record.verifiedAt = it->getString("verified_at");
+            record.rewardedAt = it->getString("rewarded_at");
             for (const auto& user : table("users").items()) {
                 if (user.getInt("id") == record.referredId) {
                     record.displayName = user.getString("display_name");

@@ -48,7 +48,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 `auth.resendCode`, `auth.forgotPassword`, `auth.resetPassword`,
 `auth.refresh`, `ping`, `server.info`, `invite.get`, `invite.respond`,
 `booking.get`, `booking.book`, `booking.manage`, `booking.reschedule`,
-`booking.cancel`, `booking.resendLink`, требуют авторизации.
+`booking.cancel`, `booking.resendLink`, `booking.confirm`, требуют авторизации.
 
 ## Коды ошибок
 
@@ -341,8 +341,9 @@ Access-токен автоматически обновляется по `refres
 (изменение 2FA), `invite.accepted` / `invite.declined` (гость ответил на
 приглашение по ссылке), `booking.created` / `booking.rescheduled` /
 `booking.cancelled` (гость записался, перенёс или отменил встречу на
-странице записи), `referral.joined` (приглашённый по реферальной ссылке
-подтвердил email). Push-доставка — через устройства в `push_devices`
+странице записи), `booking.confirmed` (гость нажал «Приду»), `referral.joined`
+(приглашённый по реферальной ссылке подтвердил email), `referral.reward`
+(приглашённому начислен месяц Pro). Push-доставка — через устройства в `push_devices`
 (платформы `apns` | `fcm` | `webhook` | `dev`); платформенный конверт
 уходит во внешний шлюз (`SELFVOY_PUSH_DRIVER=webhook`,
 `SELFVOY_PUSH_WEBHOOK_URL`), который подписывает ключи провайдера (JWT для
@@ -451,20 +452,25 @@ guest_name, comment}`).
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `booking.pageCreate` | `{title (1–120, одна строка), description? (≤ 1000), duration_minutes? (15–240, 30), days_ahead? (1–60, 14), max_per_day? (1–16, 4), notice_hours? (0–168, 2), max_series? (1–12, 1), weekends? (bool, false)}` | `{page}`; больше 10 страниц → `forbidden` |
+| `booking.pageCreate` | `{title (1–120, одна строка), description? (≤ 1000), duration_minutes? (15–240, 30), days_ahead? (1–60, 14), max_per_day? (1–16, 4), notice_hours? (0–168, 2), max_series? (1–12, 1), weekends? (bool, false), guest_reminders? (bool, true), hide_branding? (bool, false)}` | `{page}`; больше 10 страниц → `forbidden`; `hide_branding: true` без Pro при `SELFVOY_PLANS_ENFORCED=1` → `pro_required` |
 | `booking.pageList` | — | `{pages: [page]}` — новые сверху, без удалённых |
-| `booking.pageUpdate` | `{page_id, …любые поля pageCreate, status? (active \| paused)}` | `{page}` — меняются только переданные поля |
+| `booking.pageUpdate` | `{page_id, …любые поля pageCreate, status? (active \| paused)}` | `{page}` — меняются только переданные поля; включить `hide_branding` без Pro (при `SELFVOY_PLANS_ENFORCED=1`) → `pro_required`, выключить можно всегда |
 | `booking.pageDelete` | `{page_id}` | `{deleted: true}` — ссылка перестаёт работать, сделанные записи остаются |
 | `booking.list` | `{page_id? (0 — все), active_only?, limit? (1–200, 50)}` | `{bookings: [booking]}` — новые сверху |
 | `booking.ownerCancel` | `{booking_id, occurrence? (start одной встречи)}` | `{booking}`; без `occurrence` — все предстоящие встречи |
 
 `page`: `{id, slug, url, title, description, duration_minutes, days_ahead,
 max_per_day, notice_hours, max_series, weekends, status (active | paused),
-upcoming, created_at, updated_at}`; `url` пуст без `SELFVOY_PUBLIC_URL`.
+guest_reminders, hide_branding, upcoming, created_at, updated_at}`; `url` пуст
+без `SELFVOY_PUBLIC_URL`. `guest_reminders` — напоминать гостю о встрече
+(бесплатно), `hide_branding` — скрыть подпись «Запись через Selfvoy» (Pro).
 `booking` (вид владельца): `{id, page_id, page_title, guest_name, guest_email,
 guest_comment, status (active | cancelled), cancelled_by ("" | guest | owner),
-reschedules, occurrences: [{start, end, local, status (active | cancelled)}],
-created_at, updated_at}`.
+reschedules, occurrences: [{start, end, local, status (active | cancelled),
+confirmed_at}], reminders: [{start, kind (24h | 2h), due_at, sent_at}],
+created_at, updated_at}`; `confirmed_at` — когда гость нажал «Приду» ("" — не
+подтверждал), `reminders` — запланированные и отправленные напоминания гостю
+(`sent_at` "" — ещё не отправлено).
 
 Методы гостя (публичные, без входа). Соединение без входа сервер закрывает
 через `SELFVOY_AUTH_TIMEOUT` (30 с), но если по нему успешно вызывались гостевые
@@ -479,6 +485,7 @@ created_at, updated_at}`.
 | `booking.reschedule` | `{token, start, occurrence? (start переносимой встречи; по умолчанию ближайшая)}` | `{booking}`; не больше 3 переносов на запись |
 | `booking.cancel` | `{token, occurrence?, reason? (≤ 500)}` | `{booking}`; без `occurrence` — все предстоящие встречи |
 | `booking.resendLink` | `{slug, email}` | `{sent: true}` — всегда одинаково (нельзя узнать, есть ли запись); если на странице есть активная запись с этим email, ссылка управления перевыпускается (прежняя перестаёт работать) и уходит письмом |
+| `booking.confirm` | `{token, occurrence? (start встречи; по умолчанию ближайшая предстоящая активная)}` | `{booking}` (вид гостя, `slots` пуст) — у встречи ставится `confirmed_at`; повтор ничего не меняет и не уведомляет владельца второй раз; лимит — как у переноса/отмены |
 
 Письма гостю (если при записи указан email; драйвер почты — как у кодов
 подтверждения, `SELFVOY_MAIL_DRIVER`): подтверждение записи со ссылкой управления
@@ -493,20 +500,50 @@ https); лимит — 10 в час на адрес и на чат, 200 в ча�
 
 Вид страницы для гостя: `{slug, title, description, duration_minutes,
 max_series, owner_name, owner_timezone, status, slots: [{start, end, day}],
-slots_unavailable, ref}` — без email владельца и чужих записей; `day` —
+slots_unavailable, ref, branding}` — без email владельца и чужих записей; `day` —
 местная дата владельца; `slots_unavailable: true` — AI-сервис недоступен
 (страница видна, время не подобрано); `ref` — реферальный код владельца для
 ссылки «Заведите свой Selfvoy». Вид записи для гостя: `{page_title, page_slug
 ("" — запись на странице закрыта), owner_name, owner_timezone,
 duration_minutes, guest_name, status, cancelled_by, occurrences, can_cancel,
 can_reschedule, can_change, reschedules_left, slots (свободное время для
-переноса ближайшей встречи), slots_unavailable, ref, telegram_url,
-telegram_linked}`; `telegram_url` — ссылка подписки на напоминания в Telegram
+переноса ближайшей встречи), slots_unavailable, ref, branding, telegram_url,
+telegram_linked}`, у каждой встречи в `occurrences` — `confirmed_at` ("" — не
+подтверждена); `telegram_url` — ссылка подписки на напоминания в Telegram
 ("" — бот не настроен или запись отменена; после `booking.resendLink` прежняя
 ссылка перестаёт работать), `telegram_linked` — к записи уже подключён чат. `can_cancel` — есть
 предстоящая встреча (отменить можно и на паузе, и после удаления страницы);
 `can_reschedule` — к тому же страница открыта и переносы не исчерпаны;
 `can_change` — устаревший синоним `can_reschedule`.
+
+Подпись (F3): `branding: {show, text: "Запись через Selfvoy", url}`, `url` —
+`<SELFVOY_PUBLIC_URL>/#/signup?ref=<код владельца>&src=booking` ("" без
+`SELFVOY_PUBLIC_URL`). `show: false` — только пока владелец скрыл подпись
+(`hide_branding`) и у него действует Pro (или `SELFVOY_PLANS_ENFORCED=0`):
+Pro закончился — подпись снова показывается. При `show` и непустом `url` в
+письма гостю последней строкой и в сообщения бота гостю добавляется «Запись
+через Selfvoy — заведите свой бесплатно: <url>». Поле `ref` оставлено для
+совместимости.
+
+Напоминания гостю (F1, если у страницы `guest_reminders`): при записи и переносе
+на каждую активную встречу планируются `24h` (за сутки; если до начала ≥ 25 ч)
+и `2h` (за 2 часа; если до начала ≥ 2 ч 30 мин); отмена или перенос встречи
+удаляет её неотправленные напоминания. Планировщик сервера отправляет наступившие
+(атомарный захват: на PostgreSQL `FOR UPDATE SKIP LOCKED` — каждое уходит один
+раз даже при нескольких экземплярах) письмом и в Telegram-чаты записи с теми же
+лимитами, что у извещений. Не отправляются, если запись или встреча уже не
+активна, встреча началась, у страницы выключен `guest_reminders` (проверяется в
+момент отправки) или «за сутки» опоздало до последних 2 часов. Тема — «Напоминание:
+завтра в 15:00 — <название страницы>» («сегодня в …» или дата), время — местное
+время владельца, в тексте — с поясом и имя владельца. Кнопка письма «Приду» —
+`<SELFVOY_PUBLIC_URL>/#/m/<токен>?confirm=<start ISO>`, строкой — «Перенести или
+отменить: <SELFVOY_PUBLIC_URL>/#/m/<токен>»; у старых записей (токен не сохранён)
+или без `SELFVOY_PUBLIC_URL` вместо ссылок — «Перенести или отменить можно по
+ссылке из письма о записи». В Telegram — кнопка «Приду» (callback
+`cf:<booking_id>:<start_unix>`) и url-кнопка «Перенести или отменить» (только
+https-ссылка). «Приду» по ссылке вызывает `booking.confirm`; владельцу —
+уведомление `booking.confirmed` (`{booking_id, page_id, start, guest_name}`) —
+один раз на встречу. Перенос встречи сбрасывает её `confirmed_at`.
 
 Серия — та же встреча каждую неделю в том же **местном времени владельца**
 (AI `POST /v1/agent/series` считает повторы в его поясе: 10:00 остаётся 10:00
@@ -524,7 +561,7 @@ cancelled, guest_name, reason}`). Запись без предстоящих в�
 
 Ошибки: `not_found` — неизвестный/удалённый slug или токен, чужая запись;
 `conflict` — время заняли, запись на паузе, запись уже отменена, переносы
-исчерпаны; `bad_request` — слот не из свободных, неверные поля; `upstream_error` —
+исчерпаны, подтверждаемой встречи нет (прошла или отменена); `bad_request` — слот не из свободных, неверные поля; `upstream_error` —
 AI-сервис недоступен при записи/переносе; `forbidden` — лимиты по IP
 (30 `booking.get`/`booking.manage` в минуту, 10 записей в минуту и 30 в час,
 10 переносов/отмен в минуту).
@@ -616,14 +653,23 @@ IP клиента за доверенным прокси — из `X-Forwarded-F
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `referral.get` | `{limit? (1–100, 50)}` | `{code, url, joined, verified, referrals: [{display_name, source, joined_at, verified}]}` |
+| `referral.get` | `{limit? (1–100, 50)}` | `{code, url, joined, verified, rewarded, reward_days: 30, reward_cap: 12, plan, referrals: [{display_name, source, joined_at, verified}]}` |
 
 У пользователя один код из 8 символов `[A-Z0-9]` (выдаётся при первом
 запросе); `url` — `<SELFVOY_PUBLIC_URL>/#/signup?ref=<код>` или пусто. Код
 передаётся в `auth.register` (`ref`, `ref_source`); приглашённый
 засчитывается (`verified`) после `auth.verifyEmail`, тогда пригласившему
-приходит уведомление `referral.joined` (`{display_name}`). Email и id
-приглашённых пригласившему не раскрываются. Код владельца есть и в виде гостя
+приходит уведомление `referral.joined` (`{display_name, reward_days}`). Email и id
+приглашённых пригласившему не раскрываются.
+
+Награда: за подтверждённого приглашённого обоим начисляется 30 дней Pro
+(`plan_until = greatest(now, plan_until) + 30 дней`) — один раз
+(`referrals.rewarded_at`). Пригласивший получает награду максимум за 12
+приглашённых (дальше растёт только счётчик `verified`), приглашённый — всегда.
+В тело `referral.joined` добавляется «· +1 месяц Pro», если пригласившему
+начислено; приглашённому — уведомление `referral.reward` «Месяц Pro в подарок»
+(`{days, until}`). `rewarded` — число начисленных пригласившему наград (≤ 12),
+`plan` — как в объекте `user`. Код владельца есть и в виде гостя
 приглашения (`invite.get` → `ref`) и страницы записи.
 
 ### Telegram-бот
@@ -656,9 +702,9 @@ IP клиента за доверенным прокси — из `X-Forwarded-F
 если вид не в `prefs.notifications.muted_kinds`, сейчас не тихие часы и
 `prefs.notifications.telegram` не `false`. Гостю — те же извещения, что письмом
 (см. «Страницы записи»). Кнопка «Приду» (callback `cf:<booking_id>:<start_unix>`)
-принимается только из чата, привязанного к этой записи; подтверждение встречи
-подключается вместе с `booking.confirm`, пока бот отвечает «Подтверждение пока
-недоступно».
+принимается только из чата, привязанного к этой записи, и подтверждает встречу
+так же, как `booking.confirm` (ответ «Спасибо, ждём вас», клавиатура сообщения
+убирается; встреча прошла или отменена — «встреча уже прошла или отменена»).
 
 ### Администрирование
 

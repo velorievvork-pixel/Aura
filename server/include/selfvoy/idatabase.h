@@ -294,11 +294,16 @@ struct BookingPageRecord {
     std::string status = "active";
     std::string createdAt;
     std::string updatedAt;
+    // F1: напоминания гостю за сутки и за 2 часа (проверяется в момент отправки).
+    bool guestReminders = true;
+    // F3: скрыть подпись «Запись через Selfvoy» (Pro; действует, пока у владельца Pro).
+    bool hideBranding = false;
 };
 
 // Запись гостя на странице. occurrences — встречи (одна или еженедельная серия):
-// [{start, end, day, status: active|cancelled, task_id}] (ISO UTC, day — местная
-// дата владельца). status записи: active | cancelled (все встречи отменены).
+// [{start, end, day, local, status: active|cancelled, task_id, confirmed_at?}] (ISO UTC,
+// day — местная дата владельца; confirmed_at — гость нажал «Приду», F1).
+// status записи: active | cancelled (все встречи отменены).
 // manageHash — hex sha256 токена ссылки управления (#/m/<токен>), сам токен не хранится.
 struct BookingRecord {
     long long id = 0;
@@ -331,6 +336,19 @@ struct ReferralRecord {
     std::string source;       // link | booking | invite
     std::string createdAt;
     std::string verifiedAt;   // пусто — email ещё не подтверждён
+    std::string rewardedAt;   // пусто — награда (+30 дней Pro) ещё не начислялась
+};
+
+// Напоминание гостю о встрече (F1, booking_reminders): kind 24h | 2h; dueAt — когда
+// отправить; sentAt пусто — ещё не отправлено (ISO UTC).
+struct BookingReminderRecord {
+    long long id = 0;
+    long long bookingId = 0;
+    long long ownerId = 0;
+    std::string occurrenceStart;
+    std::string kind;
+    std::string dueAt;
+    std::string sentAt;
 };
 
 // Приглашение по ссылке (invite.*): встреча с человеком без Selfvoy.
@@ -596,6 +614,8 @@ public:
     virtual void releaseLeaderLock(long long /*key*/) {}
     // Тариф: plan_until = now + days; days = 0 — сброс в NULL (Free).
     virtual DatabaseError setUserPlanDays(long long userId, int days) = 0;
+    // Продление: plan_until = greatest(now, plan_until) + days (days > 0).
+    virtual DatabaseError extendUserPlanDays(long long userId, int days) = 0;
     // Telegram владельца. chatId = 0 — отвязать. Чат, привязанный к другому
     // аккаунту, у того отвязывается (один чат — один аккаунт).
     virtual DatabaseError setUserTelegram(long long userId, long long chatId, const std::string& username) = 0;
@@ -642,6 +662,22 @@ public:
     virtual long long markReferralVerified(long long referredId) = 0;
     // Приглашённые пользователем, новые сверху.
     virtual std::vector<ReferralRecord> listReferrals(long long referrerId, int limit) = 0;
+    // Награда за подтверждённого приглашённого (F3), атомарно и один раз: у строки
+    // referrals (verified_at задан, rewarded_at пуст) ставится rewarded_at, приглашённому
+    // +days дней Pro, пригласившему — тоже, если до этого наград у него было меньше cap.
+    // Возвращает id пригласившего (0 — не приглашён, не подтверждён или уже награждён);
+    // referrerRewarded — начислено ли пригласившему.
+    virtual long long rewardReferral(long long referredId, int days, int cap, bool& referrerRewarded) = 0;
+
+    // Напоминания гостю (F1, booking_reminders). Повтор (booking, start, kind) не дублируется.
+    virtual DatabaseError addBookingReminders(const std::vector<BookingReminderRecord>& reminders) = 0;
+    // Удалить неотправленные напоминания встречи (occurrenceStart ISO) или всей записи ("").
+    virtual DatabaseError deleteBookingReminders(long long bookingId, const std::string& occurrenceStart) = 0;
+    // Все напоминания записи по due_at.
+    virtual std::vector<BookingReminderRecord> listBookingReminders(long long bookingId) = 0;
+    // Атомарный захват: до limit неотправленных с due_at <= nowIso получают sent_at = now
+    // и возвращаются (PostgreSQL — FOR UPDATE SKIP LOCKED: два экземпляра не возьмут одно).
+    virtual std::vector<BookingReminderRecord> claimDueReminders(const std::string& nowIso, int limit) = 0;
 
     // Приглашения по ссылке (invite.*).
     virtual DatabaseError createInvite(const InviteRecord& record, long long& outId) = 0;

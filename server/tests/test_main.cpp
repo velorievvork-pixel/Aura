@@ -5489,6 +5489,127 @@ TEST(pg_growth_methods) {
         CHECK_EQ(first->findBooking(booking)->manageTokenEnc, std::string("sealed-value"));
     }
 }
+
+// PostgreSQL (S1b): поля страницы, напоминания (атомарный захват двумя соединениями),
+// продление тарифа и награда за приглашённого с лимитом (SELFVOY_TEST_PG_URL).
+TEST(pg_reminders_and_reward) {
+    const char* url = std::getenv("SELFVOY_TEST_PG_URL");
+    if (url == nullptr || *url == '\0') {
+        std::cout << "  (пропущен: SELFVOY_TEST_PG_URL не задан)\n";
+        return;
+    }
+    auto first = selfvoy::makePostgresDatabase(url);
+    auto second = selfvoy::makePostgresDatabase(url);
+    std::string error;
+    CHECK(first && first->connect(error));
+    CHECK(second && second->connect(error));
+    if (!first || !second) return;
+    const std::string suffix = selfvoy::crypto::randomHex(4);
+    long long owner = 0;
+    CHECK(first->createUser("pg-s1b-" + suffix + "@example.com", "argon2id$x", "Влад", owner).ok);
+
+    // Поля страницы guest_reminders / hide_branding.
+    selfvoy::BookingPageRecord page;
+    page.ownerId = owner;
+    page.slug = ("s1b" + suffix + "0000000").substr(0, 10);
+    page.title = "Разбор";
+    page.guestReminders = false;
+    page.hideBranding = true;
+    long long pageId = 0;
+    CHECK(first->createBookingPage(page, pageId).ok);
+    auto storedPage = first->findBookingPage(pageId);
+    CHECK(storedPage && !storedPage->guestReminders && storedPage->hideBranding);
+    if (storedPage) {
+        storedPage->guestReminders = true;
+        storedPage->hideBranding = false;
+        CHECK(first->updateBookingPage(*storedPage).ok);
+        storedPage = first->findBookingPage(pageId);
+        CHECK(storedPage && storedPage->guestReminders && !storedPage->hideBranding);
+    }
+
+    // Напоминания: повтор не дублируется, удаление — только неотправленных.
+    const long long booking = growth_test::makeBooking(*first, owner, growth_test::newToken());
+    const std::time_t base = 946684800 + static_cast<std::time_t>(std::time(nullptr) % 100000) * 60;  // 2000 г.
+    std::vector<selfvoy::BookingReminderRecord> rows;
+    for (int i = 0; i < 20; ++i) {
+        selfvoy::BookingReminderRecord row;
+        row.bookingId = booking;
+        row.ownerId = owner;
+        row.occurrenceStart = selfvoy::isoUtc(base + i * 3600);
+        row.kind = "2h";
+        row.dueAt = selfvoy::isoUtc(base + i * 3600 - 7200);
+        rows.push_back(row);
+    }
+    CHECK(first->addBookingReminders(rows).ok);
+    CHECK(first->addBookingReminders(rows).ok);  // ON CONFLICT DO NOTHING
+    CHECK_EQ(first->listBookingReminders(booking).size(), std::size_t(20));
+    CHECK_EQ(first->listBookingReminders(booking).front().occurrenceStart, selfvoy::isoUtc(base));
+
+    // Захват двумя соединениями параллельно: каждая строка — ровно одному.
+    std::vector<long long> claimedA;
+    std::vector<long long> claimedB;
+    const std::string until = selfvoy::isoUtc(base + 20 * 3600);
+    std::thread worker([&] {
+        for (int i = 0; i < 20; ++i) {
+            for (const auto& item : second->claimDueReminders(until, 2)) claimedB.push_back(item.id);
+        }
+    });
+    for (int i = 0; i < 20; ++i) {
+        for (const auto& item : first->claimDueReminders(until, 2)) claimedA.push_back(item.id);
+    }
+    worker.join();
+    std::vector<long long> all = claimedA;
+    all.insert(all.end(), claimedB.begin(), claimedB.end());
+    std::sort(all.begin(), all.end());
+    CHECK_EQ(all.size(), std::size_t(20));
+    CHECK(std::adjacent_find(all.begin(), all.end()) == all.end());
+    CHECK(first->claimDueReminders(until, 100).empty());
+    for (const auto& reminder : first->listBookingReminders(booking)) CHECK(!reminder.sentAt.empty());
+    selfvoy::BookingReminderRecord fresh = rows.front();
+    fresh.kind = "24h";
+    fresh.dueAt = selfvoy::isoUtc(base - 86400);
+    CHECK(first->addBookingReminders({fresh}).ok);
+    CHECK_EQ(first->listBookingReminders(booking).size(), std::size_t(21));
+    CHECK(first->deleteBookingReminders(booking, selfvoy::isoUtc(base)).ok);  // отправленная 2h остаётся
+    CHECK_EQ(first->listBookingReminders(booking).size(), std::size_t(20));
+    CHECK(first->deleteBookingReminders(booking, "").ok);
+    CHECK_EQ(first->listBookingReminders(booking).size(), std::size_t(20));
+
+    // Продление тарифа: greatest(now, plan_until) + days.
+    const std::time_t now = std::time(nullptr);
+    const auto untilOf = [&](long long id) {
+        std::time_t at = 0;
+        selfvoy::parseIsoUtc(first->findUserById(id)->planUntil, at);
+        return at;
+    };
+    CHECK(first->extendUserPlanDays(owner, 10).ok);
+    CHECK(std::llabs(static_cast<long long>(untilOf(owner) - (now + 10 * 86400))) < 120);
+    CHECK(first->extendUserPlanDays(owner, 5).ok);
+    CHECK(std::llabs(static_cast<long long>(untilOf(owner) - (now + 15 * 86400))) < 120);
+
+    // Награда: один раз, пригласившему — не больше cap (здесь 2), приглашённым — всегда.
+    long long referrer = 0;
+    CHECK(first->createUser("pg-s1b-ref-" + suffix + "@example.com", "argon2id$x", "Рита", referrer).ok);
+    int toReferrer = 0;
+    for (int i = 0; i < 3; ++i) {
+        long long friendId = 0;
+        CHECK(first->createUser("pg-s1b-f" + std::to_string(i) + "-" + suffix + "@example.com", "argon2id$x", "Друг",
+                                friendId).ok);
+        CHECK(first->createReferral(referrer, friendId, "link").ok);
+        bool rewarded = true;
+        CHECK_EQ(first->rewardReferral(friendId, 30, 2, rewarded), 0LL);  // ещё не подтверждён
+        CHECK_EQ(first->markReferralVerified(friendId), referrer);
+        CHECK_EQ(first->rewardReferral(friendId, 30, 2, rewarded), referrer);
+        if (rewarded) ++toReferrer;
+        CHECK_EQ(second->rewardReferral(friendId, 30, 2, rewarded), 0LL);  // повтор
+        CHECK(std::llabs(static_cast<long long>(untilOf(friendId) - (now + 30 * 86400))) < 120);
+    }
+    CHECK_EQ(toReferrer, 2);
+    CHECK(std::llabs(static_cast<long long>(untilOf(referrer) - (now + 60 * 86400))) < 120);
+    std::size_t rewardedRows = 0;
+    for (const auto& referral : first->listReferrals(referrer, 10)) rewardedRows += referral.rewardedAt.empty() ? 0 : 1;
+    CHECK_EQ(rewardedRows, std::size_t(3));
+}
 #endif
 
 // ------------------------------------------- F6: пост «свободные окна» и ICS-подписка
@@ -5882,4 +6003,563 @@ TEST(calendar_feed_ics_over_http) {
     CHECK(last.find("Cache-Control: no-store\r\n") != std::string::npos);
     CHECK(calendar.serveHttp("GET", probe, "203.0.113.10").rfind("HTTP/1.1 404", 0) == 0);
     CHECK_EQ(calendar.serveHttp("GET", "/healthz", "203.0.113.9"), std::string());  // не маршрут ICS
+}
+
+// ------------------------------------------- рост (S1b): напоминания, подпись, награда
+namespace growth_s1b {
+
+using booking_test::bookPayload;
+using booking_test::daySlot;
+using booking_test::pagePayload;
+using booking_test::settledOutbox;
+using booking_test::slugPayload;
+using booking_test::tokenPayload;
+
+// Напоминания гостю (письма из ящика dev) после since: только kind booking.reminder на адрес to.
+std::vector<selfvoy::MailNotice> reminderMails(const std::string& to) {
+    std::vector<selfvoy::MailNotice> out;
+    for (const auto& mail : settledOutbox()) {
+        if (mail.to == to && mail.kind == "booking.reminder") out.push_back(mail);
+    }
+    return out;
+}
+
+// Напоминания записи из вида владельца (booking.list).
+Json ownerReminders(Fixture& fixture, const std::shared_ptr<selfvoy::Session>& owner, long long bookingId) {
+    const Json list = integration::payloadOf(fixture.call(owner, "booking.list")).get("bookings");
+    for (const auto& item : list.items()) {
+        if (item.getInt("id") == bookingId) return item.get("reminders");
+    }
+    return Json::array();
+}
+
+bool hasReminder(const Json& reminders, std::time_t start, const std::string& kind, std::time_t due) {
+    for (const auto& item : reminders.items()) {
+        std::time_t at = 0;
+        std::time_t dueAt = 0;
+        if (selfvoy::parseIsoUtc(item.getString("start"), at) && at == start && item.getString("kind") == kind &&
+            selfvoy::parseIsoUtc(item.getString("due_at"), dueAt) && dueAt == due) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::size_t countKind(selfvoy::IDatabase& db, long long userId, const std::string& kind) {
+    std::size_t count = 0;
+    for (const auto& item : db.listNotifications(userId, false, 200)) {
+        if (item.kind == kind) ++count;
+    }
+    return count;
+}
+
+// Страница и запись напрямую в БД (без AI); token "" — старая запись без шифра токена.
+long long directPage(selfvoy::IDatabase& db, long long ownerId, const std::string& slug, bool reminders = true) {
+    selfvoy::BookingPageRecord page;
+    page.ownerId = ownerId;
+    page.slug = slug;
+    page.title = "Разбор";
+    page.guestReminders = reminders;
+    long long id = 0;
+    db.createBookingPage(page, id);
+    return id;
+}
+
+long long directBooking(selfvoy::IDatabase& db, long long ownerId, long long pageId, std::time_t start,
+                        const std::string& email, const std::string& token) {
+    Json occurrence = Json::object();
+    occurrence.set("start", Json(selfvoy::isoUtc(start)));
+    occurrence.set("end", Json(selfvoy::isoUtc(start + 3600)));
+    occurrence.set("day", Json(selfvoy::isoUtc(start).substr(0, 10)));
+    occurrence.set("local", Json(selfvoy::isoUtc(start + 3 * 3600).substr(0, 16)));  // пояс UTC+3
+    occurrence.set("status", Json("active"));
+    Json occurrences = Json::array();
+    occurrences.push(occurrence);
+    selfvoy::BookingRecord booking;
+    booking.pageId = pageId;
+    booking.ownerId = ownerId;
+    booking.manageHash = selfvoy::BookingManager::tokenHash(token.empty() ? growth_test::newToken() : token);
+    booking.guestName = "Гость";
+    booking.guestEmail = email;
+    booking.occurrences = occurrences;
+    long long id = 0;
+    db.createBooking(booking, id);
+    return id;
+}
+
+}  // namespace growth_s1b
+
+// F1: расписание напоминаний при записи, переносе и отмене; отправка тиком планировщика
+// с будущим now — письмо (dev-почта) и Telegram с кнопками; повторно не уходит.
+TEST(booking_reminders_schedule_and_tick) {
+    using namespace growth_s1b;
+    using namespace growth_test;
+    const std::time_t slotA = invite_test::future(30);  // ≥ 25 ч — оба напоминания
+    const std::time_t slotD = invite_test::future(54);
+    const std::time_t slotB = invite_test::future(5);   // 5–5,5 ч — только «за 2 часа»
+    const std::time_t slotC = invite_test::future(1);   // < 2,5 ч — без напоминаний
+    const std::time_t slotE = invite_test::future(78);
+    invite_test::FakeAi ai([&] {
+        Json slots = Json::array();
+        for (const std::time_t at : {slotC, slotB, slotA, slotD, slotE}) {
+            slots.push(daySlot(at, 60, selfvoy::isoUtc(at).substr(0, 10)));
+        }
+        Json body = Json::object();
+        body.set("slots", slots);
+        return body.dump();
+    });
+    Fixture fixture;
+    FakeTelegram* fake = enableBot(fixture, ai.url(), "https://selfvoy.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "rem-owner");
+    fixture.registerUser(owner, "remowner@example.com", "Ольга");
+    Json pageReq = pagePayload("Разбор");
+    pageReq.set("max_per_day", Json(8LL));
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageReq)).get("page");
+    CHECK(page.getBool("guest_reminders", false));
+    CHECK(!page.getBool("hide_branding", true));
+    const std::string slug = page.getString("slug");
+    auto guest = sockets.open(fixture, "rem-guest");
+    auto& db = fixture.server->database().db();
+    auto& bookings = fixture.server->bookings();
+
+    const auto book = [&](std::time_t at, const std::string& name, const std::string& email) {
+        Json payload = bookPayload(slug, at, name);
+        payload.set("guest_email", Json(email));
+        return integration::payloadOf(fixture.call(guest, "booking.book", payload));
+    };
+    const Json bookedA = book(slotA, "Анна", "rem-a@example.com");
+    const Json bookedB = book(slotB, "Борис", "rem-b@example.com");
+    const Json bookedC = book(slotC, "Вера", "rem-c@example.com");
+    const Json bookedE = book(slotE, "Глеб", "rem-e@example.com");
+    const std::string tokenA = bookedA.getString("token");
+    CHECK(!tokenA.empty() && !bookedB.getString("token").empty() && !bookedC.getString("token").empty());
+    const long long idA = db.findBookingByToken(selfvoy::BookingManager::tokenHash(tokenA))->id;
+    const long long idB = db.findBookingByToken(selfvoy::BookingManager::tokenHash(bookedB.getString("token")))->id;
+    const long long idC = db.findBookingByToken(selfvoy::BookingManager::tokenHash(bookedC.getString("token")))->id;
+    const long long idE = db.findBookingByToken(selfvoy::BookingManager::tokenHash(bookedE.getString("token")))->id;
+
+    // Запись: 24h (если до начала ≥ 25 ч) и 2h (≥ 2 ч 30 мин); вид владельца их показывает.
+    Json remindersA = ownerReminders(fixture, owner, idA);
+    CHECK_EQ(remindersA.size(), std::size_t(2));
+    CHECK(hasReminder(remindersA, slotA, "24h", slotA - 24 * 3600));
+    CHECK(hasReminder(remindersA, slotA, "2h", slotA - 2 * 3600));
+    for (const auto& item : remindersA.items()) CHECK_EQ(item.getString("sent_at"), std::string());
+    const Json remindersB = ownerReminders(fixture, owner, idB);
+    CHECK_EQ(remindersB.size(), std::size_t(1));
+    CHECK(hasReminder(remindersB, slotB, "2h", slotB - 2 * 3600));
+    CHECK_EQ(ownerReminders(fixture, owner, idC).size(), std::size_t(0));
+    CHECK_EQ(db.listBookingReminders(idE).size(), std::size_t(2));
+
+    // Отмена — неотправленные напоминания удаляются.
+    CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(bookedE.getString("token"))).getString("type"),
+             std::string("ok"));
+    CHECK_EQ(db.listBookingReminders(idE).size(), std::size_t(0));
+
+    // Перенос A → D: напоминания прежнего времени удалены, нового — созданы.
+    Json move = tokenPayload(tokenA);
+    move.set("start", Json(selfvoy::isoUtc(slotD)));
+    CHECK_EQ(fixture.call(guest, "booking.reschedule", move).getString("type"), std::string("ok"));
+    remindersA = ownerReminders(fixture, owner, idA);
+    CHECK_EQ(remindersA.size(), std::size_t(2));
+    CHECK(hasReminder(remindersA, slotD, "24h", slotD - 24 * 3600));
+    CHECK(hasReminder(remindersA, slotD, "2h", slotD - 2 * 3600));
+
+    // Гость A подключает Telegram — напоминание уйдёт и в чат.
+    auto& bot = fixture.server->telegram();
+    bot.handleUpdate(textUpdate(9001, "/start " + startPayload(bookedA.getString("telegram_url"))));
+    bot.flush();
+    CHECK(hasChat(db, idA, 9001));
+    bookings.flushMail();
+    const std::size_t sentBefore = fake->of("sendMessage").size();
+
+    // Тик «за сутки до D»: захвачены 24h записи A и 2h записи B (B уже началась — пропуск).
+    const std::time_t tick1 = slotD - 24 * 3600 + 60;
+    CHECK_EQ(bookings.reminderTick(100, tick1), std::size_t(2));
+    bookings.flushMail();
+    bot.flush();
+    const auto mailsA = reminderMails("rem-a@example.com");
+    CHECK_EQ(mailsA.size(), std::size_t(1));
+    if (!mailsA.empty()) {
+        const auto& mail = mailsA.back();
+        char clock[8];
+        std::tm parts{};
+        gmtime_r(&slotD, &parts);
+        std::snprintf(clock, sizeof clock, "%02d:%02d", parts.tm_hour, parts.tm_min);
+        CHECK_EQ(mail.subject, "Напоминание: завтра в " + std::string(clock) + " — Разбор");
+        CHECK(mail.lead.find("Ольга ждёт вас завтра в") == 0);
+        CHECK_EQ(mail.linkText, std::string("Приду"));
+        CHECK_EQ(mail.linkUrl, "https://selfvoy.example.com/#/m/" + tokenA + "?confirm=" + selfvoy::isoUtc(slotD));
+        CHECK(std::find(mail.footer.begin(), mail.footer.end(),
+                        "Перенести или отменить: https://selfvoy.example.com/#/m/" + tokenA) != mail.footer.end());
+        // Подпись Selfvoy — последняя строка письма.
+        CHECK(!mail.footer.empty() &&
+              mail.footer.back().find("Запись через Selfvoy — заведите свой бесплатно: "
+                                      "https://selfvoy.example.com/#/signup?ref=") == 0);
+        CHECK(mail.footer.back().find("&src=booking") != std::string::npos);
+        CHECK(mail.lead.find("Анна") == std::string::npos);  // имя гостя в извещения не попадает
+    }
+    CHECK(reminderMails("rem-b@example.com").empty());
+    // Telegram: кнопка «Приду» (callback) и url-кнопка «Перенести или отменить».
+    bool telegramOk = false;
+    const auto sent = fake->of("sendMessage");
+    for (std::size_t i = sentBefore; i < sent.size(); ++i) {
+        const auto& item = sent[i];
+        if (item.body.getInt("chat_id") != 9001) continue;
+        CHECK(item.body.getString("text").find("Напоминание о встрече\n«Разбор» — Ольга") == 0);
+        CHECK(item.body.getString("text").find("Запись через Selfvoy — заведите свой бесплатно") != std::string::npos);
+        const Json keyboard = item.body.get("reply_markup").get("inline_keyboard");
+        telegramOk = keyboard.size() == 2 &&
+                     keyboard.at(0).at(0).getString("callback_data") ==
+                         "cf:" + std::to_string(idA) + ":" + std::to_string(static_cast<long long>(slotD)) &&
+                     keyboard.at(1).at(0).getString("url") == "https://selfvoy.example.com/#/m/" + tokenA;
+    }
+    CHECK(telegramOk);
+    remindersA = ownerReminders(fixture, owner, idA);
+    std::size_t sentMarks = 0;
+    for (const auto& item : remindersA.items()) {
+        if (!item.getString("sent_at").empty()) {
+            ++sentMarks;
+            CHECK_EQ(item.getString("kind"), std::string("24h"));
+        }
+    }
+    CHECK_EQ(sentMarks, std::size_t(1));
+
+    // Повторный тик с тем же now — ничего не уходит второй раз.
+    CHECK_EQ(bookings.reminderTick(100, tick1), std::size_t(0));
+    bookings.flushMail();
+    CHECK_EQ(reminderMails("rem-a@example.com").size(), std::size_t(1));
+
+    // «За 2 часа»: тема «сегодня/завтра в …», уходит один раз.
+    CHECK_EQ(bookings.reminderTick(100, slotD - 2 * 3600 + 60), std::size_t(1));
+    bookings.flushMail();
+    const auto mailsA2 = reminderMails("rem-a@example.com");
+    CHECK_EQ(mailsA2.size(), std::size_t(2));
+    if (mailsA2.size() == 2) CHECK(mailsA2.back().subject.find("Напоминание: ") == 0);
+    CHECK_EQ(bookings.reminderTick(100, slotD - 60), std::size_t(0));
+    // Отменённая запись E не напоминается и после наступления срока.
+    CHECK_EQ(bookings.reminderTick(100, slotE - 3600), std::size_t(0));
+    CHECK(reminderMails("rem-e@example.com").empty());
+}
+
+// F1: пропуски в момент отправки (встреча отменена в обход, guest_reminders=false) и текст
+// для старой записи без сохранённого токена.
+TEST(booking_reminders_skip_and_legacy_text) {
+    using namespace growth_s1b;
+    using namespace growth_test;
+    Fixture fixture;
+    FakeTelegram* fake = enableBot(fixture, "", "https://selfvoy.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "legacy-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "legacyowner@example.com", "Ирина"));
+    auto& db = fixture.server->database().db();
+    auto& bookings = fixture.server->bookings();
+    const std::time_t now = std::time(nullptr);
+    const long long page = directPage(db, ownerId, "legacy0001");
+    const long long quietPage = directPage(db, ownerId, "legacy0002", false);
+
+    const std::time_t start1 = now + 48 * 3600;
+    const long long legacy = directBooking(db, ownerId, page, start1, "legacy@example.com", "");
+    const long long dropped = directBooking(db, ownerId, page, start1 + 3600, "dropped@example.com", "");
+    const long long quiet = directBooking(db, ownerId, quietPage, start1 + 1800, "quiet@example.com", "");
+    for (const long long id : {legacy, dropped, quiet}) bookings.scheduleReminders(*db.findBooking(id), now);
+    CHECK_EQ(db.listBookingReminders(legacy).size(), std::size_t(2));
+    CHECK(db.linkBookingTelegram(legacy, 9101, 3));
+    // Встреча отменена в обход BookingManager (напоминания остались) — отправка её пропускает.
+    auto record = db.findBooking(dropped);
+    Json occurrences = Json::array();
+    Json cancelled = record->occurrences.at(0);
+    cancelled.set("status", Json("cancelled"));
+    occurrences.push(cancelled);
+    record->occurrences = occurrences;
+    record->status = "cancelled";
+    CHECK(db.updateBooking(*record).ok);
+    CHECK_EQ(db.listBookingReminders(dropped).size(), std::size_t(2));
+
+    const std::time_t tick = now + 25 * 3600 + 60;  // наступили все три «за сутки»
+    CHECK_EQ(bookings.reminderTick(100, tick), std::size_t(3));
+    bookings.flushMail();
+    fixture.server->telegram().flush();
+    CHECK(reminderMails("dropped@example.com").empty());
+    CHECK(reminderMails("quiet@example.com").empty());
+    const auto legacyMails = reminderMails("legacy@example.com");
+    CHECK_EQ(legacyMails.size(), std::size_t(1));
+    if (!legacyMails.empty()) {
+        const auto& mail = legacyMails.back();
+        // Местное время владельца (UTC+3 по полю local) и пояс владельца.
+        char clock[8];
+        const std::time_t local = start1 + 3 * 3600;
+        std::tm parts{};
+        gmtime_r(&local, &parts);
+        std::snprintf(clock, sizeof clock, "%02d:%02d", parts.tm_hour, parts.tm_min);
+        CHECK(mail.subject.find(std::string(" в ") + clock + " — Разбор") != std::string::npos);
+        CHECK(mail.lead.find("(Europe/Moscow)") != std::string::npos);
+        CHECK(mail.linkUrl.empty());
+        CHECK(std::find(mail.footer.begin(), mail.footer.end(),
+                        "Перенести или отменить можно по ссылке из письма о записи") != mail.footer.end());
+    }
+    const std::string text = fake->last(9101);
+    CHECK(text.find("Перенести или отменить можно по ссылке из письма о записи") != std::string::npos);
+    bool callbackOnly = false;
+    for (const auto& item : fake->of("sendMessage")) {
+        if (item.body.getInt("chat_id") != 9101) continue;
+        const Json keyboard = item.body.get("reply_markup").get("inline_keyboard");
+        callbackOnly = keyboard.size() == 1 &&
+                       keyboard.at(0).at(0).getString("callback_data").find("cf:" + std::to_string(legacy) + ":") == 0;
+    }
+    CHECK(callbackOnly);
+    // Захваченные строки отмечены — второй тик их не трогает.
+    CHECK_EQ(bookings.reminderTick(100, tick), std::size_t(0));
+    std::size_t sentRows = 0;
+    for (const long long id : {legacy, dropped, quiet}) {
+        for (const auto& reminder : db.listBookingReminders(id)) sentRows += reminder.sentAt.empty() ? 0 : 1;
+    }
+    CHECK_EQ(sentRows, std::size_t(3));
+}
+
+// F1: booking.confirm (идемпотентно, уведомление владельцу один раз) и «Приду» из Telegram.
+TEST(booking_confirm_and_telegram_button) {
+    using namespace growth_s1b;
+    using namespace growth_test;
+    Fixture fixture;
+    FakeTelegram* fake = enableBot(fixture, "", "https://selfvoy.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "confirm-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "confirmowner@example.com", "Павел"));
+    auto guest = sockets.open(fixture, "confirm-guest");
+    auto& db = fixture.server->database().db();
+    const std::time_t now = std::time(nullptr);
+    const long long page = directPage(db, ownerId, "confirm001");
+    const std::string token = newToken();
+    const std::time_t start = now + 30 * 3600;
+    const long long booking = directBooking(db, ownerId, page, start, "", token);
+
+    const Json first = fixture.call(guest, "booking.confirm", tokenPayload(token));
+    CHECK_EQ(first.getString("type"), std::string("ok"));
+    const std::string confirmedAt =
+        integration::payloadOf(first).get("booking").get("occurrences").at(0).getString("confirmed_at");
+    CHECK(!confirmedAt.empty());
+    CHECK_EQ(countKind(db, ownerId, "booking.confirmed"), std::size_t(1));
+    for (const auto& item : db.listNotifications(ownerId, false, 50)) {
+        if (item.kind != "booking.confirmed") continue;
+        CHECK_EQ(item.payload.getInt("booking_id"), booking);
+        CHECK_EQ(item.payload.getInt("page_id"), page);
+        CHECK_EQ(item.payload.getString("start"), selfvoy::isoUtc(start));
+        CHECK_EQ(item.payload.getString("guest_name"), std::string("Гость"));
+    }
+    // Повтор (и с явным occurrence) — без изменений и без второго уведомления.
+    Json again = tokenPayload(token);
+    again.set("occurrence", Json(selfvoy::isoUtc(start)));
+    const Json second = fixture.call(guest, "booking.confirm", again);
+    CHECK_EQ(integration::payloadOf(second).get("booking").get("occurrences").at(0).getString("confirmed_at"),
+             confirmedAt);
+    CHECK_EQ(countKind(db, ownerId, "booking.confirmed"), std::size_t(1));
+    // Вид владельца: confirmed_at у встречи и список напоминаний.
+    const Json listed = integration::payloadOf(fixture.call(owner, "booking.list")).get("bookings").at(0);
+    CHECK_EQ(listed.get("occurrences").at(0).getString("confirmed_at"), confirmedAt);
+    CHECK(listed.get("reminders").isArray());
+    // Ошибки: чужой токен, неверное время, нет такой встречи.
+    CHECK_EQ(fixture.call(guest, "booking.confirm", tokenPayload(newToken())).getString("code"),
+             std::string("not_found"));
+    Json badTime = tokenPayload(token);
+    badTime.set("occurrence", Json("завтра"));
+    CHECK_EQ(fixture.call(guest, "booking.confirm", badTime).getString("code"), std::string("bad_request"));
+    Json missing = tokenPayload(token);
+    missing.set("occurrence", Json(selfvoy::isoUtc(start + 3600)));
+    CHECK_EQ(fixture.call(guest, "booking.confirm", missing).getString("code"), std::string("conflict"));
+    // booking.confirm — публичный метод (без входа).
+    CHECK(selfvoy::protocol::isPublicType("booking.confirm"));
+
+    // «Приду» из Telegram: чужой чат — отказ; привязанный — подтверждение, клавиатура убрана.
+    const std::string token2 = newToken();
+    const std::time_t start2 = now + 50 * 3600;
+    const long long booking2 = directBooking(db, ownerId, page, start2, "", token2);
+    CHECK(db.linkBookingTelegram(booking2, 9201, 3));
+    auto& bot = fixture.server->telegram();
+    const std::string data = "cf:" + std::to_string(booking2) + ":" + std::to_string(static_cast<long long>(start2));
+    bot.handleUpdate(callbackUpdate(9299, data));
+    bot.flush();
+    CHECK(db.findBooking(booking2)->occurrences.at(0).getString("confirmed_at").empty());
+    bot.handleUpdate(callbackUpdate(9201, data));
+    bot.flush();
+    const auto answers = fake->of("answerCallbackQuery");
+    CHECK_EQ(answers.size(), std::size_t(2));
+    if (answers.size() == 2) {
+        CHECK(answers[0].body.getString("text").find("не для этого чата") != std::string::npos);
+        CHECK_EQ(answers[1].body.getString("text"), std::string("Спасибо, ждём вас"));
+    }
+    CHECK_EQ(fake->of("editMessageReplyMarkup").size(), std::size_t(1));
+    CHECK(!db.findBooking(booking2)->occurrences.at(0).getString("confirmed_at").empty());
+    CHECK_EQ(countKind(db, ownerId, "booking.confirmed"), std::size_t(2));
+    // Повторное нажатие — «спасибо» без второго уведомления; время не той встречи — отказ.
+    bot.handleUpdate(callbackUpdate(9201, data));
+    bot.handleUpdate(callbackUpdate(9201, "cf:" + std::to_string(booking2) + ":" +
+                                              std::to_string(static_cast<long long>(start2 + 60))));
+    bot.flush();
+    CHECK_EQ(countKind(db, ownerId, "booking.confirmed"), std::size_t(2));
+    const auto more = fake->of("answerCallbackQuery");
+    CHECK_EQ(more.size(), std::size_t(4));
+    if (more.size() == 4) {
+        CHECK_EQ(more[2].body.getString("text"), std::string("Спасибо, ждём вас"));
+        CHECK(more[3].body.getString("text").find("прошла или отменена") != std::string::npos);
+    }
+}
+
+// F3: подпись в видах гостя, hide_branding (Pro при enforced=1, действует только с Pro).
+TEST(booking_branding_and_pro) {
+    using namespace growth_s1b;
+    Fixture fixture;
+    fixture.config.publicUrl = "https://selfvoy.example.com";
+    fixture.server->stop();
+    fixture.server = std::make_unique<selfvoy::Server>(fixture.config);
+    std::string error;
+    CHECK(fixture.server->start(error));
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "brand-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "brandowner@example.com", "Лена"));
+    auto guest = sockets.open(fixture, "brand-guest");
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pagePayload("Подпись")))
+                          .get("page");
+    const std::string slug = page.getString("slug");
+    const long long pageId = page.getInt("id");
+    const std::string code = integration::payloadOf(fixture.call(owner, "referral.get")).getString("code");
+    const auto guestBranding = [&]() {
+        return integration::payloadOf(fixture.call(guest, "booking.get", slugPayload(slug))).get("page").get("branding");
+    };
+    Json branding = guestBranding();
+    CHECK(branding.getBool("show"));
+    CHECK_EQ(branding.getString("text"), std::string("Запись через Selfvoy"));
+    CHECK_EQ(branding.getString("url"), "https://selfvoy.example.com/#/signup?ref=" + code + "&src=booking");
+    auto& db = fixture.server->database().db();
+    const std::string token = growth_test::newToken();
+    directBooking(db, ownerId, pageId, std::time(nullptr) + 40 * 3600, "", token);
+    const Json managed = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(token))).get("booking");
+    CHECK(managed.get("branding").getBool("show"));
+    CHECK_EQ(managed.get("branding").getString("url"), branding.getString("url"));
+
+    // enforced=0 (бета): скрыть можно всем.
+    Json hide = Json::object();
+    hide.set("page_id", Json(pageId));
+    hide.set("hide_branding", Json(true));
+    const Json hidden = fixture.call(owner, "booking.pageUpdate", hide);
+    CHECK(integration::payloadOf(hidden).get("page").getBool("hide_branding"));
+    CHECK(!guestBranding().getBool("show", true));
+    Json badType = hide;
+    badType.set("hide_branding", Json("yes"));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", badType).getString("code"), std::string("bad_request"));
+
+    // enforced=1, владелец без Pro: скрытие не действует, включить заново/на новой странице — pro_required.
+    fixture.config.plansEnforced = true;
+    fixture.server->stop();
+    fixture.server = std::make_unique<selfvoy::Server>(fixture.config);
+    CHECK(fixture.server->start(error));
+    auto owner2 = sockets.open(fixture, "brand-owner2");
+    fixture.call(owner2, "auth.login", admin_test::loginPayload("brandowner@example.com"));
+    auto guest2 = sockets.open(fixture, "brand-guest2");
+    const auto guestBranding2 = [&]() {
+        return integration::payloadOf(fixture.call(guest2, "booking.get", slugPayload(slug))).get("page").get("branding");
+    };
+    CHECK(guestBranding2().getBool("show"));
+    Json show = hide;
+    show.set("hide_branding", Json(false));
+    CHECK_EQ(fixture.call(owner2, "booking.pageUpdate", show).getString("type"), std::string("ok"));  // вернуть — можно
+    CHECK_EQ(fixture.call(owner2, "booking.pageUpdate", hide).getString("code"), std::string("pro_required"));
+    Json created = pagePayload("Вторая");
+    created.set("hide_branding", Json(true));
+    CHECK_EQ(fixture.call(owner2, "booking.pageCreate", created).getString("code"), std::string("pro_required"));
+    // С Pro — можно, и подпись скрыта.
+    auto& db2 = fixture.server->database().db();
+    CHECK(db2.setUserPlanDays(ownerId, 30).ok);
+    CHECK_EQ(fixture.call(owner2, "booking.pageUpdate", hide).getString("type"), std::string("ok"));
+    CHECK(!guestBranding2().getBool("show", true));
+    // Pro закончился — подпись снова показывается (флаг на странице остаётся).
+    CHECK(db2.setUserPlanDays(ownerId, 0).ok);
+    CHECK(guestBranding2().getBool("show"));
+    CHECK(db2.findBookingPage(pageId)->hideBranding);
+    selfvoy::plan::setEnforced(false);
+}
+
+// F3: награда за подтверждённого приглашённого — обоим +30 дней Pro, один раз; не больше
+// 12 наград пригласившему.
+TEST(referral_reward_both_idempotent_and_cap) {
+    Fixture fixture;
+    admin_test::Sockets sockets;
+    auto inviter = sockets.open(fixture, "ref-inviter");
+    const long long inviterId = admin_test::userIdOf(fixture.registerUser(inviter, "inviter@example.com", "Марина"));
+    const std::string code = integration::payloadOf(fixture.call(inviter, "referral.get")).getString("code");
+    auto newcomer = sockets.open(fixture, "ref-newcomer");
+    Json reg = Json::object();
+    reg.set("email", Json("newcomer@example.com"));
+    reg.set("password", Json("selfvoy1234"));
+    reg.set("display_name", Json("Никита"));
+    reg.set("ref", Json(code));
+    const Json registered = fixture.call(newcomer, "auth.register", reg);
+    CHECK_EQ(registered.getString("type"), std::string("ok"));
+    Json verify = Json::object();
+    verify.set("email", Json("newcomer@example.com"));
+    verify.set("code", Json(integration::payloadOf(registered).getString("email_code")));
+    CHECK_EQ(fixture.call(newcomer, "auth.verifyEmail", verify).getString("type"), std::string("ok"));
+    auto& db = fixture.server->database().db();
+    const long long newcomerId = db.findUserByEmail("newcomer@example.com")->id;
+    const std::time_t now = std::time(nullptr);
+    const auto untilOf = [&](long long id) {
+        std::time_t until = 0;
+        selfvoy::parseIsoUtc(db.findUserById(id)->planUntil, until);
+        return until;
+    };
+    CHECK(std::llabs(static_cast<long long>(untilOf(inviterId) - (now + 30 * 86400))) < 120);
+    CHECK(std::llabs(static_cast<long long>(untilOf(newcomerId) - (now + 30 * 86400))) < 120);
+    const Json info = integration::payloadOf(fixture.call(inviter, "referral.get"));
+    CHECK_EQ(info.getInt("rewarded"), 1LL);
+    CHECK_EQ(info.getInt("reward_days"), 30LL);
+    CHECK_EQ(info.getInt("reward_cap"), 12LL);
+    CHECK_EQ(info.get("plan").getString("name"), std::string("pro"));
+    bool joinedBody = false;
+    for (const auto& item : db.listNotifications(inviterId, false, 20)) {
+        if (item.kind == "referral.joined") joinedBody = item.body.find("+1 месяц Pro") != std::string::npos;
+    }
+    CHECK(joinedBody);
+    CHECK_EQ(growth_s1b::countKind(db, newcomerId, "referral.reward"), std::size_t(1));
+    for (const auto& item : db.listNotifications(newcomerId, false, 20)) {
+        if (item.kind == "referral.reward") CHECK_EQ(item.title, std::string("Месяц Pro в подарок"));
+    }
+
+    // Повторная верификация не начисляет второй раз.
+    const std::time_t inviterUntil = untilOf(inviterId);
+    const std::time_t newcomerUntil = untilOf(newcomerId);
+    fixture.server->referrals().verified(newcomerId);
+    bool referrerRewarded = true;
+    CHECK_EQ(db.rewardReferral(newcomerId, 30, 12, referrerRewarded), 0LL);
+    CHECK(!referrerRewarded);
+    CHECK_EQ(untilOf(inviterId), inviterUntil);
+    CHECK_EQ(untilOf(newcomerId), newcomerUntil);
+    CHECK_EQ(growth_s1b::countKind(db, newcomerId, "referral.reward"), std::size_t(1));
+    CHECK_EQ(growth_s1b::countKind(db, inviterId, "referral.joined"), std::size_t(1));
+
+    // Не подтверждён — не награждается.
+    long long pending = 0;
+    CHECK(db.createUser("pending-ref@example.com", "argon2id$x", "Ждёт", pending).ok);
+    CHECK(db.createReferral(inviterId, pending, "link").ok);
+    CHECK_EQ(db.rewardReferral(pending, 30, 12, referrerRewarded), 0LL);
+
+    // Лимит: у пригласившего не больше 12 наград, приглашённые получают всегда; продление
+    // складывается: greatest(now, plan_until) + 30 дней.
+    long long capper = 0;
+    CHECK(db.createUser("capper@example.com", "argon2id$x", "Капитан", capper).ok);
+    int rewardedCount = 0;
+    for (int i = 0; i < 13; ++i) {
+        long long friendId = 0;
+        CHECK(db.createUser("cap-friend" + std::to_string(i) + "@example.com", "argon2id$x", "Друг", friendId).ok);
+        CHECK(db.createReferral(capper, friendId, "link").ok);
+        CHECK_EQ(db.markReferralVerified(friendId), capper);
+        bool toReferrer = false;
+        CHECK_EQ(db.rewardReferral(friendId, 30, 12, toReferrer), capper);
+        if (toReferrer) ++rewardedCount;
+        CHECK(std::llabs(static_cast<long long>(untilOf(friendId) - (now + 30 * 86400))) < 120);
+    }
+    CHECK_EQ(rewardedCount, 12);
+    CHECK(std::llabs(static_cast<long long>(untilOf(capper) - (now + 12LL * 30 * 86400))) < 120);
+    CHECK(db.extendUserPlanDays(capper, 1).ok);
+    CHECK(std::llabs(static_cast<long long>(untilOf(capper) - (now + (12LL * 30 + 1) * 86400))) < 120);
+    CHECK(!db.extendUserPlanDays(capper, 0).ok);
 }

@@ -101,6 +101,23 @@ struct Config {
     // строит клиент.
     std::string publicUrl;                               // SELFVOY_PUBLIC_URL
 
+    // --- Рост (S1a): тариф, https, Telegram-бот ---
+    // 0 (по умолчанию, бета) — функции Pro открыты всем; 1 — требуют действующего Pro
+    // (users.plan_until > now), иначе ошибка pro_required.
+    bool plansEnforced = false;                          // SELFVOY_PLANS_ENFORCED
+    // Дополнительный корневой сертификат для исходящих https-запросов (свой CA, тесты).
+    std::string caFile;                                  // SELFVOY_CA_FILE
+    // Telegram-бот (F2): включён, когда заданы токен и имя (без @).
+    std::string telegramBotToken;                        // SELFVOY_TELEGRAM_BOT_TOKEN
+    std::string telegramBotUsername;                     // SELFVOY_TELEGRAM_BOT_USERNAME
+    std::string telegramApiUrl = "https://api.telegram.org";  // SELFVOY_TELEGRAM_API_URL (e2e — http-мок)
+    bool telegramPoll = true;                            // SELFVOY_TELEGRAM_POLL (0 — только отправка)
+
+    bool telegramEnabled() const { return !telegramBotToken.empty() && !telegramBotUsername.empty(); }
+    // Ключ AES-256-GCM для шифруемых полей БД (TOTP-секреты, токен ссылки управления):
+    // sha256(SELFVOY_2FA_KEY), без него — sha256(SELFVOY_JWT_SECRET). 32 байта.
+    std::string dataKey() const;
+
     // Устаревшие имена AURA_*, которые fromEnv() прочитал вместо SELFVOY_*
     // (совместимость на один релиз; validate() выдаёт по ним одно предупреждение).
     std::vector<std::string> legacyEnvNames;

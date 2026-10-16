@@ -101,6 +101,9 @@ std::string htmlNotice(const MailNotice& notice) {
                  "\" style=\"display:inline-block;background:#7c7cf5;color:#fff;text-decoration:none;"
                  "padding:12px 18px;border-radius:10px;font-weight:600\">" + htmlEscape(notice.linkText) + "</a></p>";
     }
+    for (const auto& line : notice.footer) {
+        button += "<p style=\"color:#a1a4ae;line-height:1.5;margin:16px 0 0\">" + htmlEscape(line) + "</p>";
+    }
     return "<!doctype html><html lang=\"ru\"><body style=\"margin:0;background:#0b0c10;padding:32px 16px;"
            "font-family:-apple-system,Segoe UI,Inter,Roboto,sans-serif;color:#e8e9ee\">"
            "<div style=\"max-width:440px;margin:0 auto;background:#12141c;border:1px solid rgba(255,255,255,.08);"
@@ -198,6 +201,7 @@ public:
         if (!notice.linkUrl.empty() && safeLink(notice.linkUrl)) {
             text += "\r\n" + notice.linkText + ": " + notice.linkUrl + "\r\n";
         }
+        for (const auto& line : notice.footer) text += "\r\n" + line + "\r\n";
         if (!notice.note.empty()) text += "\r\n" + notice.note + "\r\n";
         message.text = text;
         message.html = htmlNotice(notice);

@@ -57,6 +57,11 @@ SELFVOY_E2E_GOOGLE_MOCK=1 SELFVOY_E2E_PUSH_MOCK=1 python3 tools/e2e.py
 # сценарий админ-панели (§5a) — только если сервер запущен с SELFVOY_ADMIN_EMAILS,
 # содержащим этот адрес; без переменных секция печатает «пропуск»:
 SELFVOY_E2E_ADMIN_EMAIL=root@example.com SELFVOY_E2E_ADMIN_PASSWORD=... python3 tools/e2e.py
+
+# Telegram-бот (§3b): мок Bot API поднимает сам e2e (порт SELFVOY_E2E_TELEGRAM_MOCK_PORT,
+# по умолчанию 9083); сервер — с SELFVOY_TELEGRAM_BOT_TOKEN=e2e:token,
+# SELFVOY_TELEGRAM_BOT_USERNAME=selfvoy_e2e_bot, SELFVOY_TELEGRAM_API_URL=http://127.0.0.1:9083:
+SELFVOY_E2E_TELEGRAM_MOCK=1 python3 tools/e2e.py
 ```
 
 Покрытие: регистрация → email-код → вход → JWT → сессии; чат между
@@ -64,7 +69,10 @@ SELFVOY_E2E_ADMIN_EMAIL=root@example.com SELFVOY_E2E_ADMIN_PASSWORD=... python3 
 барьер подтверждения; задачи, напоминания, планировщик; уведомления и
 push-конверт в webhook-шлюз; STT через AI-сервис; 2FA (TOTP RFC 6238,
 резервные коды, доверенные устройства); Google OAuth 2.0 + PKCE (календарь,
-Gmail, авто-refresh, отзыв); сценарии безопасности; server.info.
+Gmail, авто-refresh, отзыв); Telegram-бот (привязка владельца и гостя по
+подписанным ссылкам, отказ поддельной/просроченной, уведомление о записи, извещение
+гостю, «Приду» из чужого чата, `/stop`, отвязка при 403, `telegram.unlink`); тариф
+(`admin.setPlan`, `user.plan`); сценарии безопасности; server.info.
 
 ### 4. Статические проверки без платформенных инструментов
 

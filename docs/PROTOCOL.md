@@ -63,6 +63,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 | `conflict` | email уже занят |
 | `upstream_error` | AI-сервис недоступен или вернул мусор |
 | `internal_error` | необработанное исключение; текст всегда обобщённый («внутренняя ошибка сервера»), подробности (SQL и т.п.) — только в логе сервера |
+| `pro_required` | действие доступно только на тарифе Pro: сервер запущен с `SELFVOY_PLANS_ENFORCED=1`, а Pro у пользователя не действует (`user.plan.name = "free"`). При `SELFVOY_PLANS_ENFORCED=0` (бета, по умолчанию) не возвращается |
 
 ## Методы
 
@@ -70,7 +71,12 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 
 Поток аккаунта (auth v3): регистрация → код подтверждения email → вход.
 Регистрация сессию не выдаёт. В каждом `user` есть `role`
-(`user`|`moderator`|`admin`, см. «Администрирование»).
+(`user`|`moderator`|`admin`, см. «Администрирование») и тариф
+`plan: {name: "pro"|"free", until: ISO|"", enforced: bool}` — `name` честный
+(Pro, пока `until` в будущем) независимо от `enforced`; `enforced` —
+`SELFVOY_PLANS_ENFORCED` (false — бета: функции Pro открыты всем; true — без
+действующего Pro они отвечают `pro_required`). Pro выдаёт администратор
+(`admin.setPlan`) или команда деплоя `selfvoy pro EMAIL ДНЕЙ`.
 
 | тип | payload | ответ |
 | --- | --- | --- |
@@ -344,8 +350,9 @@ APNs, OAuth2 сервисного аккаунта для FCM) и форвард
 C++-сервер TLS/HTTP2 не делает и ключи провайдеров не хранит.
 Тихие часы и отключённые виды читаются из настроек пользователя:
 `prefs.notifications = {"quiet_hours": {"start":"22:00","end":"08:00"},
-"muted_kinds": ["login.new"]}` (время UTC; гасят только push, in-app
-доставляется всегда).
+"muted_kinds": ["login.new"]}` (время UTC; гасят только push и Telegram, in-app
+доставляется всегда). `prefs.notifications.telegram: false` — не дублировать
+уведомления в Telegram (см. «Telegram-бот»).
 
 | тип | payload | ответ |
 | --- | --- | --- |
@@ -467,16 +474,19 @@ created_at, updated_at}`.
 | тип | payload | ответ |
 | --- | --- | --- |
 | `booking.get` | `{slug}` | `{page}` — вид гостя |
-| `booking.book` | `{slug, start (start свободного слота), guest_name (1–80), guest_email? (≤ 254), comment? (≤ 500), count? (1–max_series, 1)}` | `{booking, token, url}` — токен ссылки управления (43 символа base64url) показывается **один раз**; `url` — `<SELFVOY_PUBLIC_URL>/#/m/<токен>` или пусто |
+| `booking.book` | `{slug, start (start свободного слота), guest_name (1–80), guest_email? (≤ 254), comment? (≤ 500), count? (1–max_series, 1)}` | `{booking, token, url, telegram_url}` — токен ссылки управления (43 символа base64url) показывается **один раз**; `url` — `<SELFVOY_PUBLIC_URL>/#/m/<токен>` или пусто; `telegram_url` — ссылка на бота для напоминаний (`https://t.me/<бот>?start=g_…`) или "" (бот не настроен) |
 | `booking.manage` | `{token}` | `{booking}` — вид гостя по ссылке управления |
 | `booking.reschedule` | `{token, start, occurrence? (start переносимой встречи; по умолчанию ближайшая)}` | `{booking}`; не больше 3 переносов на запись |
 | `booking.cancel` | `{token, occurrence?, reason? (≤ 500)}` | `{booking}`; без `occurrence` — все предстоящие встречи |
 | `booking.resendLink` | `{slug, email}` | `{sent: true}` — всегда одинаково (нельзя узнать, есть ли запись); если на странице есть активная запись с этим email, ссылка управления перевыпускается (прежняя перестаёт работать) и уходит письмом |
 
 Письма гостю (если при записи указан email; драйвер почты — как у кодов
-подтверждения, `SELFVOY_MAIL_DRIVER`): подтверждение записи со ссылкой управления,
+подтверждения, `SELFVOY_MAIL_DRIVER`): подтверждение записи со ссылкой управления
+(и строкой «Напоминания в Telegram: <url>», если бот настроен),
 перенос, отмена гостем и отмена владельцем (со ссылкой «Выбрать другое время»),
-новая ссылка по `booking.resendLink`. Время — местное время владельца с
+новая ссылка по `booking.resendLink`. Те же извещения уходят в Telegram-чаты,
+подключённые к записи (простой текст; ссылка управления — url-кнопкой, если адрес
+https); лимит — 10 в час на адрес и на чат, 200 в час на владельца. Время — местное время владельца с
 поясом. В письмах только текст сервера и владельца (название страницы, имя
 владельца): имя и комментарий гостя туда не попадают, на один адрес — не больше
 10 писем в час.
@@ -490,7 +500,10 @@ slots_unavailable, ref}` — без email владельца и чужих за�
 ("" — запись на странице закрыта), owner_name, owner_timezone,
 duration_minutes, guest_name, status, cancelled_by, occurrences, can_cancel,
 can_reschedule, can_change, reschedules_left, slots (свободное время для
-переноса ближайшей встречи), slots_unavailable, ref}`. `can_cancel` — есть
+переноса ближайшей встречи), slots_unavailable, ref, telegram_url,
+telegram_linked}`; `telegram_url` — ссылка подписки на напоминания в Telegram
+("" — бот не настроен или запись отменена; после `booking.resendLink` прежняя
+ссылка перестаёт работать), `telegram_linked` — к записи уже подключён чат. `can_cancel` — есть
 предстоящая встреча (отменить можно и на паузе, и после удаления страницы);
 `can_reschedule` — к тому же страница открыта и переносы не исчерпаны;
 `can_change` — устаревший синоним `can_reschedule`.
@@ -530,6 +543,40 @@ AI-сервис недоступен при записи/переносе; `forb
 приглашённых пригласившему не раскрываются. Код владельца есть и в виде гостя
 приглашения (`invite.get` → `ref`) и страницы записи.
 
+### Telegram-бот
+
+Бот включается на сервере переменными `SELFVOY_TELEGRAM_BOT_TOKEN` и
+`SELFVOY_TELEGRAM_BOT_USERNAME`; его имя отдаёт `server.info` → `telegram_bot`
+("" — бот не настроен; есть и в ответе без входа). Привязка — по deep link
+`https://t.me/<бот>?start=<payload>`, payload (≤ 64 символов `[A-Za-z0-9_-]`)
+подписан сервером (HMAC-SHA256, 16 байт подписи в base64url):
+`o_<user_id>_<expires_unix>_<sig>` — владелец, ссылка живёт 15 минут;
+`g_<booking_id>_<sig>` — гость записи, подпись над `manage_hash` (после
+перевыпуска ссылки управления прежняя ссылка бота не работает).
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `telegram.status` | — | `{enabled, bot_username, linked, username}` (`username` — ник в Telegram или "") |
+| `telegram.link` | — | `{url, expires_at}` — ссылка владельца на 15 минут; бот не настроен → `bad_request` «Telegram-бот не настроен на сервере» |
+| `telegram.unlink` | — | `{linked: false}` |
+
+Команды бота (только личные чаты): `/start o_…` — чат привязывается к аккаунту
+(если он был привязан к другому — перепривязывается); `/start g_…` — к записи
+(запись активна, не больше 3 чатов), ответ — ближайшая встреча в местном времени
+владельца; `/start` без payload и любой текст — справка; `/stop` — чат
+отвязывается от аккаунта и от всех записей. Поддельная или просроченная ссылка —
+ответ «Ссылка недействительна или устарела». Если пользователь заблокировал бота
+(Telegram отвечает 403), чат отвязывается везде.
+
+Владельцу в привязанный чат дублируются уведомления видов `booking.*`,
+`package.*`, `invite.*`, `referral.*`, `task.due` текстом «<title>\n<body>» —
+если вид не в `prefs.notifications.muted_kinds`, сейчас не тихие часы и
+`prefs.notifications.telegram` не `false`. Гостю — те же извещения, что письмом
+(см. «Страницы записи»). Кнопка «Приду» (callback `cf:<booking_id>:<start_unix>`)
+принимается только из чата, привязанного к этой записи; подтверждение встречи
+подключается вместе с `booking.confirm`, пока бот отвечает «Подтверждение пока
+недоступно».
+
 ### Администрирование
 
 Роли (`user.role`): `user` (по умолчанию), `moderator`, `admin`. Роль
@@ -553,8 +600,8 @@ AI-сервис недоступен при записи/переносе; `forb
 пока адрес в списке. Каждое назначение пишется в журнал (`role_bootstrap`).
 
 `AdminUser` = `id`, `email`, `display_name`, `avatar_url`, `role`,
-`is_active`, `email_verified`, `two_factor`, `created_at`, `last_seen_at`
-(хэш пароля и токены не отдаются).
+`is_active`, `email_verified`, `two_factor`, `created_at`, `last_seen_at`,
+`plan` (как в `user`; хэш пароля и токены не отдаются).
 
 | тип | payload | ответ |
 | --- | --- | --- |
@@ -564,6 +611,7 @@ AI-сервис недоступен при записи/переносе; `forb
 | `admin.setActive` | `user_id`, `active` (bool), `reason` (обязательна при блокировке, ≤200 симв.) | `user`; блокировка (`active=false`) отзывает все сессии и refresh-токены и закрывает открытые соединения пользователя (WS close `4001`, причина `account_disabled`); заблокированный не входит (`auth.login` → `forbidden`) и не проходит по старому токену (`unauthorized`) |
 | `admin.setRole` | `user_id`, `role` | `user`; свою роль менять нельзя, последнего активного администратора понизить нельзя (`forbidden`); `moderator`/`admin` — только активному пользователю с подтверждённым email (`bad_request`) |
 | `admin.revokeSessions` | `user_id` | `revoked` (сколько живых сессий завершено); refresh-токены отозваны, соединения закрыты (WS close `4001`, причина `sessions_revoked`); аккаунт не блокируется — войти заново можно |
+| `admin.setPlan` | `user_id`, `days` (целое 0–3650; 0 — сбросить в Free) | `user` (AdminUser + `plan`); только admin (`forbidden`), `plan_until = now + days`; запись `admin_plan_changed` (`days`, `plan_until`, `old_plan_until`, `actor_email` \| `target_email`) в журнал; неверный `days` → `bad_request` |
 | `admin.audit` | `user_id?` (0 — все), `before_id?` (0 — с самых новых; иначе записи с `id < before_id`), `limit?` (1–200, по умолчанию 100) | `entries[]`: `id`, `user_id`, `user_email?`, `kind`, `detail`, `remote_addr`, `created_at` — новые первыми; следующая страница — `before_id` = `id` последней записи |
 
 Ошибки: `forbidden` — не хватает роли / цель выше по роли / действие над

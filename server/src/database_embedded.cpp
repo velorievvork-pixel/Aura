@@ -1487,6 +1487,107 @@ public:
         return DatabaseError::failure("пользователь не найден");
     }
 
+    // --------------------------------------- рост (S1a): состояние, тариф, Telegram
+    std::string getState(const std::string& key) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& item : table("server_state").items()) {
+            if (item.getString("key") == key) return item.getString("value");
+        }
+        return "";
+    }
+
+    DatabaseError setState(const std::string& key, const std::string& value) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& item : mutableTable("server_state")) {
+            if (item.getString("key") != key) continue;
+            item.set("value", Json(value));
+            item.set("updated_at", Json(isoNow()));
+            flush();
+            return DatabaseError::success();
+        }
+        Json row = Json::object();
+        row.set("key", Json(key));
+        row.set("value", Json(value));
+        row.set("updated_at", Json(isoNow()));
+        table("server_state").push(row);
+        flush();
+        return DatabaseError::success();
+    }
+
+    DatabaseError setUserPlanDays(long long userId, int days) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("id") != userId) continue;
+            item.set("plan_until",
+                     Json(days > 0 ? isoUtc(std::time(nullptr) + static_cast<std::time_t>(days) * 86400) : std::string()));
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("пользователь не найден");
+    }
+
+    DatabaseError setUserTelegram(long long userId, long long chatId, const std::string& username) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        bool found = false;
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("id") == userId) {
+                found = true;
+                item.set("telegram_chat_id", Json(chatId));
+                item.set("telegram_username", Json(chatId != 0 ? username : std::string()));
+            } else if (chatId != 0 && item.getInt("telegram_chat_id") == chatId) {
+                item.set("telegram_chat_id", Json(0LL));
+                item.set("telegram_username", Json(""));
+            }
+        }
+        if (!found) return DatabaseError::failure("пользователь не найден");
+        flush();
+        return DatabaseError::success();
+    }
+
+    bool linkBookingTelegram(long long bookingId, long long chatId, int maxChats) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        int count = 0;
+        for (const auto& item : table("booking_telegram").items()) {
+            if (item.getInt("booking_id") != bookingId) continue;
+            if (item.getInt("chat_id") == chatId) return true;
+            ++count;
+        }
+        if (count >= maxChats) return false;
+        Json row = Json::object();
+        row.set("booking_id", Json(bookingId));
+        row.set("chat_id", Json(chatId));
+        row.set("linked_at", Json(isoNow()));
+        table("booking_telegram").push(row);
+        flush();
+        return true;
+    }
+
+    std::vector<long long> bookingTelegramChats(long long bookingId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<long long> chats;
+        for (const auto& item : table("booking_telegram").items()) {
+            if (item.getInt("booking_id") == bookingId) chats.push_back(item.getInt("chat_id"));
+        }
+        return chats;
+    }
+
+    DatabaseError unlinkTelegramChat(long long chatId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (chatId == 0) return DatabaseError::success();
+        table("booking_telegram");  // ключ создаётся до взятия ссылок на таблицы
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("telegram_chat_id") != chatId) continue;
+            item.set("telegram_chat_id", Json(0LL));
+            item.set("telegram_username", Json(""));
+        }
+        auto& links = mutableTable("booking_telegram");
+        links.erase(std::remove_if(links.begin(), links.end(),
+                                   [chatId](const Json& item) { return item.getInt("chat_id") == chatId; }),
+                    links.end());
+        flush();
+        return DatabaseError::success();
+    }
+
     std::vector<UserRecord> adminListUsers(const std::string& query,
                                            const std::string& role,
                                            const std::string& status,
@@ -1846,6 +1947,7 @@ private:
 
     static void writeBooking(Json& entry, const BookingRecord& record) {
         if (!record.manageHash.empty()) entry.set("manage_hash", Json(record.manageHash));
+        if (!record.manageTokenEnc.empty()) entry.set("manage_token_enc", Json(record.manageTokenEnc));
         entry.set("occurrences", record.occurrences.isArray() ? record.occurrences : Json::array());
         entry.set("status", Json(record.status));
         entry.set("cancelled_by", Json(record.cancelledBy));
@@ -1868,6 +1970,7 @@ private:
         record.reschedules = static_cast<int>(entry.getInt("reschedules"));
         record.createdAt = entry.getString("created_at");
         record.updatedAt = entry.getString("updated_at");
+        record.manageTokenEnc = entry.getString("manage_token_enc");
         return record;
     }
 
@@ -2147,6 +2250,9 @@ private:
         record.emailVerified = json.getBool("email_verified", true);
         record.role = json.getString("role", "user");
         if (record.role.empty()) record.role = "user";
+        record.planUntil = json.getString("plan_until");
+        record.telegramChatId = json.getInt("telegram_chat_id");
+        record.telegramUsername = json.getString("telegram_username");
         return record;
     }
 

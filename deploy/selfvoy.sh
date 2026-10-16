@@ -4,6 +4,7 @@
 #   selfvoy status            — состояние контейнеров и модели LLM
 #   selfvoy logs [сервис]     — последние строки логов (server | ai | postgres | caddy)
 #   selfvoy verify EMAIL      — подтвердить email вручную (если почта не настроена)
+#   selfvoy pro EMAIL DAYS    — выдать тариф Pro на DAYS дней (0 — снять Pro)
 #   selfvoy llm-key           — вставить/сменить API-ключ LLM и проверить модель
 #   selfvoy llm-check         — проверить, что отвечает настоящая модель
 #   selfvoy backup            — резервная копия базы в backups/ (хранятся 14 последних)
@@ -99,6 +100,31 @@ case "$cmd" in
             exit 1
         fi
         ;;
+    pro)
+        email=${2:-}
+        days=${3:-}
+        [ -n "$email" ] && [ -n "$days" ] || { echo "использование: selfvoy pro ваш@email ДНЕЙ (0 — снять Pro)"; exit 1; }
+        case "$days" in
+            ''|*[!0-9]*) echo "ДНЕЙ — целое число от 0 до 3650"; exit 1 ;;
+        esac
+        [ "${#days}" -le 4 ] && [ "$days" -le 3650 ] || { echo "ДНЕЙ — целое число от 0 до 3650"; exit 1; }
+        # Значения — переменными psql через stdin (:'email', :'days' — литералы, не подстановка в SQL).
+        if echo "UPDATE users SET plan_until = CASE WHEN :'days'::int = 0 THEN NULL
+                  ELSE now() + make_interval(days => :'days'::int) END
+                  WHERE lower(email) = lower(:'email');" \
+            | "${compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 -U postgres -d selfvoy \
+                -v email="$email" -v days="$days" \
+            | grep -q "UPDATE 1"; then
+            if [ "$days" -eq 0 ]; then
+                echo "Тариф Pro у $email снят."
+            else
+                echo "Тариф Pro для $email — на $days дн."
+            fi
+        else
+            echo "Пользователь $email не найден — сначала зарегистрируйтесь в приложении."
+            exit 1
+        fi
+        ;;
     llm-key)
         printf 'API-ключ LLM: '
         read -r -s key </dev/tty; echo
@@ -138,7 +164,7 @@ case "$cmd" in
         "${compose[@]}" restart "${@:2}"
         ;;
     *)
-        sed -n '2,14p' "$0"
+        sed -n '2,13p' "$0"
         exit 1
         ;;
 esac

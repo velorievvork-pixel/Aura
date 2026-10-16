@@ -40,13 +40,24 @@
 #include "selfvoy/protocol.h"
 #include "selfvoy/schedulelock.h"
 #include "selfvoy/server.h"
+#include "selfvoy/plan.h"
 #include "selfvoy/smtp.h"
+#include "selfvoy/telegrambot.h"
+#include "selfvoy/tls.h"
 #include "selfvoy/toolmanager.h"
 #include "selfvoy/totp.h"
 #include "selfvoy/ws.h"
+#include "../src/notificationsmanager.h"  // уведомления владельцу → Telegram (рост, S1a)
 
 #ifdef SELFVOY_WITH_LIBPQ
 #include <libpq-fe.h>
+#endif
+
+#ifdef SELFVOY_HAVE_OPENSSL
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
 #endif
 
 namespace {
@@ -628,8 +639,19 @@ TEST(net_url_parsing) {
     CHECK_EQ(url.port, 80);
     CHECK_EQ(url.path, std::string("/healthz"));
 
-    CHECK(!selfvoy::net::parseUrl("https://example.com", url, error));
+    // https — порт 443 по умолчанию (TLS — selfvoy/tls.h); прочие схемы и порты вне 1–65535 — нет.
+    CHECK(selfvoy::net::parseUrl("https://api.telegram.org/bot1:x/getMe", url, error));
+    CHECK_EQ(url.scheme, std::string("https"));
+    CHECK_EQ(url.port, 443);
+    CHECK_EQ(url.host, std::string("api.telegram.org"));
+    CHECK_EQ(url.path, std::string("/bot1:x/getMe"));
+    CHECK(selfvoy::net::parseUrl("HTTPS://example.com:8443", url, error));
+    CHECK_EQ(url.port, 8443);
+    CHECK_EQ(url.path, std::string("/"));
+    error.clear();
+    CHECK(!selfvoy::net::parseUrl("ftp://example.com", url, error));
     CHECK(!error.empty());
+    CHECK(!selfvoy::net::parseUrl("https://example.com:70000/", url, error));
 
     // Разбор chunked-ответа
     const std::string chunked = "5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n";
@@ -4612,3 +4634,857 @@ TEST(referral_register_and_verify) {
     CHECK_EQ(integration::payloadOf(fixture.call(host, "referral.get")).getInt("joined"), 1LL);
     CHECK_EQ(fixture.call(other, "referral.get").getString("code"), std::string("unauthorized"));
 }
+
+// ============================================================ рост (S1a)
+// https, тариф Pro, служебное состояние, шифр токена ссылки управления, Telegram-бот.
+namespace growth_test {
+
+#ifdef SELFVOY_HAVE_OPENSSL
+// Локальный TLS-сервер с самоподписанным сертификатом на 127.0.0.1 (SAN IP):
+// принимает accepts соединений, на запрос отвечает «200 ok» и рвёт соединение
+// без close_notify (клиент должен остановиться по Content-Length).
+struct TlsServer {
+    EVP_PKEY* key = nullptr;
+    X509* cert = nullptr;
+    SSL_CTX* ctx = nullptr;
+    int listener = -1;
+    int port = 0;
+    std::string certPath;
+    std::thread thread;
+    std::mutex mutex;
+    std::vector<std::string> requests;
+
+    explicit TlsServer(int accepts) {
+        key = EVP_EC_gen("P-256");
+        cert = X509_new();
+        X509_set_version(cert, 2);
+        ASN1_INTEGER_set(X509_get_serialNumber(cert), 1);
+        X509_gmtime_adj(X509_getm_notBefore(cert), -60);
+        X509_gmtime_adj(X509_getm_notAfter(cert), 3600);
+        X509_set_pubkey(cert, key);
+        X509_NAME* name = X509_get_subject_name(cert);
+        X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("selfvoy-test"),
+                                   -1, -1, 0);
+        X509_set_issuer_name(cert, name);
+        X509V3_CTX v3{};
+        X509V3_set_ctx_nodb(&v3);
+        X509V3_set_ctx(&v3, cert, cert, nullptr, nullptr, 0);
+        for (const auto& [nid, value] : {std::make_pair(NID_subject_alt_name, "IP:127.0.0.1"),
+                                         std::make_pair(NID_basic_constraints, "critical,CA:TRUE")}) {
+            X509_EXTENSION* ext = X509V3_EXT_conf_nid(nullptr, &v3, nid, value);
+            X509_add_ext(cert, ext, -1);
+            X509_EXTENSION_free(ext);
+        }
+        X509_sign(cert, key, EVP_sha256());
+        certPath = "/tmp/selfvoy-test-ca-" + std::to_string(::getpid()) + ".pem";
+        if (FILE* file = std::fopen(certPath.c_str(), "w")) {
+            PEM_write_X509(file, cert);
+            std::fclose(file);
+        }
+        ctx = SSL_CTX_new(TLS_server_method());
+        SSL_CTX_use_certificate(ctx, cert);
+        SSL_CTX_use_PrivateKey(ctx, key);
+
+        listener = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        ::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof addr);
+        ::listen(listener, 4);
+        socklen_t len = sizeof addr;
+        ::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &len);
+        port = ntohs(addr.sin_port);
+        thread = std::thread([this, accepts] {
+            for (int i = 0; i < accepts; ++i) {
+                const int fd = ::accept(listener, nullptr, nullptr);
+                if (fd < 0) return;
+                SSL* ssl = SSL_new(ctx);
+                SSL_set_fd(ssl, fd);
+                if (SSL_accept(ssl) == 1) {
+                    std::string request;
+                    char chunk[2048];
+                    while (request.find("\r\n\r\n") == std::string::npos) {
+                        const int n = SSL_read(ssl, chunk, sizeof chunk);
+                        if (n <= 0) break;
+                        request.append(chunk, static_cast<std::size_t>(n));
+                    }
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        requests.push_back(request);
+                    }
+                    const std::string answer = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok";
+                    SSL_write(ssl, answer.data(), static_cast<int>(answer.size()));
+                }
+                SSL_free(ssl);  // без SSL_shutdown: соединение рвётся без close_notify
+                ::close(fd);
+            }
+        });
+    }
+
+    ~TlsServer() {
+        ::shutdown(listener, SHUT_RDWR);
+        ::close(listener);
+        if (thread.joinable()) thread.join();
+        SSL_CTX_free(ctx);
+        X509_free(cert);
+        EVP_PKEY_free(key);
+        std::remove(certPath.c_str());
+    }
+};
+#endif
+
+// Поддельный Bot API: записывает вызовы, отдаёт апдейты, 403 для «заблокировавших» чатов.
+struct FakeTelegram : selfvoy::TelegramBot::Transport {
+    struct Call {
+        std::string method;
+        Json body;
+    };
+    std::mutex mutex;
+    std::vector<Call> calls;
+    std::vector<long long> blocked;
+    Json updates = Json::array();
+
+    selfvoy::net::HttpResponse call(const std::string& method, const Json& body, int, const std::atomic<bool>*,
+                                    std::string&) override {
+        std::lock_guard<std::mutex> lock(mutex);
+        calls.push_back({method, body});
+        selfvoy::net::HttpResponse response;
+        response.status = 200;
+        if (method == "sendMessage" &&
+            std::find(blocked.begin(), blocked.end(), body.getInt("chat_id")) != blocked.end()) {
+            response.status = 403;
+            response.body = R"({"ok":false,"error_code":403,"description":"Forbidden: bot was blocked by the user"})";
+            return response;
+        }
+        if (method == "getUpdates") {
+            Json answer = Json::object();
+            answer.set("ok", Json(true));
+            answer.set("result", updates);
+            updates = Json::array();
+            response.body = answer.dump();
+            return response;
+        }
+        response.body = R"({"ok":true,"result":true})";
+        return response;
+    }
+
+    // Тексты sendMessage в чат (по порядку).
+    std::vector<std::string> texts(long long chatId) {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<std::string> out;
+        for (const auto& item : calls) {
+            if (item.method == "sendMessage" && item.body.getInt("chat_id") == chatId) {
+                out.push_back(item.body.getString("text"));
+            }
+        }
+        return out;
+    }
+    std::string last(long long chatId) {
+        const auto all = texts(chatId);
+        return all.empty() ? std::string() : all.back();
+    }
+    std::vector<Call> of(const std::string& method) {
+        std::lock_guard<std::mutex> lock(mutex);
+        std::vector<Call> out;
+        for (const auto& item : calls) {
+            if (item.method == method) out.push_back(item);
+        }
+        return out;
+    }
+};
+
+Json textUpdate(long long chatId, const std::string& text, const std::string& type = "private",
+                const std::string& username = "tg_user") {
+    Json chat = Json::object();
+    chat.set("id", Json(chatId));
+    chat.set("type", Json(type));
+    Json from = Json::object();
+    from.set("id", Json(chatId));
+    from.set("username", Json(username));
+    Json message = Json::object();
+    message.set("message_id", Json(1LL));
+    message.set("chat", chat);
+    message.set("from", from);
+    message.set("text", Json(text));
+    Json update = Json::object();
+    update.set("update_id", Json(1LL));
+    update.set("message", message);
+    return update;
+}
+
+Json callbackUpdate(long long chatId, const std::string& data, long long messageId = 77) {
+    Json chat = Json::object();
+    chat.set("id", Json(chatId));
+    chat.set("type", Json("private"));
+    Json message = Json::object();
+    message.set("message_id", Json(messageId));
+    message.set("chat", chat);
+    Json callback = Json::object();
+    callback.set("id", Json("cb-" + std::to_string(chatId)));
+    callback.set("data", Json(data));
+    callback.set("message", message);
+    Json update = Json::object();
+    update.set("update_id", Json(2LL));
+    update.set("callback_query", callback);
+    return update;
+}
+
+selfvoy::Config botConfig() {
+    selfvoy::Config config;
+    config.jwtSecret = "telegram-test-secret-0123456789abcdef";
+    config.telegramBotToken = "1:test-token";
+    config.telegramBotUsername = "selfvoy_test_bot";
+    config.telegramPoll = false;
+    return config;
+}
+
+std::string newToken() {
+    std::string token = selfvoy::crypto::base64UrlEncode(selfvoy::crypto::randomBytes(32));
+    while (!token.empty() && token.back() == '=') token.pop_back();
+    return token;
+}
+
+// Запись с одной встречей через day суток (встроенная БД).
+long long makeBooking(selfvoy::IDatabase& db, long long ownerId, const std::string& token, double days = 1.0) {
+    selfvoy::BookingPageRecord page;
+    page.ownerId = ownerId;
+    page.slug = "tgpage" + std::to_string(ownerId % 10000);
+    while (page.slug.size() < 10) page.slug += "0";
+    page.title = "Разбор";
+    long long pageId = 0;
+    db.createBookingPage(page, pageId);
+    const std::time_t start = std::time(nullptr) + static_cast<std::time_t>(days * 86400);
+    Json occurrence = Json::object();
+    occurrence.set("start", Json(selfvoy::isoUtc(start)));
+    occurrence.set("end", Json(selfvoy::isoUtc(start + 3600)));
+    occurrence.set("day", Json(selfvoy::isoUtc(start).substr(0, 10)));
+    occurrence.set("local", Json(selfvoy::isoUtc(start).substr(0, 16)));
+    occurrence.set("status", Json("active"));
+    Json occurrences = Json::array();
+    occurrences.push(occurrence);
+    selfvoy::BookingRecord booking;
+    booking.pageId = pageId;
+    booking.ownerId = ownerId;
+    booking.manageHash = selfvoy::BookingManager::tokenHash(token);
+    booking.guestName = "Гость";
+    booking.occurrences = occurrences;
+    long long id = 0;
+    db.createBooking(booking, id);
+    return id;
+}
+
+bool hasChat(selfvoy::IDatabase& db, long long bookingId, long long chatId) {
+    const auto chats = db.bookingTelegramChats(bookingId);
+    return std::find(chats.begin(), chats.end(), chatId) != chats.end();
+}
+
+// Сервер Fixture с включённым ботом (без опроса) и поддельным Bot API.
+FakeTelegram* enableBot(Fixture& fixture, const std::string& aiUrl = "", const std::string& publicUrl = "") {
+    fixture.config.telegramBotToken = "1:test-token";
+    fixture.config.telegramBotUsername = "selfvoy_test_bot";
+    fixture.config.telegramPoll = false;
+    if (!aiUrl.empty()) fixture.config.aiServiceUrl = aiUrl;
+    fixture.config.publicUrl = publicUrl;
+    fixture.server->stop();
+    fixture.server = std::make_unique<selfvoy::Server>(fixture.config);
+    std::string error;
+    if (!fixture.server->start(error)) std::cout << "  не удалось перезапустить сервер: " << error << "\n";
+    auto fake = std::make_unique<FakeTelegram>();
+    FakeTelegram* raw = fake.get();
+    fixture.server->telegram().setTransport(std::move(fake));
+    return raw;
+}
+
+// payload из ссылки https://t.me/<бот>?start=<payload>.
+std::string startPayload(const std::string& url) {
+    const auto at = url.find("?start=");
+    return at == std::string::npos ? std::string() : url.substr(at + 7);
+}
+
+}  // namespace growth_test
+
+TEST(net_https_local_tls_and_ca) {
+#ifdef SELFVOY_HAVE_OPENSSL
+    CHECK(selfvoy::tls::available());
+    growth_test::TlsServer server(2);
+    const std::string url = "https://127.0.0.1:" + std::to_string(server.port) + "/v1/ping";
+    // Свой корневой сертификат (SELFVOY_CA_FILE): сертификат и IP сверяются, ответ читается
+    // по Content-Length, хотя сервер не прислал close_notify.
+    selfvoy::net::setCaFile(server.certPath);
+    std::string error;
+    const auto ok = selfvoy::net::httpRequest("GET", url, {}, "", 5000, error);
+    CHECK_EQ(error, std::string());
+    CHECK_EQ(ok.status, 200);
+    CHECK_EQ(ok.body, std::string("ok"));
+    // Без своего CA самоподписанный сертификат не принимается.
+    selfvoy::net::setCaFile("");
+    error.clear();
+    const auto rejected = selfvoy::net::httpRequest("GET", url, {}, "", 5000, error);
+    CHECK_EQ(rejected.status, 0);
+    CHECK(error.find("сертификат") != std::string::npos);
+    {
+        std::lock_guard<std::mutex> lock(server.mutex);
+        CHECK_EQ(server.requests.size(), std::size_t(1));
+        if (!server.requests.empty()) {
+            CHECK(server.requests[0].find("GET /v1/ping HTTP/1.1") == 0);
+            CHECK(server.requests[0].find("Host: 127.0.0.1:" + std::to_string(server.port)) != std::string::npos);
+        }
+    }
+    // Нечитаемый файл CA — понятная ошибка до рукопожатия.
+    selfvoy::net::setCaFile("/nonexistent/ca.pem");
+    error.clear();
+    selfvoy::net::httpRequest("GET", url, {}, "", 2000, error);
+    CHECK(error.find("SELFVOY_CA_FILE") != std::string::npos);
+    selfvoy::net::setCaFile("");
+#else
+    // Сборка без TLS: https-запрос — понятная ошибка, а не открытый текст.
+    CHECK(!selfvoy::tls::available());
+    std::string error;
+    const auto response = selfvoy::net::httpRequest("GET", "https://127.0.0.1:1/", {}, "", 1000, error);
+    CHECK_EQ(response.status, 0);
+    CHECK(error.find("сборка без TLS") != std::string::npos);
+#endif
+}
+
+// Долгий запрос (long polling) прерывается флагом остановки, а не ждёт таймаута.
+TEST(net_request_cancel) {
+    const int listener = ::socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    ::bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof addr);
+    ::listen(listener, 4);  // соединение примет ядро; ответа не будет
+    socklen_t len = sizeof addr;
+    ::getsockname(listener, reinterpret_cast<sockaddr*>(&addr), &len);
+    std::atomic<bool> cancel{false};
+    std::thread stopper([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        cancel.store(true);
+    });
+    const auto started = std::chrono::steady_clock::now();
+    std::string error;
+    const auto response = selfvoy::net::httpRequest(
+        "POST", "http://127.0.0.1:" + std::to_string(ntohs(addr.sin_port)) + "/getUpdates", {}, "{}", 20000, error,
+        &cancel);
+    stopper.join();
+    CHECK_EQ(response.status, 0);
+    CHECK_EQ(error, std::string("запрос прерван"));
+    CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(3));
+    ::close(listener);
+}
+
+TEST(telegram_signed_payloads) {
+    selfvoy::Config config = growth_test::botConfig();
+    selfvoy::DatabaseManager database(selfvoy::makeEmbeddedDatabase(""));
+    selfvoy::TelegramBot bot(database, config, std::make_unique<growth_test::FakeTelegram>());
+    const std::time_t now = std::time(nullptr);
+    const auto safe = [](const std::string& payload) {
+        return payload.size() <= 64 && std::all_of(payload.begin(), payload.end(), [](unsigned char ch) {
+                   return std::isalnum(ch) != 0 || ch == '_' || ch == '-';
+               });
+    };
+
+    // Владелец: подпись, срок 15 минут, подмена любой части.
+    const std::string owner = bot.ownerPayload(123456789012LL, now + 900);
+    CHECK(safe(owner));
+    CHECK_EQ(bot.sign("x").size(), std::size_t(22));
+    long long userId = 0;
+    CHECK(bot.verifyOwner(owner, now, userId));
+    CHECK_EQ(userId, 123456789012LL);
+    CHECK(!bot.verifyOwner(owner, now + 901, userId));  // истекла
+    CHECK_EQ(userId, 0LL);
+    CHECK(!bot.verifyOwner(bot.ownerPayload(5, now + 7200), now, userId));  // срок дальше, чем выдаёт сервер
+    std::string tampered = owner;
+    tampered.back() = tampered.back() == 'A' ? 'B' : 'A';
+    CHECK(!bot.verifyOwner(tampered, now, userId));
+    std::string otherUser = owner;
+    otherUser.replace(2, 1, otherUser[2] == '1' ? "2" : "1");
+    CHECK(!bot.verifyOwner(otherUser, now, userId));
+    const std::string longer = owner.substr(0, owner.rfind('_')) + "0" + owner.substr(owner.rfind('_'));
+    CHECK(!bot.verifyOwner(longer, now, userId));  // продлённый срок — другая подпись
+    CHECK(!bot.verifyOwner("o_1_2_short", now, userId));
+    CHECK(!bot.verifyOwner("g_" + owner.substr(2), now, userId));
+    CHECK(!bot.verifyOwner("", now, userId));
+
+    // Гость: подпись над manage_hash — перевыпуск ссылки управления её отменяет.
+    const std::string hash(64, 'a');
+    const std::string guest = bot.guestPayload(42, hash);
+    CHECK(safe(guest));
+    CHECK(bot.verifyGuest(guest, 42, hash));
+    CHECK(!bot.verifyGuest(guest, 43, hash));
+    CHECK(!bot.verifyGuest(guest, 42, std::string(64, 'b')));
+    CHECK(!bot.verifyGuest(guest, 42, ""));
+    long long bookingId = 0;
+    std::string sig;
+    CHECK(selfvoy::TelegramBot::parseGuest(guest, bookingId, sig));
+    CHECK_EQ(bookingId, 42LL);
+    CHECK(!selfvoy::TelegramBot::parseGuest("g_042_" + sig, bookingId, sig));
+    CHECK(!selfvoy::TelegramBot::parseGuest("g_-1_" + std::string(22, 'a'), bookingId, sig));
+    CHECK(!selfvoy::TelegramBot::parseGuest("g_1_" + std::string(21, 'a') + "!", bookingId, sig));
+    CHECK_EQ(bot.linkUrl(guest), "https://t.me/selfvoy_test_bot?start=" + guest);
+
+    // Другой секрет сервера — подписи не совпадают.
+    selfvoy::Config other = config;
+    other.jwtSecret = "another-secret-0123456789abcdef0123";
+    selfvoy::TelegramBot stranger(database, other, std::make_unique<growth_test::FakeTelegram>());
+    CHECK(!stranger.verifyOwner(owner, now, userId));
+    CHECK(!stranger.verifyGuest(guest, 42, hash));
+}
+
+TEST(telegram_bot_updates_with_fake_transport) {
+    using namespace growth_test;
+    selfvoy::Config config = botConfig();
+    selfvoy::DatabaseManager database(selfvoy::makeEmbeddedDatabase(""));
+    auto& db = database.db();
+    auto fakeOwned = std::make_unique<FakeTelegram>();
+    FakeTelegram* fake = fakeOwned.get();
+    selfvoy::TelegramBot bot(database, config, std::move(fakeOwned));
+    long long anna = 0, boris = 0;
+    CHECK(db.createUser("tg-anna@example.com", "argon2id$x", "Анна", anna).ok);
+    CHECK(db.createUser("tg-boris@example.com", "argon2id$x", "Борис", boris).ok);
+    const std::time_t now = std::time(nullptr);
+
+    // Владелец: /start o_… → чат привязан, ответ с подсказкой /stop.
+    bot.handleUpdate(textUpdate(1001, "/start " + bot.ownerPayload(anna, now + 900), "private", "anna_tg"));
+    bot.flush();
+    CHECK_EQ(db.findUserById(anna)->telegramChatId, 1001LL);
+    CHECK_EQ(db.findUserById(anna)->telegramUsername, std::string("anna_tg"));
+    CHECK(fake->last(1001).find("Готово: сюда будут приходить новые записи") == 0);
+    // Тот же чат другим аккаунтом — перепривязка к новому.
+    bot.handleUpdate(textUpdate(1001, "/start@selfvoy_test_bot " + bot.ownerPayload(boris, now + 900)));
+    bot.flush();
+    CHECK_EQ(db.findUserById(anna)->telegramChatId, 0LL);
+    CHECK_EQ(db.findUserById(boris)->telegramChatId, 1001LL);
+    // Просроченная/поддельная ссылка и группа — не привязывают.
+    bot.handleUpdate(textUpdate(1002, "/start " + bot.ownerPayload(anna, now - 1)));
+    bot.handleUpdate(textUpdate(1003, "/start " + bot.ownerPayload(anna, now + 900), "group"));
+    std::string forged = bot.ownerPayload(anna, now + 900);
+    forged.back() = forged.back() == 'x' ? 'y' : 'x';
+    bot.handleUpdate(textUpdate(1004, "/start " + forged));
+    bot.flush();
+    CHECK_EQ(db.findUserById(anna)->telegramChatId, 0LL);
+    CHECK(fake->last(1002).find("недействительна") != std::string::npos);
+    CHECK(fake->texts(1003).empty());
+    CHECK(fake->last(1004).find("недействительна") != std::string::npos);
+    // Любой другой текст — справка.
+    bot.handleUpdate(textUpdate(1005, "привет"));
+    bot.flush();
+    CHECK(fake->last(1005).find("/stop") != std::string::npos);
+
+    // Гость: /start g_… → чат записи; не больше 3 чатов.
+    const std::string token = newToken();
+    const long long booking = makeBooking(db, anna, token);
+    const auto record = db.findBooking(booking);
+    CHECK(record.has_value());
+    const std::string guest = bot.guestPayload(booking, record->manageHash);
+    CHECK_EQ(bot.guestUrl(*record), "https://t.me/selfvoy_test_bot?start=" + guest);
+    bot.handleUpdate(textUpdate(2002, "/start " + guest));
+    bot.handleUpdate(textUpdate(2003, "/start " + bot.guestPayload(booking, std::string(64, 'f'))));
+    bot.flush();
+    CHECK(hasChat(db, booking, 2002));
+    CHECK(!hasChat(db, booking, 2003));
+    CHECK(fake->last(2002).find("Готово") == 0);
+    CHECK(fake->last(2003).find("недействительна") != std::string::npos);
+    bot.handleUpdate(textUpdate(2004, "/start " + guest));
+    bot.handleUpdate(textUpdate(2005, "/start " + guest));
+    bot.handleUpdate(textUpdate(2006, "/start " + guest));
+    bot.handleUpdate(textUpdate(2002, "/start " + guest));  // повтор тем же чатом — не новый
+    bot.flush();
+    CHECK_EQ(db.bookingTelegramChats(booking).size(), std::size_t(3));
+    CHECK(!hasChat(db, booking, 2006));
+    CHECK(fake->last(2006).find("уже подключено 3 чата") != std::string::npos);
+
+    // «Приду»: из чужого чата — отказ; из привязанного — хук BookingManager (здесь нет — «недоступно»).
+    const std::string cf = "cf:" + std::to_string(booking) + ":" + std::to_string(static_cast<long long>(now + 86400));
+    bot.handleUpdate(callbackUpdate(3003, cf));
+    bot.handleUpdate(callbackUpdate(2004, cf));
+    bot.flush();
+    const auto answers = fake->of("answerCallbackQuery");
+    CHECK_EQ(answers.size(), std::size_t(2));
+    if (answers.size() == 2) {
+        CHECK(answers[0].body.getString("text").find("не для этого чата") != std::string::npos);
+        CHECK(answers[1].body.getString("text").find("недоступно") != std::string::npos);
+    }
+    CHECK(fake->of("editMessageReplyMarkup").empty());
+
+    // /stop — чат отвязан от записи (и от пользователя).
+    bot.handleUpdate(textUpdate(2002, "/stop"));
+    bot.handleUpdate(textUpdate(1001, "/STOP"));
+    bot.flush();
+    CHECK(!hasChat(db, booking, 2002));
+    CHECK_EQ(db.findUserById(boris)->telegramChatId, 0LL);
+    CHECK(fake->last(2002).find("больше не пишу") != std::string::npos);
+
+    // 403 (бот заблокирован) — чат отвязывается везде.
+    {
+        std::lock_guard<std::mutex> lock(fake->mutex);
+        fake->blocked.push_back(2004);
+    }
+    bot.sendMessage(2004, "напоминание");
+    bot.flush();
+    CHECK(!hasChat(db, booking, 2004));
+    CHECK(hasChat(db, booking, 2005));
+
+    // Опрос: апдейты обрабатываются, смещение — в server_state.
+    {
+        std::lock_guard<std::mutex> lock(fake->mutex);
+        Json update = textUpdate(2005, "/stop");
+        update.set("update_id", Json(41LL));
+        fake->updates.push(update);
+    }
+    CHECK(bot.pollOnce(0));
+    bot.flush();
+    CHECK_EQ(db.getState(selfvoy::TelegramBot::kOffsetKey), std::string("42"));
+    CHECK(!hasChat(db, booking, 2005));
+    CHECK(bot.pollOnce(0));
+    const auto polls = fake->of("getUpdates");
+    CHECK_EQ(polls.size(), std::size_t(2));
+    if (polls.size() == 2) {
+        CHECK_EQ(polls[1].body.getInt("offset"), 42LL);
+        CHECK_EQ(polls[1].body.get("allowed_updates").size(), std::size_t(2));
+    }
+    bot.stop();
+    bot.sendMessage(2005, "после остановки");  // не принимается и не падает
+}
+
+TEST(server_state_and_manage_token_field) {
+    auto db = selfvoy::makeEmbeddedDatabase("");
+    CHECK_EQ(db->getState("telegram.offset"), std::string());
+    CHECK(db->setState("telegram.offset", "10").ok);
+    CHECK(db->setState("telegram.offset", "11").ok);
+    CHECK(db->setState("other", "x").ok);
+    CHECK_EQ(db->getState("telegram.offset"), std::string("11"));
+    CHECK_EQ(db->getState("other"), std::string("x"));
+    CHECK(db->tryLeaderLock(selfvoy::TelegramBot::kLeaderLockKey));
+
+    // Шифр поля: тот же ключ и AAD — исходный текст; иначе — отказ.
+    const std::string key = selfvoy::crypto::sha256("k");
+    const std::string sealed = selfvoy::crypto::sealField(key, "token-value", "selfvoy-manage-token");
+    CHECK(!sealed.empty());
+    std::string plain;
+    CHECK(selfvoy::crypto::openField(key, sealed, "selfvoy-manage-token", plain));
+    CHECK_EQ(plain, std::string("token-value"));
+    CHECK(!selfvoy::crypto::openField(key, sealed, "selfvoy-2fa", plain));
+    CHECK(!selfvoy::crypto::openField(selfvoy::crypto::sha256("other"), sealed, "selfvoy-manage-token", plain));
+    CHECK(!selfvoy::crypto::openField(key, "", "selfvoy-manage-token", plain));
+}
+
+TEST(plan_computation_and_admin_set_plan) {
+    selfvoy::UserRecord user;
+    const std::time_t now = std::time(nullptr);
+    CHECK(!selfvoy::plan::isPro(user, now));
+    user.planUntil = selfvoy::isoUtc(now + 3600);
+    CHECK(selfvoy::plan::isPro(user, now));
+    CHECK(!selfvoy::plan::isPro(user, now + 7200));
+    user.planUntil = "мусор";
+    CHECK(!selfvoy::plan::isPro(user, now));
+
+    ::setenv("SELFVOY_ADMIN_EMAILS", "planadmin@example.com", 1);
+    Fixture fixture;
+    ::unsetenv("SELFVOY_ADMIN_EMAILS");
+    admin_test::Sockets sockets;
+    auto admin = sockets.open(fixture, "plan-admin");
+    fixture.registerUser(admin, "planadmin@example.com", "Админ");
+    auto member = sockets.open(fixture, "plan-user");
+    const Json login = fixture.registerUser(member, "planuser@example.com", "Вера");
+    const long long memberId = admin_test::userIdOf(login);
+    // В каждом user — plan; бета (enforced=false): Pro-функции открыты и без Pro.
+    const Json plan = login.get("payload").get("user").get("plan");
+    CHECK_EQ(plan.getString("name"), std::string("free"));
+    CHECK_EQ(plan.getString("until"), std::string());
+    CHECK_EQ(plan.getBool("enforced", true), false);
+    CHECK(fixture.server->proAllowed(memberId));
+
+    Json payload = admin_test::byId(memberId);
+    payload.set("days", Json(30LL));
+    CHECK_EQ(fixture.call(member, "admin.setPlan", payload).getString("code"), std::string("forbidden"));
+    const Json granted = fixture.call(admin, "admin.setPlan", payload);
+    CHECK_EQ(granted.getString("type"), std::string("ok"));
+    const Json grantedPlan = integration::payloadOf(granted).get("user").get("plan");
+    CHECK_EQ(grantedPlan.getString("name"), std::string("pro"));
+    std::time_t until = 0;
+    CHECK(selfvoy::parseIsoUtc(grantedPlan.getString("until"), until));
+    CHECK(std::llabs(static_cast<long long>(until - (now + 30 * 86400))) < 120);
+    CHECK_EQ(integration::payloadOf(fixture.call(member, "auth.me")).get("plan").getString("name"), std::string("pro"));
+
+    for (const Json& bad : {Json(-1LL), Json(3651LL), Json(1.5), Json("30")}) {
+        Json wrong = admin_test::byId(memberId);
+        wrong.set("days", bad);
+        CHECK_EQ(fixture.call(admin, "admin.setPlan", wrong).getString("code"), std::string("bad_request"));
+    }
+    Json missing = admin_test::byId(999999);
+    missing.set("days", Json(1LL));
+    CHECK_EQ(fixture.call(admin, "admin.setPlan", missing).getString("code"), std::string("not_found"));
+    bool audited = false;
+    for (const auto& entry : fixture.server->database().db().listAudit(memberId, 20)) {
+        if (entry.kind == "admin_plan_changed" && entry.detail.getInt("days") == 30) audited = true;
+    }
+    CHECK(audited);
+
+    // Принудительные тарифы: без Pro — нельзя, с Pro — можно; enforced виден в user.plan.
+    fixture.config.plansEnforced = true;
+    fixture.server->stop();
+    fixture.server = std::make_unique<selfvoy::Server>(fixture.config);
+    std::string error;
+    CHECK(fixture.server->start(error));
+    CHECK(fixture.server->proAllowed(memberId));
+    const long long adminId = fixture.server->database().db().findUserByEmail("planadmin@example.com")->id;
+    CHECK(!fixture.server->proAllowed(adminId));
+    auto relogged = sockets.open(fixture, "plan-relogin");
+    const Json again = fixture.call(relogged, "auth.login", admin_test::loginPayload("planuser@example.com"));
+    CHECK_EQ(again.get("payload").get("user").get("plan").getBool("enforced"), true);
+    // Сброс (days = 0) — снова Free.
+    auto adminAgain = sockets.open(fixture, "plan-admin2");
+    fixture.call(adminAgain, "auth.login", admin_test::loginPayload("planadmin@example.com"));
+    Json reset = admin_test::byId(memberId);
+    reset.set("days", Json(0LL));
+    const Json cleared = integration::payloadOf(fixture.call(adminAgain, "admin.setPlan", reset)).get("user");
+    CHECK_EQ(cleared.get("plan").getString("name"), std::string("free"));
+    CHECK_EQ(cleared.get("plan").getString("until"), std::string());
+    CHECK(!fixture.server->proAllowed(memberId));
+    CHECK_EQ(std::string(selfvoy::protocol::code::kProRequired), std::string("pro_required"));
+    selfvoy::plan::setEnforced(false);
+}
+
+TEST(telegram_protocol_and_owner_notifications) {
+    using namespace growth_test;
+    Fixture fixture;
+    admin_test::Sockets sockets;
+    // Бот не настроен: статус выключен, ссылка — bad_request.
+    auto plain = sockets.open(fixture, "tg-plain");
+    fixture.registerUser(plain, "tgplain@example.com", "Пётр");
+    const Json off = integration::payloadOf(fixture.call(plain, "telegram.status"));
+    CHECK_EQ(off.getBool("enabled", true), false);
+    const Json noBot = fixture.call(plain, "telegram.link");
+    CHECK_EQ(noBot.getString("code"), std::string("bad_request"));
+    CHECK_EQ(noBot.getString("message"), std::string("Telegram-бот не настроен на сервере"));
+    CHECK_EQ(integration::payloadOf(fixture.call(plain, "server.info")).getString("telegram_bot"), std::string());
+
+    FakeTelegram* fake = enableBot(fixture);
+    auto owner = sockets.open(fixture, "tg-owner");
+    fixture.registerUser(owner, "tgowner@example.com", "Ольга");
+    const long long ownerId = fixture.server->database().db().findUserByEmail("tgowner@example.com")->id;
+    auto anonymous = sockets.open(fixture, "tg-anon");
+    CHECK_EQ(integration::payloadOf(fixture.call(anonymous, "server.info")).getString("telegram_bot"),
+             std::string("selfvoy_test_bot"));
+    CHECK_EQ(fixture.call(anonymous, "telegram.status").getString("code"), std::string("unauthorized"));
+    const Json status = integration::payloadOf(fixture.call(owner, "telegram.status"));
+    CHECK(status.getBool("enabled"));
+    CHECK_EQ(status.getString("bot_username"), std::string("selfvoy_test_bot"));
+    CHECK_EQ(status.getBool("linked", true), false);
+    const Json link = integration::payloadOf(fixture.call(owner, "telegram.link"));
+    const std::string url = link.getString("url");
+    CHECK(url.find("https://t.me/selfvoy_test_bot?start=o_" + std::to_string(ownerId) + "_") == 0);
+    std::time_t expires = 0;
+    CHECK(selfvoy::parseIsoUtc(link.getString("expires_at"), expires));
+    CHECK(expires > std::time(nullptr) + 800 && expires <= std::time(nullptr) + 900);
+
+    auto& bot = fixture.server->telegram();
+    bot.handleUpdate(textUpdate(7001, "/start " + startPayload(url), "private", "olga"));
+    bot.flush();
+    const Json linked = integration::payloadOf(fixture.call(owner, "telegram.status"));
+    CHECK(linked.getBool("linked"));
+    CHECK_EQ(linked.getString("username"), std::string("olga"));
+
+    // Уведомления владельцу: booking.*, task.due — в чат; прочие виды — нет.
+    auto& notifications = fixture.server->notifications();
+    notifications.create(ownerId, "booking.created", "Анна записалась на встречу", "Консультация");
+    notifications.create(ownerId, "login.new", "Новый вход в Selfvoy", "127.0.0.1");
+    notifications.create(ownerId, "task.due", "Напоминание", "Позвонить");
+    bot.flush();
+    auto texts = fake->texts(7001);
+    CHECK_EQ(texts.size(), std::size_t(3));  // ответ на /start + два уведомления
+    if (texts.size() == 3) {
+        CHECK_EQ(texts[1], std::string("Анна записалась на встречу\nКонсультация"));
+        CHECK_EQ(texts[2], std::string("Напоминание\nПозвонить"));
+    }
+    // Отключённый вид и prefs.notifications.telegram = false — не уходят.
+    Json prefs = Json::object();
+    Json notify = Json::object();
+    Json muted = Json::array();
+    muted.push(Json("booking.cancelled"));
+    notify.set("muted_kinds", muted);
+    prefs.set("notifications", notify);
+    CHECK_EQ(fixture.call(owner, "prefs.set", prefs).getString("type"), std::string("ok"));
+    notifications.create(ownerId, "booking.cancelled", "Отмена", "Консультация");
+    notify.set("telegram", Json(false));
+    prefs.set("notifications", notify);
+    CHECK_EQ(fixture.call(owner, "prefs.set", prefs).getString("type"), std::string("ok"));
+    notifications.create(ownerId, "booking.rescheduled", "Перенос", "Консультация");
+    bot.flush();
+    CHECK_EQ(fake->texts(7001).size(), std::size_t(3));
+
+    const Json unlinked = integration::payloadOf(fixture.call(owner, "telegram.unlink"));
+    CHECK_EQ(unlinked.getBool("linked", true), false);
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "telegram.status")).getBool("linked", true), false);
+}
+
+// Запись гостя: ссылка Telegram в ответе, письме и виде гостя; шифр токена ссылки
+// управления; извещения гостю уходят и в привязанный чат.
+TEST(telegram_booking_guest_channel) {
+    using namespace booking_test;
+    using namespace growth_test;
+    const std::time_t first = future(30);
+    const std::string day = selfvoy::isoUtc(first).substr(0, 10);
+    FakeAi ai([&] {
+        Json slots = Json::array();
+        slots.push(daySlot(first, 60, day));
+        slots.push(daySlot(first + 7200, 60, day));
+        Json body = Json::object();
+        body.set("slots", slots);
+        return body.dump();
+    });
+    Fixture fixture;
+    FakeTelegram* fake = enableBot(fixture, ai.url(), "https://selfvoy.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "tgb-owner");
+    fixture.registerUser(owner, "tgcoach@example.com", "Ольга");
+    const std::string slug =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", pagePayload("Разбор"))).get("page").getString("slug");
+    auto guest = sockets.open(fixture, "tgb-guest");
+    Json payload = bookPayload(slug, first, "Пётр");
+    payload.set("guest_email", Json("tg-guest@example.com"));
+    selfvoy::devOutbox();
+    const Json booked = integration::payloadOf(fixture.call(guest, "booking.book", payload));
+    const std::string token = booked.getString("token");
+    const std::string telegramUrl = booked.getString("telegram_url");
+    CHECK(telegramUrl.find("https://t.me/selfvoy_test_bot?start=g_") == 0);
+    CHECK_EQ(booked.get("booking").getString("telegram_url"), telegramUrl);
+    CHECK_EQ(booked.get("booking").getBool("telegram_linked", true), false);
+
+    // Письмо-подтверждение — со строкой «Напоминания в Telegram: <url>».
+    bool mailed = false;
+    for (const auto& mail : settledOutbox()) {
+        if (mail.to != "tg-guest@example.com" || mail.kind != "booking.created") continue;
+        mailed = std::find(mail.footer.begin(), mail.footer.end(), "Напоминания в Telegram: " + telegramUrl) !=
+                 mail.footer.end();
+    }
+    CHECK(mailed);
+
+    // Токен ссылки управления хранится шифром; хэш остаётся ключом поиска.
+    auto& db = fixture.server->database().db();
+    const auto stored = db.findBookingByToken(selfvoy::BookingManager::tokenHash(token));
+    CHECK(stored.has_value());
+    if (!stored) return;
+    CHECK(!stored->manageTokenEnc.empty());
+    CHECK(stored->manageTokenEnc.find(token) == std::string::npos);
+    CHECK_EQ(fixture.server->bookings().manageTokenOf(*stored), token);
+    selfvoy::BookingRecord legacy = *stored;
+    legacy.manageTokenEnc.clear();
+    CHECK_EQ(fixture.server->bookings().manageTokenOf(legacy), std::string());
+
+    // Гость подключает Telegram по ссылке — вид гостя это показывает.
+    auto& bot = fixture.server->telegram();
+    bot.handleUpdate(textUpdate(8001, "/start " + startPayload(telegramUrl)));
+    bot.flush();
+    CHECK(fake->last(8001).find("Готово: напоминания о записи «Разбор» (Ольга)") == 0);
+    CHECK(fake->last(8001).find("Ближайшая встреча:") != std::string::npos);
+    const Json managed = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(token))).get("booking");
+    CHECK(managed.getBool("telegram_linked"));
+    CHECK_EQ(managed.getString("telegram_url"), telegramUrl);
+
+    // Перевыпуск ссылки управления: шифр — новый токен, прежняя Telegram-ссылка недействительна.
+    Json resend = slugPayload(slug);
+    resend.set("email", Json("tg-guest@example.com"));
+    CHECK_EQ(fixture.call(guest, "booking.resendLink", resend).getString("type"), std::string("ok"));
+    fixture.server->bookings().flushMail();
+    const auto reissued = db.findBooking(stored->id);
+    CHECK(reissued && reissued->manageHash != stored->manageHash);
+    if (reissued) {
+        const std::string fresh = fixture.server->bookings().manageTokenOf(*reissued);
+        CHECK_EQ(selfvoy::BookingManager::tokenHash(fresh), reissued->manageHash);
+        CHECK(!bot.verifyGuest(startPayload(telegramUrl), reissued->id, reissued->manageHash));
+        // Новая ссылка ушла и в Telegram-чат гостя (url-кнопкой: адрес https).
+        bot.flush();
+        const auto sent = fake->of("sendMessage");
+        bool button = false;
+        for (const auto& item : sent) {
+            if (item.body.getInt("chat_id") != 8001) continue;
+            const Json keyboard = item.body.get("reply_markup").get("inline_keyboard");
+            if (keyboard.size() == 1 && keyboard.at(0).at(0).getString("url") ==
+                                            "https://selfvoy.example.com/#/m/" + fresh) {
+                button = true;
+            }
+        }
+        CHECK(button);
+        // Гость отменяет — извещение в чат.
+        CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(fresh)).getString("type"), std::string("ok"));
+        fixture.server->bookings().flushMail();
+        bot.flush();
+        CHECK(fake->last(8001).find("Запись отменена") == 0);
+        CHECK(fake->last(8001).find("«Разбор» — Ольга") != std::string::npos);
+        CHECK(fake->last(8001).find("Пётр") == std::string::npos);  // имя гостя в извещения не попадает
+    }
+}
+
+#ifdef SELFVOY_WITH_LIBPQ
+// PostgreSQL: состояние, тариф, Telegram-привязки и лидерство опроса (SELFVOY_TEST_PG_URL).
+TEST(pg_growth_methods) {
+    const char* url = std::getenv("SELFVOY_TEST_PG_URL");
+    if (url == nullptr || *url == '\0') {
+        std::cout << "  (пропущен: SELFVOY_TEST_PG_URL не задан)\n";
+        return;
+    }
+    auto first = selfvoy::makePostgresDatabase(url);
+    auto second = selfvoy::makePostgresDatabase(url);
+    std::string error;
+    CHECK(first && first->connect(error));
+    CHECK(second && second->connect(error));
+    if (!first || !second) return;
+    const std::string key = "test." + selfvoy::crypto::randomHex(4);
+    CHECK_EQ(first->getState(key), std::string());
+    CHECK(first->setState(key, "1").ok);
+    CHECK(first->setState(key, "2").ok);
+    CHECK_EQ(second->getState(key), std::string("2"));
+
+    // Лидер: повторный вызов у держателя — true; другой процесс (соединение) — false,
+    // после release — может взять.
+    const long long lockKey = 0x53564F59544C00LL + (std::time(nullptr) % 200);
+    CHECK(first->tryLeaderLock(lockKey));
+    CHECK(first->tryLeaderLock(lockKey));
+    CHECK(!second->tryLeaderLock(lockKey));
+    first->releaseLeaderLock(lockKey);
+    CHECK(second->tryLeaderLock(lockKey));
+    CHECK(!first->tryLeaderLock(lockKey));
+    second->releaseLeaderLock(lockKey);
+
+    long long a = 0, b = 0;
+    const std::string suffix = selfvoy::crypto::randomHex(4);
+    CHECK(first->createUser("pg-tg-a-" + suffix + "@example.com", "argon2id$x", "А", a).ok);
+    CHECK(first->createUser("pg-tg-b-" + suffix + "@example.com", "argon2id$x", "Б", b).ok);
+    const long long chat = 900000000000LL + (std::time(nullptr) % 100000);
+    CHECK(first->setUserTelegram(a, chat, "anna").ok);
+    CHECK_EQ(first->findUserById(a)->telegramChatId, chat);
+    CHECK(first->setUserTelegram(b, chat, "boris").ok);  // перепривязка
+    CHECK_EQ(first->findUserById(a)->telegramChatId, 0LL);
+    CHECK_EQ(first->findUserById(b)->telegramUsername, std::string("boris"));
+    CHECK(first->setUserPlanDays(b, 10).ok);
+    CHECK(selfvoy::plan::isPro(*first->findUserById(b)));
+    CHECK(first->setUserPlanDays(b, 0).ok);
+    CHECK_EQ(first->findUserById(b)->planUntil, std::string());
+
+    const std::string token = growth_test::newToken();
+    const long long booking = growth_test::makeBooking(*first, a, token);
+    CHECK(booking > 0);
+    CHECK(first->linkBookingTelegram(booking, chat, 3));
+    CHECK(first->linkBookingTelegram(booking, chat, 3));
+    CHECK(first->linkBookingTelegram(booking, chat + 1, 3));
+    CHECK(first->linkBookingTelegram(booking, chat + 2, 3));
+    CHECK(!first->linkBookingTelegram(booking, chat + 3, 3));
+    CHECK_EQ(first->bookingTelegramChats(booking).size(), std::size_t(3));
+    CHECK(first->unlinkTelegramChat(chat).ok);
+    CHECK_EQ(first->bookingTelegramChats(booking).size(), std::size_t(2));
+    CHECK_EQ(first->findUserById(b)->telegramChatId, 0LL);
+
+    auto record = first->findBooking(booking);
+    CHECK(record && record->manageTokenEnc.empty());
+    if (record) {
+        record->manageTokenEnc = "sealed-value";
+        CHECK(first->updateBooking(*record).ok);
+        CHECK_EQ(first->findBooking(booking)->manageTokenEnc, std::string("sealed-value"));
+        record->manageTokenEnc.clear();  // пустое не затирает
+        CHECK(first->updateBooking(*record).ok);
+        CHECK_EQ(first->findBooking(booking)->manageTokenEnc, std::string("sealed-value"));
+    }
+}
+#endif

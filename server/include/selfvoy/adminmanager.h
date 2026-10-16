@@ -57,6 +57,8 @@ public:
     Result setRole(long long actorId, const Json& payload, const std::string& remoteAddr);
     Result revokeSessions(long long actorId, const Json& payload, const std::string& remoteAddr);
     Result audit(long long actorId, const Json& payload);
+    // Тариф (только admin): plan_until = now + days (0–3650; 0 — сброс в Free).
+    Result setPlan(long long actorId, const Json& payload, const std::string& remoteAddr);
 
 private:
     // Актор с ролью не ниже minRole; иначе — failure forbidden.

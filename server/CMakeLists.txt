@@ -50,6 +50,9 @@ set(SELFVOY_SOURCES
     src/log.cpp
     src/mailprovider.cpp
     src/smtp.cpp
+    src/tls.cpp
+    src/plan.cpp
+    src/telegrambot.cpp
     src/memorymanager.cpp
     src/net.cpp
     src/notificationsmanager.cpp
@@ -88,6 +91,9 @@ set(SELFVOY_HEADERS
     include/selfvoy/taskmanager.h
     include/selfvoy/toolmanager.h
     include/selfvoy/ws.h
+    include/selfvoy/tls.h
+    include/selfvoy/plan.h
+    include/selfvoy/telegrambot.h
 )
 
 add_library(selfvoy-core STATIC ${SELFVOY_SOURCES} ${SELFVOY_HEADERS})
@@ -108,15 +114,16 @@ if(SELFVOY_WITH_LIBPQ)
     endif()
 endif()
 
-# OpenSSL: TLS для SMTP (SELFVOY_MAIL_DRIVER=smtp). Без него сервер собирается,
-# но письма можно слать только через локальный ретранслятор (SELFVOY_SMTP_TLS=none).
+# OpenSSL: TLS для SMTP (SELFVOY_MAIL_DRIVER=smtp) и https-запросов (Telegram Bot API,
+# Google). Без него сервер собирается, но письма можно слать только через локальный
+# ретранслятор (SELFVOY_SMTP_TLS=none), а https-запросы возвращают ошибку «сборка без TLS».
 find_package(OpenSSL)
 if(OpenSSL_FOUND)
     target_compile_definitions(selfvoy-core PUBLIC SELFVOY_HAVE_OPENSSL)
     target_link_libraries(selfvoy-core PUBLIC OpenSSL::SSL OpenSSL::Crypto)
-    message(STATUS "selfvoy-server: TLS для SMTP — OpenSSL ${OPENSSL_VERSION}")
+    message(STATUS "selfvoy-server: TLS (SMTP, https) — OpenSSL ${OPENSSL_VERSION}")
 else()
-    message(WARNING "selfvoy-server: OpenSSL не найден — SMTP только без TLS")
+    message(WARNING "selfvoy-server: OpenSSL не найден — SMTP и https без TLS")
 endif()
 
 add_executable(selfvoy-server src/main.cpp)

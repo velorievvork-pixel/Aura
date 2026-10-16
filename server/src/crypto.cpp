@@ -810,4 +810,17 @@ bool constantTimeEquals(const std::string& left, const std::string& right) {
     return diff == 0;
 }
 
+std::string sealField(const std::string& key, const std::string& plaintext, const std::string& aad) {
+    std::string blob;
+    if (!aes256GcmEncrypt(key, plaintext, aad, blob)) return "";
+    return base64Encode(blob);
+}
+
+bool openField(const std::string& key, const std::string& sealed, const std::string& aad, std::string& out) {
+    out.clear();
+    std::string blob;
+    if (sealed.empty() || !base64Decode(sealed, blob)) return false;
+    return aes256GcmDecrypt(key, blob, aad, out);
+}
+
 }  // namespace selfvoy::crypto

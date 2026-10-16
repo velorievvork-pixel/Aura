@@ -8,6 +8,7 @@
 #include "selfvoy/log.h"
 #include "selfvoy/net.h"
 #include "selfvoy/protocol.h"
+#include "selfvoy/telegrambot.h"
 
 namespace selfvoy {
 
@@ -40,11 +41,28 @@ long long NotificationsManager::create(long long userId,
     // In-app: событие живым сессиям владельца.
     connections_.deliverToUser(userId, protocol::event("notification.new", record.toJson()));
 
-    // Push: с уважением к тихим часам и отключённым типам (in-app уже сохранено).
+    // Push и Telegram: с уважением к тихим часам и отключённым типам (in-app уже сохранено).
     if (!kindMuted(userId, kind) && !inQuietHours(userId)) {
         deliverPush(record, unreadCount(userId));
+        if (telegram_ && telegramKind(kind)) deliverTelegram(record);
     }
     return id;
+}
+
+bool NotificationsManager::telegramKind(const std::string& kind) {
+    for (const char* prefix : {"booking.", "package.", "invite.", "referral."}) {
+        if (kind.rfind(prefix, 0) == 0) return true;
+    }
+    return kind == "task.due";
+}
+
+void NotificationsManager::deliverTelegram(const NotificationRecord& record) {
+    if (!telegram_->enabled()) return;
+    const auto user = database_.db().findUserById(record.userId);
+    if (!user || user->telegramChatId == 0) return;
+    const Json prefs = database_.db().getPreferences(record.userId);
+    if (!prefs.get("notifications").getBool("telegram", true)) return;
+    telegram_->sendMessage(user->telegramChatId, record.body.empty() ? record.title : record.title + "\n" + record.body);
 }
 
 NotificationsManager::Result NotificationsManager::list(long long userId,

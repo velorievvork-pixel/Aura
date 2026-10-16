@@ -96,6 +96,7 @@ selfvoy llm-check
 | `selfvoy status` | контейнеры и текущая модель LLM |
 | `selfvoy logs [server\|ai\|postgres\|caddy]` | последние логи |
 | `selfvoy verify EMAIL` | подтвердить email без почты |
+| `selfvoy pro EMAIL DAYS` | выдать тариф Pro на DAYS дней (0–3650; 0 — снять Pro) |
 | `selfvoy llm-key` / `selfvoy llm-check` | вставить ключ / проверить модель |
 | `selfvoy backup` | копия базы в `/opt/selfvoy/backups/` (14 последних) |
 | `selfvoy update` | обновить и пересобрать |

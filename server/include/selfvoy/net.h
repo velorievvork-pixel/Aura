@@ -1,23 +1,30 @@
-// selfvoy/net.h — минимальный TCP/HTTP-клиент.
+// selfvoy/net.h — минимальный TCP/HTTP(S)-клиент.
 //
-// Нужен двум модулям: AgentManager (запросы в Python AI Service) и ToolManager
-// (вызовы внешних API). TLS намеренно не поддерживается: внутри docker-сети
-// сервисы общаются по HTTP, а наружу трафик терминирует обратный прокси.
+// Запросы в Python AI Service (внутри docker-сети — обычный http), во внешние
+// API (Google, Telegram Bot API, push-шлюз). https работает напрямую, если сервер
+// собран с OpenSSL (SELFVOY_HAVE_OPENSSL): TLS ≥ 1.2, проверка сертификата
+// (системные CA + SELFVOY_CA_FILE), SNI и имени хоста — общая обвязка
+// selfvoy/tls.h, та же, что у SMTP. Без OpenSSL https-запрос возвращает ошибку
+// «сборка без TLS».
 #pragma once
 
+#include <atomic>
 #include <map>
 #include <string>
 
 namespace selfvoy::net {
 
 struct Url {
-    std::string scheme = "http";
+    std::string scheme = "http";  // http | https | ws
     std::string host;
-    int port = 80;
+    int port = 80;                // по умолчанию 80 (http/ws) или 443 (https)
     std::string path = "/";
 };
 
 bool parseUrl(const std::string& text, Url& out, std::string& error);
+
+// Дополнительный корневой сертификат для https (SELFVOY_CA_FILE; "" — только системные CA).
+void setCaFile(const std::string& path);
 
 int connectTcp(const std::string& host, int port, int timeoutMs, std::string& error);
 bool sendAll(int fd, const std::string& data, int timeoutMs);
@@ -42,6 +49,17 @@ HttpResponse httpRequest(const std::string& method,
                          const std::string& body,
                          int timeoutMs,
                          std::string& error);
+
+// То же с возможностью прервать ожидание: *cancel == true — запрос завершается
+// (не позже чем через ~200 мс) с ошибкой «запрос прерван». Нужно долгим
+// запросам (long polling Telegram), чтобы остановка сервера их не ждала.
+HttpResponse httpRequest(const std::string& method,
+                         const std::string& url,
+                         const std::map<std::string, std::string>& headers,
+                         const std::string& body,
+                         int timeoutMs,
+                         std::string& error,
+                         const std::atomic<bool>* cancel);
 
 // Проверка доступности AI-сервиса (используется в healthcheck'е сервера).
 bool pingAiService(const std::string& baseUrl, int timeoutMs, std::string& error);

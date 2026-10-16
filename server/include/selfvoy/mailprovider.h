@@ -30,6 +30,7 @@ struct MailNotice {
     std::vector<std::string> lines;
     std::string linkUrl;  // пусто — без кнопки
     std::string linkText;
+    std::vector<std::string> footer;  // абзацы после кнопки («Напоминания в Telegram: …»)
     std::string note;
 };
 

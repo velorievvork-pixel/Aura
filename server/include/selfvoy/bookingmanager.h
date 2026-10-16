@@ -39,9 +39,21 @@ class MemoryManager;
 class NotificationsManager;
 class ReferralManager;
 class ScheduleLock;
+class TelegramBot;
 struct BookingPageRecord;
 struct BookingRecord;
 struct Config;
+
+// Извещение гостю: одно сообщение уходит на все каналы записи — email гостя (и
+// второго получателя, F5), привязанные Telegram-чаты (booking_telegram). Тексты
+// собирает сервер; имя и комментарий гостя туда не попадают.
+struct GuestNotice {
+    MailNotice mail;                  // текст письма (mail.to задаётся на каждый адрес)
+    std::vector<std::string> emails;  // адреса, лимит на каждый уже списан
+    std::vector<long long> chats;     // Telegram-чаты, лимит на каждый уже списан
+    std::string telegramText;         // простой текст для Telegram
+    Json telegramMarkup;              // reply_markup (url-кнопка) или null
+};
 
 class BookingManager {
 public:
@@ -100,8 +112,20 @@ public:
 
     using Busy = std::vector<std::pair<std::time_t, std::time_t>>;
 
-    // Дождаться отправки писем из очереди (тесты, остановка).
+    // Дождаться отправки извещений гостям из очереди (тесты, остановка).
     void flushMail();
+
+    // --- Рост (S1a) ---------------------------------------------------------
+    static constexpr const char* kManageTokenAad = "selfvoy-manage-token";
+    // Telegram-бот (может быть nullptr — бот не настроен). Задаётся до первого запроса.
+    void setTelegram(TelegramBot* telegram) { telegram_ = telegram; }
+    // Токен ссылки управления из manage_token_enc; "" — нет (старая запись) или не расшифровался.
+    std::string manageTokenOf(const BookingRecord& booking) const;
+    // Ответ бота гостю после привязки чата: ближайшая встреча (местное время владельца).
+    std::string telegramGreeting(const BookingRecord& booking);
+    // Кнопка «Приду» из Telegram (callback cf:<booking_id>:<start_unix>): чат уже
+    // проверен ботом. Логику booking.confirm подключает стадия F1; пока — «недоступно».
+    Result telegramConfirm(long long bookingId, std::time_t start);
 
 private:
     struct Offer {
@@ -147,15 +171,18 @@ private:
 
     bool limited(const std::string& key, int perWindow, int windowSeconds = 60);
 
-    // Письмо гостю о записи (если указан email; лимиты на адрес и на владельца).
-    // Тема — только текст сервера; в теле — название страницы и имя владельца
-    // (экранируются), имя гостя не попадает никуда, чтобы форму нельзя было
-    // использовать для рассылки произвольного текста. Письмо уходит из фоновой
-    // очереди: запрос гостя не ждёт SMTP. reserved — лимит адреса уже списан.
-    void mailGuest(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
-                   const std::string& subject, const std::string& title, const std::string& lead,
-                   const std::string& token, bool onlyActive, bool reserved = false);
+    // Извещение гостю о записи — на все каналы (email, Telegram-чаты записи; лимиты на
+    // адрес/чат и на владельца). Тема — только текст сервера; в теле — название страницы
+    // и имя владельца (экранируются), имя гостя не попадает никуда, чтобы форму нельзя
+    // было использовать для рассылки произвольного текста. Уходит из фоновой очереди:
+    // запрос гостя не ждёт SMTP и Telegram. reserved — лимит адреса гостя уже списан.
+    // footer — дополнительные строки письма (в Telegram не уходят).
+    void notifyGuest(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
+                     const std::string& subject, const std::string& title, const std::string& lead,
+                     const std::string& token, bool onlyActive, bool reserved = false,
+                     const std::vector<std::string>& footer = {});
     void mailLoop();
+    std::string sealManageToken(const std::string& token) const;
     std::string manageUrl(const std::string& token) const;
 
     DatabaseManager& database_;
@@ -181,10 +208,11 @@ private:
 
     std::mutex mailMutex_;
     std::condition_variable mailCv_;
-    std::deque<MailNotice> mailQueue_;
+    std::deque<GuestNotice> mailQueue_;
     bool mailBusy_ = false;
     bool mailStop_ = false;
-    std::thread mailThread_;  // запускается при первом письме
+    std::thread mailThread_;  // запускается при первом извещении
+    TelegramBot* telegram_ = nullptr;
 };
 
 }  // namespace selfvoy

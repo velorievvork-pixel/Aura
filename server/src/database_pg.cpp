@@ -29,6 +29,11 @@ namespace selfvoy {
 
 namespace {
 
+// Колонки тарифа и Telegram (S1a) в выборках users — после role, читает readUser.
+#define SELFVOY_PG_USER_GROWTH_COLUMNS                                                            \
+    ", to_char(plan_until AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "              \
+    "COALESCE(telegram_chat_id, 0), telegram_username "
+
 std::string lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -209,7 +214,7 @@ public:
         PGresult* result = nullptr;
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
-                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role" SELFVOY_PG_USER_GROWTH_COLUMNS
                      "FROM users WHERE lower(email) = LOWER($1) LIMIT 1",
                      {lower(email)}, &result)) {
             return std::nullopt;
@@ -225,7 +230,7 @@ public:
         PGresult* result = nullptr;
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
-                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role" SELFVOY_PG_USER_GROWTH_COLUMNS
                      "FROM users WHERE id = $1",
                      {std::to_string(id)}, &result)) {
             return std::nullopt;
@@ -267,7 +272,7 @@ public:
         const std::string pattern = "%" + escaped + "%";
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
-                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role" SELFVOY_PG_USER_GROWTH_COLUMNS
                      "FROM users WHERE lower(display_name) LIKE LOWER($1) ESCAPE '\\' "
                      "ORDER BY id LIMIT $2",
                      {pattern, std::to_string(limit)}, &result)) {
@@ -1749,7 +1754,7 @@ public:
         args.push_back(std::to_string(offset));
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
-                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role "
+                     "to_char(last_seen_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), email_verified, bio, role" SELFVOY_PG_USER_GROWTH_COLUMNS
                      "FROM users " + where + "ORDER BY id DESC LIMIT $5 OFFSET $6",
                      args, &result)) {
             return users;
@@ -1958,6 +1963,141 @@ private:
         execute("SELECT pg_advisory_unlock($1::bigint)", {scheduleLockKey(ownerId)}, nullptr);
     }
 
+    // --------------------------------------- рост (S1a): состояние, тариф, Telegram
+    std::string getState(const std::string& key) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT value FROM server_state WHERE key = $1", {key}, &result)) return "";
+        const std::string value = PQntuples(result) > 0 ? value_(result, 0, 0) : std::string();
+        PQclear(result);
+        return value;
+    }
+
+    DatabaseError setState(const std::string& key, const std::string& value) override {
+        Lease lease(pool_);
+        if (!execute("INSERT INTO server_state (key, value, updated_at) VALUES ($1, $2, now()) "
+                     "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()",
+                     {key, value}, nullptr)) {
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
+    }
+
+    // Ведущий экземпляр: advisory lock живёт в сессии соединения блокировок. Сначала —
+    // держим ли мы его уже (pg_locks этой сессии): повторный pg_try_advisory_lock
+    // увеличил бы счётчик захватов, и один unlock его бы не отпустил.
+    bool tryLeaderLock(long long key) override {
+        Lease lease(lockPool_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
+                     "AND pid = pg_backend_pid() AND granted AND objsubid = 1 "
+                     "AND ((classid::bigint << 32) | objid::bigint) = $1::bigint) "
+                     "THEN true ELSE pg_try_advisory_lock($1::bigint) END",
+                     {std::to_string(key)}, &result)) {
+            return false;
+        }
+        const bool locked = PQntuples(result) > 0 && value_(result, 0, 0) == "t";
+        PQclear(result);
+        return locked;
+    }
+
+    void releaseLeaderLock(long long key) override {
+        Lease lease(lockPool_);
+        execute("SELECT pg_advisory_unlock($1::bigint)", {std::to_string(key)}, nullptr);
+    }
+
+    DatabaseError setUserPlanDays(long long userId, int days) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE users SET plan_until = CASE WHEN $2::int <= 0 THEN NULL "
+                     "ELSE now() + make_interval(days => $2::int) END WHERE id = $1",
+                     {std::to_string(userId), std::to_string(days)}, &result)) {
+            return DatabaseError::failure(lastError());
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched ? DatabaseError::success() : DatabaseError::failure("пользователь не найден");
+    }
+
+    // Отвязка у прежнего аккаунта и привязка к новому — одной транзакцией на одном
+    // соединении (уникальный индекс по telegram_chat_id).
+    DatabaseError setUserTelegram(long long userId, long long chatId, const std::string& username) override {
+        Lease lease(pool_);
+        if (chatId == 0) {
+            PGresult* result = nullptr;
+            if (!execute("UPDATE users SET telegram_chat_id = NULL, telegram_username = '' WHERE id = $1",
+                         {std::to_string(userId)}, &result)) {
+                return DatabaseError::failure(lastError());
+            }
+            const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+            PQclear(result);
+            return touched ? DatabaseError::success() : DatabaseError::failure("пользователь не найден");
+        }
+        if (!execute("BEGIN", {}, nullptr)) return DatabaseError::failure(lastError());
+        PGresult* result = nullptr;
+        const bool ok =
+            execute("UPDATE users SET telegram_chat_id = NULL, telegram_username = '' "
+                    "WHERE telegram_chat_id = $1::bigint AND id <> $2",
+                    {std::to_string(chatId), std::to_string(userId)}, nullptr) &&
+            execute("UPDATE users SET telegram_chat_id = $2::bigint, telegram_username = $3 WHERE id = $1",
+                    {std::to_string(userId), std::to_string(chatId), username}, &result);
+        const bool touched = ok && std::atoi(PQcmdTuples(result)) > 0;
+        if (result) PQclear(result);
+        if (!touched) {
+            const std::string message = ok ? std::string("пользователь не найден") : lastError();
+            execute("ROLLBACK", {}, nullptr);
+            return DatabaseError::failure(message);
+        }
+        if (!execute("COMMIT", {}, nullptr)) {
+            execute("ROLLBACK", {}, nullptr);
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
+    }
+
+    bool linkBookingTelegram(long long bookingId, long long chatId, int maxChats) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        // Уже привязан — true; иначе вставка, только пока чатов меньше maxChats.
+        if (!execute("WITH existing AS (SELECT 1 FROM booking_telegram WHERE booking_id = $1 AND chat_id = $2::bigint), "
+                     "inserted AS (INSERT INTO booking_telegram (booking_id, chat_id) "
+                     "SELECT $1, $2::bigint WHERE NOT EXISTS (SELECT 1 FROM existing) "
+                     "AND (SELECT count(*) FROM booking_telegram WHERE booking_id = $1) < $3::int "
+                     "ON CONFLICT DO NOTHING RETURNING 1) "
+                     "SELECT (SELECT count(*) FROM existing) + (SELECT count(*) FROM inserted)",
+                     {std::to_string(bookingId), std::to_string(chatId), std::to_string(maxChats)}, &result)) {
+            return false;
+        }
+        const bool linked = PQntuples(result) > 0 && std::atoll(value_(result, 0, 0).c_str()) > 0;
+        PQclear(result);
+        return linked;
+    }
+
+    std::vector<long long> bookingTelegramChats(long long bookingId) override {
+        Lease lease(pool_);
+        std::vector<long long> chats;
+        PGresult* result = nullptr;
+        if (!execute("SELECT chat_id FROM booking_telegram WHERE booking_id = $1 ORDER BY linked_at",
+                     {std::to_string(bookingId)}, &result)) {
+            return chats;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) chats.push_back(std::atoll(value_(result, row, 0).c_str()));
+        PQclear(result);
+        return chats;
+    }
+
+    DatabaseError unlinkTelegramChat(long long chatId) override {
+        Lease lease(pool_);
+        if (chatId == 0) return DatabaseError::success();
+        const std::string chat = std::to_string(chatId);
+        if (!execute("UPDATE users SET telegram_chat_id = NULL, telegram_username = '' WHERE telegram_chat_id = $1::bigint",
+                     {chat}, nullptr) ||
+            !execute("DELETE FROM booking_telegram WHERE chat_id = $1::bigint", {chat}, nullptr)) {
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
+    }
+
     // --------------------------------------------------------- booking_pages
     DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) override {
         Lease lease(pool_);
@@ -2061,13 +2201,15 @@ private:
         Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("INSERT INTO bookings (page_id, owner_id, manage_hash, guest_name, guest_email, guest_comment, "
-                     "occurrences, status, cancelled_by, reschedules, ends_at) "
-                     "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::int, NULLIF($11, '')::timestamptz) "
+                     "occurrences, status, cancelled_by, reschedules, ends_at, manage_token_enc) "
+                     "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::int, NULLIF($11, '')::timestamptz, "
+                     "NULLIF($12, '')) "
                      "RETURNING id",
                      {std::to_string(record.pageId), std::to_string(record.ownerId), record.manageHash,
                       record.guestName, record.guestEmail, record.guestComment,
                       record.occurrences.isArray() ? record.occurrences.dump() : std::string("[]"), record.status,
-                      record.cancelledBy, std::to_string(record.reschedules), bookingEndsAt(record.occurrences)},
+                      record.cancelledBy, std::to_string(record.reschedules), bookingEndsAt(record.occurrences),
+                      record.manageTokenEnc},
                      &result)) {
             PQclear(result);
             return DatabaseError::failure(lastError());
@@ -2125,11 +2267,12 @@ private:
         PGresult* result = nullptr;
         if (!execute("UPDATE bookings SET occurrences = $2::jsonb, status = $3, cancelled_by = $4, "
                      "reschedules = $5::int, manage_hash = COALESCE(NULLIF($6, ''), manage_hash), "
-                     "ends_at = NULLIF($7, '')::timestamptz, updated_at = now() WHERE id = $1",
+                     "ends_at = NULLIF($7, '')::timestamptz, "
+                     "manage_token_enc = COALESCE(NULLIF($8, ''), manage_token_enc), updated_at = now() WHERE id = $1",
                      {std::to_string(record.id),
                       record.occurrences.isArray() ? record.occurrences.dump() : std::string("[]"), record.status,
                       record.cancelledBy, std::to_string(record.reschedules), record.manageHash,
-                      bookingEndsAt(record.occurrences)},
+                      bookingEndsAt(record.occurrences), record.manageTokenEnc},
                      &result)) {
             return DatabaseError::failure(lastError());
         }
@@ -2142,7 +2285,8 @@ private:
         return "SELECT id, page_id, owner_id, manage_hash, guest_name, guest_email, guest_comment, "
                "occurrences::text, status, cancelled_by, reschedules, "
                "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
-               "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+               "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+               "COALESCE(manage_token_enc, '') "
                "FROM bookings";
     }
 
@@ -2172,6 +2316,7 @@ private:
         record.reschedules = std::atoi(value_(result, row, 10).c_str());
         record.createdAt = value_(result, row, 11);
         record.updatedAt = value_(result, row, 12);
+        if (PQnfields(result) > 13) record.manageTokenEnc = value_(result, row, 13);
         return record;
     }
 
@@ -2418,6 +2563,11 @@ private:
         record.bio = value_(result, row, 10);
         if (PQnfields(result) > 11) record.role = value_(result, row, 11);
         if (record.role.empty()) record.role = "user";
+        if (PQnfields(result) > 14) {
+            record.planUntil = value_(result, row, 12);
+            record.telegramChatId = std::atoll(value_(result, row, 13).c_str());
+            record.telegramUsername = value_(result, row, 14);
+        }
         return record;
     }
 

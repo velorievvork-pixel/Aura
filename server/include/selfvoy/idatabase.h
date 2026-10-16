@@ -28,8 +28,12 @@ struct UserRecord {
     bool active = true;
     bool emailVerified = true;  // подтверждён ли email
     std::string role = "user";  // user | moderator | admin (админ-панель)
+    // Тариф и Telegram (S1a). planUntil — ISO UTC или "" (NULL): Pro, пока planUntil > now.
+    std::string planUntil;
+    long long telegramChatId = 0;  // 0 — чат не привязан
+    std::string telegramUsername;
 
-    Json toJson(bool includeSecret = false) const;
+    Json toJson(bool includeSecret = false) const;  // + plan (selfvoy/plan.h)
 };
 
 struct SessionRecord {
@@ -310,6 +314,10 @@ struct BookingRecord {
     int reschedules = 0;
     std::string createdAt;
     std::string updatedAt;
+    // Токен ссылки управления, зашифрованный AES-256-GCM (Config::dataKey, AAD
+    // "selfvoy-manage-token"): напоминания дают гостю ссылку. "" — старая запись.
+    // Ключ поиска — по-прежнему только manageHash.
+    std::string manageTokenEnc;
 };
 
 // Конец последней активной встречи записи (ISO UTC) или "" — активных нет.
@@ -575,6 +583,28 @@ public:
     // Межпроцессная блокировка расписания владельца (ScheduleLock). true — захвачена.
     virtual bool tryLockSchedule(long long /*ownerId*/) { return true; }
     virtual void unlockSchedule(long long /*ownerId*/) {}
+
+    // --- Рост (S1a): служебное состояние, тариф, Telegram ---------------------
+    // server_state: ключ → значение (смещение getUpdates Telegram и т.п.). "" — ключа нет.
+    virtual std::string getState(const std::string& key) = 0;
+    virtual DatabaseError setState(const std::string& key, const std::string& value) = 0;
+    // Ведущий экземпляр фоновой задачи (опрос Telegram): advisory lock PostgreSQL на
+    // соединении блокировок. Держатель при повторном вызове получает true без второго
+    // захвата; после обрыва соединения блокировка берётся заново (если свободна).
+    // Встроенное хранилище работает в одном процессе — всегда ведущий.
+    virtual bool tryLeaderLock(long long /*key*/) { return true; }
+    virtual void releaseLeaderLock(long long /*key*/) {}
+    // Тариф: plan_until = now + days; days = 0 — сброс в NULL (Free).
+    virtual DatabaseError setUserPlanDays(long long userId, int days) = 0;
+    // Telegram владельца. chatId = 0 — отвязать. Чат, привязанный к другому
+    // аккаунту, у того отвязывается (один чат — один аккаунт).
+    virtual DatabaseError setUserTelegram(long long userId, long long chatId, const std::string& username) = 0;
+    // Telegram-чаты записи (booking_telegram). true — чат привязан (или уже был);
+    // false — у записи уже maxChats чатов или ошибка.
+    virtual bool linkBookingTelegram(long long bookingId, long long chatId, int maxChats) = 0;
+    virtual std::vector<long long> bookingTelegramChats(long long bookingId) = 0;
+    // /stop или 403 от Telegram: чат отвязывается от пользователя и от всех записей.
+    virtual DatabaseError unlinkTelegramChat(long long chatId) = 0;
 
     // Страницы записи (booking.*).
     virtual DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) = 0;

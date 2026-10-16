@@ -18,6 +18,7 @@
 #include "selfvoy/referralmanager.h"
 #include "selfvoy/schedulelock.h"
 #include "selfvoy/session.h"
+#include "selfvoy/telegrambot.h"
 #include "notificationsmanager.h"
 
 namespace selfvoy {
@@ -186,12 +187,20 @@ void BookingManager::mailLoop() {
     for (;;) {
         mailCv_.wait(lock, [this] { return mailStop_ || !mailQueue_.empty(); });
         if (mailQueue_.empty()) return;  // mailStop_ и всё отправлено
-        MailNotice notice = std::move(mailQueue_.front());
+        GuestNotice notice = std::move(mailQueue_.front());
         mailQueue_.pop_front();
         mailBusy_ = true;
         lock.unlock();
-        if (!mail_->sendNotice(notice)) {
-            SELFVOY_LOG(log::Level::Warn, "booking") << "письмо гостю (" << notice.kind << ") не отправлено";
+        for (const auto& address : notice.emails) {
+            MailNotice mail = notice.mail;
+            mail.to = address;
+            if (!mail_ || !mail_->sendNotice(mail)) {
+                SELFVOY_LOG(log::Level::Warn, "booking") << "письмо гостю (" << mail.kind << ") не отправлено";
+            }
+        }
+        // Telegram — своя очередь бота: здесь только постановка, без ожидания сети.
+        if (telegram_) {
+            for (const long long chat : notice.chats) telegram_->sendMessage(chat, notice.telegramText, notice.telegramMarkup);
         }
         lock.lock();
         mailBusy_ = false;
@@ -219,19 +228,33 @@ std::string BookingManager::manageUrl(const std::string& token) const {
     return config_.publicUrl.empty() || token.empty() ? std::string() : config_.publicUrl + "/#/m/" + token;
 }
 
-void BookingManager::mailGuest(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
-                               const std::string& subject, const std::string& title, const std::string& lead,
-                               const std::string& token, bool onlyActive, bool reserved) {
-    if (booking.guestEmail.empty() || !mail_) return;
-    std::string address = booking.guestEmail;
-    std::transform(address.begin(), address.end(), address.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    // Лимиты на адрес и на владельца: форма записи не должна превращаться в
+void BookingManager::notifyGuest(const BookingRecord& booking, const BookingPageRecord& page, const std::string& kind,
+                                 const std::string& subject, const std::string& title, const std::string& lead,
+                                 const std::string& token, bool onlyActive, bool reserved,
+                                 const std::vector<std::string>& footer) {
+    GuestNotice notice;
+    // Лимиты на адрес/чат и на владельца: форма записи не должна превращаться в
     // рассылку на чужой email, а страница — в канал рассылки от имени Selfvoy.
-    if (!reserved && limited("booking.mail:" + address, kMailPerAddressHour, 3600)) {
-        SELFVOY_LOG(log::Level::Warn, "booking") << "лимит писем на адрес исчерпан, письмо (" << kind << ") не отправлено";
-        return;
+    if (!booking.guestEmail.empty() && mail_) {
+        std::string address = booking.guestEmail;
+        std::transform(address.begin(), address.end(), address.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (reserved || !limited("booking.mail:" + address, kMailPerAddressHour, 3600)) {
+            notice.emails.push_back(booking.guestEmail);
+        } else {
+            SELFVOY_LOG(log::Level::Warn, "booking") << "лимит писем на адрес исчерпан, письмо (" << kind << ") не отправлено";
+        }
     }
+    if (telegram_ && telegram_->enabled() && booking.id > 0) {
+        for (const long long chat : database_.db().bookingTelegramChats(booking.id)) {
+            if (limited("booking.tg:" + std::to_string(chat), kMailPerAddressHour, 3600)) {
+                SELFVOY_LOG(log::Level::Warn, "booking") << "лимит сообщений в чат исчерпан (" << kind << ")";
+                continue;
+            }
+            notice.chats.push_back(chat);
+        }
+    }
+    if (notice.emails.empty() && notice.chats.empty()) return;
     if (limited("booking.mail.owner:" + std::to_string(page.ownerId), kMailPerOwnerHour, 3600)) {
         SELFVOY_LOG(log::Level::Warn, "booking") << "лимит писем владельца " << page.ownerId << " исчерпан";
         return;
@@ -240,34 +263,92 @@ void BookingManager::mailGuest(const BookingRecord& booking, const BookingPageRe
     std::string ownerTimezone;
     ownerInfo(page.ownerId, ownerName, ownerTimezone);
     const std::time_t now = std::time(nullptr);
-    MailNotice notice;
-    notice.kind = kind;
-    notice.to = booking.guestEmail;
-    notice.subject = subject;
-    notice.title = title;
-    notice.lead = lead;
+    MailNotice& mail = notice.mail;
+    mail.kind = kind;
+    mail.subject = subject;
+    mail.title = title;
+    mail.lead = lead;
     for (const auto& occurrence : booking.occurrences.items()) {
         std::time_t start = 0;
         if (!parseIsoUtc(occurrence.getString("start"), start)) continue;
         const bool active = occurrence.getString("status") == "active";
         if (onlyActive && (!active || start <= now)) continue;
-        notice.lines.push_back(whenText(occurrence, ownerTimezone) + (active ? "" : " — отменена"));
+        mail.lines.push_back(whenText(occurrence, ownerTimezone) + (active ? "" : " — отменена"));
     }
     const std::string link = manageUrl(token);
     if (!link.empty()) {
-        notice.linkUrl = link;
-        notice.linkText = "Перенести или отменить";
+        mail.linkUrl = link;
+        mail.linkText = "Перенести или отменить";
     } else if (kind == "booking.owner_cancelled" && page.status == "active" && !config_.publicUrl.empty()) {
-        notice.linkUrl = config_.publicUrl + "/#/b/" + page.slug;
-        notice.linkText = "Выбрать другое время";
+        mail.linkUrl = config_.publicUrl + "/#/b/" + page.slug;
+        mail.linkText = "Выбрать другое время";
     }
-    notice.note = "Письмо пришло, потому что этот адрес указали при записи на странице «" + page.title +
-                  "» (" + ownerName + ") в Selfvoy." + (link.empty() ? "" : " Ссылка — только для вас, не пересылайте её.");
+    mail.footer = footer;
+    mail.note = "Письмо пришло, потому что этот адрес указали при записи на странице «" + page.title +
+                "» (" + ownerName + ") в Selfvoy." + (link.empty() ? "" : " Ссылка — только для вас, не пересылайте её.");
+
+    if (!notice.chats.empty()) {
+        // Telegram — простой текст (без parse_mode), ссылка — url-кнопкой, если она https.
+        std::string text = title + "\n«" + page.title + "» — " + ownerName + "\n\n" + lead;
+        for (const auto& line : mail.lines) text += "\n• " + line;
+        if (!mail.linkUrl.empty()) {
+            if (mail.linkUrl.rfind("https://", 0) == 0) {
+                Json button = Json::object();
+                button.set("text", Json(mail.linkText));
+                button.set("url", Json(mail.linkUrl));
+                Json row = Json::array();
+                row.push(button);
+                Json keyboard = Json::array();
+                keyboard.push(row);
+                notice.telegramMarkup = Json::object();
+                notice.telegramMarkup.set("inline_keyboard", keyboard);
+            } else {
+                text += "\n\n" + mail.linkText + ": " + mail.linkUrl;
+            }
+        }
+        notice.telegramText = text;
+    }
+
     std::lock_guard<std::mutex> lock(mailMutex_);
     if (mailStop_) return;
     mailQueue_.push_back(std::move(notice));
     if (!mailThread_.joinable()) mailThread_ = std::thread([this] { mailLoop(); });
     mailCv_.notify_all();
+}
+
+std::string BookingManager::sealManageToken(const std::string& token) const {
+    return crypto::sealField(config_.dataKey(), token, kManageTokenAad);
+}
+
+std::string BookingManager::manageTokenOf(const BookingRecord& booking) const {
+    std::string token;
+    if (booking.manageTokenEnc.empty() ||
+        !crypto::openField(config_.dataKey(), booking.manageTokenEnc, kManageTokenAad, token)) {
+        return "";
+    }
+    // Шифр от прежней ссылки (перевыпуск не записался) — не выдаём недействующий токен.
+    return tokenHash(token) == booking.manageHash ? token : std::string();
+}
+
+std::string BookingManager::telegramGreeting(const BookingRecord& booking) {
+    const auto page = database_.db().findBookingPage(booking.pageId);
+    std::string ownerName;
+    std::string ownerTimezone;
+    ownerInfo(booking.ownerId, ownerName, ownerTimezone);
+    std::string text = "Готово: напоминания о записи «" + (page ? page->title : std::string("Selfvoy")) + "» (" +
+                       ownerName + ") будут приходить сюда.";
+    const int nearest = findOccurrence(booking, "", std::time(nullptr));
+    if (nearest >= 0) {
+        text += "\nБлижайшая встреча: " +
+                whenText(booking.occurrences.items()[static_cast<std::size_t>(nearest)], ownerTimezone) + ".";
+    }
+    return text + "\nНапомню за сутки и за 2 часа. Отписаться — /stop";
+}
+
+BookingManager::Result BookingManager::telegramConfirm(long long bookingId, std::time_t start) {
+    (void)bookingId;
+    (void)start;
+    return Result::failure(protocol::code::kConflict, "Подтверждение пока недоступно");
 }
 
 std::string BookingManager::tokenHash(const std::string& token) {
@@ -425,6 +506,9 @@ Json BookingManager::guestBookingJson(const BookingRecord& booking, const Bookin
     json.set("slots", slots);
     json.set("slots_unavailable", Json(slotsUnavailable));
     json.set("ref", Json(referrals_.codeFor(page.ownerId)));
+    // Telegram (F2): ссылка подписки на напоминания и подключён ли уже чат.
+    json.set("telegram_url", Json(telegram_ ? telegram_->guestUrl(booking) : std::string()));
+    json.set("telegram_linked", Json(booking.id > 0 && !database_.db().bookingTelegramChats(booking.id).empty()));
     return json;
 }
 
@@ -889,11 +973,11 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
         std::string ownerName;
         std::string ownerTimezone;
         ownerInfo(page->ownerId, ownerName, ownerTimezone);
-        mailGuest(*booking, *page, "booking.owner_cancelled", "Selfvoy: встреча отменена",
-                  "Организатор отменил встречу",
-                  ownerName + (booking->status == "cancelled" ? " отменил(а) запись. Встречи:"
-                                                              : " отменил(а) одну встречу. Расписание:"),
-                  "", booking->status != "cancelled");
+        notifyGuest(*booking, *page, "booking.owner_cancelled", "Selfvoy: встреча отменена",
+                    "Организатор отменил встречу",
+                    ownerName + (booking->status == "cancelled" ? " отменил(а) запись. Встречи:"
+                                                                : " отменил(а) одну встречу. Расписание:"),
+                    "", booking->status != "cancelled");
     }
     Result result;
     result.ok = true;
@@ -1046,6 +1130,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         while (!token.empty() && token.back() == '=') token.pop_back();
         booking.manageHash = tokenHash(token);
         if (booking.manageHash.empty()) continue;
+        booking.manageTokenEnc = sealManageToken(token);
         const DatabaseError saved = database_.db().createBooking(booking, id);
         if (!saved.ok) {
             SELFVOY_LOG(log::Level::Warn, "booking") << "запись не сохранена: " << saved.message;
@@ -1087,8 +1172,11 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         std::string ownerName;
         std::string ownerTimezone;
         ownerInfo(page->ownerId, ownerName, ownerTimezone);
-        mailGuest(booking, *page, "booking.created", "Selfvoy: вы записаны", "Вы записаны",
-                  ownerName + (count > 1 ? " ждёт вас на встречах:" : " ждёт вас:"), token, true);
+        std::vector<std::string> footer;
+        const std::string telegramUrl = telegram_ ? telegram_->guestUrl(booking) : std::string();
+        if (!telegramUrl.empty()) footer.push_back("Напоминания в Telegram: " + telegramUrl);
+        notifyGuest(booking, *page, "booking.created", "Selfvoy: вы записаны", "Вы записаны",
+                    ownerName + (count > 1 ? " ждёт вас на встречах:" : " ждёт вас:"), token, true, false, footer);
     }
 
     const auto stored = database_.db().findBooking(id);
@@ -1097,6 +1185,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     result.payload.set("booking", guestBookingJson(stored ? *stored : booking, *page, false));
     result.payload.set("token", Json(token));
     result.payload.set("url", Json(config_.publicUrl.empty() ? std::string() : config_.publicUrl + "/#/m/" + token));
+    result.payload.set("telegram_url", Json(telegram_ ? telegram_->guestUrl(stored ? *stored : booking) : std::string()));
     return result;
 }
 
@@ -1196,8 +1285,8 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
         notifications_->create(page->ownerId, "booking.rescheduled", booking->guestName + " перенес(ла) встречу",
                                page->title, notify);
     }
-    mailGuest(*booking, *page, "booking.rescheduled", "Selfvoy: встреча перенесена", "Встреча перенесена",
-              "Новое расписание (перенести или отменить можно по ссылке из первого письма):", "", true);
+    notifyGuest(*booking, *page, "booking.rescheduled", "Selfvoy: встреча перенесена", "Встреча перенесена",
+                "Новое расписание (перенести или отменить можно по ссылке из первого письма):", "", true);
     Result result;
     result.ok = true;
     result.payload.set("booking", guestBookingJson(*booking, *page, true));
@@ -1247,11 +1336,11 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
                                booking->guestName + (cancelled > 1 ? " отменил(а) встречи" : " отменил(а) встречу"),
                                page->title, notify);
     }
-    mailGuest(*booking, *page, "booking.cancelled", "Selfvoy: запись отменена",
-              booking->status == "cancelled" ? "Запись отменена" : "Встреча отменена",
-              booking->status == "cancelled" ? "Организатор получил уведомление. Встречи записи:"
-                                             : "Организатор получил уведомление. Остальные встречи в силе:",
-              "", booking->status != "cancelled");
+    notifyGuest(*booking, *page, "booking.cancelled", "Selfvoy: запись отменена",
+                booking->status == "cancelled" ? "Запись отменена" : "Встреча отменена",
+                booking->status == "cancelled" ? "Организатор получил уведомление. Встречи записи:"
+                                               : "Организатор получил уведомление. Остальные встречи в силе:",
+                "", booking->status != "cancelled");
     Result result;
     result.ok = true;
     result.payload.set("booking", guestBookingJson(*booking, *page, true));
@@ -1289,9 +1378,10 @@ BookingManager::Result BookingManager::resendLink(const Json& payload, const std
         std::string token = crypto::base64UrlEncode(crypto::randomBytes(kTokenBytes));
         while (!token.empty() && token.back() == '=') token.pop_back();
         booking.manageHash = tokenHash(token);
+        booking.manageTokenEnc = sealManageToken(token);
         if (booking.manageHash.empty() || !database_.db().updateBooking(booking).ok) continue;
-        mailGuest(booking, *page, "booking.link", "Selfvoy: ссылка на вашу запись", "Ваша запись",
-                  "Вы просили прислать ссылку заново — прежняя больше не действует. Встречи:", token, true, true);
+        notifyGuest(booking, *page, "booking.link", "Selfvoy: ссылка на вашу запись", "Ваша запись",
+                    "Вы просили прислать ссылку заново — прежняя больше не действует. Встречи:", token, true, true);
     }
     return result;
 }

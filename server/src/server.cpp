@@ -1,6 +1,9 @@
 // selfvoy/server.cpp
 #include "selfvoy/server.h"
+#include "selfvoy/net.h"
+#include "selfvoy/plan.h"
 #include "selfvoy/smtp.h"
+#include "selfvoy/tls.h"
 
 #include <algorithm>
 #include <chrono>
@@ -119,15 +122,17 @@ bool Server::start(std::string& error) {
     std::vector<std::string> warnings;
     if (!config_.validate(error, warnings)) return false;
     for (const auto& warning : warnings) SELFVOY_LOG(log::Level::Warn, "server") << warning;
-    // net.h не умеет TLS: https-адреса Google работают только через TLS-прокси
-    // (egress), которому сервер шлёт обычный http. Предупреждаем заранее.
-    if (!config_.googleClientId.empty()) {
+    plan::setEnforced(config_.plansEnforced);
+    net::setCaFile(config_.caFile);
+    // С OpenSSL https-адреса Google работают напрямую. Без него (сборка без TLS)
+    // — только через TLS-прокси (egress), которому сервер шлёт обычный http.
+    if (!config_.googleClientId.empty() && !tls::available()) {
         for (const std::string* url : {&config_.googleAuthUrl, &config_.googleTokenUrl, &config_.googleRevokeUrl,
                                        &config_.googleCalendarUrl, &config_.googleGmailUrl}) {
             if (url->rfind("https://", 0) == 0 && url != &config_.googleAuthUrl) {
                 SELFVOY_LOG(log::Level::Warn, "server")
                     << "интеграции Google: " << *url
-                    << " — https, а сервер ходит во внешние API только по http (без TLS). "
+                    << " — https, а сервер собран без OpenSSL (без TLS). "
                        "Задайте SELFVOY_GOOGLE_TOKEN_URL/REVOKE_URL/CALENDAR_URL/GMAIL_URL на http-адрес "
                        "TLS-прокси (egress), иначе обмен кода и синхронизация не заработают";
                 break;
@@ -162,6 +167,15 @@ bool Server::start(std::string& error) {
                                                scheduleLock_.get());
     bookings_ = std::make_unique<BookingManager>(*database_, *memory_, notifications_.get(), *referrals_,
                                                  *scheduleLock_, config_);
+    // Telegram-бот (F2): без токена и имени — выключен (ссылки пустые, отправка — no-op).
+    telegram_ = std::make_unique<TelegramBot>(*database_, config_);
+    telegram_->setBookings(bookings_.get());
+    bookings_->setTelegram(telegram_.get());
+    notifications_->setTelegram(telegram_.get());
+    if (config_.telegramEnabled() && config_.telegramApiUrl.rfind("https://", 0) == 0 && !tls::available()) {
+        SELFVOY_LOG(log::Level::Warn, "server") << "Telegram-бот: SELFVOY_TELEGRAM_API_URL — https, а сервер собран "
+                                                   "без OpenSSL — бот работать не будет";
+    }
     admin_->bootstrapAll();
 
     registerHandlers();
@@ -183,8 +197,11 @@ bool Server::start(std::string& error) {
     if (config_.schedulerIntervalMs > 0 && !schedulerThread_) {
         schedulerThread_ = std::make_unique<std::thread>(&Server::schedulerLoop, this);
     }
+    telegram_->start();  // опрос getUpdates (если бот включён и SELFVOY_TELEGRAM_POLL != 0)
     return true;
 }
+
+bool Server::proAllowed(long long userId) { return database_ && plan::proAllowed(database_->db(), userId); }
 
 void Server::schedulerLoop() {
     while (!stopping_.load()) {
@@ -229,6 +246,10 @@ void Server::stop() {
     schedulerCv_.notify_all();
     if (schedulerThread_ && schedulerThread_->joinable()) schedulerThread_->join();
     schedulerThread_.reset();
+    // Извещения гостям из очереди ставят сообщения боту — сначала они, потом бот
+    // (опрос прерывается сразу, очередь отправки дописывается не дольше ~5 с).
+    if (bookings_) bookings_->flushMail();
+    if (telegram_) telegram_->stop();
     if (!already) waitCondition_.notify_all();
 }
 
@@ -421,9 +442,11 @@ void Server::registerHandlers() {
             payload.set("status", Json("ok"));
             payload.set("service", Json("selfvoy-server"));
             payload.set("version", Json("0.1"));
+            payload.set("telegram_bot", Json(telegram_ ? telegram_->username() : std::string()));
             return protocol::ok(request.id, payload);
         }
         Json payload = health();
+        payload.set("telegram_bot", Json(telegram_ ? telegram_->username() : std::string()));
         Json types = Json::array();
         for (const auto& type : handlerTypes()) types.push(Json(type));
         payload.set("handlers", types);
@@ -1307,6 +1330,29 @@ void Server::registerHandlers() {
     registerHandler("admin.audit", [this, adminReply](std::shared_ptr<Session> session,
                                                       const protocol::Request& request) {
         return adminReply(request, admin_->audit(session->userId(), request.payload), "");
+    });
+
+    // ------------------------------------------- рост (S1a): тариф и Telegram
+    registerHandler("admin.setPlan", [this, adminReply](std::shared_ptr<Session> session,
+                                                        const protocol::Request& request) {
+        return adminReply(request, admin_->setPlan(session->userId(), request.payload, session->remoteAddr()), "");
+    });
+
+    registerHandler("telegram.status", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        return protocol::ok(request.id, telegram_->status(session->userId()));
+    });
+
+    registerHandler("telegram.link", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        Json payload;
+        std::string error;
+        if (!telegram_->link(session->userId(), payload, error)) {
+            return protocol::error(request.id, protocol::code::kBadRequest, error);
+        }
+        return protocol::ok(request.id, payload);
+    });
+
+    registerHandler("telegram.unlink", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        return protocol::ok(request.id, telegram_->unlink(session->userId()));
     });
 }
 

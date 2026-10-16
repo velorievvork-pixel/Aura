@@ -6,6 +6,7 @@
 
 #include "selfvoy/idatabase.h"
 #include "selfvoy/memorymanager.h"
+#include "selfvoy/plan.h"
 
 namespace selfvoy {
 
@@ -48,6 +49,7 @@ Json UserRecord::toJson(bool includeSecret) const {
     json.set("role", Json(role.empty() ? std::string("user") : role));
     json.set("created_at", Json(createdAt));
     if (!lastSeenAt.empty()) json.set("last_seen_at", Json(lastSeenAt));
+    json.set("plan", plan::toJson(*this));
     if (includeSecret) json.set("password_hash", Json(passwordHash));
     return json;
 }

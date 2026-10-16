@@ -47,6 +47,11 @@ bool aes256GcmDecrypt(const std::string& key,
                       const std::string& aad,
                       std::string& out);
 
+// Шифруемое поле БД: base64(aes256GcmEncrypt(key, plaintext, aad)); "" — ошибка.
+std::string sealField(const std::string& key, const std::string& plaintext, const std::string& aad);
+// Обратное к sealField; false — поле пустое, повреждено или ключ/AAD другие.
+bool openField(const std::string& key, const std::string& sealed, const std::string& aad, std::string& out);
+
 // --- хэширование паролей ---------------------------------------------------
 // Основной формат: argon2id$v=19$m=<KiB>,t=<итерации>,p=<параллелизм>$<saltHex>$<hashHex>
 // (RFC 9106, профиль m=64MiB/t=3/p=4). Старый формат pbkdf2$... понимается

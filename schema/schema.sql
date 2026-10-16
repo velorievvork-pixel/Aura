@@ -462,6 +462,37 @@ CREATE UNLOGGED TABLE IF NOT EXISTS rate_limits (
 );
 CREATE INDEX IF NOT EXISTS rate_limits_window_idx ON rate_limits (window_start);
 
+-- ------------------------------------------- Рост (S1a): тариф, Telegram ---
+-- Те же изменения для существующей базы — миграция 2026_10_16_telegram_pro.sql.
+-- Тариф: Pro действует, пока plan_until > now() (NULL — Free).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_until TIMESTAMPTZ;
+-- Telegram владельца (уведомления о записях): один чат — один аккаунт.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_chat_id BIGINT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_username TEXT NOT NULL DEFAULT '';
+CREATE UNIQUE INDEX IF NOT EXISTS users_telegram_chat_key ON users (telegram_chat_id)
+    WHERE telegram_chat_id IS NOT NULL;
+
+-- Токен ссылки управления #/m/<токен>, зашифрованный AES-256-GCM (ключ — как у
+-- TOTP-секретов, AAD "selfvoy-manage-token"): напоминания дают гостю ссылку.
+-- Поиск — по-прежнему только по manage_hash. NULL — запись до этой версии.
+ALTER TABLE bookings ADD COLUMN IF NOT EXISTS manage_token_enc TEXT;
+
+-- Telegram-чаты гостя записи (напоминания): не больше 3 на запись (проверяет сервер).
+CREATE TABLE IF NOT EXISTS booking_telegram (
+    booking_id       BIGINT        NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+    chat_id          BIGINT        NOT NULL,
+    linked_at        TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    PRIMARY KEY (booking_id, chat_id)
+);
+CREATE INDEX IF NOT EXISTS booking_telegram_chat_idx ON booking_telegram (chat_id);
+
+-- Служебное состояние сервера (смещение getUpdates Telegram и т.п.).
+CREATE TABLE IF NOT EXISTS server_state (
+    key              TEXT          PRIMARY KEY,
+    value            TEXT          NOT NULL,
+    updated_at       TIMESTAMPTZ   NOT NULL DEFAULT now()
+);
+
 -- --------------------------------------------------------------- Триггер ---
 CREATE OR REPLACE FUNCTION selfvoy_touch_updated_at() RETURNS trigger AS $$
 BEGIN

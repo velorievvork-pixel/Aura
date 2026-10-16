@@ -37,6 +37,8 @@ constexpr const char* kNotFound = "not_found";
 constexpr const char* kConflict = "conflict";
 constexpr const char* kUpstream = "upstream_error";
 constexpr const char* kInternal = "internal_error";
+// Действие доступно только на тарифе Pro (SELFVOY_PLANS_ENFORCED=1, Pro не действует).
+constexpr const char* kProRequired = "pro_required";
 }  // namespace code
 
 }  // namespace selfvoy::protocol

@@ -311,6 +311,135 @@ class PushMock:
             writer.close()
 
 
+class TelegramMock:
+    """Мок Telegram Bot API (F2).
+
+    Поднимается при SELFVOY_E2E_TELEGRAM_MOCK=1; C++-сервер должен быть запущен с
+    SELFVOY_TELEGRAM_BOT_TOKEN=e2e:token, SELFVOY_TELEGRAM_BOT_USERNAME=selfvoy_e2e_bot и
+    SELFVOY_TELEGRAM_API_URL=http://127.0.0.1:<порт>. getUpdates отдаёт поставленные
+    тестом апдейты (long polling: ответ сразу, как только апдейт появился); sendMessage,
+    answerCallbackQuery и editMessageReplyMarkup записываются. Чаты из blocked получают
+    403 (бот заблокирован).
+    """
+
+    TOKEN = "e2e:token"
+
+    def __init__(self, port: int):
+        self.port = port
+        self.sent: list[Dict[str, Any]] = []
+        self.blocked: set[int] = set()
+        self.bad_token: list[str] = []
+        self.polls = 0
+        self._updates: list[Dict[str, Any]] = []
+        self._next_id = 1
+        self._event = asyncio.Event()
+        self._server: asyncio.AbstractServer | None = None
+
+    async def start(self) -> None:
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", self.port)
+
+    async def stop(self) -> None:
+        if self._server:
+            self._server.close()
+            await self._server.wait_closed()
+
+    def push(self, update: Dict[str, Any]) -> None:
+        update = dict(update, update_id=self._next_id)
+        self._next_id += 1
+        self._updates.append(update)
+        self._event.set()
+
+    def text(self, chat_id: int, text: str, username: str = "e2e_user") -> None:
+        self.push({"message": {"message_id": self._next_id, "date": int(time.time()), "text": text,
+                               "chat": {"id": chat_id, "type": "private"},
+                               "from": {"id": chat_id, "is_bot": False, "username": username}}})
+
+    def callback(self, chat_id: int, data: str, message_id: int = 1) -> None:
+        self.push({"callback_query": {"id": f"cb{self._next_id}", "data": data,
+                                      "from": {"id": chat_id, "is_bot": False},
+                                      "message": {"message_id": message_id,
+                                                  "chat": {"id": chat_id, "type": "private"}}}})
+
+    def calls(self, method: str, chat_id: int | None = None) -> list[Dict[str, Any]]:
+        return [c["body"] for c in self.sent if c["method"] == method
+                and (chat_id is None or c["body"].get("chat_id") == chat_id)]
+
+    async def wait_for(self, method: str, chat_id: int | None, after: int, timeout: float = 15.0,
+                       contains: str = "") -> Dict[str, Any] | None:
+        """Первый вызов method (в чат chat_id) с номером ≥ after, текст которого содержит contains."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for index, call in enumerate(self.sent):
+                body = call["body"]
+                if index < after or call["method"] != method:
+                    continue
+                if chat_id is not None and body.get("chat_id") != chat_id:
+                    continue
+                if contains and contains not in body.get("text", ""):
+                    continue
+                return body
+            await asyncio.sleep(0.1)
+        return None
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            request_line = (await reader.readline()).decode("latin-1").strip()
+            if not request_line:
+                return
+            headers: Dict[str, str] = {}
+            while True:
+                line = await reader.readline()
+                if line in (b"\r\n", b"\n", b""):
+                    break
+                key, _, value = line.decode("latin-1").partition(":")
+                headers[key.strip().lower()] = value.strip()
+            raw = b""
+            if headers.get("content-length"):
+                raw = await reader.readexactly(int(headers["content-length"]))
+            try:
+                body = json.loads(raw.decode("utf-8")) if raw else {}
+            except json.JSONDecodeError:
+                body = {}
+            target = request_line.split(" ")[1] if " " in request_line else "/"
+            prefix = f"/bot{self.TOKEN}/"
+            status, result = 200, {"ok": True, "result": True}
+            if not target.startswith(prefix):
+                self.bad_token.append(target)
+                status, result = 401, {"ok": False, "error_code": 401, "description": "Unauthorized"}
+            else:
+                method = target[len(prefix):]
+                if method == "getUpdates":
+                    self.polls += 1
+                    offset = int(body.get("offset", 0) or 0)
+                    self._updates = [u for u in self._updates if u["update_id"] >= offset]
+                    if not self._updates:
+                        self._event.clear()
+                        try:
+                            await asyncio.wait_for(self._event.wait(),
+                                                   timeout=min(float(body.get("timeout", 0) or 0), 25.0))
+                        except asyncio.TimeoutError:
+                            pass
+                    result = {"ok": True, "result": [u for u in self._updates if u["update_id"] >= offset]}
+                else:
+                    self.sent.append({"method": method, "body": body})
+                    if method == "sendMessage" and body.get("chat_id") in self.blocked:
+                        status, result = 403, {"ok": False, "error_code": 403,
+                                               "description": "Forbidden: bot was blocked by the user"}
+                    elif method == "sendMessage":
+                        result = {"ok": True, "result": {"message_id": len(self.sent),
+                                                         "chat": {"id": body.get("chat_id")}}}
+            payload = json.dumps(result).encode("utf-8")
+            reason = {200: "OK", 401: "Unauthorized", 403: "Forbidden"}.get(status, "OK")
+            head = (f"HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n"
+                    f"Content-Length: {len(payload)}\r\nConnection: close\r\n\r\n")
+            writer.write(head.encode("latin-1") + payload)
+            await writer.drain()
+        except (ConnectionResetError, asyncio.IncompleteReadError, BrokenPipeError):
+            pass
+        finally:
+            writer.close()
+
+
 async def main() -> int:
     print(f"Selfvoy E2E → {SERVER_URL} (прогон {RUN})\n")
 
@@ -326,6 +455,12 @@ async def main() -> int:
     if os.environ.get("SELFVOY_E2E_PUSH_MOCK") == "1":
         push_mock = PushMock(int(os.environ.get("SELFVOY_E2E_PUSH_MOCK_PORT", "9082")))
         await push_mock.start()
+
+    # Telegram mock (F2): Bot API бота selfvoy_e2e_bot.
+    telegram_mock: TelegramMock | None = None
+    if os.environ.get("SELFVOY_E2E_TELEGRAM_MOCK") == "1":
+        telegram_mock = TelegramMock(int(os.environ.get("SELFVOY_E2E_TELEGRAM_MOCK_PORT", "9083")))
+        await telegram_mock.start()
 
     anna = Client("anna")
     anya = Client("anya")
@@ -802,6 +937,162 @@ async def main() -> int:
     check(bool(joined_events), "Анна получила notification.new referral.joined",
           [e.get("payload", {}).get("kind") for e in anna.events_of("notification.new")])
     await newcomer.close()
+
+    # ------------------------------------------------------ Telegram-бот (F2)
+    print("\n3b. Telegram-бот: привязка владельца и гостя, уведомления, /stop")
+    me_plan = (await anna.call("auth.me")).get("payload", {}).get("plan", {})
+    check(me_plan.get("name") in ("free", "pro") and "until" in me_plan and "enforced" in me_plan,
+          "auth.me: в user есть plan {name, until, enforced}", me_plan)
+    bot_name = (await anna.call("server.info")).get("payload", {}).get("telegram_bot", "")
+    if telegram_mock is None or not bot_name:
+        link_off = await anna.call("telegram.link")
+        if not bot_name:
+            check(link_off.get("code") == "bad_request", "бот не настроен: telegram.link — bad_request", link_off)
+        print("  — пропуск сценария Telegram: нужны SELFVOY_E2E_TELEGRAM_MOCK=1 и SELFVOY_TELEGRAM_* у сервера")
+    else:
+        tg = telegram_mock
+        owner_chat, guest_chat, stranger_chat = 5550001, 5550002, 5550009
+        check(bot_name == "selfvoy_e2e_bot", "server.info: telegram_bot", bot_name)
+        tg_status = (await anna.call("telegram.status")).get("payload", {})
+        check(tg_status.get("enabled") is True and tg_status.get("linked") is False
+              and tg_status.get("bot_username") == "selfvoy_e2e_bot", "telegram.status: бот включён, чат не привязан",
+              tg_status)
+        tg_link = (await anna.call("telegram.link")).get("payload", {})
+        tg_url = tg_link.get("url", "")
+        owner_payload = tg_url.split("?start=", 1)[1] if "?start=" in tg_url else ""
+        check(tg_url.startswith("https://t.me/selfvoy_e2e_bot?start=o_") and len(owner_payload) <= 64
+              and bool(tg_link.get("expires_at")), "telegram.link: deep link владельца на 15 минут", tg_link)
+
+        # Подделка и «продлённый» срок отвергаются, чат не привязывается.
+        forged = owner_payload[:-1] + ("A" if owner_payload[-1:] != "A" else "B")
+        mark = len(tg.sent)
+        tg.text(stranger_chat, "/start " + forged)
+        rejected = await tg.wait_for("sendMessage", stranger_chat, mark)
+        check(rejected is not None and "недействительна" in rejected.get("text", ""),
+              "поддельная подпись владельца отвергнута", rejected)
+        parts = owner_payload.split("_", 3)
+        if len(parts) == 4:
+            mark = len(tg.sent)
+            tg.text(stranger_chat, "/start " + "_".join([parts[0], parts[1], str(int(time.time()) - 60), parts[3]]))
+            expired = await tg.wait_for("sendMessage", stranger_chat, mark)
+            check(expired is not None and "недействительна" in expired.get("text", ""),
+                  "ссылка с изменённым (прошедшим) сроком отвергнута", expired)
+        check((await anna.call("telegram.status")).get("payload", {}).get("linked") is False,
+              "после поддельных ссылок чат не привязан")
+
+        mark = len(tg.sent)
+        tg.text(owner_chat, "/start " + owner_payload, username="anna_e2e")
+        linked_reply = await tg.wait_for("sendMessage", owner_chat, mark)
+        check(linked_reply is not None and linked_reply.get("text", "").startswith("Готово: сюда будут приходить"),
+              "бот ответил владельцу после /start o_…", linked_reply)
+        tg_status = (await anna.call("telegram.status")).get("payload", {})
+        check(tg_status.get("linked") is True and tg_status.get("username") == "anna_e2e",
+              "telegram.status.linked после привязки", tg_status)
+
+        # Новая запись — уведомление владельцу в Telegram; гость получает telegram_url.
+        tg_page = (await anna.call("booking.pageCreate", {
+            "title": f"Telegram {RUN}", "duration_minutes": 30, "days_ahead": 14, "max_per_day": 4,
+            "notice_hours": 1,
+        })).get("payload", {}).get("page", {})
+        tg_guest = Client("tg-guest")
+        await tg_guest.connect()
+        tg_slots = (await tg_guest.call("booking.get", {"slug": tg_page.get("slug", "")}, timeout=40)) \
+            .get("payload", {}).get("page", {}).get("slots", [])
+        mark = len(tg.sent)
+        tg_booked = await tg_guest.call("booking.book", {
+            "slug": tg_page.get("slug", ""), "start": tg_slots[0].get("start", "") if tg_slots else "",
+            "guest_name": "Тимур", "guest_email": f"timur.{RUN}@example.com",
+        }, timeout=40)
+        tg_booked_payload = tg_booked.get("payload", {})
+        guest_url = tg_booked_payload.get("telegram_url", "")
+        tg_token = tg_booked_payload.get("token", "")
+        check(guest_url.startswith("https://t.me/selfvoy_e2e_bot?start=g_")
+              and tg_booked_payload.get("booking", {}).get("telegram_linked") is False,
+              "booking.book: telegram_url гостя, чат ещё не привязан", tg_booked_payload)
+        owner_note = await tg.wait_for("sendMessage", owner_chat, mark, contains="Тимур")
+        check(owner_note is not None and f"Telegram {RUN}" in owner_note.get("text", ""),
+              "владелец получил в Telegram уведомление о новой записи", owner_note)
+
+        # Гость: поддельная подпись — отказ; настоящая ссылка — привязка и ближайшая встреча.
+        guest_payload = guest_url.split("?start=", 1)[1] if "?start=" in guest_url else ""
+        mark = len(tg.sent)
+        tg.text(stranger_chat, "/start " + guest_payload[:-2] + ("xx" if guest_payload[-2:] != "xx" else "yy"))
+        guest_forged = await tg.wait_for("sendMessage", stranger_chat, mark)
+        check(guest_forged is not None and "недействительна" in guest_forged.get("text", ""),
+              "поддельная ссылка гостя отвергнута", guest_forged)
+        mark = len(tg.sent)
+        tg.text(guest_chat, "/start " + guest_payload)
+        guest_reply = await tg.wait_for("sendMessage", guest_chat, mark)
+        check(guest_reply is not None and guest_reply.get("text", "").startswith("Готово: напоминания о записи")
+              and "Ближайшая встреча" in guest_reply.get("text", ""),
+              "гость подключил Telegram: ответ с ближайшей встречей", guest_reply)
+        tg_view = (await tg_guest.call("booking.manage", {"token": tg_token}, timeout=40)) \
+            .get("payload", {}).get("booking", {})
+        check(tg_view.get("telegram_linked") is True and tg_view.get("telegram_url") == guest_url,
+              "booking.manage: telegram_linked и telegram_url", tg_view)
+
+        # «Приду» (F1): из чужого чата — отказ.
+        tg_id = 0
+        for item in (await anna.call("booking.list", {"page_id": tg_page.get("id", 0)})) \
+                .get("payload", {}).get("bookings", []):
+            tg_id = item.get("id", 0)
+        start_unix = int(instant(tg_view.get("occurrences", [{}])[0].get("start", "")).timestamp()) \
+            if tg_view.get("occurrences") else 0
+        mark = len(tg.sent)
+        tg.callback(stranger_chat, f"cf:{tg_id}:{start_unix}")
+        foreign_cb = await tg.wait_for("answerCallbackQuery", None, mark)
+        check(foreign_cb is not None and "не для этого чата" in foreign_cb.get("text", ""),
+              "кнопка «Приду» из чужого чата отвергнута", foreign_cb)
+
+        # Отмена владельцем — извещение гостю и в Telegram; /stop отвязывает.
+        mark = len(tg.sent)
+        await anna.call("booking.ownerCancel", {"booking_id": tg_id})
+        guest_notice = await tg.wait_for("sendMessage", guest_chat, mark, contains="Организатор отменил встречу")
+        check(guest_notice is not None and "Тимур" not in guest_notice.get("text", ""),
+              "извещение об отмене пришло гостю в Telegram (без имени гостя)", guest_notice)
+        mark = len(tg.sent)
+        tg.text(guest_chat, "/stop")
+        stop_reply = await tg.wait_for("sendMessage", guest_chat, mark)
+        check(stop_reply is not None and "больше не пишу" in stop_reply.get("text", ""), "/stop: бот подтвердил",
+              stop_reply)
+        tg_view = (await tg_guest.call("booking.manage", {"token": tg_token}, timeout=40)) \
+            .get("payload", {}).get("booking", {})
+        check(tg_view.get("telegram_linked") is False, "после /stop чат гостя отвязан", tg_view)
+        await tg_guest.close()
+
+        # 403 (бот заблокирован) — чат владельца отвязывается автоматически.
+        tg.blocked.add(owner_chat)
+        trigger = Client("tg-guest2")
+        await trigger.connect()
+        slots2 = (await trigger.call("booking.get", {"slug": tg_page.get("slug", "")}, timeout=40)) \
+            .get("payload", {}).get("page", {}).get("slots", [])
+        await trigger.call("booking.book", {"slug": tg_page.get("slug", ""),
+                                            "start": slots2[0].get("start", "") if slots2 else "",
+                                            "guest_name": "Ульяна"}, timeout=40)
+        await trigger.close()
+        unlinked_by_403 = False
+        for _ in range(50):
+            if (await anna.call("telegram.status")).get("payload", {}).get("linked") is False:
+                unlinked_by_403 = True
+                break
+            await asyncio.sleep(0.2)
+        check(unlinked_by_403, "403 от Telegram: чат владельца отвязан")
+        tg.blocked.discard(owner_chat)
+
+        # Снова привязать и отвязать через telegram.unlink.
+        relink = (await anna.call("telegram.link")).get("payload", {}).get("url", "")
+        mark = len(tg.sent)
+        tg.text(owner_chat, "/start " + relink.split("?start=", 1)[-1], username="anna_e2e")
+        await tg.wait_for("sendMessage", owner_chat, mark)
+        check((await anna.call("telegram.status")).get("payload", {}).get("linked") is True,
+              "повторная привязка владельца")
+        tg_unlinked = await anna.call("telegram.unlink")
+        check(tg_unlinked.get("payload", {}).get("linked") is False
+              and (await anna.call("telegram.status")).get("payload", {}).get("linked") is False,
+              "telegram.unlink отвязывает чат", tg_unlinked)
+        check(not tg.bad_token and tg.polls >= 1, "бот опрашивает getUpdates с верным токеном",
+              {"polls": tg.polls, "bad": tg.bad_token[:2]})
+        await anna.call("booking.pageDelete", {"page_id": tg_page.get("id", 0)})
 
     # ------------------------------------- разрешения и барьер подтверждения
     print("\n3c. Разрешения и барьер подтверждения (этап 8)")
@@ -1442,6 +1733,32 @@ async def main() -> int:
         demoted = await admin.call("admin.setRole", {"user_id": victim_id, "role": "user"})
         check(demoted.get("payload", {}).get("user", {}).get("role") == "user", "роль снята обратно",
               demoted)
+
+        # Тариф Pro: admin.setPlan (только admin), plan в user.
+        anna_found = await admin.call("admin.users", {"query": f"anna.{RUN}@example.com"})
+        anna_id = (anna_found.get("payload", {}).get("users") or [{}])[0].get("id", 0)
+        plan_set = await admin.call("admin.setPlan", {"user_id": anna_id, "days": 30})
+        set_plan = plan_set.get("payload", {}).get("user", {}).get("plan", {})
+        check(plan_set.get("type") == "ok" and set_plan.get("name") == "pro" and bool(set_plan.get("until")),
+              "admin.setPlan: Анне выдан Pro на 30 дней", plan_set)
+        anna_plan = (await anna.call("auth.me")).get("payload", {}).get("plan", {})
+        until_ok = False
+        if anna_plan.get("until"):
+            left = instant(anna_plan["until"]).timestamp() - time.time()
+            until_ok = 29 * 86400 < left <= 30 * 86400 + 120
+        check(anna_plan.get("name") == "pro" and until_ok, "auth.me: plan.name = pro, until ≈ +30 дней", anna_plan)
+        plan_denied = await anna.call("admin.setPlan", {"user_id": anna_id, "days": 365})
+        check(plan_denied.get("code") == "forbidden", "admin.setPlan обычному пользователю — forbidden",
+              plan_denied)
+        plan_bad = await admin.call("admin.setPlan", {"user_id": anna_id, "days": 4000})
+        check(plan_bad.get("code") == "bad_request", "admin.setPlan: days вне 0–3650 — bad_request", plan_bad)
+        plan_reset = await admin.call("admin.setPlan", {"user_id": anna_id, "days": 0})
+        reset_plan = plan_reset.get("payload", {}).get("user", {}).get("plan", {})
+        check(reset_plan.get("name") == "free" and reset_plan.get("until") == "",
+              "admin.setPlan days=0: снова Free", plan_reset)
+        plan_journal = await admin.call("admin.audit", {"user_id": anna_id, "before_id": 0, "limit": 20})
+        check(any(e.get("kind") == "admin_plan_changed" for e in plan_journal.get("payload", {}).get("entries", [])),
+              "admin.audit: смена тарифа в журнале", plan_journal.get("payload", {}).get("entries", [])[:3])
         await admin.close()
 
     # -------------------------------------------------------------- итоги
@@ -1503,6 +1820,8 @@ async def main() -> int:
         await google_mock.stop()
     if push_mock is not None:
         await push_mock.stop()
+    if telegram_mock is not None:
+        await telegram_mock.stop()
 
     print(f"\nпроверок: {checks}, ошибок: {len(failures)}")
     if failures:

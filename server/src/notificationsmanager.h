@@ -18,6 +18,8 @@
 
 namespace selfvoy {
 
+class TelegramBot;
+
 class NotificationsManager {
 public:
     static constexpr std::size_t kMaxDevices = 20;  // устройств push на пользователя
@@ -54,6 +56,12 @@ public:
     Result listDevices(long long userId);
     Result revokeDevice(long long userId, long long id);
 
+    // Telegram владельца (F2): виды booking.*, package.*, invite.*, referral.*, task.due
+    // дублируются в привязанный чат «<title>\n<body>» — если вид не в muted_kinds, не тихие
+    // часы и prefs.notifications.telegram != false. Отправка — очередь бота (не ждём сеть).
+    void setTelegram(TelegramBot* telegram) { telegram_ = telegram; }
+    static bool telegramKind(const std::string& kind);
+
 private:
     bool inQuietHours(long long userId) const;
     bool kindMuted(long long userId, const std::string& kind) const;
@@ -61,9 +69,12 @@ private:
     Json pushEnvelope(const PushDeviceRecord& device, const NotificationRecord& record,
                       long long badge) const;
 
+    void deliverTelegram(const NotificationRecord& record);
+
     DatabaseManager& database_;
     ConnectionManager& connections_;
     const Config& config_;
+    TelegramBot* telegram_ = nullptr;
 };
 
 }  // namespace selfvoy

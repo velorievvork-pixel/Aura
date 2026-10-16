@@ -99,6 +99,13 @@ services:
       SELFVOY_ADMIN_EMAILS: ${SELFVOY_ADMIN_EMAILS:-}
       SELFVOY_TRUSTED_PROXIES: ${SELFVOY_TRUSTED_PROXIES:-}
       SELFVOY_PUBLIC_URL: ${SELFVOY_PUBLIC_URL:-}
+      # Тариф Pro (0 — бета, всё открыто) и Telegram-бот (пусто — выключен).
+      SELFVOY_PLANS_ENFORCED: ${SELFVOY_PLANS_ENFORCED:-}
+      SELFVOY_TELEGRAM_BOT_TOKEN: ${SELFVOY_TELEGRAM_BOT_TOKEN:-}
+      SELFVOY_TELEGRAM_BOT_USERNAME: ${SELFVOY_TELEGRAM_BOT_USERNAME:-}
+      SELFVOY_TELEGRAM_API_URL: ${SELFVOY_TELEGRAM_API_URL:-}
+      SELFVOY_TELEGRAM_POLL: ${SELFVOY_TELEGRAM_POLL:-}
+      SELFVOY_CA_FILE: ${SELFVOY_CA_FILE:-}
     healthcheck:
       # Порт 9000 принимает соединения (в образе есть bash, curl — нет).
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"]

@@ -134,8 +134,26 @@ Config Config::fromEnv() {
     // здесь — только чтобы устаревшее AURA_DB_POOL_SIZE попало в предупреждение.
     envOr("SELFVOY_DB_POOL_SIZE", "", legacy);
     while (!config.publicUrl.empty() && config.publicUrl.back() == '/') config.publicUrl.pop_back();
+    // Рост (S1a): тариф, https, Telegram-бот.
+    config.plansEnforced = flagOn("SELFVOY_PLANS_ENFORCED", legacy);
+    config.caFile = envOr("SELFVOY_CA_FILE", "", legacy);
+    config.telegramBotToken = envOr("SELFVOY_TELEGRAM_BOT_TOKEN", "", legacy);
+    config.telegramBotUsername = envOr("SELFVOY_TELEGRAM_BOT_USERNAME", "", legacy);
+    while (!config.telegramBotUsername.empty() && config.telegramBotUsername.front() == '@') {
+        config.telegramBotUsername.erase(0, 1);
+    }
+    config.telegramApiUrl = envOr("SELFVOY_TELEGRAM_API_URL", config.telegramApiUrl, legacy);
+    while (!config.telegramApiUrl.empty() && config.telegramApiUrl.back() == '/') config.telegramApiUrl.pop_back();
+    {
+        std::string poll = envOr("SELFVOY_TELEGRAM_POLL", "1", legacy);
+        std::transform(poll.begin(), poll.end(), poll.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        config.telegramPoll = !(poll == "0" || poll == "false" || poll == "no" || poll == "off");
+    }
     return config;
 }
+
+std::string Config::dataKey() const { return crypto::sha256(twoFactorKey.empty() ? jwtSecret : twoFactorKey); }
 
 std::string Config::describe() const {
     std::ostringstream out;
@@ -145,6 +163,8 @@ std::string Config::describe() const {
         << " token_ttl=" << tokenTtlSeconds << 's'
         << " refresh_ttl=" << refreshTtlSeconds << 's'
         << " mail=" << mailDriver
+        << (telegramEnabled() ? " telegram=@" + telegramBotUsername : std::string())
+        << (plansEnforced ? " plans=enforced" : "")
         << (devMode ? " DEV_MODE" : "");
     return out.str();
 }
@@ -206,6 +226,32 @@ bool Config::validate(std::string& error, std::vector<std::string>& warnings) {
     }
     if (publicUrl.rfind("http://", 0) == 0 && !devMode) {
         warnings.push_back("SELFVOY_PUBLIC_URL без https: ссылки-приглашения уйдут гостям по открытому каналу");
+    }
+
+    // Telegram-бот: имя и токен попадают в ссылки и в путь запроса к Bot API.
+    if (!telegramBotUsername.empty()) {
+        const bool valid = telegramBotUsername.size() >= 5 && telegramBotUsername.size() <= 32 &&
+                           std::all_of(telegramBotUsername.begin(), telegramBotUsername.end(), [](unsigned char ch) {
+                               return std::isalnum(ch) != 0 || ch == '_';
+                           });
+        if (!valid) {
+            error = "SELFVOY_TELEGRAM_BOT_USERNAME: имя бота без @ — 5–32 символа, латиница, цифры и _";
+            return false;
+        }
+    }
+    if (!telegramBotToken.empty() &&
+        !std::all_of(telegramBotToken.begin(), telegramBotToken.end(), [](unsigned char ch) {
+            return std::isalnum(ch) != 0 || ch == ':' || ch == '_' || ch == '-';
+        })) {
+        error = "SELFVOY_TELEGRAM_BOT_TOKEN: токен от @BotFather вида 123456:ABC-…";
+        return false;
+    }
+    if (telegramBotToken.empty() != telegramBotUsername.empty()) {
+        warnings.push_back("Telegram-бот выключен: нужны и SELFVOY_TELEGRAM_BOT_TOKEN, и SELFVOY_TELEGRAM_BOT_USERNAME");
+    }
+    if (telegramEnabled() && telegramApiUrl.rfind("https://", 0) != 0 && telegramApiUrl.rfind("http://", 0) != 0) {
+        error = "SELFVOY_TELEGRAM_API_URL: адрес Bot API вида https://api.telegram.org";
+        return false;
     }
 
     if (resetTtlSeconds <= 0 || resetTtlSeconds > 3600) {

@@ -9,7 +9,7 @@ e2e — на реальном PostgreSQL.
 изменения — файлами `schema/migrations/` (применяются по порядку имени).
 Демо-данные: `schema/seed.sql`.
 
-## 28 таблиц по доменам
+## 30 таблиц по доменам
 
 ### Аутентификация и безопасность
 | таблица | назначение |
@@ -81,6 +81,22 @@ e2e — на реальном PostgreSQL.
 соединений (`SELFVOY_DB_POOL_SIZE`, по умолчанию 8) и отдельное соединение для
 advisory lock'ов (их берут и отпускают в одной сессии PostgreSQL).
 
+### Рост: тариф, Telegram, служебное состояние
+| таблица | назначение |
+| --- | --- |
+| `booking_telegram` | Telegram-чаты гостя записи (напоминания и извещения): `booking_id` (ON DELETE CASCADE), `chat_id`, `linked_at`; PK (booking_id, chat_id), индекс по `chat_id` (отвязка `/stop` и при 403); не больше 3 чатов на запись — проверяет сервер |
+| `server_state` | служебное состояние сервера ключ → значение (`telegram.offset` — смещение `getUpdates`), `updated_at` |
+
+Миграция `2026_10_16_telegram_pro.sql` (то же — блоком в конце таблиц `schema.sql`):
+`users.plan_until` (Pro, пока `plan_until > now()`; NULL — Free),
+`users.telegram_chat_id` (уникальный частичный индекс: один чат — один аккаунт)
+и `users.telegram_username`, `bookings.manage_token_enc` — токен ссылки
+управления, зашифрованный AES-256-GCM ключом `SELFVOY_2FA_KEY` (AAD
+`selfvoy-manage-token`; поиск записи — по-прежнему только по `manage_hash`),
+таблицы `booking_telegram` и `server_state`. Опрос Telegram ведёт один экземпляр
+сервера: advisory lock с отдельным ключом (`0x53564F59544C47`, не пространство
+расписаний `0x4155…`) на соединении блокировок.
+
 Миграция `2026_10_15_audit_fixes.sql`: `users.email_verified DEFAULT FALSE`
 (новый аккаунт без явного значения не считается подтверждённым), `bookings.ends_at`
 с заполнением и индексами, `rate_limits` — UNLOGGED и индекс `window_start`.
@@ -91,7 +107,7 @@ advisory lock'ов (их берут и отпускают в одной сесс
   конкатенируются в SQL (проверено e2e-сценариями SQLi, TESTING.md).
 - Время — UTC, ISO-8601; идентификаторы — BIGSERIAL.
 - Секреты в БД: только хэши (пароли, коды, refresh) или шифры
-  (TOTP, токены интеграций); ключи — из окружения, не в БД.
+  (TOTP, токены интеграций, токен ссылки управления записи); ключи — из окружения, не в БД.
 - Удаление аккаунта: большинство таблиц — `ON DELETE CASCADE` по
   `user_id`; осознанные `SET NULL`: `audit_logs.user_id` (журнал
   безопасности сохраняется), `messages.sender_id` (история собеседника

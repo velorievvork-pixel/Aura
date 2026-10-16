@@ -2154,9 +2154,10 @@ private:
         if (!execute("INSERT INTO booking_pages (owner_id, slug, title, description, duration_minutes, days_ahead, "
                      "max_per_day, notice_hours, max_series, weekends, status, guest_reminders, hide_branding, "
                      "price, currency, prepay, deposit, payment_url, payment_note, pay_within_minutes, cancel_hours, "
-                     "late_cancel, policy_text) "
+                     "late_cancel, policy_text, packages) "
                      "VALUES ($1, $2, $3, $4, $5::int, $6::int, $7::int, $8::int, $9::int, $10::bool, $11, "
-                     "$12::bool, $13::bool, $14::bigint, $15, $16, $17::bigint, $18, $19, $20::int, $21::int, $22, $23) "
+                     "$12::bool, $13::bool, $14::bigint, $15, $16, $17::bigint, $18, $19, $20::int, $21::int, $22, $23, "
+                     "$24::jsonb) "
                      "RETURNING id",
                      {std::to_string(record.ownerId), record.slug, record.title, record.description,
                       std::to_string(record.durationMinutes), std::to_string(record.daysAhead),
@@ -2165,7 +2166,8 @@ private:
                       record.guestReminders ? "true" : "false", record.hideBranding ? "true" : "false",
                       std::to_string(record.price), record.currency, record.prepay, std::to_string(record.deposit),
                       record.paymentUrl, record.paymentNote, std::to_string(record.payWithinMinutes),
-                      std::to_string(record.cancelHours), record.lateCancel, record.policyText},
+                      std::to_string(record.cancelHours), record.lateCancel, record.policyText,
+                      record.packages.isArray() ? record.packages.dump() : std::string("[]")},
                      &result)) {
             PQclear(result);
             return DatabaseError::failure(lastError());
@@ -2205,7 +2207,7 @@ private:
                      "weekends = $9::bool, status = $10, guest_reminders = $11::bool, hide_branding = $12::bool, "
                      "price = $13::bigint, currency = $14, prepay = $15, deposit = $16::bigint, payment_url = $17, "
                      "payment_note = $18, pay_within_minutes = $19::int, cancel_hours = $20::int, late_cancel = $21, "
-                     "policy_text = $22, updated_at = now() WHERE id = $1",
+                     "policy_text = $22, packages = $23::jsonb, updated_at = now() WHERE id = $1",
                      {std::to_string(record.id), record.title, record.description,
                       std::to_string(record.durationMinutes), std::to_string(record.daysAhead),
                       std::to_string(record.maxPerDay), std::to_string(record.noticeHours),
@@ -2213,7 +2215,8 @@ private:
                       record.guestReminders ? "true" : "false", record.hideBranding ? "true" : "false",
                       std::to_string(record.price), record.currency, record.prepay, std::to_string(record.deposit),
                       record.paymentUrl, record.paymentNote, std::to_string(record.payWithinMinutes),
-                      std::to_string(record.cancelHours), record.lateCancel, record.policyText},
+                      std::to_string(record.cancelHours), record.lateCancel, record.policyText,
+                      record.packages.isArray() ? record.packages.dump() : std::string("[]")},
                      &result)) {
             return DatabaseError::failure(lastError());
         }
@@ -2228,7 +2231,7 @@ private:
                "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "guest_reminders, hide_branding, price, currency, prepay, deposit, payment_url, payment_note, "
-               "pay_within_minutes, cancel_hours, late_cancel, policy_text "
+               "pay_within_minutes, cancel_hours, late_cancel, policy_text, packages::text "
                "FROM booking_pages";
     }
 
@@ -2270,6 +2273,8 @@ private:
         record.cancelHours = std::atoi(value_(result, row, 23).c_str());
         record.lateCancel = value_(result, row, 24);
         record.policyText = value_(result, row, 25);
+        const Json packages = Json::parse(value_(result, row, 26));
+        if (packages.isArray()) record.packages = packages;
         return record;
     }
 
@@ -2354,15 +2359,17 @@ private:
         Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("INSERT INTO bookings (page_id, owner_id, manage_hash, guest_name, guest_email, guest_comment, "
-                     "occurrences, status, cancelled_by, reschedules, ends_at, manage_token_enc, payment) "
+                     "occurrences, status, cancelled_by, reschedules, ends_at, manage_token_enc, payment, cc_email, "
+                     "package_id) "
                      "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::int, NULLIF($11, '')::timestamptz, "
-                     "NULLIF($12, ''), NULLIF($13, '')::jsonb) "
+                     "NULLIF($12, ''), NULLIF($13, '')::jsonb, $14, NULLIF($15::bigint, 0)) "
                      "RETURNING id",
                      {std::to_string(record.pageId), std::to_string(record.ownerId), record.manageHash,
                       record.guestName, record.guestEmail, record.guestComment,
                       record.occurrences.isArray() ? record.occurrences.dump() : std::string("[]"), record.status,
                       record.cancelledBy, std::to_string(record.reschedules), bookingEndsAt(record.occurrences),
-                      record.manageTokenEnc, record.payment.isObject() ? record.payment.dump() : std::string()},
+                      record.manageTokenEnc, record.payment.isObject() ? record.payment.dump() : std::string(),
+                      record.ccEmail, std::to_string(record.packageId)},
                      &result)) {
             PQclear(result);
             return DatabaseError::failure(lastError());
@@ -2441,7 +2448,7 @@ private:
                "occurrences::text, status, cancelled_by, reschedules, "
                "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
-               "COALESCE(manage_token_enc, ''), COALESCE(payment::text, '') "
+               "COALESCE(manage_token_enc, ''), COALESCE(payment::text, ''), cc_email, COALESCE(package_id, 0) "
                "FROM bookings";
     }
 
@@ -2532,7 +2539,147 @@ private:
             const Json payment = Json::parse(value_(result, row, 14));
             if (payment.isObject()) record.payment = payment;
         }
+        if (PQnfields(result) > 16) {
+            record.ccEmail = value_(result, row, 15);
+            record.packageId = std::atoll(value_(result, row, 16).c_str());
+        }
         return record;
+    }
+
+    std::vector<BookingRecord> listBookingsByPackage(long long packageId, int limit) override {
+        Lease lease(pool_);
+        std::vector<BookingRecord> bookings;
+        PGresult* result = nullptr;
+        if (packageId <= 0 ||
+            !execute(bookingSelect() + " WHERE package_id = $1 ORDER BY id LIMIT $2",
+                     {std::to_string(packageId), std::to_string(limit > 0 ? limit : 100)}, &result)) {
+            return bookings;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) bookings.push_back(readBooking(result, row));
+        PQclear(result);
+        return bookings;
+    }
+
+    // ------------------------------------------------------ package_purchases
+    static std::string packageSelect() {
+        return "SELECT id, owner_id, page_id, offer_id, title, sessions_total, sessions_used, valid_days, price, "
+               "currency, COALESCE(to_char(valid_until AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), ''), "
+               "status, COALESCE(payment::text, ''), guest_name, guest_email, cc_email, token_hash, "
+               "COALESCE(token_enc, ''), "
+               "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+               "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+               "FROM package_purchases";
+    }
+
+    PackagePurchaseRecord readPackage(PGresult* result, int row) const {
+        PackagePurchaseRecord record;
+        record.id = std::atoll(value_(result, row, 0).c_str());
+        record.ownerId = std::atoll(value_(result, row, 1).c_str());
+        record.pageId = std::atoll(value_(result, row, 2).c_str());
+        record.offerId = std::atoll(value_(result, row, 3).c_str());
+        record.title = value_(result, row, 4);
+        record.sessionsTotal = std::atoi(value_(result, row, 5).c_str());
+        record.sessionsUsed = std::atoi(value_(result, row, 6).c_str());
+        record.validDays = std::atoi(value_(result, row, 7).c_str());
+        record.price = std::atoll(value_(result, row, 8).c_str());
+        record.currency = value_(result, row, 9);
+        record.validUntil = value_(result, row, 10);
+        record.status = value_(result, row, 11);
+        if (!value_(result, row, 12).empty()) {
+            const Json payment = Json::parse(value_(result, row, 12));
+            if (payment.isObject()) record.payment = payment;
+        }
+        record.guestName = value_(result, row, 13);
+        record.guestEmail = value_(result, row, 14);
+        record.ccEmail = value_(result, row, 15);
+        record.tokenHash = value_(result, row, 16);
+        record.tokenEnc = value_(result, row, 17);
+        record.createdAt = value_(result, row, 18);
+        record.updatedAt = value_(result, row, 19);
+        return record;
+    }
+
+    std::vector<PackagePurchaseRecord> packagesWhere(const std::string& tail, const std::vector<std::string>& args) {
+        Lease lease(pool_);
+        std::vector<PackagePurchaseRecord> packages;
+        PGresult* result = nullptr;
+        if (!execute(packageSelect() + tail, args, &result)) return packages;
+        for (int row = 0; row < PQntuples(result); ++row) packages.push_back(readPackage(result, row));
+        PQclear(result);
+        return packages;
+    }
+
+    DatabaseError createPackagePurchase(const PackagePurchaseRecord& record, long long& outId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO package_purchases (owner_id, page_id, offer_id, title, sessions_total, sessions_used, "
+                     "valid_days, price, currency, valid_until, status, payment, guest_name, guest_email, cc_email, "
+                     "token_hash, token_enc) "
+                     "VALUES ($1, $2, $3::bigint, $4, $5::int, $6::int, $7::int, $8::bigint, $9, "
+                     "NULLIF($10, '')::timestamptz, $11, NULLIF($12, '')::jsonb, $13, $14, $15, $16, NULLIF($17, '')) "
+                     "RETURNING id",
+                     {std::to_string(record.ownerId), std::to_string(record.pageId), std::to_string(record.offerId),
+                      record.title, std::to_string(record.sessionsTotal), std::to_string(record.sessionsUsed),
+                      std::to_string(record.validDays), std::to_string(record.price), record.currency,
+                      record.validUntil, record.status,
+                      record.payment.isObject() ? record.payment.dump() : std::string(), record.guestName,
+                      record.guestEmail, record.ccEmail, record.tokenHash, record.tokenEnc},
+                     &result)) {
+            PQclear(result);
+            return DatabaseError::failure(lastError());
+        }
+        outId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    std::optional<PackagePurchaseRecord> findPackagePurchase(long long id) override {
+        auto found = packagesWhere(" WHERE id = $1", {std::to_string(id)});
+        if (found.empty()) return std::nullopt;
+        return found.front();
+    }
+
+    std::optional<PackagePurchaseRecord> findPackagePurchaseByToken(const std::string& tokenHash) override {
+        if (tokenHash.empty()) return std::nullopt;
+        auto found = packagesWhere(" WHERE token_hash = $1", {tokenHash});
+        if (found.empty()) return std::nullopt;
+        return found.front();
+    }
+
+    std::vector<PackagePurchaseRecord> listPackagePurchases(long long ownerId, long long pageId,
+                                                           const std::string& status, int limit) override {
+        return packagesWhere(" WHERE owner_id = $1 AND ($2::bigint = 0 OR page_id = $2::bigint) "
+                             "AND ($3::text = '' OR status = $3::text) ORDER BY id DESC LIMIT $4",
+                             {std::to_string(ownerId), std::to_string(pageId), status,
+                              std::to_string(limit > 0 ? limit : 100)});
+    }
+
+    DatabaseError updatePackagePurchase(const PackagePurchaseRecord& record) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE package_purchases SET sessions_total = $2::int, sessions_used = $3::int, "
+                     "valid_until = NULLIF($4, '')::timestamptz, status = $5, payment = NULLIF($6, '')::jsonb, "
+                     "updated_at = now() WHERE id = $1",
+                     {std::to_string(record.id), std::to_string(record.sessionsTotal),
+                      std::to_string(record.sessionsUsed), record.validUntil, record.status,
+                      record.payment.isObject() ? record.payment.dump() : std::string()},
+                     &result)) {
+            return DatabaseError::failure(lastError());
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched ? DatabaseError::success() : DatabaseError::failure("пакет не найден");
+    }
+
+    std::vector<PackagePurchaseRecord> listPendingPackagePurchases(int limit) override {
+        return packagesWhere(" WHERE status = 'pending' ORDER BY payment->>'due_at', id LIMIT $1",
+                             {std::to_string(limit > 0 ? limit : 100)});
+    }
+
+    std::vector<PackagePurchaseRecord> listExpiredPackagePurchases(const std::string& nowIso, int limit) override {
+        return packagesWhere(" WHERE status = 'active' AND valid_until <= $1::timestamptz ORDER BY valid_until, id "
+                             "LIMIT $2",
+                             {nowIso, std::to_string(limit > 0 ? limit : 100)});
     }
 
     // ------------------------------------------------------------- referrals

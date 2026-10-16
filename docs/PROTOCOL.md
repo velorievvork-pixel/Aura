@@ -49,6 +49,7 @@ Kotlin/Compose (Android, этап 11 — см. docs/ANDROID.md), Python (e2e).
 `auth.refresh`, `ping`, `server.info`, `invite.get`, `invite.respond`,
 `booking.get`, `booking.book`, `booking.manage`, `booking.reschedule`,
 `booking.cancel`, `booking.resendLink`, `booking.confirm`, `booking.paymentClaim`,
+`package.get`, `package.paymentClaim`,
 требуют авторизации.
 
 ## Коды ошибок
@@ -347,7 +348,12 @@ Access-токен автоматически обновляется по `refres
 (оплата записи: `{booking_id, page_id, status, amount, currency, guest_name}`,
 `status` — `claimed` гость отметил «Я оплатил(а)», `paid` оплата через ЮKassa
 прошла, `refunded` деньги возвращены через ЮKassa, `refund_due` — верните оплату
-гостю вручную), `referral.joined`
+гостю вручную), `package.purchased` (гость купил пакет при записи:
+`{package_id, page_id, guest_name}`), `package.payment` (оплата пакета:
+`{package_id, page_id, guest_name, status, amount, currency}`, `status` —
+`claimed` / `paid` / `refunded` / `refund_due` как у записи, `expired` — оплата не
+поступила, покупка отменена), `package.low` (у пакета осталось 1 или 0 занятий:
+`{package_id, page_id, guest_name, left}`), `referral.joined`
 (приглашённый по реферальной ссылке подтвердил email), `referral.reward`
 (приглашённому начислен месяц Pro). Push-доставка — через устройства в `push_devices`
 (платформы `apns` | `fcm` | `webhook` | `dev`); платформенный конверт
@@ -458,9 +464,9 @@ guest_name, comment}`).
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `booking.pageCreate` | `{title (1–120, одна строка), description? (≤ 1000), duration_minutes? (15–240, 30), days_ahead? (1–60, 14), max_per_day? (1–16, 4), notice_hours? (0–168, 2), max_series? (1–12, 1), weekends? (bool, false), guest_reminders? (bool, true), hide_branding? (bool, false), …поля цены и политики отмены (F4, ниже)}` | `{page}`; больше 10 страниц → `forbidden`; `hide_branding: true` или `prepay` ≠ `none` без Pro при `SELFVOY_PLANS_ENFORCED=1` → `pro_required` |
+| `booking.pageCreate` | `{title (1–120, одна строка), description? (≤ 1000), duration_minutes? (15–240, 30), days_ahead? (1–60, 14), max_per_day? (1–16, 4), notice_hours? (0–168, 2), max_series? (1–12, 1), weekends? (bool, false), guest_reminders? (bool, true), hide_branding? (bool, false), …поля цены и политики отмены (F4, ниже), packages? (предложения пакетов, F5, ниже)}` | `{page}`; больше 10 страниц → `forbidden`; `hide_branding: true`, `prepay` ≠ `none` или непустой `packages` без Pro при `SELFVOY_PLANS_ENFORCED=1` → `pro_required` |
 | `booking.pageList` | — | `{pages: [page]}` — новые сверху, без удалённых |
-| `booking.pageUpdate` | `{page_id, …любые поля pageCreate, status? (active \| paused)}` | `{page}` — меняются только переданные поля; включить `hide_branding` или предоплату (`prepay` из `none`) без Pro (при `SELFVOY_PLANS_ENFORCED=1`) → `pro_required`, выключить можно всегда |
+| `booking.pageUpdate` | `{page_id, …любые поля pageCreate, status? (active \| paused)}` | `{page}` — меняются только переданные поля (`packages` — целым массивом); включить `hide_branding`, предоплату (`prepay` из `none`) или пакеты (непустой `packages` у страницы без пакетов) без Pro (при `SELFVOY_PLANS_ENFORCED=1`) → `pro_required`, выключить и править уже включённое можно всегда |
 | `booking.pageDelete` | `{page_id}` | `{deleted: true}` — ссылка перестаёт работать, сделанные записи остаются |
 | `booking.list` | `{page_id? (0 — все), active_only?, limit? (1–200, 50)}` | `{bookings: [booking]}` — новые сверху |
 | `booking.ownerCancel` | `{booking_id, occurrence? (start одной встречи)}` | `{booking}`; без `occurrence` — все предстоящие встречи; оплаченная запись, отменённая целиком, — возврат (см. «Цена, предоплата и политика отмены») |
@@ -469,12 +475,13 @@ guest_name, comment}`).
 `page`: `{id, slug, url, title, description, duration_minutes, days_ahead,
 max_per_day, notice_hours, max_series, weekends, status (active | paused),
 guest_reminders, hide_branding, price, currency, prepay, deposit, payment_url,
-payment_note, pay_within_minutes, cancel_hours, late_cancel, policy_text, upcoming,
-created_at, updated_at}`; `url` пуст
+payment_note, pay_within_minutes, cancel_hours, late_cancel, policy_text, packages,
+upcoming, created_at, updated_at}`; `url` пуст
 без `SELFVOY_PUBLIC_URL`. `guest_reminders` — напоминать гостю о встрече
 (бесплатно), `hide_branding` — скрыть подпись «Запись через Selfvoy» (Pro).
 `booking` (вид владельца): `{id, page_id, page_title, guest_name, guest_email,
-guest_comment, status (active | cancelled), cancelled_by ("" | guest | owner),
+guest_comment, cc_email (второй получатель, "" — нет; F5), package_id (пакет записи,
+0 — без пакета; F5), status (active | cancelled), cancelled_by ("" | guest | owner),
 reschedules, occurrences: [{start, end, local, status (active | cancelled),
 confirmed_at}], reminders: [{start, kind (24h | 2h), due_at, sent_at}],
 payment (объект оплаты целиком или null), created_at, updated_at}`;
@@ -491,7 +498,7 @@ payment (объект оплаты целиком или null), created_at, upda
 | тип | payload | ответ |
 | --- | --- | --- |
 | `booking.get` | `{slug}` | `{page}` — вид гостя |
-| `booking.book` | `{slug, start (start свободного слота), guest_name (1–80), guest_email? (≤ 254), comment? (≤ 500), count? (1–max_series, 1)}` | `{booking, token, url, telegram_url}` — токен ссылки управления (43 символа base64url) показывается **один раз**; `url` — `<SELFVOY_PUBLIC_URL>/#/m/<токен>` или пусто; `telegram_url` — ссылка на бота для напоминаний (`https://t.me/<бот>?start=g_…`) или "" (бот не настроен) |
+| `booking.book` | `{slug, start (start свободного слота), guest_name (1–80), guest_email? (≤ 254), cc_email? (≤ 254, ≠ guest_email; F5), comment? (≤ 500), count? (1–max_series, 1), package_id? (id предложения пакета — купить пакет; F5), package_token? (токен ссылки пакета — запись по пакету; F5)}` | `{booking, token, url, telegram_url}` — токен ссылки управления (43 символа base64url) показывается **один раз**; `url` — `<SELFVOY_PUBLIC_URL>/#/m/<токен>` или пусто; `telegram_url` — ссылка на бота для напоминаний (`https://t.me/<бот>?start=g_…`) или "" (бот не настроен). С `package_id` дополнительно `package_token` (показывается **один раз**), `package_url` (`<SELFVOY_PUBLIC_URL>/#/p/<токен>` или "") и `package` (вид гостя); с `package_token` — `package`. С пакетом `guest_name` можно не передавать (берётся из пакета) |
 | `booking.manage` | `{token}` | `{booking}` — вид гостя по ссылке управления |
 | `booking.reschedule` | `{token, start, occurrence? (start переносимой встречи; по умолчанию ближайшая)}` | `{booking}`; не больше 3 переносов на запись |
 | `booking.cancel` | `{token, occurrence?, reason? (≤ 500)}` | `{booking}`; без `occurrence` — все предстоящие встречи |
@@ -500,12 +507,13 @@ payment (объект оплаты целиком или null), created_at, upda
 | `booking.paymentClaim` | `{token}` | `{booking}` (вид гостя, `slots` пуст) — «Я оплатил(а)» для оплаты по ссылке: `pending` → `claimed`, владельцу — `booking.payment` (`claimed`); повтор и уже `paid`/`waived` — без изменений; оплата через ЮKassa → `bad_request`; нет оплаты → `bad_request`; запись отменена (оплата `expired`) → `conflict`; лимит — как у переноса/отмены |
 
 Письма гостю (если при записи указан email; драйвер почты — как у кодов
-подтверждения, `SELFVOY_MAIL_DRIVER`): подтверждение записи со ссылкой управления
+подтверждения, `SELFVOY_MAIL_DRIVER`; копия каждого — второму получателю
+`cc_email`, F5): подтверждение записи со ссылкой управления
 (и строкой «Напоминания в Telegram: <url>», если бот настроен),
 перенос, отмена гостем и отмена владельцем (со ссылкой «Выбрать другое время»),
 новая ссылка по `booking.resendLink`. Те же извещения уходят в Telegram-чаты,
 подключённые к записи (простой текст; ссылка управления — url-кнопкой, если адрес
-https); лимит — 10 в час на адрес и на чат, 200 в час на владельца. Время — местное время владельца с
+https); лимит — 10 в час на адрес (у `cc_email` — свой) и на чат, 200 в час на владельца. Время — местное время владельца с
 поясом. В письмах только текст сервера и владельца (название страницы, имя
 владельца): имя и комментарий гостя туда не попадают, на один адрес — не больше
 10 писем в час.
@@ -513,13 +521,15 @@ https); лимит — 10 в час на адрес и на чат, 200 в ча�
 Вид страницы для гостя: `{slug, title, description, duration_minutes,
 max_series, owner_name, owner_timezone, status, slots: [{start, end, day}],
 slots_unavailable, ref, branding, price, currency, prepay, deposit, payment_note,
-payment_url, pay_within_minutes, policy: {cancel_hours, late_cancel, text}}` —
+payment_url, pay_within_minutes, policy: {cancel_hours, late_cancel, text},
+packages: [{id, title, sessions, price, valid_days}]}` —
 без email владельца и чужих записей; `day` —
 местная дата владельца; `slots_unavailable: true` — AI-сервис недоступен
 (страница видна, время не подобрано); `ref` — реферальный код владельца для
 ссылки «Заведите свой Selfvoy». Вид записи для гостя: `{page_title, page_slug
 ("" — запись на странице закрыта), owner_name, owner_timezone,
-duration_minutes, guest_name, status, cancelled_by, occurrences, can_cancel,
+duration_minutes, guest_name, cc_email (замаскирован: `m***@example.com`; "" — нет),
+by_package (запись по пакету), status, cancelled_by, occurrences, can_cancel,
 can_reschedule, can_change, reschedules_left, slots (свободное время для
 переноса ближайшей встречи), slots_unavailable, ref, branding, telegram_url,
 telegram_linked, payment (без `provider_id`; null — оплаты нет), late, policy,
@@ -571,7 +581,7 @@ https-ссылка). «Приду» по ссылке вызывает `booking.
 `occurrences` есть `local` — местное время владельца `YYYY-MM-DDTHH:MM`. На каждую встречу владельцу создаётся задача с `due_at = start`
 и `remind_at = start − 15 мин` (при переносе — пересоздаётся, при отмене —
 удаляется) и уведомление `booking.created` (`{booking_id, page_id, start, end,
-count, guest_name}`), `booking.rescheduled` (`{booking_id, page_id, from,
+count, guest_name, package_id?}` — `package_id` у записи по пакету), `booking.rescheduled` (`{booking_id, page_id, from,
 start, end, guest_name}`), `booking.cancelled` (`{booking_id, page_id,
 cancelled, guest_name, reason}`). Запись без предстоящих встреч получает
 `status: cancelled`.
@@ -668,6 +678,93 @@ refunded_at}`; `status`: `pending` (ждём оплату) → `paid` / `claimed
   `late_cancel: block` гость не может ни отменить, ни перенести встречу
   (`conflict` «до встречи меньше N ч — свяжитесь со специалистом»). Отмена одной
   встречи серии оплату не меняет. ЮKassa не приняла возврат — `refund_due`.
+
+### Пакеты, абонементы и второй получатель (F5)
+
+**Второй получатель.** `booking.book` принимает `cc_email` (≤ 254 символов,
+отличается от `guest_email` без учёта регистра) — «копия напоминаний, например
+родителю». Копия получает все извещения гостя: подтверждение со ссылкой
+управления, напоминания, перенос, отмену, оплату (лимит писем — свой, 10 в час
+на адрес). Вид владельца — `cc_email` целиком, вид гостя — замаскированный
+(`m***@example.com`). Бесплатно.
+
+**Предложения пакетов** — поле страницы `packages` (`booking.pageCreate` /
+`booking.pageUpdate`, правка — целым массивом):
+`[{id, title (1–80, одна строка), sessions (2–100), price (мин. единицы валюты
+страницы, > 0, ≤ 100 000 000), valid_days? (7–365, 90)}]`, не больше 5.
+Элементы с `id` сохраняют `id` (неизвестный или повторный `id` → `bad_request`),
+без `id` — новые (id больше всех прежних). Непустой массив — Pro (при
+`SELFVOY_PLANS_ENFORCED=1`, как скрытие подписи: включить без Pro нельзя, править
+уже включённые — можно). Гость видит предложения в `booking.get` (`packages`).
+
+**Покупка при записи** — `booking.book {…, package_id: <id предложения>}`
+(`count` ≤ `sessions`): создаётся покупка-снимок предложения, запись
+привязывается к ней и сразу списывает занятия. Оплата — как у записи (F4),
+сумма = цена пакета, `payment.kind = package`, предоплата страницы не
+применяется:
+- ЮKassa владельца подключена — покупка `pending`, `POST /payments`
+  (`Idempotence-Key: pk-<package_id>`, `return_url: <SELFVOY_PUBLIC_URL>/#/p/<токен>?paid=1`,
+  `description` «<страница>: <пакет>», `metadata.package_id`); платёж не создался
+  → покупка `cancelled`, запись отменена, `upstream_error`.
+- Есть `payment_url` / `payment_note` — покупка `pending`, способ `link`;
+  гость платит и нажимает «Я оплатил(а)» (`package.paymentClaim`).
+- Способа оплаты нет — покупка сразу `active`, оплата `pending` без срока
+  (`due_at: ""`), её отмечает владелец (`package.paymentSet`).
+Время записи держится до `due_at` (= сейчас + `pay_within_minutes`, не позже
+первой встречи). Оплата пришла (ЮKassa — планировщик раз в 30 с и при
+`package.get`; `claimed`; `paymentSet paid|waived`) → покупка `active`,
+`valid_until = момент активации + valid_days` (гостю письмо «Оплата пакета
+получена», владельцу `package.payment` `paid`). Не оплачено к сроку (или ЮKassa
+отменила платёж) → покупка `cancelled`, оплата `expired`, записи пакета
+отменяются системой (`cancelled_by: system`, владельцу `booking.cancelled` и
+`package.payment` `expired`, гостю «Оплата пакета не поступила» со ссылкой
+страницы). Гость заплатил после отмены — автоматический возврат (`pr-<id>`, при
+`package.get`). Письмо о записи — со строками пакета: занятия, срок, ссылка пакета,
+сумма и способ оплаты. Владельцу — `package.purchased`.
+
+**Запись по пакету** — `booking.book {slug, start, package_token, count?}`:
+пакет этой страницы (чужая страница → `bad_request`), `active`, не истёк, остаток
+≥ `count`, каждая встреча раньше `valid_until`; иначе `conflict` («абонемент ещё не
+оплачен», «абонемент отменён», «срок действия абонемента истёк», «занятия по
+абонементу закончились», «на абонементе осталось N занятий», «абонемент действует
+до … — выберите время раньше»); неизвестный токен → `not_found`; `package_id` и
+`package_token` вместе → `bad_request`. Имя, email и `cc_email` берутся из пакета,
+если не переданы; предоплата не нужна.
+
+**Списание и возврат.** Каждая активная встреча записи по пакету — одно
+занятие при записи. Отмена гостем не позже `cancel_hours` до встречи возвращает
+занятие, поздняя — нет (в письме об отмене — «занятие списано с абонемента»);
+отмена владельцем (`booking.ownerCancel`) возвращает всегда. Остаток 0 → статус
+`used` (возврат — снова `active`). Остаток 1 или 0 после списания → гостю (+
+копия, Telegram-чаты записей пакета) «Осталось N занятий — продлите абонемент:
+<ссылка страницы>» и владельцу `package.low` `{package_id, left}`. Планировщик
+переводит `active` в `expired` по `valid_until`.
+
+Пакет — `{status: pending | active | used | expired | cancelled, payment, …}`;
+ссылка пакета `<SELFVOY_PUBLIC_URL>/#/p/<токен>` (токен 43 символа base64url; в БД —
+sha256 и шифр AES-256-GCM, AAD `selfvoy-package-token`, для писем).
+
+Методы гостя (публичные):
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `package.get` | `{token}` | `{package}` — вид гостя: `{title, sessions_total, sessions_left, valid_until ("" — ещё не оплачен), valid_days, status, price, currency, payment (без provider_id; null — без оплаты), payment_note, guest_name, cc_email (замаскирован), page_slug ("" — запись на странице закрыта), page_title, owner_name, owner_timezone, bookings: [{start, status}], branding}`; ЮKassa — статус платежа проверяется при каждом открытии; неизвестный токен → `not_found`; 30 в минуту с IP |
+| `package.paymentClaim` | `{token}` | `{package}` — «Я оплатил(а)» за пакет (способ `link`): оплата `pending` → `claimed`, покупка `pending` → `active`; владельцу `package.payment` (`claimed`); повтор — без изменений; ЮKassa / нет оплаты → `bad_request`; покупка отменена → `conflict`; лимит — как у переноса/отмены |
+
+Методы владельца:
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `package.list` | `{page_id? (0 — все), status? (pending \| active \| used \| expired \| cancelled), limit? (1–200, 50)}` | `{packages: [package]}` — новые сверху |
+| `package.issue` | `{page_id, offer_id? \| (title (1–80) + sessions (1–100) + price? (≥ 0, 0) + valid_days? (7–365, 90)), guest_name (1–80), guest_email?, cc_email?, paid? (bool, false)}` | `{package, token, url}` — продажа вне сайта: пакет сразу `active` (`valid_until` = сейчас + `valid_days`), оплата — `paid` (`paid: true`), `pending` (отметит владелец) или null (цена 0); гостю (+ копии) письмо со ссылкой пакета; токен показывается **один раз**; чужая страница → `not_found`; 60 в час |
+| `package.adjust` | `{package_id, delta (−100..100, ≠ 0)}` | `{package}` — корректировка остатка (`sessions_total += delta`; убрать больше остатка нельзя → `bad_request`, всего ≤ 1000); статус `used`/`active` — по остатку; отменённый → `conflict` |
+| `package.cancel` | `{package_id}` | `{package}` — `cancelled`: по ссылке больше не записаться (сделанные записи остаются — их отменяет `booking.ownerCancel`); ожидаемая оплата → `expired`; оплачен через ЮKassa и ни одно занятие не использовано — возврат всей суммы (`POST /refunds`, `Idempotence-Key: pr-<id>`); гостю письмо; повтор → `conflict` |
+| `package.paymentSet` | `{package_id, status: paid \| waived \| refunded}` | `{package}` — отметка оплаты владельцем (`paid_at` / `refunded_at` = сейчас); `paid`/`waived` у `pending` — активация; `paid` — гостю письмо «Оплата пакета получена»; нет оплаты → `bad_request` |
+
+`package` (вид владельца): `{id, page_id, page_title, offer_id (0 — выдан вне
+предложений), title, sessions_total, sessions_used, sessions_left, valid_days,
+valid_until, price, currency, status, payment (целиком или null), guest_name,
+guest_email, cc_email, created_at, updated_at}`. Чужой пакет → `not_found`.
 
 ### Пост «свободные окна» (F6)
 

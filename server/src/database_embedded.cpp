@@ -1917,6 +1917,7 @@ private:
         entry.set("cancel_hours", Json(static_cast<long long>(record.cancelHours)));
         entry.set("late_cancel", Json(record.lateCancel));
         entry.set("policy_text", Json(record.policyText));
+        entry.set("packages", record.packages.isArray() ? record.packages : Json::array());
         entry.set("updated_at", Json(isoNow()));
     }
 
@@ -1948,6 +1949,7 @@ private:
         record.cancelHours = static_cast<int>(entry.getInt("cancel_hours", 0));
         record.lateCancel = entry.getString("late_cancel", "allow");
         record.policyText = entry.getString("policy_text");
+        if (entry.get("packages").isArray()) record.packages = entry.get("packages");
         return record;
     }
 
@@ -2060,6 +2062,8 @@ private:
         entry.set("guest_name", Json(record.guestName));
         entry.set("guest_email", Json(record.guestEmail));
         entry.set("guest_comment", Json(record.guestComment));
+        entry.set("cc_email", Json(record.ccEmail));
+        entry.set("package_id", Json(record.packageId));
         entry.set("created_at", Json(isoNow()));
         writeBooking(entry, record);
         table("bookings").push(entry);
@@ -2155,7 +2159,164 @@ private:
         record.updatedAt = entry.getString("updated_at");
         record.manageTokenEnc = entry.getString("manage_token_enc");
         if (entry.get("payment").isObject()) record.payment = entry.get("payment");
+        record.ccEmail = entry.getString("cc_email");
+        record.packageId = entry.getInt("package_id");
         return record;
+    }
+
+    std::vector<BookingRecord> listBookingsByPackage(long long packageId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingRecord> result;
+        if (packageId <= 0) return result;
+        for (const auto& entry : table("bookings").items()) {
+            if (entry.getInt("package_id") != packageId) continue;
+            result.push_back(toBooking(entry));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    // ------------------------------------------------------ package_purchases
+    static bool validPackageStatus(const std::string& status) {
+        return status == "pending" || status == "active" || status == "used" || status == "expired" ||
+               status == "cancelled";
+    }
+
+    static void writePackage(Json& entry, const PackagePurchaseRecord& record) {
+        entry.set("sessions_total", Json(static_cast<long long>(record.sessionsTotal)));
+        entry.set("sessions_used", Json(static_cast<long long>(record.sessionsUsed)));
+        entry.set("valid_until", Json(record.validUntil));
+        entry.set("status", Json(record.status));
+        entry.set("payment", record.payment.isObject() ? record.payment : Json());
+        entry.set("updated_at", Json(isoNow()));
+    }
+
+    static PackagePurchaseRecord toPackage(const Json& entry) {
+        PackagePurchaseRecord record;
+        record.id = entry.getInt("id");
+        record.ownerId = entry.getInt("owner_id");
+        record.pageId = entry.getInt("page_id");
+        record.offerId = entry.getInt("offer_id");
+        record.title = entry.getString("title");
+        record.sessionsTotal = static_cast<int>(entry.getInt("sessions_total"));
+        record.sessionsUsed = static_cast<int>(entry.getInt("sessions_used"));
+        record.validDays = static_cast<int>(entry.getInt("valid_days", 90));
+        record.price = entry.getInt("price");
+        record.currency = entry.getString("currency", "RUB");
+        record.validUntil = entry.getString("valid_until");
+        record.status = entry.getString("status", "pending");
+        if (entry.get("payment").isObject()) record.payment = entry.get("payment");
+        record.guestName = entry.getString("guest_name");
+        record.guestEmail = entry.getString("guest_email");
+        record.ccEmail = entry.getString("cc_email");
+        record.tokenHash = entry.getString("token_hash");
+        record.tokenEnc = entry.getString("token_enc");
+        record.createdAt = entry.getString("created_at");
+        record.updatedAt = entry.getString("updated_at");
+        return record;
+    }
+
+    DatabaseError createPackagePurchase(const PackagePurchaseRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.tokenHash.empty() || record.title.empty()) return DatabaseError::failure("пакет без токена или названия");
+        if (!validPackageStatus(record.status) || record.sessionsTotal < 1 || record.sessionsUsed < 0) {
+            return DatabaseError::failure("некорректный пакет");
+        }
+        for (const auto& entry : table("package_purchases").items()) {
+            if (entry.getString("token_hash") == record.tokenHash) return DatabaseError::failure("токен пакета уже существует");
+        }
+        const long long id = nextId("package_purchases");
+        Json entry = Json::object();
+        entry.set("id", Json(id));
+        entry.set("owner_id", Json(record.ownerId));
+        entry.set("page_id", Json(record.pageId));
+        entry.set("offer_id", Json(record.offerId));
+        entry.set("title", Json(record.title));
+        entry.set("valid_days", Json(static_cast<long long>(record.validDays)));
+        entry.set("price", Json(record.price));
+        entry.set("currency", Json(record.currency));
+        entry.set("guest_name", Json(record.guestName));
+        entry.set("guest_email", Json(record.guestEmail));
+        entry.set("cc_email", Json(record.ccEmail));
+        entry.set("token_hash", Json(record.tokenHash));
+        entry.set("token_enc", Json(record.tokenEnc));
+        entry.set("created_at", Json(isoNow()));
+        writePackage(entry, record);
+        table("package_purchases").push(entry);
+        flush();
+        outId = id;
+        return DatabaseError::success();
+    }
+
+    std::optional<PackagePurchaseRecord> findPackagePurchase(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("package_purchases").items()) {
+            if (entry.getInt("id") == id) return toPackage(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::optional<PackagePurchaseRecord> findPackagePurchaseByToken(const std::string& tokenHash) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (tokenHash.empty()) return std::nullopt;
+        for (const auto& entry : table("package_purchases").items()) {
+            if (entry.getString("token_hash") == tokenHash) return toPackage(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::vector<PackagePurchaseRecord> listPackagePurchases(long long ownerId, long long pageId,
+                                                           const std::string& status, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<PackagePurchaseRecord> result;
+        const auto& entries = table("package_purchases").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId) continue;
+            if (pageId > 0 && it->getInt("page_id") != pageId) continue;
+            if (!status.empty() && it->getString("status") != status) continue;
+            result.push_back(toPackage(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    DatabaseError updatePackagePurchase(const PackagePurchaseRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!validPackageStatus(record.status) || record.sessionsTotal < 1 || record.sessionsUsed < 0) {
+            return DatabaseError::failure("некорректный пакет");
+        }
+        for (auto& entry : mutableTable("package_purchases")) {
+            if (entry.getInt("id") != record.id) continue;
+            writePackage(entry, record);
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("пакет не найден");
+    }
+
+    std::vector<PackagePurchaseRecord> listPendingPackagePurchases(int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<PackagePurchaseRecord> result;
+        for (const auto& entry : table("package_purchases").items()) {
+            if (entry.getString("status") == "pending") result.push_back(toPackage(entry));
+        }
+        std::stable_sort(result.begin(), result.end(), [](const PackagePurchaseRecord& a, const PackagePurchaseRecord& b) {
+            return a.payment.getString("due_at") < b.payment.getString("due_at");
+        });
+        if (limit > 0 && static_cast<int>(result.size()) > limit) result.resize(static_cast<std::size_t>(limit));
+        return result;
+    }
+
+    std::vector<PackagePurchaseRecord> listExpiredPackagePurchases(const std::string& nowIso, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<PackagePurchaseRecord> result;
+        for (const auto& entry : table("package_purchases").items()) {
+            const std::string until = entry.getString("valid_until");
+            if (entry.getString("status") != "active" || until.empty() || until > nowIso) continue;
+            result.push_back(toPackage(entry));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
     }
 
     std::vector<BookingRecord> listAwaitingPayments(int limit) override {

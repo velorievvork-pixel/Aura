@@ -9,7 +9,7 @@ e2e — на реальном PostgreSQL.
 изменения — файлами `schema/migrations/` (применяются по порядку имени).
 Демо-данные: `schema/seed.sql`.
 
-## 30 таблиц и 2 представления по доменам
+## 31 таблица и 2 представления по доменам
 
 ### Аутентификация и безопасность
 | таблица | назначение |
@@ -87,6 +87,7 @@ advisory lock'ов (их берут и отпускают в одной сесс
 | `booking_telegram` | Telegram-чаты гостя записи (напоминания и извещения): `booking_id` (ON DELETE CASCADE), `chat_id`, `linked_at`; PK (booking_id, chat_id), индекс по `chat_id` (отвязка `/stop` и при 403); не больше 3 чатов на запись — проверяет сервер |
 | `server_state` | служебное состояние сервера ключ → значение (`telegram.offset` — смещение `getUpdates`), `updated_at` |
 | `payment_accounts` | магазин ЮKassa владельца (F4): `user_id` PK (ON DELETE CASCADE), `provider` CHECK (`yookassa`), `shop_id`, `secret_enc` (AES-256-GCM, AAD `selfvoy-payment-secret`), `connected_at` |
+| `package_purchases` | пакеты (абонементы) гостей (F5): `owner_id`, `page_id` (ON DELETE CASCADE), `offer_id` (id предложения страницы; 0 — выдан владельцем), снимок предложения `title`, `sessions_total` CHECK 1–1000, `sessions_used`, `valid_days`, `price`, `currency`; `valid_until` (NULL — ждёт оплату), `status` CHECK (`pending`/`active`/`used`/`expired`/`cancelled`), `payment` JSONB (как `bookings.payment`, `kind: package`), `guest_name/email`, `cc_email`, `token_hash` UNIQUE (sha256 токена ссылки `#/p/<токен>`), `token_enc` (тот же токен, AES-256-GCM, AAD `selfvoy-package-token` — для писем); индексы (owner_id, id DESC), частичные по `payment->>'due_at' WHERE status = 'pending'` и `valid_until WHERE status = 'active'` |
 | `booking_reminders` | напоминания гостю о встрече (F1): `booking_id` (ON DELETE CASCADE), `owner_id`, `occurrence_start`, `kind` CHECK (`24h`/`2h`), `due_at`, `sent_at` (NULL — не отправлено); UNIQUE (booking_id, occurrence_start, kind), частичный индекс `due_at WHERE sent_at IS NULL`. Создаются при записи/переносе, неотправленные удаляются при отмене/переносе встречи; планировщик захватывает наступившие одним `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING` |
 
 Миграция `2026_10_16_telegram_pro.sql` (то же — блоком в конце таблиц `schema.sql`):
@@ -123,6 +124,16 @@ PROTOCOL.md) с частичным индексом `bookings_payment_pending_id
 `selfvoy-payment-secret`), `connected_at`. `bookings.cancelled_by` получает
 значение `system` (оплата не поступила). Во встроенном хранилище — поля в тех же
 записях и массив `payment_accounts`.
+
+Миграция `2026_10_16_packages.sql` (S2b, F5; то же — блоком в конце таблиц
+`schema.sql`): `booking_pages.packages` JSONB (`[]` по умолчанию; предложения
+пакетов `[{id, title, sessions, price, valid_days}]`, не больше 5 — проверяет
+сервер), таблица `package_purchases`, `bookings.cc_email` (второй получатель
+извещений гостя, `''` — нет) и `bookings.package_id` (REFERENCES
+`package_purchases` ON DELETE SET NULL; частичный индекс по непустым). Остаток
+занятий = `sessions_total − sessions_used`; списание и возврат — под
+блокировкой расписания владельца. Во встроенном хранилище — поля в тех же
+записях и массив `package_purchases`.
 
 Миграция `2026_10_15_audit_fixes.sql`: `users.email_verified DEFAULT FALSE`
 (новый аккаунт без явного значения не считается подтверждённым), `bookings.ends_at`

@@ -309,6 +309,8 @@ struct BookingPageRecord {
     int cancelHours = 0;                 // отмена с возвратом — не позже чем за N ч (0 — всегда)
     std::string lateCancel = "allow";    // allow | block — позже срока
     std::string policyText;              // текст политики отмены
+    // F5: предложения пакетов (абонементов) — [{id, title, sessions, price, valid_days}], ≤ 5.
+    Json packages = Json::array();
 };
 
 // Запись гостя на странице. occurrences — встречи (одна или еженедельная серия):
@@ -336,6 +338,38 @@ struct BookingRecord {
     std::string manageTokenEnc;
     // F4: оплата записи (selfvoy/payments.h) или null — оплаты нет.
     Json payment;
+    // F5: второй получатель извещений гостя ("" — нет) и пакет, по которому сделана
+    // запись (0 — без пакета). Пишутся при создании записи.
+    std::string ccEmail;
+    long long packageId = 0;
+};
+
+// Покупка пакета (абонемента) гостем, F5 (package_purchases). Пакет — снимок
+// предложения страницы на момент покупки (название, число занятий, цена, срок).
+// status: pending (ждём оплату) | active | used (занятий не осталось) | expired
+// (истёк valid_until) | cancelled. tokenHash — hex sha256 токена ссылки #/p/<токен>;
+// tokenEnc — сам токен, AES-256-GCM (Config::dataKey, AAD "selfvoy-package-token").
+struct PackagePurchaseRecord {
+    long long id = 0;
+    long long ownerId = 0;
+    long long pageId = 0;
+    long long offerId = 0;      // id предложения страницы (0 — выдан владельцем вне предложений)
+    std::string title;
+    int sessionsTotal = 0;
+    int sessionsUsed = 0;
+    int validDays = 90;         // срок действия с момента активации
+    long long price = 0;        // мин. единицы валюты
+    std::string currency = "RUB";
+    std::string validUntil;     // ISO UTC; "" — ещё не активирован
+    std::string status = "pending";
+    Json payment;               // selfvoy/payments.h (kind: package) или null
+    std::string guestName;
+    std::string guestEmail;
+    std::string ccEmail;
+    std::string tokenHash;
+    std::string tokenEnc;
+    std::string createdAt;
+    std::string updatedAt;
 };
 
 // Подключённый владельцем магазин ЮKassa (payment_accounts). secretEnc — секретный
@@ -673,6 +707,23 @@ public:
     virtual DatabaseError updateBooking(const BookingRecord& record) = 0;
     // F4: записи с ожидаемой оплатой (payment.status = pending), раньше истекающие — первыми.
     virtual std::vector<BookingRecord> listAwaitingPayments(int limit) = 0;
+
+    // F5: записи по пакету (bookings.package_id), старые сверху.
+    virtual std::vector<BookingRecord> listBookingsByPackage(long long packageId, int limit) = 0;
+
+    // F5: покупки пакетов (package_purchases).
+    virtual DatabaseError createPackagePurchase(const PackagePurchaseRecord& record, long long& outId) = 0;
+    virtual std::optional<PackagePurchaseRecord> findPackagePurchase(long long id) = 0;
+    virtual std::optional<PackagePurchaseRecord> findPackagePurchaseByToken(const std::string& tokenHash) = 0;
+    // Пакеты владельца (pageId = 0 — всех страниц; status "" — любые), новые сверху.
+    virtual std::vector<PackagePurchaseRecord> listPackagePurchases(long long ownerId, long long pageId,
+                                                                   const std::string& status, int limit) = 0;
+    // Перезаписывает sessions_total, sessions_used, valid_until, status, payment; updated_at = now.
+    virtual DatabaseError updatePackagePurchase(const PackagePurchaseRecord& record) = 0;
+    // Покупки, ждущие оплату (status = pending), раньше истекающие — первыми.
+    virtual std::vector<PackagePurchaseRecord> listPendingPackagePurchases(int limit) = 0;
+    // Активные пакеты с valid_until <= nowIso (планировщик переводит их в expired).
+    virtual std::vector<PackagePurchaseRecord> listExpiredPackagePurchases(const std::string& nowIso, int limit) = 0;
 
     // F4: магазин ЮKassa владельца (payment_accounts). set — вставка или замена.
     virtual std::optional<PaymentAccountRecord> findPaymentAccount(long long userId) = 0;

@@ -2,7 +2,7 @@
 
 Кроссплатформенное приложение: C++17 сервер (WebSocket + HTTP), Python AI-сервис
 (FastAPI, LLM/RAG/память), Qt6/QML desktop-клиент, Android (Kotlin + Compose),
-iOS (SwiftUI). База — PostgreSQL, 30 таблиц и 2 представления (`schema/schema.sql` + `schema/migrations/`).
+iOS (SwiftUI). База — PostgreSQL, 31 таблица и 2 представления (`schema/schema.sql` + `schema/migrations/`).
 
 ## Команды (всё через Makefile)
 

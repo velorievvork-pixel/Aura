@@ -7383,3 +7383,867 @@ TEST(pg_payments_methods) {
     CHECK(db->deletePaymentAccount(owner).ok);
     CHECK(!db->findPaymentAccount(owner));
 }
+
+// ------------------------------------------- F5: пакеты (абонементы) и второй получатель
+
+namespace packages_test {
+
+using namespace payments_test;
+
+// Сессия с собственным адресом гостя: лимиты гостевых методов считаются по IP.
+std::shared_ptr<selfvoy::Session> openFrom(Fixture& fixture, admin_test::Sockets& sockets, const std::string& id,
+                                           const std::string& address) {
+    int pair[2] = {-1, -1};
+    if (::socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) return nullptr;
+    sockets.fds.push_back(pair[0]);
+    sockets.fds.push_back(pair[1]);
+    return std::make_shared<selfvoy::Session>(pair[1], id, address, fixture.config);
+}
+
+Json offer(const std::string& title, long long sessions, long long price, long long validDays = 0) {
+    Json json = Json::object();
+    json.set("title", Json(title));
+    json.set("sessions", Json(sessions));
+    json.set("price", Json(price));
+    if (validDays > 0) json.set("valid_days", Json(validDays));
+    return json;
+}
+
+Json offersPage(const std::string& title, const Json& offers) {
+    Json payload = payPage(title);
+    payload.set("packages", offers);
+    return payload;
+}
+
+Json packageIdPayload(long long id) {
+    Json payload = Json::object();
+    payload.set("package_id", Json(id));
+    return payload;
+}
+
+std::string lower(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return value;
+}
+
+// Писем вида kind на адрес (без учёта регистра).
+std::size_t mailCount(const std::string& to, const std::string& kind) {
+    std::size_t count = 0;
+    const std::string wanted = lower(to);
+    for (const auto& mail : settledOutbox()) {
+        if (lower(mail.to) == wanted && mail.kind == kind) ++count;
+    }
+    return count;
+}
+
+std::optional<selfvoy::MailNotice> lastMail(const std::string& to, const std::string& kind) {
+    const auto found = mails(to, kind);
+    if (found.empty()) return std::nullopt;
+    return found.back();
+}
+
+bool footerHas(const selfvoy::MailNotice& mail, const std::string& part) {
+    return std::any_of(mail.footer.begin(), mail.footer.end(),
+                       [&](const std::string& line) { return line.find(part) != std::string::npos; });
+}
+
+// Последнее уведомление владельца вида kind (payload) или null.
+Json lastNotice(selfvoy::IDatabase& db, long long ownerId, const std::string& kind) {
+    for (const auto& item : db.listNotifications(ownerId, false, 200)) {
+        if (item.kind == kind) return item.payload;  // новые сверху
+    }
+    return Json();
+}
+
+}  // namespace packages_test
+
+// F5: предложения пакетов страницы — проверка полей, сохранение id при pageUpdate, вид гостя.
+TEST(packages_offers_validation_and_ids) {
+    using namespace packages_test;
+    Fixture fixture;
+    enablePayments(fixture, "");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "pk-offers-owner");
+    fixture.registerUser(owner, "pkoffers@example.com", "Ольга");
+    const auto code = [&](const Json& packages) {
+        return fixture.call(owner, "booking.pageCreate", offersPage("Пакеты", packages)).getString("code");
+    };
+    const auto one = [](const Json& item) {
+        Json list = Json::array();
+        list.push(item);
+        return list;
+    };
+    const std::string bad = "bad_request";
+    CHECK_EQ(code(Json("пять занятий")), bad);
+    Json six = Json::array();
+    for (int i = 0; i < 6; ++i) six.push(offer("Пакет " + std::to_string(i), 5, 100000));
+    CHECK_EQ(code(six), bad);
+    CHECK_EQ(code(one(offer("", 5, 100000))), bad);
+    CHECK_EQ(code(one(offer(std::string(81, 'a'), 5, 100000))), bad);
+    CHECK_EQ(code(one(offer("Две\nстроки", 5, 100000))), bad);
+    CHECK_EQ(code(one(offer("Пакет", 1, 100000))), bad);
+    CHECK_EQ(code(one(offer("Пакет", 101, 100000))), bad);
+    CHECK_EQ(code(one(offer("Пакет", 5, 0))), bad);
+    CHECK_EQ(code(one(offer("Пакет", 5, 100000001))), bad);
+    CHECK_EQ(code(one(offer("Пакет", 5, 100000, 6))), bad);
+    CHECK_EQ(code(one(offer("Пакет", 5, 100000, 366))), bad);
+    CHECK_EQ(code(one(Json("строка"))), bad);
+    Json withId = offer("Пакет", 5, 100000);
+    withId.set("id", Json(7LL));
+    CHECK_EQ(code(one(withId)), bad);  // у новой страницы нет прежних предложений
+    Json noSessions = offer("Пакет", 5, 100000);
+    noSessions.erase("sessions");
+    CHECK_EQ(code(one(noSessions)), bad);
+
+    Json offers = Json::array();
+    offers.push(offer("  5 занятий  ", 5, 1000000));
+    offers.push(offer("10 занятий", 10, 1800000, 180));
+    const Json created =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", offersPage("Пакеты", offers))).get("page");
+    const Json stored = created.get("packages");
+    CHECK_EQ(stored.size(), std::size_t(2));
+    CHECK(stored.at(0).getInt("id") == 1 && stored.at(1).getInt("id") == 2);
+    CHECK_EQ(stored.at(0).getString("title"), std::string("5 занятий"));
+    CHECK(stored.at(0).getInt("valid_days") == 90 && stored.at(1).getInt("valid_days") == 180);
+    CHECK(stored.at(0).getInt("sessions") == 5 && stored.at(0).getInt("price") == 1000000);
+    const long long pageId = created.getInt("id");
+
+    // Правка целым массивом: элемент с id сохраняет id, без id — новый (больше прежних).
+    Json update = Json::object();
+    update.set("page_id", Json(pageId));
+    Json kept = offer("10 занятий+", 10, 1900000);
+    kept.set("id", Json(2LL));
+    Json next = Json::array();
+    next.push(kept);
+    next.push(offer("3 занятия", 3, 500000));
+    update.set("packages", next);
+    const Json updated = integration::payloadOf(fixture.call(owner, "booking.pageUpdate", update)).get("page");
+    const Json after = updated.get("packages");
+    CHECK_EQ(after.size(), std::size_t(2));
+    CHECK(after.at(0).getInt("id") == 2 && after.at(0).getString("title") == "10 занятий+" &&
+          after.at(0).getInt("price") == 1900000);
+    CHECK_EQ(after.at(1).getInt("id"), 3LL);
+    // Удалённое предложение (id 1) больше не известно; повтор id — ошибка.
+    Json gone = offer("5 занятий", 5, 1000000);
+    gone.set("id", Json(1LL));
+    update.set("packages", one(gone));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", update).getString("code"), bad);
+    Json duplicates = Json::array();
+    duplicates.push(kept);
+    duplicates.push(kept);
+    update.set("packages", duplicates);
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", update).getString("code"), bad);
+    // Правка без packages их не трогает.
+    Json rename = Json::object();
+    rename.set("page_id", Json(pageId));
+    rename.set("title", Json("Абонементы"));
+    const Json renamed = integration::payloadOf(fixture.call(owner, "booking.pageUpdate", rename)).get("page");
+    CHECK_EQ(renamed.get("packages").size(), std::size_t(2));
+
+    // Гость видит предложения в booking.get.
+    auto guest = sockets.open(fixture, "pk-offers-guest");
+    const Json view =
+        integration::payloadOf(fixture.call(guest, "booking.get", slugPayload(created.getString("slug")))).get("page");
+    CHECK_EQ(view.get("packages").size(), std::size_t(2));
+    CHECK_EQ(view.get("packages").at(1).getString("title"), std::string("3 занятия"));
+
+    // Пустой массив — предложений нет.
+    update.set("packages", Json::array());
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "booking.pageUpdate", update)).get("page").get("packages").size(),
+             std::size_t(0));
+}
+
+// F5: при SELFVOY_PLANS_ENFORCED=1 непустой packages — только Pro; уже включённые можно править.
+TEST(packages_pro_gating_enforced) {
+    using namespace packages_test;
+    Fixture fixture;
+    enablePayments(fixture, "", true);
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "pk-pro-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "pkpro@example.com", "Пётр"));
+    Json offers = Json::array();
+    offers.push(offer("4 занятия", 4, 400000));
+    CHECK_EQ(fixture.call(owner, "booking.pageCreate", offersPage("Пакеты", offers)).getString("code"),
+             std::string("pro_required"));
+    Json plain = payPage("Без пакетов");
+    plain.set("packages", Json::array());  // пустой массив — бесплатно
+    const Json page = fixture.call(owner, "booking.pageCreate", plain);
+    CHECK_EQ(page.getString("type"), std::string("ok"));
+    Json enable = Json::object();
+    enable.set("page_id", Json(integration::payloadOf(page).get("page").getInt("id")));
+    enable.set("packages", offers);
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", enable).getString("code"), std::string("pro_required"));
+
+    CHECK(fixture.server->database().db().setUserPlanDays(ownerId, 30).ok);
+    CHECK_EQ(fixture.call(owner, "booking.pageCreate", offersPage("Пакеты", offers)).getString("type"), std::string("ok"));
+    const Json enabled = fixture.call(owner, "booking.pageUpdate", enable);
+    CHECK_EQ(enabled.getString("type"), std::string("ok"));
+    // Pro закончился: уже включённые пакеты можно править.
+    CHECK(fixture.server->database().db().setUserPlanDays(ownerId, 0).ok);
+    Json edited = integration::payloadOf(enabled).get("page").get("packages");
+    Json first = edited.at(0);
+    first.set("price", Json(450000LL));
+    Json list = Json::array();
+    list.push(first);
+    enable.set("packages", list);
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", enable).getString("type"), std::string("ok"));
+    selfvoy::plan::setEnforced(false);
+}
+
+// F5: покупка пакета при записи без способа оплаты (сразу active), запись по package_token,
+// остаток и «осталось N», чужая страница, второй получатель, возврат занятия до срока и
+// сгорание при поздней отмене, отмена владельцем, истечение valid_until (тик с подставленным now).
+TEST(packages_purchase_token_booking_return_and_expiry) {
+    using namespace packages_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    const std::time_t slotC = invite_test::future(5);   // позже cancel_hours (24 ч)
+    const std::time_t slotD = invite_test::future(78);
+    const std::time_t slotE = invite_test::future(102);
+    invite_test::FakeAi ai([&] { return slotsBody({slotA, slotB, slotC, slotD, slotE}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "pk-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "pkowner@example.com", "Ольга"));
+    auto& db = fixture.server->database().db();
+    auto& bookings = fixture.server->bookings();
+    Json offers = Json::array();
+    offers.push(offer("3 занятия", 3, 900000));
+    Json pageReq = offersPage("Тренировки", offers);
+    pageReq.set("cancel_hours", Json(24LL));
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageReq)).get("page");
+    const std::string slug = page.getString("slug");
+    const std::string other =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", payPage("Другая"))).get("page").getString("slug");
+    auto guest = sockets.open(fixture, "pk-guest");
+
+    // Ошибки запроса: и package_id, и package_token; неизвестный пакет; встреч больше, чем в пакете.
+    Json both = bookPayload(slug, slotA, "Мария");
+    both.set("package_id", Json(1LL));
+    both.set("package_token", Json(growth_test::newToken()));
+    CHECK_EQ(fixture.call(guest, "booking.book", both).getString("code"), std::string("bad_request"));
+    Json unknown = bookPayload(slug, slotA, "Мария");
+    unknown.set("package_id", Json(99LL));
+    CHECK_EQ(fixture.call(guest, "booking.book", unknown).getString("code"), std::string("bad_request"));
+    Json strangerToken = bookPayload(slug, slotA, "Мария");
+    strangerToken.set("package_token", Json(growth_test::newToken()));
+    CHECK_EQ(fixture.call(guest, "booking.book", strangerToken).getString("code"), std::string("not_found"));
+
+    // Покупка: страница без способа оплаты — пакет сразу active, запись списывает занятие.
+    const std::time_t before = std::time(nullptr);
+    Json buy = bookPayload(slug, slotA, "Мария");
+    buy.set("guest_email", Json("pk-maria@example.com"));
+    buy.set("cc_email", Json("pk-mama@example.com"));
+    buy.set("package_id", Json(1LL));
+    const Json bought = fixture.call(guest, "booking.book", buy);
+    CHECK_EQ(bought.getString("type"), std::string("ok"));
+    const Json boughtPayload = integration::payloadOf(bought);
+    const std::string packageToken = boughtPayload.getString("package_token");
+    CHECK_EQ(packageToken.size(), std::size_t(43));
+    CHECK_EQ(boughtPayload.getString("package_url"), "https://selfvoy.example.com/#/p/" + packageToken);
+    const Json pack = boughtPayload.get("package");
+    CHECK_EQ(pack.getString("status"), std::string("active"));
+    CHECK_EQ(pack.getInt("sessions_total"), 3LL);
+    CHECK_EQ(pack.getInt("sessions_left"), 2LL);
+    CHECK_EQ(pack.get("payment").getString("status"), std::string("pending"));  // отметит владелец
+    CHECK_EQ(pack.get("payment").getString("kind"), std::string("package"));
+    CHECK_EQ(pack.get("payment").getString("due_at"), std::string());
+    std::time_t until = 0;
+    CHECK(selfvoy::parseIsoUtc(pack.getString("valid_until"), until) && until >= before + 90 * 86400 &&
+          until <= std::time(nullptr) + 90 * 86400);
+    CHECK_EQ(boughtPayload.get("booking").getString("cc_email"), std::string("p***@example.com"));
+    CHECK(boughtPayload.get("booking").getBool("by_package"));
+    CHECK(boughtPayload.get("booking").get("payment").isNull());  // запись оплачена пакетом
+    auto purchase = db.findPackagePurchaseByToken(selfvoy::BookingManager::tokenHash(packageToken));
+    CHECK(purchase && purchase->sessionsUsed == 1 && purchase->ccEmail == "pk-mama@example.com" &&
+          purchase->offerId == 1 && purchase->price == 900000);
+    const long long packageId = purchase ? purchase->id : 0;
+    // Токен ссылки пакета — только sha256 и шифр (для писем).
+    CHECK(purchase && purchase->tokenEnc.find(packageToken) == std::string::npos &&
+          bookings.packageTokenOf(*purchase) == packageToken);
+    const long long bookingA =
+        db.findBookingByToken(selfvoy::BookingManager::tokenHash(boughtPayload.getString("token")))->id;
+    CHECK_EQ(db.findBooking(bookingA)->packageId, packageId);
+    const Json owned = integration::payloadOf(fixture.call(owner, "booking.list")).get("bookings");
+    CHECK(owned.size() == 1 && owned.at(0).getString("cc_email") == "pk-mama@example.com" &&
+          owned.at(0).getInt("package_id") == packageId);
+    CHECK_EQ(ownerNotices(db, ownerId, "package.purchased"), std::size_t(1));
+    // Письмо о записи — со ссылкой пакета; копия — второму получателю.
+    const auto createdMail = lastMail("pk-maria@example.com", "booking.created");
+    CHECK(createdMail && footerHas(*createdMail, "Абонемент «3 занятия»: 3 занятия, 9 000 ₽.") &&
+          footerHas(*createdMail, "https://selfvoy.example.com/#/p/" + packageToken) &&
+          footerHas(*createdMail, "Оплату пакета (9 000 ₽) примет организатор."));
+    CHECK_EQ(mailCount("pk-mama@example.com", "booking.created"), std::size_t(1));
+
+    // Гость открывает ссылку пакета.
+    const Json viewed = integration::payloadOf(fixture.call(guest, "package.get", tokenPayload(packageToken))).get("package");
+    CHECK_EQ(viewed.getString("title"), std::string("3 занятия"));
+    CHECK_EQ(viewed.getInt("sessions_left"), 2LL);
+    CHECK_EQ(viewed.getString("page_slug"), slug);
+    CHECK_EQ(viewed.getString("owner_name"), std::string("Ольга"));
+    CHECK(viewed.get("bookings").size() == 1 && viewed.get("bookings").at(0).getString("status") == "active");
+    CHECK(viewed.get("branding").getBool("show"));
+    CHECK_EQ(viewed.getString("cc_email"), std::string("p***@example.com"));
+    CHECK_EQ(fixture.call(guest, "package.get", tokenPayload(growth_test::newToken())).getString("code"),
+             std::string("not_found"));
+
+    // Запись по пакету: имя и адреса — из пакета; остаток 1 → «продлите» гостю и копии.
+    const auto byToken = [&](std::time_t at) {
+        Json payload = slugPayload(slug);
+        payload.set("start", Json(selfvoy::isoUtc(at)));
+        payload.set("package_token", Json(packageToken));
+        return fixture.call(guest, "booking.book", payload);
+    };
+    const Json bookedB = byToken(slotB);
+    CHECK_EQ(bookedB.getString("type"), std::string("ok"));
+    CHECK_EQ(integration::payloadOf(bookedB).get("booking").getString("guest_name"), std::string("Мария"));
+    CHECK_EQ(integration::payloadOf(bookedB).get("package").getInt("sessions_left"), 1LL);
+    const std::string tokenB = integration::payloadOf(bookedB).getString("token");
+    const auto storedB = db.findBookingByToken(selfvoy::BookingManager::tokenHash(tokenB));
+    CHECK(storedB && storedB->guestEmail == "pk-maria@example.com" && storedB->ccEmail == "pk-mama@example.com" &&
+          storedB->packageId == packageId);
+    const auto lowMail = lastMail("pk-maria@example.com", "package.low");
+    CHECK(lowMail && lowMail->subject == "Selfvoy: осталось 1 занятие по абонементу" &&
+          lowMail->lead == "Осталось 1 занятие — продлите абонемент: https://selfvoy.example.com/#/b/" + slug);
+    CHECK_EQ(mailCount("pk-mama@example.com", "package.low"), std::size_t(1));
+    CHECK_EQ(ownerNotices(db, ownerId, "package.low"), std::size_t(1));
+    CHECK_EQ(lastNotice(db, ownerId, "package.low").getInt("left"), 1LL);
+    CHECK_EQ(lastNotice(db, ownerId, "package.low").getInt("package_id"), packageId);
+    const auto createdB = lastMail("pk-maria@example.com", "booking.created");
+    CHECK(createdB && footerHas(*createdB, "Списано с абонемента «3 занятия»: осталось 1 из 3."));
+
+    // Чужая страница — нельзя.
+    Json elsewhere = slugPayload(other);
+    elsewhere.set("start", Json(selfvoy::isoUtc(slotD)));
+    elsewhere.set("package_token", Json(packageToken));
+    CHECK_EQ(fixture.call(guest, "booking.book", elsewhere).getString("code"), std::string("bad_request"));
+
+    // Последнее занятие → used (и ещё одно «осталось 0»); дальше — conflict.
+    const Json bookedC = byToken(slotC);
+    CHECK_EQ(bookedC.getString("type"), std::string("ok"));
+    CHECK_EQ(db.findPackagePurchase(packageId)->status, std::string("used"));
+    CHECK_EQ(ownerNotices(db, ownerId, "package.low"), std::size_t(2));
+    const Json refused = byToken(slotD);
+    CHECK_EQ(refused.getString("code"), std::string("conflict"));
+    CHECK_EQ(refused.getString("message"), std::string("занятия по абонементу закончились"));
+
+    // Поздняя отмена (до встречи меньше 24 ч) — занятие сгорает.
+    const std::string tokenC = integration::payloadOf(bookedC).getString("token");
+    CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(tokenC)).getString("type"), std::string("ok"));
+    auto stored = db.findPackagePurchase(packageId);
+    CHECK(stored && stored->sessionsUsed == 3 && stored->status == "used");
+    const auto lateMail = lastMail("pk-maria@example.com", "booking.cancelled");
+    CHECK(lateMail && footerHas(*lateMail, "занятие списано с абонемента"));
+    CHECK_EQ(mailCount("pk-mama@example.com", "booking.cancelled"), std::size_t(1));  // копия отмены
+    // Отмена до срока — занятие возвращается, пакет снова active.
+    CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(tokenB)).getString("type"), std::string("ok"));
+    stored = db.findPackagePurchase(packageId);
+    CHECK(stored && stored->sessionsUsed == 2 && stored->status == "active");
+    const auto returnMail = lastMail("pk-maria@example.com", "booking.cancelled");
+    CHECK(returnMail && footerHas(*returnMail, "Занятия возвращены на абонемент: 1."));
+    // Владелец отменяет запись A — занятие возвращается всегда.
+    Json ownerCancel = Json::object();
+    ownerCancel.set("booking_id", Json(bookingA));
+    CHECK_EQ(fixture.call(owner, "booking.ownerCancel", ownerCancel).getString("type"), std::string("ok"));
+    CHECK_EQ(db.findPackagePurchase(packageId)->sessionsUsed, 1);
+    const Json listedView = integration::payloadOf(fixture.call(guest, "package.get", tokenPayload(packageToken))).get("package");
+    CHECK_EQ(listedView.getInt("sessions_left"), 2LL);
+    CHECK_EQ(listedView.get("bookings").size(), std::size_t(3));
+
+    // Истечение: планировщик переводит active → expired по valid_until (подставленное now).
+    const std::time_t now = std::time(nullptr);
+    CHECK_EQ(bookings.packageTick(100, now + 89 * 86400), std::size_t(0));
+    CHECK_EQ(db.findPackagePurchase(packageId)->status, std::string("active"));
+    CHECK_EQ(bookings.packageTick(100, now + 91 * 86400), std::size_t(1));
+    CHECK_EQ(db.findPackagePurchase(packageId)->status, std::string("expired"));
+    CHECK_EQ(bookings.packageTick(100, now + 92 * 86400), std::size_t(0));
+    const Json expired = byToken(slotE);
+    CHECK_EQ(expired.getString("code"), std::string("conflict"));
+    CHECK_EQ(expired.getString("message"), std::string("срок действия абонемента истёк"));
+}
+
+// F5: покупка через ЮKassa — pending (POST /payments pk-<id>, возврат на #/p/<токен>?paid=1),
+// запись по неоплаченному пакету нельзя, succeeded → active (тик), неоплаченный к сроку →
+// покупка cancelled и запись отменена системой, оплата при package.get, возврат pr-<id>.
+TEST(packages_yookassa_purchase_paid_expired_refund) {
+    using namespace packages_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    const std::time_t slotC = invite_test::future(78);
+    const std::time_t slotD = invite_test::future(102);
+    invite_test::FakeAi ai([&] { return slotsBody({slotA, slotB, slotC, slotD}); });
+    Fixture fixture;
+    FakeYooKassa* fake = enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "pk-yk-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "pkykowner@example.com", "Ирина"));
+    auto& db = fixture.server->database().db();
+    auto& bookings = fixture.server->bookings();
+    CHECK_EQ(fixture.call(owner, "payments.connect", connectPayload(kShop, kSecret)).getString("type"), std::string("ok"));
+    Json offers = Json::array();
+    offers.push(offer("4 занятия", 4, 1200000));
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", offersPage("Йога", offers))).get("page");
+    const std::string slug = page.getString("slug");
+    auto guest = sockets.open(fixture, "pk-yk-guest");
+    const auto buy = [&](std::time_t at, const std::string& email) {
+        Json payload = bookPayload(slug, at, "Гость");
+        payload.set("guest_email", Json(email));
+        payload.set("package_id", Json(1LL));
+        return integration::payloadOf(fixture.call(guest, "booking.book", payload));
+    };
+    const Json boughtA = buy(slotA, "pk-yk-a@example.com");
+    const std::string tokenA = boughtA.getString("package_token");
+    const Json packA = boughtA.get("package");
+    CHECK_EQ(packA.getString("status"), std::string("pending"));
+    CHECK_EQ(packA.getString("valid_until"), std::string());
+    CHECK_EQ(packA.get("payment").getString("method"), std::string("yookassa"));
+    CHECK_EQ(packA.get("payment").getInt("amount"), 1200000LL);
+    CHECK_EQ(packA.get("payment").getString("action_url"), std::string("https://yoomoney.example/checkout/pay-1"));
+    CHECK(!packA.get("payment").contains("provider_id"));
+    const long long idA = db.findPackagePurchaseByToken(selfvoy::BookingManager::tokenHash(tokenA))->id;
+    const auto created = fake->of("POST", "/payments");
+    CHECK_EQ(created.size(), std::size_t(1));
+    if (!created.empty()) {
+        CHECK_EQ(created.front().headers.at("Idempotence-Key"), "pk-" + std::to_string(idA));
+        CHECK_EQ(created.front().body.get("amount").getString("value"), std::string("12000.00"));
+        CHECK_EQ(created.front().body.get("confirmation").getString("return_url"),
+                 "https://selfvoy.example.com/#/p/" + tokenA + "?paid=1");
+        CHECK_EQ(created.front().body.get("metadata").getString("package_id"), std::to_string(idA));
+        CHECK_EQ(created.front().body.getString("description"), std::string("Йога: 4 занятия"));
+    }
+    CHECK_EQ(db.findPackagePurchase(idA)->payment.getString("provider_id"), std::string("pay-1"));
+    const auto mailA = lastMail("pk-yk-a@example.com", "booking.created");
+    CHECK(mailA && footerHas(*mailA, "Оплатить: https://yoomoney.example/checkout/pay-1") &&
+          footerHas(*mailA, "Оплата пакета: 12 000 ₽ — оплатите в течение") &&
+          footerHas(*mailA, "Срок действия — 90 дней с момента оплаты."));
+    // Пока не оплачен — по пакету не записаться.
+    Json early = slugPayload(slug);
+    early.set("start", Json(selfvoy::isoUtc(slotB)));
+    early.set("package_token", Json(tokenA));
+    const Json notPaid = fixture.call(guest, "booking.book", early);
+    CHECK_EQ(notPaid.getString("code"), std::string("conflict"));
+    CHECK_EQ(notPaid.getString("message"), std::string("абонемент ещё не оплачен"));
+
+    // Тик: pending — опрос; succeeded → active, срок действия — с момента оплаты.
+    const std::time_t now = std::time(nullptr);
+    CHECK_EQ(bookings.packageTick(100, now), std::size_t(1));
+    CHECK_EQ(fake->of("GET", "/payments/pay-1").size(), std::size_t(1));
+    CHECK_EQ(bookings.packageTick(100, now + 10), std::size_t(1));
+    CHECK_EQ(fake->of("GET", "/payments/pay-1").size(), std::size_t(1));  // не чаще раза в 30 с
+    fake->set("pay-1", "succeeded");
+    CHECK_EQ(bookings.packageTick(100, now + 31), std::size_t(1));
+    auto storedA = db.findPackagePurchase(idA);
+    CHECK(storedA && storedA->status == "active" && storedA->payment.getString("status") == "paid" &&
+          storedA->validUntil == selfvoy::isoUtc(now + 31 + 90 * 86400));
+    CHECK_EQ(ownerNotices(db, ownerId, "package.payment", "paid"), std::size_t(1));
+    const auto paidMail = lastMail("pk-yk-a@example.com", "package.paid");
+    CHECK(paidMail && paidMail->linkUrl == "https://selfvoy.example.com/#/p/" + tokenA);
+    CHECK_EQ(fixture.call(guest, "booking.book", early).getString("type"), std::string("ok"));
+    CHECK_EQ(db.findPackagePurchase(idA)->sessionsUsed, 2);
+    // «Я оплатил(а)» — только для оплаты по ссылке.
+    CHECK_EQ(fixture.call(guest, "package.paymentClaim", tokenPayload(tokenA)).getString("code"),
+             std::string("bad_request"));
+
+    // Не оплачен к сроку → покупка cancelled, её запись отменена системой.
+    const Json boughtC = buy(slotC, "pk-yk-c@example.com");
+    const std::string tokenC = boughtC.getString("package_token");
+    const long long idC = db.findPackagePurchaseByToken(selfvoy::BookingManager::tokenHash(tokenC))->id;
+    const long long bookingC = db.findBookingByToken(selfvoy::BookingManager::tokenHash(boughtC.getString("token")))->id;
+    CHECK_EQ(bookings.packageTick(100, now + 2 * 3600), std::size_t(1));
+    auto storedC = db.findPackagePurchase(idC);
+    CHECK(storedC && storedC->status == "cancelled" && storedC->payment.getString("status") == "expired");
+    auto cancelledC = db.findBooking(bookingC);
+    CHECK(cancelledC && cancelledC->status == "cancelled" && cancelledC->cancelledBy == "system");
+    CHECK(db.listBookingReminders(bookingC).empty());
+    CHECK_EQ(ownerNotices(db, ownerId, "package.payment", "expired"), std::size_t(1));
+    CHECK_EQ(lastNotice(db, ownerId, "booking.cancelled").getString("cancelled_by"), std::string("system"));
+    const auto expiredMail = lastMail("pk-yk-c@example.com", "package.payment_expired");
+    CHECK(expiredMail && expiredMail->linkUrl == "https://selfvoy.example.com/#/b/" + slug);
+    CHECK_EQ(bookings.packageTick(100, now + 3 * 3600), std::size_t(0));  // повторно не отменяется
+
+    // Оплата видна при открытии ссылки пакета (гость вернулся с ?paid=1); владелец отменил
+    // единственную запись (занятие вернулось) и сам пакет — возврат всей суммы pr-<id>.
+    const Json boughtD = buy(slotD, "pk-yk-d@example.com");
+    const std::string tokenD = boughtD.getString("package_token");
+    const long long idD = db.findPackagePurchaseByToken(selfvoy::BookingManager::tokenHash(tokenD))->id;
+    fake->set("pay-3", "succeeded");
+    const Json openedD = integration::payloadOf(fixture.call(guest, "package.get", tokenPayload(tokenD))).get("package");
+    CHECK_EQ(openedD.getString("status"), std::string("active"));
+    CHECK_EQ(openedD.get("payment").getString("status"), std::string("paid"));
+    Json ownerCancel = Json::object();
+    ownerCancel.set("booking_id",
+                    Json(db.findBookingByToken(selfvoy::BookingManager::tokenHash(boughtD.getString("token")))->id));
+    CHECK_EQ(fixture.call(owner, "booking.ownerCancel", ownerCancel).getString("type"), std::string("ok"));
+    CHECK_EQ(db.findPackagePurchase(idD)->sessionsUsed, 0);
+    const Json cancelledD = integration::payloadOf(fixture.call(owner, "package.cancel", packageIdPayload(idD))).get("package");
+    CHECK_EQ(cancelledD.getString("status"), std::string("cancelled"));
+    CHECK_EQ(cancelledD.get("payment").getString("status"), std::string("refunded"));
+    const auto refunds = fake->of("POST", "/refunds");
+    CHECK(refunds.size() == 1 && refunds.back().headers.at("Idempotence-Key") == "pr-" + std::to_string(idD) &&
+          refunds.back().body.getString("payment_id") == "pay-3");
+    CHECK_EQ(ownerNotices(db, ownerId, "package.payment", "refunded"), std::size_t(1));
+    // Пакет с использованными занятиями — без автоматического возврата.
+    CHECK_EQ(fixture.call(owner, "package.cancel", packageIdPayload(idA)).getString("type"), std::string("ok"));
+    CHECK_EQ(fake->of("POST", "/refunds").size(), std::size_t(1));
+}
+
+// F5: оплата пакета по ссылке («Я оплатил(а)» → active), продажа вне сайта (package.issue),
+// корректировка остатка, отметка оплаты владельцем, список и отмена пакета.
+TEST(packages_claim_issue_adjust_cancel_payment_set) {
+    using namespace packages_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    invite_test::FakeAi ai([&] { return slotsBody({slotA, slotB}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "pk-iss-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "pkissowner@example.com", "Анна"));
+    auto& db = fixture.server->database().db();
+    Json offers = Json::array();
+    offers.push(offer("2 занятия", 2, 500000, 30));
+    Json pageReq = offersPage("Массаж", offers);
+    pageReq.set("payment_url", Json("https://pay.example/anna"));
+    pageReq.set("payment_note", Json("СБП +7 900 000-00-00"));
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageReq)).get("page");
+    const long long pageId = page.getInt("id");
+    auto guest = sockets.open(fixture, "pk-iss-guest");
+
+    // Покупка с оплатой по ссылке: pending до «Я оплатил(а)».
+    Json buy = bookPayload(page.getString("slug"), slotA, "Вера");
+    buy.set("guest_email", Json("pk-vera@example.com"));
+    buy.set("package_id", Json(1LL));
+    const Json bought = integration::payloadOf(fixture.call(guest, "booking.book", buy));
+    const std::string token = bought.getString("package_token");
+    CHECK_EQ(bought.get("package").getString("status"), std::string("pending"));
+    CHECK_EQ(bought.get("package").get("payment").getString("method"), std::string("link"));
+    CHECK_EQ(bought.get("package").get("payment").getString("action_url"), std::string("https://pay.example/anna"));
+    const auto mail = lastMail("pk-vera@example.com", "booking.created");
+    CHECK(mail && footerHas(*mail, "Как оплатить: СБП +7 900 000-00-00") &&
+          footerHas(*mail, "После оплаты нажмите «Я оплатил(а)» на странице абонемента."));
+    const Json claimed = integration::payloadOf(fixture.call(guest, "package.paymentClaim", tokenPayload(token))).get("package");
+    CHECK_EQ(claimed.getString("status"), std::string("active"));
+    CHECK_EQ(claimed.get("payment").getString("status"), std::string("claimed"));
+    CHECK(!claimed.getString("valid_until").empty());
+    CHECK_EQ(fixture.call(guest, "package.paymentClaim", tokenPayload(token)).getString("type"), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "package.payment", "claimed"), std::size_t(1));
+    CHECK_EQ(ownerNotices(db, ownerId, "package.low"), std::size_t(1));  // активирован с остатком 1
+    CHECK_EQ(fixture.call(guest, "package.paymentClaim", tokenPayload(growth_test::newToken())).getString("code"),
+             std::string("not_found"));
+    // Неоплаченный по ссылке пакет claimed не истекает.
+    CHECK_EQ(fixture.server->bookings().packageTick(100, std::time(nullptr) + 3 * 3600), std::size_t(0));
+
+    // package.issue — проверка полей.
+    const auto issue = [&](const Json& payload) { return fixture.call(owner, "package.issue", payload); };
+    Json base = Json::object();
+    base.set("page_id", Json(pageId));
+    base.set("guest_name", Json("Олег"));
+    base.set("guest_email", Json("pk-oleg@example.com"));
+    base.set("cc_email", Json("pk-oleg-cc@example.com"));
+    Json wrong = base;
+    wrong.set("page_id", Json(999999LL));
+    wrong.set("offer_id", Json(1LL));
+    CHECK_EQ(issue(wrong).getString("code"), std::string("not_found"));
+    wrong = base;
+    wrong.set("offer_id", Json(9LL));
+    CHECK_EQ(issue(wrong).getString("code"), std::string("bad_request"));
+    wrong = base;
+    wrong.set("title", Json("Своё"));
+    wrong.set("sessions", Json(0LL));
+    CHECK_EQ(issue(wrong).getString("code"), std::string("bad_request"));
+    wrong = base;
+    wrong.set("offer_id", Json(1LL));
+    wrong.set("guest_name", Json(""));
+    CHECK_EQ(issue(wrong).getString("code"), std::string("bad_request"));
+    wrong = base;
+    wrong.set("offer_id", Json(1LL));
+    wrong.set("cc_email", Json("PK-OLEG@example.com"));
+    CHECK_EQ(issue(wrong).getString("code"), std::string("bad_request"));
+    wrong = base;
+    wrong.set("offer_id", Json(1LL));
+    wrong.set("paid", Json("да"));
+    CHECK_EQ(issue(wrong).getString("code"), std::string("bad_request"));
+    auto stranger = sockets.open(fixture, "pk-iss-stranger");
+    fixture.registerUser(stranger, "pkissstranger@example.com", "Чужой");
+    Json fromOffer = base;
+    fromOffer.set("offer_id", Json(1LL));
+    fromOffer.set("paid", Json(true));
+    CHECK_EQ(fixture.call(stranger, "package.issue", fromOffer).getString("code"), std::string("not_found"));
+
+    // Выдача по предложению, оплачено: пакет сразу active, письмо гостю и копия — со ссылкой.
+    const Json issued = integration::payloadOf(issue(fromOffer));
+    const Json issuedPack = issued.get("package");
+    const std::string issuedToken = issued.getString("token");
+    CHECK_EQ(issuedPack.getString("status"), std::string("active"));
+    CHECK_EQ(issuedPack.getInt("offer_id"), 1LL);
+    CHECK_EQ(issuedPack.getInt("sessions_left"), 2LL);
+    CHECK_EQ(issuedPack.getInt("valid_days"), 30LL);
+    CHECK_EQ(issuedPack.get("payment").getString("status"), std::string("paid"));
+    CHECK_EQ(issuedPack.getString("cc_email"), std::string("pk-oleg-cc@example.com"));
+    CHECK_EQ(issued.getString("url"), "https://selfvoy.example.com/#/p/" + issuedToken);
+    const auto issuedMail = lastMail("pk-oleg@example.com", "package.issued");
+    CHECK(issuedMail && issuedMail->linkUrl == issued.getString("url") &&
+          issuedMail->subject == "Selfvoy: ваш абонемент «2 занятия»");
+    CHECK_EQ(mailCount("pk-oleg-cc@example.com", "package.issued"), std::size_t(1));
+    // Своё название и число занятий: без цены — без оплаты; с ценой и без paid — ждёт оплату.
+    Json custom = base;
+    custom.erase("cc_email");
+    custom.set("title", Json("Индивидуально"));
+    custom.set("sessions", Json(4LL));
+    const Json free = integration::payloadOf(issue(custom)).get("package");
+    CHECK(free.get("payment").isNull() && free.getInt("sessions_total") == 4 && free.getInt("offer_id") == 0 &&
+          free.getInt("valid_days") == 90);
+    custom.set("price", Json(300000LL));
+    const Json unpaid = integration::payloadOf(issue(custom)).get("package");
+    CHECK_EQ(unpaid.get("payment").getString("status"), std::string("pending"));
+    CHECK_EQ(unpaid.getString("status"), std::string("active"));
+
+    // package.adjust — корректировка остатка.
+    const long long freeId = free.getInt("id");
+    const auto adjust = [&](long long id, long long delta) {
+        Json payload = packageIdPayload(id);
+        payload.set("delta", Json(delta));
+        return fixture.call(owner, "package.adjust", payload);
+    };
+    CHECK_EQ(adjust(freeId, 0).getString("code"), std::string("bad_request"));
+    CHECK_EQ(adjust(freeId, 101).getString("code"), std::string("bad_request"));
+    CHECK_EQ(adjust(freeId, -4).getString("code"), std::string("bad_request"));  // меньше 1 занятия
+    CHECK_EQ(integration::payloadOf(adjust(freeId, 3)).get("package").getInt("sessions_left"), 7LL);
+    CHECK_EQ(adjust(freeId, -7).getString("code"), std::string("bad_request"));
+    CHECK_EQ(integration::payloadOf(adjust(freeId, -6)).get("package").getInt("sessions_left"), 1LL);
+    CHECK_EQ(db.findPackagePurchase(freeId)->sessionsTotal, 1);
+    Json strangerAdjust = packageIdPayload(freeId);
+    strangerAdjust.set("delta", Json(1LL));
+    CHECK_EQ(fixture.call(stranger, "package.adjust", strangerAdjust).getString("code"), std::string("not_found"));
+    // Купленный пакет (1 занятие использовано): убрать больше остатка нельзя; −1 → used.
+    const long long boughtId = db.findPackagePurchaseByToken(selfvoy::BookingManager::tokenHash(token))->id;
+    CHECK_EQ(adjust(boughtId, -2).getString("code"), std::string("bad_request"));
+    CHECK_EQ(integration::payloadOf(adjust(boughtId, -1)).get("package").getString("status"), std::string("used"));
+    CHECK_EQ(integration::payloadOf(adjust(boughtId, 2)).get("package").getString("status"), std::string("active"));
+
+    // package.paymentSet: paid — гостю «оплата получена»; неверный статус; пакет без оплаты.
+    const long long unpaidId = unpaid.getInt("id");
+    Json set = packageIdPayload(unpaidId);
+    set.set("status", Json("paid"));
+    const Json paid = integration::payloadOf(fixture.call(owner, "package.paymentSet", set)).get("package");
+    CHECK(paid.get("payment").getString("status") == "paid" && !paid.get("payment").getString("paid_at").empty());
+    CHECK_EQ(mailCount("pk-oleg@example.com", "package.paid"), std::size_t(1));
+    CHECK_EQ(ownerNotices(db, ownerId, "package.payment", "paid"), std::size_t(0));  // сам отметил
+    set.set("status", Json("pending"));
+    CHECK_EQ(fixture.call(owner, "package.paymentSet", set).getString("code"), std::string("bad_request"));
+    Json freeSet = packageIdPayload(freeId);
+    freeSet.set("status", Json("paid"));
+    CHECK_EQ(fixture.call(owner, "package.paymentSet", freeSet).getString("code"), std::string("bad_request"));
+    set.set("status", Json("refunded"));
+    CHECK(!integration::payloadOf(fixture.call(owner, "package.paymentSet", set)).get("package").get("payment")
+               .getString("refunded_at").empty());
+
+    // package.list: все, по статусу, по странице; неверный статус.
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "package.list")).get("packages").size(), std::size_t(4));
+    Json filter = Json::object();
+    filter.set("status", Json("active"));
+    filter.set("page_id", Json(pageId));
+    const Json active = integration::payloadOf(fixture.call(owner, "package.list", filter)).get("packages");
+    CHECK_EQ(active.size(), std::size_t(4));
+    CHECK_EQ(active.at(0).getString("page_title"), std::string("Массаж"));
+    filter.set("status", Json("lost"));
+    CHECK_EQ(fixture.call(owner, "package.list", filter).getString("code"), std::string("bad_request"));
+    CHECK_EQ(integration::payloadOf(fixture.call(stranger, "package.list")).get("packages").size(), std::size_t(0));
+
+    // package.cancel: по пакету больше не записаться, корректировать нельзя, повтор — conflict.
+    const long long issuedId = issuedPack.getInt("id");
+    CHECK_EQ(fixture.call(stranger, "package.cancel", packageIdPayload(issuedId)).getString("code"),
+             std::string("not_found"));
+    const Json cancelled = integration::payloadOf(fixture.call(owner, "package.cancel", packageIdPayload(issuedId)));
+    CHECK_EQ(cancelled.get("package").getString("status"), std::string("cancelled"));
+    CHECK_EQ(mailCount("pk-oleg@example.com", "package.cancelled"), std::size_t(1));
+    CHECK_EQ(fixture.call(owner, "package.cancel", packageIdPayload(issuedId)).getString("code"), std::string("conflict"));
+    CHECK_EQ(adjust(issuedId, 1).getString("code"), std::string("conflict"));
+    Json byCancelled = slugPayload(page.getString("slug"));
+    byCancelled.set("start", Json(selfvoy::isoUtc(slotB)));
+    byCancelled.set("package_token", Json(issuedToken));
+    CHECK_EQ(fixture.call(guest, "booking.book", byCancelled).getString("message"), std::string("абонемент отменён"));
+    const Json guestView = integration::payloadOf(fixture.call(guest, "package.get", tokenPayload(issuedToken))).get("package");
+    CHECK_EQ(guestView.getString("status"), std::string("cancelled"));
+}
+
+// F5: второй получатель (cc_email) — проверка, письма о записи, напоминания и отмене,
+// свой лимит писем на адрес, маска в виде гостя.
+TEST(cc_email_notices_limit_and_mask) {
+    using namespace packages_test;
+    std::vector<std::time_t> slots;
+    for (int k = 0; k < 10; ++k) slots.push_back(invite_test::future(30 + 12 * k));
+    invite_test::FakeAi ai([&] { return slotsBody(slots); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "cc-owner");
+    fixture.registerUser(owner, "ccowner@example.com", "Ольга");
+    auto& db = fixture.server->database().db();
+    const std::string slug =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", payPage("Репетитор"))).get("page").getString("slug");
+    const auto book = [&](int index, const std::string& guestEmail, const std::string& cc) {
+        auto guest = openFrom(fixture, sockets, "cc-guest-" + std::to_string(index),
+                              "127.0.3." + std::to_string(index + 1) + ":5000");
+        Json payload = bookPayload(slug, slots[static_cast<std::size_t>(index)], "Ученик");
+        payload.set("guest_email", Json(guestEmail));
+        if (!cc.empty()) payload.set("cc_email", Json(cc));
+        return fixture.call(guest, "booking.book", payload);
+    };
+    CHECK_EQ(book(0, "cc-g0@example.com", "не адрес").getString("code"), std::string("bad_request"));
+    CHECK_EQ(book(0, "cc-g0@example.com", "CC-G0@example.com").getString("code"), std::string("bad_request"));
+    CHECK_EQ(book(0, "cc-g0@example.com", "x@" + std::string(260, 'a') + ".ru").getString("code"),
+             std::string("bad_request"));
+
+    const std::string cc = "Parent.CC@Example.com";
+    const Json first = book(0, "cc-g0@example.com", cc);
+    CHECK_EQ(first.getString("type"), std::string("ok"));
+    const std::string token = integration::payloadOf(first).getString("token");
+    CHECK_EQ(integration::payloadOf(first).get("booking").getString("cc_email"), std::string("P***@Example.com"));
+    auto guest = sockets.open(fixture, "cc-manage");
+    const Json managed = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(token))).get("booking");
+    CHECK_EQ(managed.getString("cc_email"), std::string("P***@Example.com"));
+    CHECK(!managed.getBool("by_package", true));
+    const auto copy = lastMail(cc, "booking.created");
+    CHECK(copy && !copy->linkUrl.empty() && copy->linkUrl.find("/#/m/" + token) != std::string::npos);
+    CHECK_EQ(db.findBookingByToken(selfvoy::BookingManager::tokenHash(token))->ccEmail, cc);
+
+    // Напоминание за сутки — и второму получателю.
+    CHECK_EQ(fixture.server->bookings().reminderTick(100, std::time(nullptr) + 7 * 3600), std::size_t(1));
+    CHECK_EQ(mailCount(cc, "booking.reminder"), std::size_t(1));
+    CHECK_EQ(mailCount("cc-g0@example.com", "booking.reminder"), std::size_t(1));
+    // Отмена — копия тоже.
+    CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(token)).getString("type"), std::string("ok"));
+    CHECK_EQ(mailCount(cc, "booking.cancelled"), std::size_t(1));
+
+    // Свой лимит: 10 писем в час на адрес (ключ — в нижнем регистре). У копии уже 3 письма;
+    // ещё 7 записей — 10, дальше копия не уходит, а гость своё письмо получает.
+    for (int i = 1; i <= 7; ++i) {
+        CHECK_EQ(book(i, "cc-g" + std::to_string(i) + "@example.com", "parent.cc@example.com").getString("type"),
+                 std::string("ok"));
+    }
+    CHECK_EQ(mailCount(cc, "booking.created"), std::size_t(8));
+    CHECK_EQ(book(8, "cc-g8@example.com", "parent.cc@example.com").getString("type"), std::string("ok"));
+    CHECK_EQ(mailCount(cc, "booking.created"), std::size_t(8));
+    CHECK_EQ(mailCount("cc-g8@example.com", "booking.created"), std::size_t(1));
+
+    // Маска: первый символ локальной части (UTF-8 — целиком).
+    CHECK_EQ(selfvoy::BookingManager::maskEmail("mama@example.com"), std::string("m***@example.com"));
+    CHECK_EQ(selfvoy::BookingManager::maskEmail("ю@почта.рф"), std::string("ю***@почта.рф"));
+    CHECK_EQ(selfvoy::BookingManager::maskEmail(""), std::string(""));
+}
+
+// PostgreSQL (S2b): предложения страницы, покупки пакетов, cc_email и package_id записи.
+TEST(pg_packages_methods) {
+    const char* url = std::getenv("SELFVOY_TEST_PG_URL");
+    if (url == nullptr || *url == '\0') {
+        std::cout << "  (пропущен: SELFVOY_TEST_PG_URL не задан)\n";
+        return;
+    }
+    auto db = selfvoy::makePostgresDatabase(url);
+    std::string error;
+    CHECK(db && db->connect(error));
+    if (!db) return;
+    long long owner = 0;
+    const std::string suffix = selfvoy::crypto::randomHex(4);
+    CHECK(db->createUser("pg-pkg-" + suffix + "@example.com", "argon2id$x", "Пакеты", owner).ok);
+    selfvoy::BookingPageRecord page;
+    page.ownerId = owner;
+    page.slug = "pkg" + suffix + "00";
+    page.slug.resize(10, '0');
+    page.title = "Пакеты";
+    Json offers = Json::array();
+    Json offer = Json::object();
+    offer.set("id", Json(1LL));
+    offer.set("title", Json("5 занятий"));
+    offer.set("sessions", Json(5LL));
+    offer.set("price", Json(1000000LL));
+    offer.set("valid_days", Json(90LL));
+    offers.push(offer);
+    page.packages = offers;
+    long long pageId = 0;
+    CHECK(db->createBookingPage(page, pageId).ok);
+    auto stored = db->findBookingPage(pageId);
+    CHECK(stored && stored->packages.size() == 1 && stored->packages.at(0).getString("title") == "5 занятий");
+    if (stored) {
+        stored->packages = Json::array();
+        CHECK(db->updateBookingPage(*stored).ok);
+        CHECK_EQ(db->findBookingPage(pageId)->packages.size(), std::size_t(0));
+    }
+
+    selfvoy::PackagePurchaseRecord purchase;
+    purchase.ownerId = owner;
+    purchase.pageId = pageId;
+    purchase.offerId = 1;
+    purchase.title = "5 занятий";
+    purchase.sessionsTotal = 5;
+    purchase.sessionsUsed = 1;
+    purchase.validDays = 30;
+    purchase.price = 1000000;
+    purchase.currency = "EUR";
+    purchase.status = "pending";
+    Json payment = Json::object();
+    payment.set("status", Json("pending"));
+    payment.set("due_at", Json("2000-01-01T00:00:00Z"));
+    purchase.payment = payment;
+    purchase.guestName = "Гость";
+    purchase.guestEmail = "g@example.com";
+    purchase.ccEmail = "cc@example.com";
+    purchase.tokenHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+    purchase.tokenEnc = "sealed";
+    long long packageId = 0;
+    CHECK(db->createPackagePurchase(purchase, packageId).ok);
+    CHECK(!db->createPackagePurchase(purchase, packageId).ok || packageId == 0);  // token_hash UNIQUE
+    packageId = 0;
+    for (const auto& item : db->listPackagePurchases(owner, 0, "", 10)) packageId = item.id;
+    auto found = db->findPackagePurchase(packageId);
+    CHECK(found && found->title == "5 занятий" && found->sessionsTotal == 5 && found->sessionsUsed == 1 &&
+          found->validDays == 30 && found->currency == "EUR" && found->status == "pending" &&
+          found->payment.getString("status") == "pending" && found->ccEmail == "cc@example.com" &&
+          found->tokenEnc == "sealed" && found->validUntil.empty() && !found->createdAt.empty());
+    CHECK(db->findPackagePurchaseByToken(purchase.tokenHash).has_value());
+    bool pending = false;
+    for (const auto& item : db->listPendingPackagePurchases(1000)) pending = pending || item.id == packageId;
+    CHECK(pending);
+    if (found) {
+        found->status = "active";
+        found->validUntil = "2001-01-01T00:00:00Z";
+        found->sessionsTotal = 6;
+        found->sessionsUsed = 2;
+        found->payment = Json();
+        CHECK(db->updatePackagePurchase(*found).ok);
+        const auto updated = db->findPackagePurchase(packageId);
+        CHECK(updated && updated->status == "active" && updated->validUntil == "2001-01-01T00:00:00Z" &&
+              updated->sessionsTotal == 6 && updated->sessionsUsed == 2 && updated->payment.isNull());
+        bool due = false;
+        for (const auto& item : db->listExpiredPackagePurchases("2002-01-01T00:00:00Z", 1000)) due = due || item.id == packageId;
+        CHECK(due);
+        for (const auto& item : db->listExpiredPackagePurchases("2000-06-01T00:00:00Z", 1000)) CHECK(item.id != packageId);
+        found->status = "lost";  // CHECK в схеме
+        CHECK(!db->updatePackagePurchase(*found).ok);
+    }
+    CHECK_EQ(db->listPackagePurchases(owner, pageId, "active", 10).size(), std::size_t(1));
+    CHECK_EQ(db->listPackagePurchases(owner, pageId, "used", 10).size(), std::size_t(0));
+
+    selfvoy::BookingRecord booking;
+    booking.pageId = pageId;
+    booking.ownerId = owner;
+    booking.manageHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+    booking.guestName = "Гость";
+    booking.ccEmail = "copy@example.com";
+    booking.packageId = packageId;
+    long long bookingId = 0;
+    CHECK(db->createBooking(booking, bookingId).ok);
+    const auto withPackage = db->findBooking(bookingId);
+    CHECK(withPackage && withPackage->ccEmail == "copy@example.com" && withPackage->packageId == packageId);
+    CHECK_EQ(db->listBookingsByPackage(packageId, 10).size(), std::size_t(1));
+    selfvoy::BookingRecord plainBooking = booking;
+    plainBooking.manageHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+    plainBooking.ccEmail.clear();
+    plainBooking.packageId = 0;
+    long long plainId = 0;
+    CHECK(db->createBooking(plainBooking, plainId).ok);
+    CHECK(db->findBooking(plainId) && db->findBooking(plainId)->packageId == 0);
+}

@@ -22,9 +22,12 @@
 #include "selfvoy/session.h"
 #include "selfvoy/slotspost.h"
 #include "selfvoy/telegrambot.h"
+#include "bookingutil.h"
 #include "notificationsmanager.h"
 
 namespace selfvoy {
+
+using namespace bookingutil;
 
 namespace {
 
@@ -36,42 +39,6 @@ constexpr int kWeekSec = 7 * 24 * 3600;
 constexpr int kAiPerDay = 8;     // кандидатов в день от AI
 constexpr int kAiMaxSlots = 120;
 constexpr int kCacheSeconds = 60;
-
-std::string trim(const std::string& value) {
-    const std::size_t begin = value.find_first_not_of(" \t\r\n");
-    if (begin == std::string::npos) return "";
-    const std::size_t end = value.find_last_not_of(" \t\r\n");
-    return value.substr(begin, end - begin + 1);
-}
-
-// Длина в символах UTF-8 (продолжающие байты 10xxxxxx не считаются).
-std::size_t utf8Length(const std::string& value) {
-    std::size_t count = 0;
-    for (const unsigned char ch : value) {
-        if ((ch & 0xC0) != 0x80) ++count;
-    }
-    return count;
-}
-
-bool validText(const std::string& value, std::size_t maxChars, bool multiline) {
-    if (utf8Length(value) > maxChars) return false;
-    for (const unsigned char ch : value) {
-        if (ch == 0x7F) return false;
-        if (ch < 0x20 && !(multiline && (ch == '\n' || ch == '\r' || ch == '\t'))) return false;
-    }
-    return true;
-}
-
-bool plausibleEmail(const std::string& email) {
-    if (email.size() < 3 || email.size() > 254) return false;
-    const std::size_t at = email.find('@');
-    if (at == std::string::npos || at == 0 || at + 1 >= email.size()) return false;
-    if (email.find('@', at + 1) != std::string::npos) return false;
-    for (const unsigned char ch : email) {
-        if (ch <= 0x20 || ch == 0x7F || ch == '<' || ch == '>' || ch == '"' || ch == ',' || ch == ';') return false;
-    }
-    return true;
-}
 
 bool validDay(const std::string& day) {
     if (day.size() != 10 || day[4] != '-' || day[7] != '-') return false;
@@ -139,17 +106,6 @@ std::string addDays(const std::string& day, int days) {
     return isoUtc(base + static_cast<std::time_t>(days) * 86400).substr(0, 10);
 }
 
-// Числовое поле payload: отсутствует → fallback; не целое или вне [min, max] → false.
-bool intField(const Json& payload, const std::string& key, long long min, long long max, long long& out) {
-    if (!payload.contains(key)) return true;
-    const Json value = payload.get(key);
-    if (!value.isNumber()) return false;
-    const double number = value.asDouble();
-    if (number != static_cast<double>(static_cast<long long>(number))) return false;
-    out = static_cast<long long>(number);
-    return out >= min && out <= max;
-}
-
 bool isFree(const BookingManager::Busy& busy, std::time_t start, std::time_t end) {
     return std::none_of(busy.begin(), busy.end(),
                         [&](const auto& interval) { return start < interval.second && interval.first < end; });
@@ -204,18 +160,6 @@ bool validPaymentUrl(const std::string& url) {
     });
 }
 
-// Первые maxChars символов UTF-8 (без разрыва многобайтового символа).
-std::string utf8Prefix(const std::string& value, std::size_t maxChars) {
-    std::size_t chars = 0;
-    for (std::size_t i = 0; i < value.size(); ++i) {
-        if ((static_cast<unsigned char>(value[i]) & 0xC0) != 0x80) {
-            if (chars == maxChars) return value.substr(0, i);
-            ++chars;
-        }
-    }
-    return value;
-}
-
 std::string lateMessage(const BookingPageRecord& page) {
     return "до встречи меньше " + std::to_string(page.cancelHours) + " ч — свяжитесь со специалистом";
 }
@@ -227,16 +171,6 @@ Json policyJson(const BookingPageRecord& page) {
     json.set("late_cancel", Json(page.lateCancel));
     json.set("text", Json(page.policyText));
     return json;
-}
-
-std::string moneyOf(const Json& payment) {
-    return slotspost::moneyLabel(payment.getInt("amount"), payment.getString("currency", "RUB"));
-}
-
-Json withStatus(const Json& payment, const std::string& status) {
-    Json updated = payment;
-    updated.set("status", Json(status));
-    return updated;
 }
 
 }  // namespace
@@ -310,16 +244,18 @@ bool BookingManager::guestRecipients(const BookingRecord& booking, const Booking
                                      const std::string& kind, bool reserved, GuestNotice& notice) {
     // Лимиты на адрес/чат и на владельца: форма записи не должна превращаться в
     // рассылку на чужой email, а страница — в канал рассылки от имени Selfvoy.
-    if (!booking.guestEmail.empty() && mail_) {
-        std::string address = booking.guestEmail;
-        std::transform(address.begin(), address.end(), address.begin(),
-                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-        if (reserved || !limited("booking.mail:" + address, kMailPerAddressHour, 3600)) {
-            notice.emails.push_back(booking.guestEmail);
+    // Email гостя и второго получателя (F5, cc_email) — у каждого адреса свой лимит;
+    // reserved относится только к адресу гостя (его лимит уже списан).
+    const auto addEmail = [&](const std::string& email, bool alreadyCounted) {
+        if (email.empty() || !mail_) return;
+        if (alreadyCounted || !limited("booking.mail:" + lowerAscii(email), kMailPerAddressHour, 3600)) {
+            notice.emails.push_back(email);
         } else {
             SELFVOY_LOG(log::Level::Warn, "booking") << "лимит писем на адрес исчерпан, письмо (" << kind << ") не отправлено";
         }
-    }
+    };
+    addEmail(booking.guestEmail, reserved);
+    if (lowerAscii(booking.ccEmail) != lowerAscii(booking.guestEmail)) addEmail(booking.ccEmail, false);
     if (telegram_ && telegram_->enabled() && booking.id > 0) {
         for (const long long chat : database_.db().bookingTelegramChats(booking.id)) {
             if (limited("booking.tg:" + std::to_string(chat), kMailPerAddressHour, 3600)) {
@@ -772,6 +708,7 @@ Json BookingManager::pageJson(const BookingPageRecord& page) {
     json.set("cancel_hours", Json(static_cast<long long>(page.cancelHours)));
     json.set("late_cancel", Json(page.lateCancel));
     json.set("policy_text", Json(page.policyText));
+    json.set("packages", page.packages.isArray() ? page.packages : Json::array());  // F5: предложения пакетов
     json.set("upcoming", Json(upcoming));
     json.set("created_at", Json(page.createdAt));
     json.set("updated_at", Json(page.updatedAt));
@@ -788,6 +725,8 @@ Json BookingManager::bookingJson(const BookingRecord& booking, const std::string
     json.set("guest_name", Json(booking.guestName));
     json.set("guest_email", Json(booking.guestEmail));
     json.set("guest_comment", Json(booking.guestComment));
+    json.set("cc_email", Json(booking.ccEmail));        // F5: второй получатель
+    json.set("package_id", Json(booking.packageId));    // F5: запись по пакету (0 — нет)
     json.set("status", Json(booking.status));
     json.set("cancelled_by", Json(booking.cancelledBy));
     json.set("reschedules", Json(static_cast<long long>(booking.reschedules)));
@@ -851,6 +790,8 @@ Json BookingManager::guestBookingJson(const BookingRecord& booking, const Bookin
     json.set("owner_timezone", Json(ownerTimezone));
     json.set("duration_minutes", Json(static_cast<long long>(page.durationMinutes)));
     json.set("guest_name", Json(booking.guestName));
+    json.set("cc_email", Json(maskEmail(booking.ccEmail)));  // F5: замаскирован
+    json.set("by_package", Json(booking.packageId > 0));
     json.set("status", Json(booking.status));
     json.set("cancelled_by", Json(booking.cancelledBy));
     json.set("occurrences", occurrences);
@@ -1122,6 +1063,9 @@ BookingManager::Result BookingManager::pageCreate(long long ownerId, const Json&
     // F4: цена, предоплата и политика отмены.
     const Result paymentFields = applyPaymentFields(ownerId, payload, true, page);
     if (!paymentFields.ok) return paymentFields;
+    // F5: предложения пакетов.
+    const Result packageOffers = applyPackageOffers(ownerId, payload, true, page);
+    if (!packageOffers.ok) return packageOffers;
     page.durationMinutes = static_cast<int>(duration);
     page.daysAhead = static_cast<int>(daysAhead);
     page.maxPerDay = static_cast<int>(maxPerDay);
@@ -1227,6 +1171,8 @@ BookingManager::Result BookingManager::pageUpdate(long long ownerId, const Json&
     }
     const Result paymentFields = applyPaymentFields(ownerId, payload, false, *page);
     if (!paymentFields.ok) return paymentFields;
+    const Result packageOffers = applyPackageOffers(ownerId, payload, false, *page);
+    if (!packageOffers.ok) return packageOffers;
     if (payload.contains("status")) {
         const std::string status = payload.getString("status");
         if (status != "active" && status != "paused") {
@@ -1373,6 +1319,7 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
         if (index < 0) return Result::failure(protocol::code::kBadRequest, "нет такой предстоящей встречи");
     }
     std::vector<long long> tasks;
+    const Json before = booking->occurrences;
     if (cancelOccurrences(*booking, index, now, tasks) == 0) {
         return Result::failure(protocol::code::kConflict, "предстоящих встреч нет");
     }
@@ -1393,6 +1340,13 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
     if (!database_.db().updateBooking(*booking).ok) {
         return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
     }
+    // F5: занятия пакета, отменённые владельцем, возвращаются всегда.
+    int returned = 0;
+    if (booking->packageId > 0) {
+        returned = returnableSessions(before, booking->occurrences, nullptr, now, true);
+        std::optional<PackagePurchaseRecord> unused;
+        if (returned > 0) shiftPackageUsedLocked(booking->packageId, -returned, now, unused);
+    }
     lock.release();
     for (const long long task : tasks) deleteOwnTask(booking->ownerId, task);
     dropInactiveReminders(*booking);
@@ -1403,6 +1357,7 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
                                         : "Организатор вернёт оплату " + moneyOf(booking->payment) + ".");
         if (auto fresh = database_.db().findBooking(booking->id)) booking = std::move(fresh);
     }
+    if (returned > 0) footer.push_back("Занятия возвращены на абонемент: " + std::to_string(returned) + ".");
     const auto page = database_.db().findBookingPage(booking->pageId);
     if (page) {
         std::string ownerName;
@@ -1473,6 +1428,8 @@ BookingManager::Result BookingManager::get(const Json& payload, const std::strin
     view.set("payment_url", Json(page->paymentUrl));
     view.set("pay_within_minutes", Json(static_cast<long long>(page->payWithinMinutes)));
     view.set("policy", policyJson(*page));
+    // F5: предложения пакетов (абонементов).
+    view.set("packages", page->packages.isArray() ? page->packages : Json::array());
     Result result;
     result.ok = true;
     result.payload.set("page", view);
@@ -1491,25 +1448,48 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     }
     if (page->status != "active") return Result::failure(protocol::code::kConflict, "запись временно закрыта");
 
-    BookingRecord booking;
-    booking.pageId = page->id;
-    booking.ownerId = page->ownerId;
-    booking.guestName = trim(payload.getString("guest_name"));
-    if (booking.guestName.empty() || !validText(booking.guestName, 80, false)) {
-        return Result::failure(protocol::code::kBadRequest, "укажите имя — до 80 символов");
-    }
-    booking.guestEmail = trim(payload.getString("guest_email"));
-    if (!booking.guestEmail.empty() && !plausibleEmail(booking.guestEmail)) {
-        return Result::failure(protocol::code::kBadRequest, "некорректный email");
-    }
-    booking.guestComment = trim(payload.getString("comment"));
-    if (!validText(booking.guestComment, 500, true)) {
-        return Result::failure(protocol::code::kBadRequest, "комментарий — не больше 500 символов");
-    }
     long long count = 1;
     if (!intField(payload, "count", 1, page->maxSeries, count)) {
         return Result::failure(protocol::code::kBadRequest,
                                "число встреч — от 1 до " + std::to_string(page->maxSeries));
+    }
+    // F5: покупка пакета (package_id — id предложения страницы) или запись по пакету
+    // (package_token): имя и адреса по умолчанию — из пакета, предоплата не нужна.
+    PackageIntent intent;
+    const Result packageCheck = packageIntent(*page, payload, count, intent);
+    if (!packageCheck.ok) return packageCheck;
+    std::optional<PackagePurchaseRecord> held =
+        intent.packageId > 0 ? database_.db().findPackagePurchase(intent.packageId) : std::nullopt;
+
+    BookingRecord booking;
+    booking.pageId = page->id;
+    booking.ownerId = page->ownerId;
+    booking.guestName = trim(payload.getString("guest_name"));
+    if (booking.guestName.empty() && held) booking.guestName = held->guestName;
+    if (booking.guestName.empty() || !validText(booking.guestName, 80, false)) {
+        return Result::failure(protocol::code::kBadRequest, "укажите имя — до 80 символов");
+    }
+    booking.guestEmail = trim(payload.getString("guest_email"));
+    if (booking.guestEmail.empty() && held) booking.guestEmail = held->guestEmail;
+    if (!booking.guestEmail.empty() && !plausibleEmail(booking.guestEmail)) {
+        return Result::failure(protocol::code::kBadRequest, "некорректный email");
+    }
+    // F5: второй получатель извещений («копия напоминаний, например родителю»).
+    booking.ccEmail = trim(payload.getString("cc_email"));
+    if (booking.ccEmail.empty() && held && lowerAscii(held->ccEmail) != lowerAscii(booking.guestEmail)) {
+        booking.ccEmail = held->ccEmail;
+    }
+    if (!booking.ccEmail.empty()) {
+        if (!plausibleEmail(booking.ccEmail)) {
+            return Result::failure(protocol::code::kBadRequest, "второй адрес (cc_email) — некорректный email");
+        }
+        if (lowerAscii(booking.ccEmail) == lowerAscii(booking.guestEmail)) {
+            return Result::failure(protocol::code::kBadRequest, "второй адрес должен отличаться от email гостя");
+        }
+    }
+    booking.guestComment = trim(payload.getString("comment"));
+    if (!validText(booking.guestComment, 500, true)) {
+        return Result::failure(protocol::code::kBadRequest, "комментарий — не больше 500 символов");
     }
     std::time_t wanted = 0;
     if (!parseIsoUtc(payload.getString("start"), wanted)) {
@@ -1567,9 +1547,25 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         occurrences.push(occurrence);
     }
 
+    // F5: пакет перечитывается под блокировкой — остаток и срок могли измениться; каждая
+    // встреча — до конца срока действия пакета.
+    if (intent.packageId > 0) {
+        held = database_.db().findPackagePurchase(intent.packageId);
+        if (!held) return Result::failure(protocol::code::kNotFound, "абонемент не найден");
+        const Result usable = packageUsable(*held, page->id, count, std::time(nullptr));
+        if (!usable.ok) return usable;
+        std::time_t until = 0;
+        if (parseIsoUtc(held->validUntil, until) &&
+            std::any_of(plan.begin(), plan.end(), [until](const Offer& item) { return item.start >= until; })) {
+            return Result::failure(protocol::code::kConflict, "абонемент действует до " + held->validUntil.substr(0, 10) +
+                                                                  " — выберите время раньше");
+        }
+    }
+
     // F4: предоплата — сумма (full: цена × встречи, deposit: депозит один раз), срок оплаты
     // (не позже начала первой встречи), способ: ЮKassa владельца или ссылка/реквизиты.
-    if (page->prepay != "none" && page->price > 0 && payments_) {
+    // Запись по пакету (F5) оплачена пакетом.
+    if (!intent.any() && page->prepay != "none" && page->price > 0 && payments_) {
         const long long amount = page->prepay == "deposit" ? page->deposit : page->price * count;
         const std::time_t due = std::min(std::time(nullptr) + static_cast<std::time_t>(page->payWithinMinutes) * 60,
                                          plan.front().start);
@@ -1582,9 +1578,21 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         }
     }
 
+    booking.occurrences = occurrences;
+    // F5: покупка пакета при записи — строка покупки до записи (запись ссылается на неё).
+    PackagePurchaseRecord purchase;
+    std::string packageToken;
+    if (intent.offerId > 0) {
+        const Result created =
+            createPurchase(*page, intent.offer, booking, static_cast<int>(count), plan.front().start, purchase, packageToken);
+        if (!created.ok) return created;
+        booking.packageId = purchase.id;
+    } else if (intent.packageId > 0) {
+        booking.packageId = intent.packageId;
+    }
+
     std::string token;
     long long id = 0;
-    booking.occurrences = occurrences;
     for (int attempt = 0; attempt < 3 && id == 0; ++attempt) {
         token = crypto::base64UrlEncode(crypto::randomBytes(kTokenBytes));
         while (!token.empty() && token.back() == '=') token.pop_back();
@@ -1597,8 +1605,18 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
             id = 0;
         }
     }
-    if (id == 0) return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
+    if (id == 0) {
+        if (purchase.id > 0) {
+            purchase.status = "cancelled";
+            if (purchase.payment.isObject()) purchase.payment = withStatus(purchase.payment, "expired");
+            database_.db().updatePackagePurchase(purchase);
+        }
+        return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
+    }
     booking.id = id;
+    // F5: запись по пакету списывает занятия (по одному на встречу).
+    std::optional<PackagePurchaseRecord> consumed;
+    if (intent.packageId > 0) shiftPackageUsedLocked(intent.packageId, static_cast<int>(count), std::time(nullptr), consumed);
 
     // Задачи с напоминанием — на каждую встречу.
     Json withTasks = Json::array();
@@ -1653,6 +1671,47 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         }, updated);
         booking.payment = updated ? updated->payment : payment;
     }
+    // F5: платёж за пакет в ЮKassa (Idempotence-Key pk-<id>; гость вернётся на страницу пакета).
+    if (purchase.id > 0 && purchase.payment.isObject() && purchase.payment.getString("method") == "yookassa" &&
+        purchase.status == "pending") {
+        Json payment = purchase.payment;
+        Json metadata = Json::object();
+        metadata.set("package_id", Json(std::to_string(purchase.id)));
+        const std::string description = utf8Prefix(page->title + ": " + purchase.title, 128);
+        std::string error;
+        if (!payments_ || !payments_->submit(page->ownerId, payment, description, packageUrl(packageToken) + "?paid=1",
+                                             "pk-" + std::to_string(purchase.id), metadata, error)) {
+            // Платёж не создан — ни пакет, ни время не держим: гостю — ошибка.
+            std::optional<PackagePurchaseRecord> dropped;
+            mutatePackage(purchase.id, [](PackagePurchaseRecord& record) {
+                if (record.status != "pending") return false;
+                record.status = "cancelled";
+                if (record.payment.isObject()) record.payment = withStatus(record.payment, "expired");
+                return true;
+            }, dropped);
+            std::vector<long long> tasks;
+            std::optional<BookingRecord> cancelled;
+            mutateBooking(id, [&](BookingRecord& record) {
+                if (record.status != "active") return false;
+                cancelOccurrences(record, -1, std::time(nullptr), tasks);
+                record.status = "cancelled";
+                record.cancelledBy = "system";
+                return true;
+            }, cancelled);
+            for (const long long task : tasks) deleteOwnTask(page->ownerId, task);
+            return Result::failure(protocol::code::kUpstream, "не удалось создать платёж — попробуйте позже");
+        }
+        std::optional<PackagePurchaseRecord> updated;
+        mutatePackage(purchase.id, [&](PackagePurchaseRecord& record) {
+            if (!record.payment.isObject() || !record.payment.getString("provider_id").empty()) return false;
+            Json stored = record.payment;
+            stored.set("provider_id", payment.get("provider_id"));
+            stored.set("action_url", payment.get("action_url"));
+            record.payment = stored;
+            return true;
+        }, updated);
+        if (updated) purchase = *updated;
+    }
     scheduleReminders(booking, std::time(nullptr));
 
     if (notifications_) {
@@ -1663,6 +1722,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         notify.set("end", Json(isoUtc(chosen->end)));
         notify.set("count", Json(count));
         notify.set("guest_name", Json(booking.guestName));
+        if (booking.packageId > 0) notify.set("package_id", Json(booking.packageId));
         notifications_->create(page->ownerId, "booking.created",
                                booking.guestName + (count > 1 ? " записался(ась) на серию встреч"
                                                               : " записался(ась) на встречу"),
@@ -1673,10 +1733,33 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         std::string ownerTimezone;
         ownerInfo(page->ownerId, ownerName, ownerTimezone);
         std::vector<std::string> footer = paymentLines(*page, booking.payment, std::time(nullptr));
+        if (purchase.id > 0) {
+            // F5: письмо о записи — и о покупке пакета: занятия, ссылка пакета, оплата.
+            const auto lines = packageLines(purchase, *page, packageToken, std::time(nullptr));
+            footer.insert(footer.end(), lines.begin(), lines.end());
+        } else if (consumed) {
+            footer.push_back("Списано с абонемента «" + consumed->title + "»: осталось " +
+                             std::to_string(std::max(0, consumed->sessionsTotal - consumed->sessionsUsed)) + " из " +
+                             std::to_string(consumed->sessionsTotal) + ".");
+        }
         const std::string telegramUrl = telegram_ ? telegram_->guestUrl(booking) : std::string();
         if (!telegramUrl.empty()) footer.push_back("Напоминания в Telegram: " + telegramUrl);
         notifyGuest(booking, *page, "booking.created", "Selfvoy: вы записаны", "Вы записаны",
                     ownerName + (count > 1 ? " ждёт вас на встречах:" : " ждёт вас:"), token, true, false, footer);
+    }
+
+    if (purchase.id > 0) {
+        if (notifications_) {
+            notifications_->create(page->ownerId, "package.purchased",
+                                   booking.guestName + " купил(а) пакет «" + purchase.title + "»",
+                                   slotspost::moneyLabel(purchase.price, purchase.currency) + " · " + page->title,
+                                   packageNotice(purchase, Json::object()));
+        }
+    }
+    // F5: остаток 1 или 0 после списания — «продлите абонемент» (гостю и владельцу).
+    if (consumed && consumed->sessionsTotal - consumed->sessionsUsed <= kPackageLowLeft) packageLow(*consumed);
+    if (purchase.id > 0 && purchase.status != "pending" && purchase.sessionsTotal - purchase.sessionsUsed <= kPackageLowLeft) {
+        packageLow(purchase);
     }
 
     const auto stored = database_.db().findBooking(id);
@@ -1686,6 +1769,16 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     result.payload.set("token", Json(token));
     result.payload.set("url", Json(config_.publicUrl.empty() ? std::string() : config_.publicUrl + "/#/m/" + token));
     result.payload.set("telegram_url", Json(telegram_ ? telegram_->guestUrl(stored ? *stored : booking) : std::string()));
+    if (purchase.id > 0) {
+        // Токен ссылки пакета показывается один раз (и уходит письмом гостю).
+        const auto fresh = database_.db().findPackagePurchase(purchase.id);
+        result.payload.set("package_token", Json(packageToken));
+        result.payload.set("package_url", Json(packageUrl(packageToken)));
+        result.payload.set("package", packageGuestJson(fresh ? *fresh : purchase, *page));
+    } else if (intent.packageId > 0) {
+        const auto fresh = database_.db().findPackagePurchase(intent.packageId);
+        if (fresh) result.payload.set("package", packageGuestJson(*fresh, *page));
+    }
     return result;
 }
 
@@ -1851,6 +1944,7 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
     }
     if (late && page->lateCancel == "block") return Result::failure(protocol::code::kConflict, lateMessage(*page));
     std::vector<long long> tasks;
+    const Json before = booking->occurrences;
     const int cancelled = cancelOccurrences(*booking, index, now, tasks);
     if (cancelled == 0) return Result::failure(protocol::code::kConflict, "предстоящих встреч нет");
     if (booking->status == "cancelled") booking->cancelledBy = "guest";
@@ -1873,6 +1967,14 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
     if (!database_.db().updateBooking(*booking).ok) {
         return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
     }
+    // F5: запись по пакету — отменённые не позже cancel_hours встречи возвращают занятие,
+    // поздняя отмена его сжигает.
+    int returned = 0;
+    if (booking->packageId > 0) {
+        returned = returnableSessions(before, booking->occurrences, &*page, now, false);
+        std::optional<PackagePurchaseRecord> unused;
+        if (returned > 0) shiftPackageUsedLocked(booking->packageId, -returned, now, unused);
+    }
     lock.release();
     for (const long long task : tasks) deleteOwnTask(booking->ownerId, task);
     dropInactiveReminders(*booking);
@@ -1885,6 +1987,13 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
     } else if (kept) {
         footer.push_back("Отмена позже чем за " + std::to_string(page->cancelHours) +
                          " ч до встречи — оплата не возвращается.");
+    }
+    if (booking->packageId > 0) {
+        if (returned > 0) footer.push_back("Занятия возвращены на абонемент: " + std::to_string(returned) + ".");
+        if (cancelled > returned) {
+            footer.push_back("Отмена позже чем за " + std::to_string(page->cancelHours) +
+                             " ч до встречи — занятие списано с абонемента.");
+        }
     }
     if (notifications_) {
         Json notify = Json::object();

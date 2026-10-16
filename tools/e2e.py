@@ -971,6 +971,186 @@ async def s2a_payments(anna: "Client", yookassa: "YooKassaMock | None") -> None:
         await anna.call("booking.pageDelete", {"page_id": page_id})
 
 
+def server_log_mails(kind: str, to: str) -> int | None:
+    """Писем вида kind на адрес to в логе C++-сервера (dev-почта пишет «[dev] письмо (kind) для to»).
+
+    Путь к логу — SELFVOY_E2E_SERVER_LOG (его задаёт e2e_pg.sh); без него — None (проверка пропускается).
+    """
+    path = os.environ.get("SELFVOY_E2E_SERVER_LOG", "")
+    if not path or not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        return sum(1 for line in handle if f"[dev] письмо ({kind}) для {to}:" in line)
+
+
+async def s2b_packages(anna: "Client", yookassa: "YooKassaMock | None") -> None:
+    """F5: пакеты/абонементы (покупка при записи, запись по пакету, остаток, возврат) и cc_email."""
+    print("\n5a++. Пакеты, абонементы и второй получатель (F5)")
+
+    def at(value: str) -> float:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (AttributeError, ValueError):
+            return 0.0
+
+    def owner_events(kind: str) -> list[Dict[str, Any]]:
+        return [e.get("payload", {}) for e in anna.events_of("notification.new")
+                if e.get("payload", {}).get("kind") == kind]
+
+    base = {"duration_minutes": 30, "days_ahead": 14, "max_per_day": 6, "notice_hours": 1}
+    bad_offer = await anna.call("booking.pageCreate", dict(base, title=f"Пакет-ошибка {RUN}",
+                                                           packages=[{"title": "Одно", "sessions": 1, "price": 1000}]))
+    check(bad_offer.get("code") == "bad_request", "packages: sessions < 2 — bad_request", bad_offer)
+    created = await anna.call("booking.pageCreate", dict(base, title=f"Абонементы {RUN}", cancel_hours=24,
+                                                         packages=[{"title": "3 занятия", "sessions": 3,
+                                                                    "price": 900000}]))
+    page = created.get("payload", {}).get("page", {})
+    pages = [page.get("id", 0)]
+    offers = page.get("packages", [])
+    check(len(offers) == 1 and offers[0].get("id") == 1 and offers[0].get("valid_days") == 90,
+          "booking.pageCreate: предложение пакета (id 1, срок 90 дней)", offers)
+    kept = dict(offers[0], title="3 занятия (утро)") if offers else {}
+    updated = await anna.call("booking.pageUpdate", {"page_id": page.get("id", 0),
+                                                     "packages": [kept, {"title": "5 занятий", "sessions": 5,
+                                                                         "price": 1400000, "valid_days": 60}]})
+    offers = updated.get("payload", {}).get("page", {}).get("packages", [])
+    check([o.get("id") for o in offers] == [1, 2] and offers[0].get("title") == "3 занятия (утро)",
+          "booking.pageUpdate: пакет с id сохраняет id, новый получает следующий", offers)
+
+    guest = Client("s2b-guest", "127.0.0.3")
+    await guest.connect()
+    slug = page.get("slug", "")
+    view = (await guest.call("booking.get", {"slug": slug}, timeout=40)).get("payload", {}).get("page", {})
+    check(len(view.get("packages", [])) == 2, "booking.get: гость видит предложения пакетов", view.get("packages"))
+    far = [s.get("start", "") for s in view.get("slots", []) if at(s.get("start", "")) > time.time() + 26 * 3600]
+    if len(far) < 3:
+        check(False, "есть 3 свободных окна позже чем через 26 ч", view.get("slots", [])[:3])
+        await guest.close()
+        for page_id in pages:
+            await anna.call("booking.pageDelete", {"page_id": page_id})
+        return
+
+    guest_email, cc_email = f"pk.{RUN}@example.com", f"parent.{RUN}@example.com"
+    bad_cc = await guest.call("booking.book", {"slug": slug, "start": far[0], "guest_name": "Маша",
+                                               "guest_email": guest_email, "cc_email": guest_email.upper()},
+                              timeout=40)
+    check(bad_cc.get("code") == "bad_request", "booking.book: cc_email = guest_email — bad_request", bad_cc)
+    purchased_before = len(owner_events("package.purchased"))
+    bought = await guest.call("booking.book", {"slug": slug, "start": far[0], "guest_name": "Маша",
+                                               "guest_email": guest_email, "cc_email": cc_email,
+                                               "package_id": 1}, timeout=40)
+    info = bought.get("payload", {})
+    package_token = info.get("package_token", "")
+    pack = info.get("package", {})
+    check(bought.get("type") == "ok" and len(package_token) == 43
+          and info.get("package_url", "").endswith(f"/#/p/{package_token}")
+          and pack.get("status") == "active" and pack.get("sessions_left") == 2
+          and pack.get("payment", {}).get("kind") == "package",
+          "покупка пакета при записи: package_token/url, пакет active, остаток 2", info)
+    check(info.get("booking", {}).get("cc_email") == f"p***@example.com",
+          "вид гостя: cc_email замаскирован", info.get("booking", {}).get("cc_email"))
+    owned = (await anna.call("booking.list", {"page_id": page.get("id", 0)})).get("payload", {}).get("bookings", [])
+    package_id = owned[0].get("package_id", 0) if owned else 0
+    check(bool(owned) and owned[0].get("cc_email") == cc_email and package_id > 0,
+          "вид владельца: cc_email и package_id записи", owned[:1])
+    await asyncio.sleep(0.5)
+    check(len(owner_events("package.purchased")) - purchased_before == 1, "владелец получил package.purchased",
+          owner_events("package.purchased")[-1:])
+    await asyncio.sleep(0.5)
+    cc_mails = server_log_mails("booking.created", cc_email)
+    if cc_mails is not None:
+        check(cc_mails == 1, "cc_email получил письмо о записи (dev-почта в логе сервера)", cc_mails)
+    got = (await guest.call("package.get", {"token": package_token})).get("payload", {}).get("package", {})
+    check(got.get("sessions_left") == 2 and got.get("page_slug") == slug and len(got.get("bookings", [])) == 1
+          and got.get("branding", {}).get("text") == "Запись через Selfvoy",
+          "package.get: остаток, страница, встречи, подпись", got)
+
+    low_before = len(owner_events("package.low"))
+    by_token = await guest.call("booking.book", {"slug": slug, "start": far[1], "package_token": package_token},
+                                timeout=40)
+    by_token_info = by_token.get("payload", {})
+    check(by_token.get("type") == "ok" and by_token_info.get("booking", {}).get("guest_name") == "Маша"
+          and by_token_info.get("package", {}).get("sessions_left") == 1,
+          "запись по package_token: имя из пакета, остаток уменьшился до 1", by_token)
+    await asyncio.sleep(0.5)
+    lows = owner_events("package.low")
+    check(len(lows) - low_before == 1 and lows[-1].get("payload", {}).get("left") == 1,
+          "package.low владельцу: осталось 1 занятие", lows[-1:])
+    low_mails = server_log_mails("package.low", cc_email)
+    if low_mails is not None:
+        check(low_mails == 1, "cc_email получил «осталось 1 занятие»", low_mails)
+    cancelled = await guest.call("booking.cancel", {"token": by_token_info.get("token", "")})
+    after_cancel = (await guest.call("package.get", {"token": package_token})).get("payload", {}).get("package", {})
+    check(cancelled.get("type") == "ok" and after_cancel.get("sessions_left") == 2,
+          "отмена до срока возвращает занятие (остаток снова 2)", after_cancel.get("sessions_left"))
+    other_page = await guest.call("booking.book", {"slug": "zzzzzzzzzz", "start": far[2],
+                                                   "package_token": package_token}, timeout=40)
+    check(other_page.get("code") == "not_found", "запись по пакету на несуществующей странице — not_found", other_page)
+
+    # Владелец: оплата пакета, продажа вне сайта, корректировка, список, отмена.
+    set_paid = await anna.call("package.paymentSet", {"package_id": package_id, "status": "paid"})
+    check(set_paid.get("payload", {}).get("package", {}).get("payment", {}).get("status") == "paid",
+          "package.paymentSet: владелец отметил оплату пакета", set_paid)
+    issued = await anna.call("package.issue", {"page_id": page.get("id", 0), "offer_id": 2, "guest_name": "Пётр",
+                                               "guest_email": f"petr.{RUN}@example.com", "paid": True})
+    issued_info = issued.get("payload", {})
+    issued_pack = issued_info.get("package", {})
+    check(issued.get("type") == "ok" and issued_pack.get("status") == "active"
+          and issued_pack.get("sessions_left") == 5 and issued_pack.get("valid_days") == 60
+          and issued_pack.get("payment", {}).get("status") == "paid"
+          and issued_info.get("url", "").endswith("/#/p/" + issued_info.get("token", "-")),
+          "package.issue: пакет вне сайта, active, оплачен, ссылка", issued_info)
+    adjusted = await anna.call("package.adjust", {"package_id": issued_pack.get("id", 0), "delta": 2})
+    check(adjusted.get("payload", {}).get("package", {}).get("sessions_left") == 7, "package.adjust: +2 занятия",
+          adjusted)
+    zero = await anna.call("package.adjust", {"package_id": issued_pack.get("id", 0), "delta": 0})
+    check(zero.get("code") == "bad_request", "package.adjust: delta 0 — bad_request", zero)
+    listed = (await anna.call("package.list", {"page_id": page.get("id", 0)})).get("payload", {}).get("packages", [])
+    check({p.get("id") for p in listed} == {package_id, issued_pack.get("id")}, "package.list: оба пакета страницы",
+          [p.get("id") for p in listed])
+    gone = await anna.call("package.cancel", {"package_id": issued_pack.get("id", 0)})
+    check(gone.get("payload", {}).get("package", {}).get("status") == "cancelled", "package.cancel: пакет отменён", gone)
+    refused = await guest.call("booking.book", {"slug": slug, "start": far[2],
+                                                "package_token": issued_info.get("token", "")}, timeout=40)
+    check(refused.get("code") == "conflict", "запись по отменённому пакету — conflict", refused)
+
+    if yookassa is not None:
+        yk = yookassa
+        await anna.call("payments.connect", {"provider": "yookassa", "shop_id": yk.SHOP, "secret_key": yk.SECRET})
+        yk_buy = await guest.call("booking.book", {"slug": slug, "start": far[2], "guest_name": "Юля",
+                                                   "package_id": 1}, timeout=40)
+        yk_info = yk_buy.get("payload", {})
+        yk_token = yk_info.get("package_token", "")
+        yk_pack = yk_info.get("package", {})
+        calls = yk.calls_of("POST", "/payments")
+        last = calls[-1] if calls else {"headers": {}, "body": {}}
+        check(yk_pack.get("status") == "pending" and yk_pack.get("payment", {}).get("method") == "yookassa"
+              and last["headers"].get("idempotence-key", "").startswith("pk-")
+              and last["body"].get("confirmation", {}).get("return_url", "").endswith(f"/#/p/{yk_token}?paid=1"),
+              "покупка через ЮKassa: pending, POST /payments pk-<id>, возврат на ссылку пакета",
+              {"package": yk_pack, "headers": last["headers"].get("idempotence-key")})
+        payment_id = yk_pack.get("payment", {}).get("action_url", "").rsplit("/", 1)[-1]
+
+        def succeed() -> int:
+            request = urllib.request.Request(f"http://127.0.0.1:{yk.port}/__succeed/{payment_id}",
+                                             method="POST", data=b"")
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status
+
+        await asyncio.to_thread(succeed)
+        paid = (await guest.call("package.get", {"token": yk_token})).get("payload", {}).get("package", {})
+        check(paid.get("status") == "active" and paid.get("payment", {}).get("status") == "paid"
+              and bool(paid.get("valid_until")), "package.get после оплаты ЮKassa: active, paid, valid_until", paid)
+        await anna.call("payments.disconnect")
+
+    await guest.close()
+    for item in (await anna.call("booking.list", {"page_id": page.get("id", 0)})).get("payload", {}).get("bookings", []):
+        if item.get("status") == "active":
+            await anna.call("booking.ownerCancel", {"booking_id": item.get("id", 0)})
+    for page_id in pages:
+        await anna.call("booking.pageDelete", {"page_id": page_id})
+
+
 async def main() -> int:
     print(f"Selfvoy E2E → {SERVER_URL} (прогон {RUN})\n")
 
@@ -2333,6 +2513,7 @@ async def main() -> int:
         await admin.close()
 
     await s2a_payments(anna, yookassa_mock)
+    await s2b_packages(anna, yookassa_mock)
 
     # -------------------------------------------------------------- итоги
     # ---------------------------------------- безопасность (этап 14)

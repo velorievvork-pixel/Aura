@@ -15,7 +15,8 @@
 // booking.created / booking.rescheduled / booking.cancelled / booking.confirmed.
 // Встречи записей занимают время владельца (MemoryManager::busy) — в переговорах,
 // приглашениях и на других страницах. Гостю — напоминания за сутки и за 2 часа
-// (booking_reminders, F1) и подпись «Запись через Selfvoy» (F3).
+// (booking_reminders, F1) и подпись «Запись через Selfvoy» (F3). Пакеты/абонементы
+// и второй получатель извещений (F5) — packages.cpp.
 #pragma once
 
 #include <chrono>
@@ -48,6 +49,7 @@ struct BookingPageRecord;
 struct BookingRecord;
 struct BookingReminderRecord;
 struct Config;
+struct PackagePurchaseRecord;
 
 // Извещение гостю: одно сообщение уходит на все каналы записи — email гостя (и
 // второго получателя, F5), привязанные Telegram-чаты (booking_telegram). Тексты
@@ -177,7 +179,44 @@ public:
     // Поздняя отмена: до начала встречи меньше cancel_hours часов (0 — никогда не поздно).
     static bool lateFor(const BookingPageRecord& page, std::time_t start, std::time_t now);
 
+    // --- F5: пакеты (абонементы) и второй получатель (S2b), packages.cpp -----
+    // Пакет — N занятий на странице записи: гость покупает его при записи
+    // (booking.book с package_id — id предложения страницы) или получает от владельца
+    // (package.issue), затем записывается по ссылке пакета (booking.book с
+    // package_token). Каждая активная встреча записи по пакету — одно занятие;
+    // отмена не позже cancel_hours возвращает занятие, поздняя — нет. Ссылка пакета
+    // <PUBLIC_URL>/#/p/<токен>: в БД — sha256 и шифр токена (AAD ниже, для писем).
+    static constexpr const char* kPackageTokenAad = "selfvoy-package-token";
+    static constexpr int kMaxPackageOffers = 5;
+    static constexpr int kMaxPackageSessions = 1000;  // sessions_total после корректировок
+    static constexpr int kPackageLowLeft = 1;         // остаток ≤ 1 — извещение «продлите»
+    // Гость (публичные): {token} → {package}; «Я оплатил(а)» за пакет (способ link).
+    Result packageGet(const Json& payload, const std::string& remoteAddr);
+    Result packagePaymentClaim(const Json& payload, const std::string& remoteAddr);
+    // Владелец.
+    Result packageList(long long ownerId, const Json& payload);
+    Result packageIssue(long long ownerId, const Json& payload);
+    Result packageAdjust(long long ownerId, const Json& payload);
+    Result packageCancel(long long ownerId, const Json& payload);
+    Result packagePaymentSet(long long ownerId, const Json& payload);
+    // Планировщик: оплата пакетов (опрос ЮKassa, истечение неоплаченных — покупка
+    // cancelled, её записи отменяются системой) и срок действия (active → expired по
+    // valid_until). now — параметр (юнит-тесты). Возвращает число просмотренных пакетов.
+    std::size_t packageTick(int limit, std::time_t now);
+    // Токен ссылки пакета из token_enc ("" — не расшифровался).
+    std::string packageTokenOf(const PackagePurchaseRecord& record) const;
+    // «m***@example.com» — адрес второго получателя в виде гостя.
+    static std::string maskEmail(const std::string& email);
+
 private:
+    // Пакет записи (booking.book): покупка (offerId > 0, offer — предложение страницы)
+    // или запись по пакету (packageId > 0, найден по package_token).
+    struct PackageIntent {
+        long long offerId = 0;
+        Json offer;
+        long long packageId = 0;
+        bool any() const { return offerId > 0 || packageId > 0; }
+    };
     struct Offer {
         std::time_t start = 0;
         std::time_t end = 0;
@@ -270,6 +309,55 @@ private:
                             const std::string& body);
     // Строки письма о записи с предоплатой: сумма, срок, ссылка или реквизиты.
     std::vector<std::string> paymentLines(const BookingPageRecord& page, const Json& payment, std::time_t now) const;
+    // --- F5 (packages.cpp) ---
+    // Поле страницы packages (pageCreate/pageUpdate): проверка, сохранение id, Pro.
+    Result applyPackageOffers(long long ownerId, const Json& payload, bool creating, BookingPageRecord& page);
+    // booking.book: разбор package_id / package_token до блокировки расписания.
+    Result packageIntent(const BookingPageRecord& page, const Json& payload, long long count, PackageIntent& out);
+    // Пакет пригоден для записи count встреч на странице pageId сейчас.
+    static Result packageUsable(const PackagePurchaseRecord& record, long long pageId, long long count,
+                                std::time_t now);
+    // Новая покупка пакета при записи (под блокировкой расписания владельца). token — сырой.
+    Result createPurchase(const BookingPageRecord& page, const Json& offer, const BookingRecord& guest, int used,
+                          std::time_t firstStart, PackagePurchaseRecord& out, std::string& token);
+    // Изменение пакета под блокировкой расписания владельца (как mutateBooking).
+    bool mutatePackage(long long packageId, const std::function<bool(PackagePurchaseRecord&)>& change,
+                       std::optional<PackagePurchaseRecord>& out);
+    // Изменить число использованных занятий (delta > 0 — списание, < 0 — возврат) —
+    // вызывающий держит блокировку расписания владельца. Статус used/active — по остатку.
+    bool shiftPackageUsedLocked(long long packageId, int delta, std::time_t now,
+                                std::optional<PackagePurchaseRecord>& out);
+    // Возвращаемые занятия отменённых встреч: встречи, ставшие cancelled (before → after),
+    // не позже срока cancel_hours страницы (all — все, отмена владельцем; page может быть nullptr).
+    static int returnableSessions(const Json& before, const Json& after, const BookingPageRecord* page,
+                                  std::time_t now, bool all);
+    Json packageOwnerJson(const PackagePurchaseRecord& record, const std::string& pageTitle) const;
+    Json packageGuestJson(const PackagePurchaseRecord& record, const BookingPageRecord& page);
+    std::string packageUrl(const std::string& token) const;
+    // Строки письма о пакете: занятия, ссылка, оплата.
+    std::vector<std::string> packageLines(const PackagePurchaseRecord& record, const BookingPageRecord& page,
+                                          const std::string& token, std::time_t now) const;
+    // Получатели извещения о пакете: email гостя и второго получателя, Telegram-чаты
+    // записей пакета (лимиты — как у извещений записи).
+    bool packageRecipients(const PackagePurchaseRecord& record, const BookingPageRecord& page,
+                           const std::string& kind, GuestNotice& notice);
+    void notifyPackage(const PackagePurchaseRecord& record, const BookingPageRecord& page, const std::string& kind,
+                       const std::string& subject, const std::string& title, const std::string& lead,
+                       const std::vector<std::string>& lines, const std::string& linkUrl, const std::string& linkText,
+                       const std::vector<std::string>& footer);
+    // Остаток ≤ 1 после списания: извещение гостю (+cc) и package.low владельцу.
+    void packageLow(const PackagePurchaseRecord& record);
+    // payload уведомления владельцу о пакете ({package_id, page_id, guest_name} + extra);
+    // виды — package.purchased / package.payment / package.low (литералы у вызывающих).
+    Json packageNotice(const PackagePurchaseRecord& record, const Json& extra) const;
+    PaymentManager::Remote syncPackagePayment(const PackagePurchaseRecord& record, std::time_t now, int minInterval);
+    void announcePackagePaid(const PackagePurchaseRecord& record, bool notifyOwner);
+    // Оплата пакета не поступила (или ЮKassa отменила платёж): покупка cancelled,
+    // активные записи пакета отменяются системой.
+    bool expirePackagePayment(long long packageId, std::time_t now);
+    void refundPackage(const PackagePurchaseRecord& record, bool provider);
+    // Отмена записи системой (оплата пакета не поступила) — задачи, напоминания, извещения.
+    void cancelBySystem(long long bookingId, std::time_t now, const std::string& reason);
     void mailLoop();
     std::string sealManageToken(const std::string& token) const;
     std::string manageUrl(const std::string& token) const;

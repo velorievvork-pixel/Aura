@@ -232,6 +232,8 @@ void Server::schedulerLoop() {
             // F4: ожидающие оплаты — опрос ЮKassa (не чаще раза в 30 с на платёж) и отмена
             // неоплаченных к сроку записей.
             if (!stopping_.load()) bookings_->paymentTick(500, std::time(nullptr));
+            // F5: оплата пакетов (опрос ЮKassa, истечение неоплаченных) и срок действия.
+            if (!stopping_.load()) bookings_->packageTick(500, std::time(nullptr));
         }
     }
 }
@@ -409,7 +411,8 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
     }
 
     const bool guestCall = !session->authenticated() &&
-                           (request.type.rfind("invite.", 0) == 0 || request.type.rfind("booking.", 0) == 0) &&
+                           (request.type.rfind("invite.", 0) == 0 || request.type.rfind("booking.", 0) == 0 ||
+                            request.type.rfind("package.", 0) == 0) &&
                            protocol::isPublicType(request.type);
     if (!protocol::isPublicType(request.type)) {
         // Открытое соединение не живёт дольше своей сессии: отзыв, истечение
@@ -1055,6 +1058,36 @@ void Server::registerHandlers() {
     registerHandler("payments.disconnect", [this, paymentsReply](std::shared_ptr<Session> session,
                                                                  const protocol::Request& request) {
         return paymentsReply(request, payments_->disconnect(session->userId()));
+    });
+    // F5: пакеты (абонементы): гость — по ссылке пакета #/p/<токен>, владелец — продажа
+    // вне сайта, корректировка остатка, отмена, отметка оплаты.
+    registerHandler("package.get", [this, bookingReply](std::shared_ptr<Session> session,
+                                                        const protocol::Request& request) {
+        return bookingReply(request, bookings_->packageGet(request.payload, session->remoteAddr()));
+    });
+    registerHandler("package.paymentClaim", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                 const protocol::Request& request) {
+        return bookingReply(request, bookings_->packagePaymentClaim(request.payload, session->remoteAddr()));
+    });
+    registerHandler("package.list", [this, bookingReply](std::shared_ptr<Session> session,
+                                                         const protocol::Request& request) {
+        return bookingReply(request, bookings_->packageList(session->userId(), request.payload));
+    });
+    registerHandler("package.issue", [this, bookingReply](std::shared_ptr<Session> session,
+                                                          const protocol::Request& request) {
+        return bookingReply(request, bookings_->packageIssue(session->userId(), request.payload));
+    });
+    registerHandler("package.adjust", [this, bookingReply](std::shared_ptr<Session> session,
+                                                           const protocol::Request& request) {
+        return bookingReply(request, bookings_->packageAdjust(session->userId(), request.payload));
+    });
+    registerHandler("package.cancel", [this, bookingReply](std::shared_ptr<Session> session,
+                                                           const protocol::Request& request) {
+        return bookingReply(request, bookings_->packageCancel(session->userId(), request.payload));
+    });
+    registerHandler("package.paymentSet", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->packagePaymentSet(session->userId(), request.payload));
     });
     // F1: «Приду» по ссылке из напоминания (#/m/<токен>?confirm=<start>).
     registerHandler("booking.confirm", [this, bookingReply](std::shared_ptr<Session> session,

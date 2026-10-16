@@ -49,6 +49,44 @@ Session::~Session() {
     net::closeSocket(socket_);
 }
 
+void Session::applyForwardedFor(const std::string& forwardedFor) {
+    // За доверенным прокси адрес клиента — правый адрес X-Forwarded-For, не
+    // принадлежащий доверенным прокси (левые части клиент может подделать).
+    if (!forwardedFor.empty() && !config_.trustedProxies.empty()) {
+        const auto trusted = [this](const std::string& ip) {
+            std::stringstream list(config_.trustedProxies);
+            std::string item;
+            while (std::getline(list, item, ',')) {
+                item.erase(0, item.find_first_not_of(" \t"));
+                item.erase(item.find_last_not_of(" \t") + 1);
+                if (!item.empty() && item == ip) return true;
+            }
+            return false;
+        };
+        if (trusted(remoteIp_)) {
+            std::vector<std::string> hops;
+            std::stringstream chain(forwardedFor);
+            std::string hop;
+            while (std::getline(chain, hop, ',')) {
+                hop.erase(0, hop.find_first_not_of(" \t"));
+                hop.erase(hop.find_last_not_of(" \t") + 1);
+                hops.push_back(hop);
+            }
+            for (auto it = hops.rbegin(); it != hops.rend(); ++it) {
+                const bool plausible = !it->empty() && it->size() <= 45 &&
+                                       std::all_of(it->begin(), it->end(), [](unsigned char ch) {
+                                           return std::isxdigit(ch) != 0 || ch == '.' || ch == ':';
+                                       });
+                if (!plausible) break;
+                if (trusted(*it)) continue;
+                remoteIp_ = *it;
+                remoteAddr_ = (it->find(':') != std::string::npos ? "[" + *it + "]" : *it) + ":0";
+                break;
+            }
+        }
+    }
+}
+
 bool Session::performHandshake(std::string& error) {
     std::string request;
     char buffer[2048];
@@ -75,6 +113,16 @@ bool Session::performHandshake(std::string& error) {
     }
 
     const ws::Handshake handshake = ws::parseHandshake(request);
+    if (!handshake.valid && !handshake.upgrade && !handshake.method.empty() && httpHandler_) {
+        applyForwardedFor(handshake.forwardedFor);
+        const std::string response = httpHandler_(handshake.method, handshake.path, remoteIp_);
+        if (!response.empty()) {
+            net::sendAll(socket_, response, 5000);
+            servedHttp_ = true;
+            error = "HTTP " + handshake.method + " (не WebSocket)";
+            return false;
+        }
+    }
     if (!handshake.valid) {
         const std::string response =
             "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -85,41 +133,7 @@ bool Session::performHandshake(std::string& error) {
 
     userAgent_ = handshake.userAgent;
     authorization_ = handshake.authorization;
-    // За доверенным прокси адрес клиента — правый адрес X-Forwarded-For, не
-    // принадлежащий доверенным прокси (левые части клиент может подделать).
-    if (!handshake.forwardedFor.empty() && !config_.trustedProxies.empty()) {
-        const auto trusted = [this](const std::string& ip) {
-            std::stringstream list(config_.trustedProxies);
-            std::string item;
-            while (std::getline(list, item, ',')) {
-                item.erase(0, item.find_first_not_of(" \t"));
-                item.erase(item.find_last_not_of(" \t") + 1);
-                if (!item.empty() && item == ip) return true;
-            }
-            return false;
-        };
-        if (trusted(remoteIp_)) {
-            std::vector<std::string> hops;
-            std::stringstream chain(handshake.forwardedFor);
-            std::string hop;
-            while (std::getline(chain, hop, ',')) {
-                hop.erase(0, hop.find_first_not_of(" \t"));
-                hop.erase(hop.find_last_not_of(" \t") + 1);
-                hops.push_back(hop);
-            }
-            for (auto it = hops.rbegin(); it != hops.rend(); ++it) {
-                const bool plausible = !it->empty() && it->size() <= 45 &&
-                                       std::all_of(it->begin(), it->end(), [](unsigned char ch) {
-                                           return std::isxdigit(ch) != 0 || ch == '.' || ch == ':';
-                                       });
-                if (!plausible) break;
-                if (trusted(*it)) continue;
-                remoteIp_ = *it;
-                remoteAddr_ = (it->find(':') != std::string::npos ? "[" + *it + "]" : *it) + ":0";
-                break;
-            }
-        }
-    }
+    applyForwardedFor(handshake.forwardedFor);
     if (!net::sendAll(socket_, ws::handshakeResponse(handshake.key), 2000)) {
         error = "не удалось отправить 101";
         return false;

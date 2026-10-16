@@ -655,6 +655,14 @@ public:
     // гостя (guest*, chosen из response). false — запись не найдена или уже закрыта:
     // два одновременных ответа не займут время дважды.
     virtual bool closeInvite(long long id, const std::string& status, const InviteRecord& response) = 0;
+
+    // ICS-подписка владельца (calendar.feed*, GET /ics/<токен>.ics): users.ics_token_hash —
+    // hex sha256 токена ссылки (сам токен не хранится); "" — подписка выключена.
+    virtual std::string icsTokenHash(long long userId) = 0;
+    // tokenHash "" — выключить (NULL). failure — пользователя нет или хэш уже занят.
+    virtual DatabaseError setIcsTokenHash(long long userId, const std::string& tokenHash) = 0;
+    // 0 — такого токена нет.
+    virtual long long findUserByIcsToken(const std::string& tokenHash) = 0;
 };
 
 std::unique_ptr<IDatabase> makePostgresDatabase(const std::string& url);

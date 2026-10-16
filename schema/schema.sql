@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS users (
 -- Email уникален без учёта регистра (citext не требуется)
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_key ON users (lower(email));
 CREATE INDEX IF NOT EXISTS users_role_idx ON users (role) WHERE role <> 'user';
+-- ICS-подписка владельца (calendar.feed*, GET /ics/<токен>.ics): hex sha256 токена
+-- ссылки, сам токен не хранится; NULL — подписка выключена. Миграция 2026_10_16_ics_feed.sql.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS ics_token_hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS users_ics_token_hash_key ON users (ics_token_hash);
 
 -- ------------------------------------------------------------- Sessions ----
 -- Один активный WebSocket/JWT-сеанс на устройство.

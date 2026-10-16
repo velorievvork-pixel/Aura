@@ -27,6 +27,16 @@ public:
     // Читает HTTP-апгрейд и отвечает 101. Возвращает false при ошибке рукопожатия.
     bool performHandshake(std::string& error);
 
+    // Обычный HTTP-запрос (без Upgrade: websocket) на тот же порт — /healthz, /ics/<токен>.ics.
+    // Обработчик получает метод, цель запроса и IP клиента (с учётом X-Forwarded-For
+    // доверенного прокси) и возвращает полный ответ HTTP/1.1 или "" — маршрута нет
+    // (тогда 400, как без обработчика). После ответа performHandshake возвращает false,
+    // servedHttp() — true: соединение закрывается.
+    using HttpHandler =
+        std::function<std::string(const std::string& method, const std::string& target, const std::string& ip)>;
+    void setHttpHandler(HttpHandler handler) { httpHandler_ = std::move(handler); }
+    bool servedHttp() const { return servedHttp_; }
+
     // Основной цикл чтения фреймов; завершается при закрытии соединения.
     void readLoop(const MessageHandler& handler);
 
@@ -69,6 +79,8 @@ public:
 
 private:
     bool sendRaw(const std::string& frame);
+    // Адрес клиента из X-Forwarded-For, если соединение пришло от доверенного прокси.
+    void applyForwardedFor(const std::string& forwardedFor);
     bool recvWithTimeout(std::string& buffer, int timeoutMs, bool& closed);
 
     const int socket_;
@@ -91,6 +103,8 @@ private:
     std::string userAgent_;
     std::string authorization_;
     std::chrono::steady_clock::time_point lastActivity_;
+    HttpHandler httpHandler_;
+    bool servedHttp_ = false;
 };
 
 }  // namespace selfvoy

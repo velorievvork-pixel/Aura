@@ -20,9 +20,12 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import struct
 import sys
 import time
+import urllib.error
+import urllib.request
 import uuid
 from datetime import datetime
 from typing import Any, Dict
@@ -438,6 +441,116 @@ class TelegramMock:
             pass
         finally:
             writer.close()
+async def http_get(path: str, method: str = "GET") -> tuple[int, Dict[str, str], str]:
+    """HTTP-запрос к порту C++-сервера (тот же, что WebSocket): ws://h:p → http://h:p."""
+    base = SERVER_URL.replace("wss://", "https://", 1).replace("ws://", "http://", 1).rstrip("/")
+
+    def run() -> tuple[int, Dict[str, str], str]:
+        request = urllib.request.Request(base + path, method=method, data=b"" if method == "POST" else None)
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return (response.status, {k.lower(): v for k, v in response.headers.items()},
+                        response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return error.code, {k.lower(): v for k, v in error.headers.items()}, error.read().decode("utf-8", "replace")
+        except (urllib.error.URLError, OSError) as error:
+            return 0, {}, str(error)
+
+    return await asyncio.to_thread(run)
+
+
+async def f6_slots_post_and_ics(anna: "Client", anya: "Client") -> None:
+    """F6: пост «свободные окна» (booking.slotsPost) и ICS-подписка (calendar.feed*, GET /ics/…)."""
+    print("\n3a++. Пост «свободные окна» и ICS-подписка (F6)")
+    created = await anna.call("booking.pageCreate", {
+        "title": f"Окна {RUN}", "duration_minutes": 60, "days_ahead": 14, "max_per_day": 4, "notice_hours": 2,
+    })
+    page = created.get("payload", {}).get("page", {})
+    page_id, slug = page.get("id", 0), page.get("slug", "")
+    check(created.get("type") == "ok" and bool(slug), "F6: страница для поста создана", created)
+
+    posted = await anna.call("booking.slotsPost", {"page_id": page_id}, timeout=40)
+    post = posted.get("payload", {})
+    text = post.get("text", "")
+    check(posted.get("type") == "ok" and post.get("slots", 0) > 0, "booking.slotsPost: есть свободные окна", posted)
+    check(f"#/b/{slug}" in text and text.splitlines()[-1].startswith("Записаться: "),
+          "пост содержит ссылку страницы", text)
+    check(text.startswith(f"Свободные окна: Окна {RUN} (1 ч)")
+          and re.search(r"^(Пн|Вт|Ср|Чт|Пт|Сб|Вс), \d{1,2} [а-я]{3}: \d\d:\d\d", text, re.M) is not None,
+          "пост: заголовок и строка дня «Пн, 21 окт: 10:00»", text)
+    vk = (await anna.call("booking.slotsPost", {"page_id": page_id, "format": "vk", "days": 3}, timeout=40))
+    check("Запись онлайн: " in vk.get("payload", {}).get("text", ""), "формат vk — «Запись онлайн: …»", vk)
+    bad_days = await anna.call("booking.slotsPost", {"page_id": page_id, "days": 15})
+    check(bad_days.get("code") == "bad_request", "days вне 1–14 — bad_request", bad_days)
+    foreign = await anya.call("booking.slotsPost", {"page_id": page_id})
+    check(foreign.get("code") == "not_found", "чужую страницу в пост не взять", foreign)
+
+    guest = Client("f6-guest")
+    await guest.connect()
+    slots = (await guest.call("booking.get", {"slug": slug}, timeout=40)).get("payload", {}).get("page", {}).get(
+        "slots", [])
+    start = slots[0].get("start", "") if slots else ""
+    booked = await guest.call("booking.book", {
+        "slug": slug, "start": start, "guest_name": "Фёдор", "comment": "Вопрос про ICS, сроки; детали",
+    }, timeout=40)
+    check(booked.get("type") == "ok", "F6: гость записался", booked)
+    await guest.close()
+    booking_id = 0
+    for item in (await anna.call("booking.list", {"page_id": page_id})).get("payload", {}).get("bookings", []):
+        if item.get("guest_name") == "Фёдор":
+            booking_id = item.get("id", 0)
+    start_unix = int(datetime.fromisoformat(start.replace("Z", "+00:00")).timestamp()) if start else 0
+    after = (await anna.call("booking.slotsPost", {"page_id": page_id}, timeout=40)).get("payload", {})
+    check(after.get("slots", 0) == post.get("slots", 0) - 1, "занятое окно из поста пропало",
+          [post.get("slots"), after.get("slots")])
+
+    feed = (await anna.call("calendar.feed")).get("payload", {})
+    check(feed.get("enabled") is False and feed.get("path") == "", "calendar.feed: подписка выключена", feed)
+    reset = (await anna.call("calendar.feedReset")).get("payload", {})
+    path = reset.get("path", "")
+    check(reset.get("enabled") is True and re.fullmatch(r"/ics/[A-Za-z0-9_-]{43}\.ics", path) is not None,
+          "calendar.feedReset: путь /ics/<токен>.ics", reset)
+    # Сервер с SELFVOY_SERVER_PUBLIC_URL: e2e получает тот же адрес в SELFVOY_E2E_SERVER_PUBLIC_URL.
+    public = os.environ.get("SELFVOY_E2E_SERVER_PUBLIC_URL", "").rstrip("/")
+    feed_url = reset.get("url", "")
+    check(feed_url == public + path if public else (feed_url == "" or feed_url.endswith(path)),
+          "url = SELFVOY_SERVER_PUBLIC_URL + path (без переменной — пусто)", reset)
+    status, headers, body = await http_get(path)
+    check(status == 200 and headers.get("content-type", "") == "text/calendar; charset=utf-8",
+          "GET /ics/<токен>.ics — 200 text/calendar", [status, headers.get("content-type"), body[:200]])
+    check(headers.get("cache-control") == "no-store", "ICS: Cache-Control: no-store", headers)
+    unfolded = body.replace("\r\n ", "")
+    check(body.startswith("BEGIN:VCALENDAR\r\n") and "X-WR-CALNAME:Selfvoy\r\n" in body
+          and body.endswith("END:VCALENDAR\r\n"), "ICS: календарь с CRLF и X-WR-CALNAME", body[:300])
+    check(f"UID:booking-{booking_id}-{start_unix}@selfvoy\r\n" in unfolded and "STATUS:CONFIRMED" in unfolded,
+          "ICS содержит VEVENT записи", [booking_id, start_unix, unfolded[:600]])
+    check(f"SUMMARY:Окна {RUN}: Фёдор\r\n" in unfolded
+          and "DESCRIPTION:Вопрос про ICS\\, сроки\\; детали\r\n" in unfolded,
+          "ICS: SUMMARY и экранированный DESCRIPTION", unfolded[:800])
+    again = (await anna.call("calendar.feed")).get("payload", {})
+    check(again.get("enabled") is True and again.get("path") == "", "calendar.feed: включена, токен не показан",
+          again)
+
+    new_path = (await anna.call("calendar.feedReset")).get("payload", {}).get("path", "")
+    old_status, _, _ = await http_get(path)
+    check(old_status == 404, "старый токен после feedReset — 404", old_status)
+    new_status, _, _ = await http_get(new_path)
+    check(new_status == 200 and new_path != path, "новый токен работает", new_status)
+    post_status, post_headers, _ = await http_get(new_path, "POST")
+    check(post_status == 405 and post_headers.get("allow") == "GET", "ICS: только GET (405)", post_status)
+    unknown_status, _, _ = await http_get("/ics/" + "A" * 43 + ".ics")
+    check(unknown_status == 404, "неизвестный токен — 404", unknown_status)
+    disabled = await anna.call("calendar.feedDisable")
+    check(disabled.get("payload", {}).get("enabled") is False, "calendar.feedDisable", disabled)
+    off_status, _, _ = await http_get(new_path)
+    check(off_status == 404, "после feedDisable — 404", off_status)
+    health_status, _, health_body = await http_get("/healthz")
+    check(health_status == 200 and json.loads(health_body or "{}").get("status") == "ok",
+          "GET /healthz на порту сервера", [health_status, health_body])
+
+    if booking_id:
+        await anna.call("booking.ownerCancel", {"booking_id": booking_id})
+    await anna.call("booking.pageDelete", {"page_id": page_id})
 
 
 async def main() -> int:
@@ -909,6 +1022,8 @@ async def main() -> int:
     gone = await guest.call("booking.get", {"slug": slug})
     check(gone.get("code") == "not_found", "удалённая страница — not_found", gone)
     await guest.close()
+
+    await f6_slots_post_and_ics(anna, anya)
 
     # Рефералы: регистрация по коду Анны засчитывается после подтверждения email.
     referral = (await anna.call("referral.get")).get("payload", {})

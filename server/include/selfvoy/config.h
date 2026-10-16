@@ -100,6 +100,10 @@ struct Config {
     // https://selfvoy.example.com → https://selfvoy.example.com/#/i/<токен>. Пусто — ссылку
     // строит клиент.
     std::string publicUrl;                               // SELFVOY_PUBLIC_URL
+    // Внешний адрес самого сервера (HTTP-маршруты на порту WebSocket), например
+    // https://api.example.com: calendar.feed* отдают url = <адрес>/ics/<токен>.ics.
+    // Пусто — url пуст, клиент собирает адрес из адреса сервера (wss→https, ws→http).
+    std::string serverPublicUrl;                         // SELFVOY_SERVER_PUBLIC_URL
 
     // --- Рост (S1a): тариф, https, Telegram-бот ---
     // 0 (по умолчанию, бета) — функции Pro открыты всем; 1 — требуют действующего Pro

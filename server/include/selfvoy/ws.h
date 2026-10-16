@@ -20,7 +20,9 @@ enum class Opcode : std::uint8_t {
 
 struct Handshake {
     bool valid = false;
+    std::string method;         // метод запроса (GET, HEAD, POST…)
     std::string path = "/";
+    bool upgrade = false;       // есть Upgrade: websocket; false — обычный HTTP-запрос
     std::string key;
     std::string origin;
     std::string authorization;  // заголовок Authorization (JWT при входе без auth.login)

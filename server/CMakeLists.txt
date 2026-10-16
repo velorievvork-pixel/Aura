@@ -31,6 +31,8 @@ set(SELFVOY_SOURCES
     src/adminmanager.cpp
     src/invitemanager.cpp
     src/bookingmanager.cpp
+    src/calendarfeed.cpp
+    src/slotspost.cpp
     src/referralmanager.cpp
     src/schedulelock.cpp
     src/agentmanager.cpp
@@ -69,6 +71,8 @@ set(SELFVOY_HEADERS
     include/selfvoy/adminmanager.h
     include/selfvoy/invitemanager.h
     include/selfvoy/bookingmanager.h
+    include/selfvoy/calendarfeed.h
+    include/selfvoy/slotspost.h
     include/selfvoy/referralmanager.h
     include/selfvoy/schedulelock.h
     include/selfvoy/agentmanager.h

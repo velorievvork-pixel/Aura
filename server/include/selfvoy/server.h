@@ -24,6 +24,7 @@
 #include "selfvoy/toolmanager.h"
 #include "selfvoy/invitemanager.h"
 #include "selfvoy/bookingmanager.h"
+#include "selfvoy/calendarfeed.h"
 #include "selfvoy/referralmanager.h"
 #include "selfvoy/schedulelock.h"
 #include "selfvoy/telegrambot.h"
@@ -69,6 +70,7 @@ public:
     BookingManager& bookings() { return *bookings_; }
     // Pro-функция доступна пользователю: !SELFVOY_PLANS_ENFORCED или действующий Pro.
     bool proAllowed(long long userId);
+    CalendarFeed& calendarFeed() { return *calendarFeed_; }
 
     // Один проход планировщика напоминаний (публично для тестов).
     // userId = 0 — все пользователи; иначе только напоминания этого пользователя.
@@ -115,6 +117,7 @@ private:
     // (поток BookingManager) до конца может ставить сообщения боту.
     std::unique_ptr<TelegramBot> telegram_;
     std::unique_ptr<BookingManager> bookings_;
+    std::unique_ptr<CalendarFeed> calendarFeed_;  // ICS-подписка (F6)
     std::unique_ptr<Listener> listener_;
     ConnectionManager connections_;
 

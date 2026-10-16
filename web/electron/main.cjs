@@ -13,7 +13,8 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const isMac = process.platform === 'darwin';
-const BG = '#0b0c10';
+// Фон окна до загрузки страницы — под тему системы (как токены --bg в global.css).
+const bg = () => (nativeTheme.shouldUseDarkColors ? '#000000' : '#f2f2f7');
 const APP_FILE = path.join(__dirname, '..', 'dist', 'index.html');
 const APP_URL = pathToFileURL(APP_FILE).href;
 
@@ -60,7 +61,7 @@ function fromApp(event) {
   return isAppUrl(frame.url);
 }
 
-nativeTheme.themeSource = 'dark';
+nativeTheme.themeSource = 'system';
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -68,12 +69,12 @@ function createWindow() {
     height: 880,
     minWidth: 380,
     minHeight: 620,
-    backgroundColor: BG,
+    backgroundColor: bg(),
     show: false,
     title: 'Selfvoy',
     // The app draws its own glass chrome: hide the title bar but keep native window controls.
     titleBarStyle: 'hidden',
-    ...(isMac ? { trafficLightPosition: { x: 46, y: 46 } } : { titleBarOverlay: { color: BG, symbolColor: '#a1a4ae', height: 32 } }),
+    ...(isMac ? { trafficLightPosition: { x: 46, y: 46 } } : { titleBarOverlay: { color: bg(), symbolColor: nativeTheme.shouldUseDarkColors ? '#a1a4ae' : '#55555c', height: 32 } }),
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

@@ -1,13 +1,12 @@
 import { ArrowLeft, CalendarCheck, CalendarClock, Check, ChevronRight, Clock, Handshake, MapPin, Plus, Star, X } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Avatar, Empty, Segmented, Spinner } from '../components/ui';
+import { Avatar, Empty, Segmented, Spinner, StatusPill } from '../components/ui';
 import { placeTags, shortWhen, when, WINDOWS } from '../lib/format';
 import { selfvoyOf, negotiationSteps } from '../lib/negotiationSteps';
 import { emailError } from '../lib/validate';
 import { useData } from '../state/data';
 import { useSession } from '../state/session';
-import { NegotiationBadge } from './Home';
 import { InviteSection } from './Invites';
 
 const DURATIONS = [
@@ -291,4 +290,11 @@ export function NegotiationView() {
       </div>
     </div>
   );
+}
+
+/** Итог переговоров — значок и слово. */
+export function NegotiationBadge({ accepted, booked }: { accepted: boolean; booked?: boolean }) {
+  if (booked) return <StatusPill status={{ label: 'В задачах', tone: 'green', icon: 'check' }} />;
+  if (accepted) return <StatusPill status={{ label: 'Договорились', tone: 'accent', icon: 'check' }} />;
+  return <StatusPill status={{ label: 'Нет общего окна', tone: 'amber', icon: 'x' }} />;
 }

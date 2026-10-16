@@ -4,6 +4,17 @@
 */
 import type { SelfvoySocket } from './socket';
 
+/**
+  Тариф (docs/PROTOCOL.md → «Авторизация»): name честный (Pro, пока until в будущем)
+  независимо от enforced; enforced=false — бета, функции Pro открыты всем.
+*/
+export interface Plan {
+  name: 'pro' | 'free';
+  /** ISO-время окончания Pro или "". */
+  until: string;
+  enforced: boolean;
+}
+
 export interface User {
   id: number;
   email: string;
@@ -14,6 +25,8 @@ export interface User {
   email_verified?: boolean;
   /** Роль в системе (auth.* / auth.me); нет поля — обычный пользователь. */
   role?: 'user' | 'moderator' | 'admin';
+  /** Тариф; старый сервер не присылает. */
+  plan?: Plan;
 }
 
 export interface Privacy {

@@ -2,18 +2,26 @@
   Страница записи глазами гостя (#/b/<slug>) и ссылка управления записью (#/m/<токен>).
 
   Обе открываются без входа (и со входом тоже) вне оболочки приложения: booking.get /
-  book / manage / reschedule / cancel — публичные методы. Время показывается по дням
-  в часовом поясе браузера. После записи гость получает ссылку управления (сервер
-  отдаёт токен один раз) — по ней можно перенести ближайшую встречу или отменить
-  одну/все встречи серии (отмена работает и когда страница на паузе). Если готовую
-  ссылку не собрать (нет SELFVOY_PUBLIC_URL, Electron/localhost), гостя сразу переводим
-  на #/m/<токен> — именно её он сохранит в закладки. Файл .ics собирается здесь же,
-  в браузере.
+  book / manage / reschedule / cancel / confirm / paymentClaim — публичные методы.
+  Вид — «как приложение»: карточка услуги с ценой, календарь месяца со свободными
+  днями, время пилюлями, липкая кнопка записи снизу, подпись «Запись через Selfvoy».
+
+  После записи гость получает ссылку управления (сервер отдаёт токен один раз), блок
+  оплаты, если у страницы предоплата (F4), и кнопку напоминаний в Telegram (F2).
+  Ссылка управления понимает ?confirm=<start> — «Приду» из напоминания (F1) — и
+  ?paid=1 — возврат со страницы оплаты ЮKassa (статус перечитывается booking.manage).
+  Если готовую ссылку не собрать (нет SELFVOY_PUBLIC_URL, Electron/localhost), гостя
+  сразу переводим на #/m/<токен> — именно её он сохранит в закладки. Файл .ics
+  собирается здесь же, в браузере.
+
+  F5 (пакеты): страница пакета #/p/<токен> и выбор пакета при записи добавятся рядом —
+  блоки оплаты и подписи (components/guest.tsx) для них уже общие.
 */
-import { CalendarPlus, Check, Clock, Copy, RefreshCw, Repeat, WifiOff } from 'lucide-react';
+import { CalendarPlus, Check, Copy, RefreshCw, WifiOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { Field, Spinner } from '../components/ui';
+import { BrandingLink, GuestHead, GuestShell, MonthCalendar, PaymentBlock, TelegramBlock } from '../components/guest';
+import { Field, Spinner, StatusPill } from '../components/ui';
 import {
   bookingIcs,
   guestActions,
@@ -21,7 +29,9 @@ import {
   isUpcoming,
   managePath,
   nextOccurrence,
+  occurrenceAt,
   pagePath,
+  parseManageQuery,
   publicLink,
   seriesLabel,
   sortedOccurrences,
@@ -31,6 +41,7 @@ import { genitive } from '../lib/format';
 import {
   browserTimeZone,
   COMMENT_MAX,
+  dayKey,
   EMAIL_MAX,
   GUEST_NAME_MAX,
   groupSlotsByDay,
@@ -46,11 +57,14 @@ import {
   type DayGroup,
   type GuestFormErrors,
 } from '../lib/invite';
-import { makeBookingApi, type GuestBooking, type GuestPage } from '../net/bookingApi';
+import { formatMoney } from '../lib/money';
+import { shortDay } from '../lib/monthCalendar';
+import { policyLines, prepayLabel } from '../lib/payment';
+import { makeBookingApi, type Booked, type GuestBooking, type GuestPage } from '../net/bookingApi';
 import type { InviteSlot } from '../net/inviteApi';
 import { useSession } from '../state/session';
 import { copyText } from '../lib/clipboard';
-import { GuestLayout, Message, OwnSelfvoy } from './InviteGuest';
+import { GuestLayout, Message } from './InviteGuest';
 
 const here = () => (typeof location === 'undefined' ? null : location);
 
@@ -80,8 +94,8 @@ function CalendarButton({ booking, icsKey }: { booking: IcsBooking; icsKey: stri
   const [failed, setFailed] = useState(false);
   return (
     <>
-      <button className="btn btn-secondary btn-block" onClick={() => setFailed(!downloadBookingIcs(booking, icsKey))}>
-        <CalendarPlus size={17} /> Добавить в календарь
+      <button className="btn btn-secondary btn-lg btn-block" onClick={() => setFailed(!downloadBookingIcs(booking, icsKey))}>
+        <CalendarPlus size={18} /> Добавить в календарь
       </button>
       {failed && <div className="field-error">Не удалось создать файл календаря.</div>}
     </>
@@ -90,7 +104,7 @@ function CalendarButton({ booking, icsKey }: { booking: IcsBooking; icsKey: stri
 
 const DAYS_AT_ONCE = 4;
 
-/** Выбор времени: слоты по дням в поясе гостя; сначала несколько ближайших дней. */
+/** Выбор времени для переноса: слоты по дням в поясе гостя; сначала несколько ближайших дней. */
 function SlotPicker({ groups, selected, onSelect }: { groups: DayGroup[]; selected: string | null; onSelect: (start: string) => void }) {
   const [days, setDays] = useState(DAYS_AT_ONCE);
   // Выбранный слот всегда на экране, даже если его день дальше показанных.
@@ -104,14 +118,14 @@ function SlotPicker({ groups, selected, onSelect }: { groups: DayGroup[]; select
           <div className="invite-slots">
             {g.slots.map((s) => (
               <button key={s.start} type="button" className="invite-slot" aria-pressed={selected === s.start} onClick={() => onSelect(s.start)}>
-                {s.label}
+                {s.label.split('–')[0]}
               </button>
             ))}
           </div>
         </div>
       ))}
       {shown.length < groups.length && (
-        <button type="button" className="btn btn-ghost btn-sm" style={{ alignSelf: 'flex-start' }} onClick={() => setDays((d) => d + DAYS_AT_ONCE)}>
+        <button type="button" className="btn btn-ghost btn-sm" style={{ justifySelf: 'start' }} onClick={() => setDays((d) => d + DAYS_AT_ONCE)}>
           Показать ещё дни ({groups.length - shown.length})
         </button>
       )}
@@ -123,7 +137,7 @@ function ZoneHint({ zone, ownerZone, ownerName }: { zone: string; ownerZone: str
   const differs = ownerZone && timeIn(new Date(), ownerZone) !== timeIn(new Date(), zone);
   const ofOwner = ownerName ? genitive(ownerName) : 'организатора';
   return (
-    <span className="hint">
+    <span className="hint" style={{ textAlign: 'center' }}>
       Время — в вашем часовом поясе: {timeZoneLabel(zone)}
       {differs ? `. У ${ofOwner} — ${timeZoneLabel(ownerZone)}` : ''}
     </span>
@@ -150,12 +164,10 @@ function guestScreens(conn: string, connError: unknown, retry: () => void) {
     if (conn !== 'open' && (conn === 'offline' || connError)) {
       return (
         <GuestLayout>
-          <div className="stack">
-            <div className="row">
-              <WifiOff size={16} className="faint" />
-              <h1 className="title-md">Нет связи с сервером Selfvoy</h1>
-            </div>
-            <p className="lead" style={{ margin: 0 }}>
+          <div className="stack" style={{ textAlign: 'center', justifyItems: 'center' }}>
+            <WifiOff size={22} className="faint" />
+            <h1 className="title-lg">Нет связи с сервером Selfvoy</h1>
+            <p className="muted" style={{ margin: 0 }}>
               Проверьте интернет — мы пробуем подключиться снова автоматически.
             </p>
             <button className="btn btn-secondary" onClick={retry}>
@@ -184,27 +196,34 @@ function ManageLink({ token, url }: { token: string; url: string }) {
     // Сюда обычно не попадаем: без готовой ссылки гостя сразу переводят на #/m/<токен>.
     return (
       <div className="notice">
-        Чтобы перенести или отменить встречу, откройте адрес <span className="mono">#{managePath(token)}</span> этого сайта и сохраните его в
-        закладки — или напишите организатору.
+        Чтобы перенести или отменить встречу, откройте адрес <span className="mono">#{managePath(token)}</span> этого сайта и сохраните его в закладки — или напишите
+        организатору.
       </div>
     );
   }
   return (
-    <div className="stack" style={{ gap: 6 }}>
-      <span className="small muted">Ссылка, чтобы перенести или отменить встречу — сохраните её:</span>
-      <div className="invite-link">
-        <input className="input mono" readOnly value={link} aria-label="Ссылка управления записью" onFocus={(e) => e.currentTarget.select()} />
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={async () => {
-            const ok = await copyText(link);
-            setCopied(ok);
-            if (ok) setTimeout(() => setCopied(false), 2000);
-          }}
-        >
-          <Copy size={15} /> {copied ? 'Скопировано' : 'Скопировать'}
-        </button>
+    <div className="group">
+      <div className="group-head">Перенести или отменить</div>
+      <div className="group-body">
+        <div className="cell">
+          <span className="lab">
+            <span className="mono small ellipsis" style={{ display: 'block' }}>
+              {link}
+            </span>
+            <small>Сохраните ссылку — она же в письме</small>
+          </span>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={async () => {
+              const ok = await copyText(link);
+              setCopied(ok);
+              if (ok) setTimeout(() => setCopied(false), 2000);
+            }}
+          >
+            <Copy size={15} /> {copied ? 'Готово' : 'Копировать'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -213,13 +232,63 @@ function ManageLink({ token, url }: { token: string; url: string }) {
 function OccurrenceList({ booking, zone }: { booking: Pick<GuestBooking, 'occurrences'>; zone: string }) {
   const list = sortedOccurrences(booking.occurrences);
   return (
-    <div className="stack" style={{ gap: 4 }}>
+    <div className="group-body">
       {list.map((o) => (
-        <div key={o.start} className={`small ${o.status === 'active' ? 'muted' : 'faint'}`} style={o.status === 'active' ? undefined : { textDecoration: 'line-through' }}>
-          {slotPhrase(o, zone)}
-          {o.status !== 'active' ? ' — отменена' : ''}
+        <div key={o.start} className={`cell occ ${o.status === 'active' ? '' : 'cancelled'}`}>
+          <span className="when">{slotPhrase(o, zone)}</span>
+          {o.status !== 'active' ? (
+            <StatusPill status={{ label: 'Отменена', tone: 'red', icon: 'x' }} />
+          ) : o.confirmed_at ? (
+            <StatusPill status={{ label: 'Вы придёте', tone: 'green', icon: 'check' }} />
+          ) : null}
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Карточка услуги: название, длительность, описание, цена. */
+function ServiceCard({ title, minutes, description, price, currency }: { title: string; minutes: number; description?: string; price?: number; currency?: string }) {
+  return (
+    <div className="card svc">
+      <div style={{ minWidth: 0 }}>
+        <b>{title || 'Встреча'}</b>
+        <small>
+          {minutes} мин{description ? ` · ${description.split('\n')[0]}` : ''}
+        </small>
+      </div>
+      {price ? <span className="pr">{formatMoney(price, currency)}</span> : null}
+    </div>
+  );
+}
+
+/** Условия: предоплата и политика отмены. */
+function Terms({ page, count }: { page: GuestPage; count: number }) {
+  const prepay = prepayLabel(page, count);
+  const lines = policyLines(page.policy, page.prepay);
+  if (!prepay && lines.length === 0) return null;
+  return (
+    <div className="group">
+      <div className="group-head">Условия</div>
+      <div className="group-body">
+        {prepay && (
+          <div className="cell">
+            <span className="lab">
+              {prepay}
+              <small>при записи{page.pay_within_minutes ? `, оплатить в течение ${page.pay_within_minutes} мин` : ''}</small>
+            </span>
+          </div>
+        )}
+        {lines.length > 0 && (
+          <div className="cell stacked">
+            <ul className="policy" style={{ margin: 0, padding: 0 }}>
+              {lines.map((l) => (
+                <li key={l}>{l}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -237,13 +306,14 @@ export function BookingGuest() {
   const [page, setPage] = useState<GuestPage | null>(null);
   const [missing, setMissing] = useState(!isPlausibleSlug(slug));
   const [loadError, setLoadError] = useState('');
-  const [done, setDone] = useState<{ booking: GuestBooking; token: string; url: string } | null>(null);
+  const [done, setDone] = useState<Booked | null>(null);
   const doneRef = useRef(done);
   doneRef.current = done;
   const seq = useRef(0);
   const connRef = useRef(conn);
   connRef.current = conn;
 
+  const [day, setDay] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [count, setCount] = useState(1);
   const [name, setName] = useState('');
@@ -251,6 +321,7 @@ export function BookingGuest() {
   const [comment, setComment] = useState('');
   const [errors, setErrors] = useState<GuestFormErrors & { form?: string }>({});
   const [busy, setBusy] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
 
   const apply = useCallback((next: GuestPage) => {
     setPage(next);
@@ -279,12 +350,20 @@ export function BookingGuest() {
   }, [conn, load]);
 
   const groups = useMemo(() => (page ? groupSlotsByDay(page.slots ?? [], zone) : []), [page, zone]);
+  const freeDays = useMemo(() => groups.map((g) => g.key), [groups]);
+  // Выбранный день пропал (время заняли) — первый свободный.
+  const activeDay = day && freeDays.includes(day) ? day : (freeDays[0] ?? null);
+  const daySlots = groups.find((g) => g.key === activeDay)?.slots ?? [];
+  const selectedSlot = groups.flatMap((g) => g.slots).find((s) => s.start === selected) ?? null;
 
   const book = async () => {
     if (!page || !slug) return;
     const next = guestFormErrors({ name, email, comment, slot: selected }, 'accept');
     setErrors(next);
-    if (hasErrors(next) || !selected) return;
+    if (hasErrors(next) || !selected) {
+      if (next.name) nameRef.current?.focus();
+      return;
+    }
     setBusy(true);
     try {
       const reply = await api.book(slug, {
@@ -298,10 +377,11 @@ export function BookingGuest() {
       if (!publicLink(managePath(reply.token), reply.url, here())) {
         // Ссылку управления не собрать — переходим на страницу записи (#/m/<токен>) вместо
         // #/b/<slug>: «сохранить в закладки» тогда сохраняет именно её, токен не теряется.
-        navigate(managePath(reply.token), { replace: true, state: { booked: true } });
+        navigate(managePath(reply.token), { replace: true, state: { booked: true, telegram_url: reply.telegram_url ?? '' } });
         return;
       }
       setDone(reply);
+      window.scrollTo?.(0, 0);
     } catch (error) {
       const kind = guestErrorKind(error);
       if (kind === 'notFound') {
@@ -329,56 +409,45 @@ export function BookingGuest() {
   }
 
   if (done) {
-    const owner = done.booking.owner_name;
-    return (
-      <GuestLayout>
-        <div className="stack">
-          <span className="invite-done" aria-hidden="true">
-            <Check size={20} strokeWidth={2.5} />
-          </span>
-          <h1 className="title-lg">Вы записаны</h1>
-          <p className="lead" style={{ margin: 0 }}>{owner ? `${owner} получил(а) уведомление.` : 'Организатор получил уведомление.'}</p>
-          <div className="card stack" style={{ gap: 6 }}>
-            <div className="title-md">{done.booking.page_title || 'Встреча'}</div>
-            <OccurrenceList booking={done.booking} zone={zone} />
-            <div className="small faint">{timeZoneLabel(zone)}</div>
-          </div>
-          <CalendarButton booking={done.booking} icsKey={done.token} />
-          <ManageLink token={done.token} url={done.url} />
-          <OwnSelfvoy refCode={done.booking.ref} source="booking" />
-        </div>
-      </GuestLayout>
-    );
+    return <BookedView booked={done} zone={zone} api={api} onBooking={(booking) => setDone((d) => (d ? { ...d, booking } : d))} />;
   }
 
   if (page) {
+    const owner = page.owner_name || 'Организатор';
     if (page.status !== 'active') {
       // Новые записи закрыты, но уже записавшийся гость может запросить ссылку управления
       // (booking.resendLink отказывает только для удалённых страниц) — и отменить встречу.
       return (
-        <GuestLayout>
-          <div className="stack">
-            <h1 className="title-lg">Запись временно закрыта</h1>
-            <p className="lead" style={{ margin: 0 }}>{`${page.owner_name || 'Организатор'} пока не принимает новые записи. Загляните позже.`}</p>
+        <GuestShell footer={<BrandingLink branding={page.branding} refCode={page.ref} />}>
+          <GuestHead owner={page.owner_name} subtitle="Онлайн-запись" />
+          <div className="card stack" style={{ textAlign: 'center' }}>
+            <h1 className="title-md">Запись временно закрыта</h1>
+            <p className="muted" style={{ margin: 0 }}>{`${owner} пока не принимает новые записи. Загляните позже.`}</p>
           </div>
           {slug && <LostLink api={api} slug={slug} />}
-          <OwnSelfvoy refCode={page.ref} source="booking" />
-        </GuestLayout>
+        </GuestShell>
       );
     }
     const seriesOptions = Array.from({ length: Math.max(1, page.max_series) }, (_, i) => i + 1);
+    const prepay = prepayLabel(page, count);
+    const today = dayKey(new Date(), zone);
+    const slotTitle = selectedSlot ? `${dayKey(new Date(selectedSlot.start), zone) === today ? 'сегодня' : shortDay(dayKey(new Date(selectedSlot.start), zone))}, ${timeIn(new Date(selectedSlot.start), zone)}` : '';
+    const hasSlots = !page.slots_unavailable && groups.length > 0;
+    const cta = hasSlots ? (
+      <>
+        <button className="btn btn-primary btn-lg btn-block" type="submit" form="guest-book" disabled={busy || !selectedSlot}>
+          {busy ? <Spinner small /> : selectedSlot ? `Записаться на ${slotTitle}` : 'Выберите время'}
+        </button>
+        {prepay ? <small>{prepay} · после записи</small> : <BrandingLink branding={page.branding} refCode={page.ref} compact />}
+      </>
+    ) : undefined;
+
     return (
-      <GuestLayout>
-        <div>
-          <h1 className="title-lg">{page.title || 'Запись'}</h1>
-          <div className="facts" style={{ marginTop: 8 }}>
-            {page.owner_name && <span>{page.owner_name}</span>}
-            <span>
-              <Clock size={14} /> {page.duration_minutes} мин
-            </span>
-          </div>
-        </div>
-        {page.description && <div className="notice invite-note">{page.description}</div>}
+      <GuestShell cta={cta} footer={prepay || !hasSlots ? <BrandingLink branding={page.branding} refCode={page.ref} /> : undefined}>
+        <GuestHead owner={page.owner_name} subtitle="Онлайн-запись" />
+        <ServiceCard title={page.title} minutes={page.duration_minutes} description={page.description} price={page.price} currency={page.currency} />
+        {page.description && page.description.includes('\n') && <div className="notice invite-note">{page.description}</div>}
+        <Terms page={page} count={count} />
         {conn !== 'open' && <div className="notice warn">Нет связи с сервером Selfvoy — переподключаемся…</div>}
 
         {page.slots_unavailable ? (
@@ -392,6 +461,7 @@ export function BookingGuest() {
           <div className="notice">Свободного времени сейчас нет — загляните позже или напишите {page.owner_name ? `организатору (${page.owner_name})` : 'организатору'} напрямую.</div>
         ) : (
           <form
+            id="guest-book"
             className="stack"
             noValidate
             onSubmit={(e) => {
@@ -399,51 +469,119 @@ export function BookingGuest() {
               void book();
             }}
           >
-            {errors.form && <div className="notice error">{errors.form}</div>}
-            <div className="field">
-              <span>Выберите время</span>
-              <SlotPicker
-                groups={groups}
-                selected={selected}
-                onSelect={(start) => {
-                  setSelected(start);
-                  setErrors((e) => ({ ...e, slot: undefined, form: undefined }));
-                }}
-              />
-              {errors.slot ? <span className="field-error">{errors.slot}</span> : <ZoneHint zone={zone} ownerZone={page.owner_timezone} ownerName={page.owner_name} />}
+            <MonthCalendar
+              freeDays={freeDays}
+              selected={activeDay}
+              todayKey={today}
+              onSelect={(key) => {
+                setDay(key);
+                setSelected(null);
+              }}
+            />
+            <div className="slots" role="group" aria-label="Свободное время">
+              {daySlots.map((s) => (
+                <button
+                  key={s.start}
+                  type="button"
+                  aria-pressed={selected === s.start}
+                  onClick={() => {
+                    setSelected(s.start);
+                    setErrors((e) => ({ ...e, slot: undefined, form: undefined }));
+                  }}
+                >
+                  {timeIn(new Date(s.start), zone)}
+                </button>
+              ))}
             </div>
-            {page.max_series > 1 && (
-              <Field label="Сколько встреч" hint="Та же встреча каждую неделю в это же время">
-                <select className="input" value={count} onChange={(e) => setCount(Number(e.target.value))}>
-                  {seriesOptions.map((n) => (
-                    <option key={n} value={n}>
-                      {seriesLabel(n)}
-                    </option>
-                  ))}
-                </select>
-              </Field>
+            {errors.slot ? <span className="field-error">{errors.slot}</span> : <ZoneHint zone={zone} ownerZone={page.owner_timezone} ownerName={page.owner_name} />}
+
+            {selectedSlot && (
+              <div className="group">
+                <div className="group-head">Ваши данные</div>
+                <div className="group-body">
+                  <div className="cell stacked">
+                    {page.max_series > 1 && (
+                      <Field label="Сколько встреч" hint="Та же встреча каждую неделю в это же время">
+                        <select className="input" value={count} onChange={(e) => setCount(Number(e.target.value))}>
+                          {seriesOptions.map((n) => (
+                            <option key={n} value={n}>
+                              {seriesLabel(n)}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                    )}
+                    <Field label="Ваше имя" error={errors.name}>
+                      <input ref={nameRef} className={`input ${errors.name ? 'invalid' : ''}`} autoComplete="name" value={name} maxLength={GUEST_NAME_MAX} onChange={(e) => setName(e.target.value)} />
+                    </Field>
+                    <Field label="Email" error={errors.email} hint={page.prepay && page.prepay !== 'none' ? 'Пришлём подтверждение, ссылку оплаты и напоминания' : 'Необязательно — для подтверждения и напоминаний'}>
+                      <input className={`input ${errors.email ? 'invalid' : ''}`} type="email" inputMode="email" autoComplete="email" placeholder="you@example.com" value={email} maxLength={EMAIL_MAX} onChange={(e) => setEmail(e.target.value)} />
+                    </Field>
+                    <Field label="Комментарий" error={errors.comment} hint="Необязательно">
+                      <textarea className="textarea" style={{ minHeight: 64 }} value={comment} maxLength={COMMENT_MAX} onChange={(e) => setComment(e.target.value)} />
+                    </Field>
+                    {/* F5: здесь появятся пакеты занятий и второй получатель напоминаний (cc_email). */}
+                  </div>
+                </div>
+              </div>
             )}
-            <Field label="Ваше имя" error={errors.name}>
-              <input className={`input ${errors.name ? 'invalid' : ''}`} autoComplete="name" value={name} maxLength={GUEST_NAME_MAX} onChange={(e) => setName(e.target.value)} />
-            </Field>
-            <Field label="Email" error={errors.email} hint="Необязательно — чтобы с вами могли связаться">
-              <input className={`input ${errors.email ? 'invalid' : ''}`} type="email" inputMode="email" autoComplete="email" placeholder="you@example.com" value={email} maxLength={EMAIL_MAX} onChange={(e) => setEmail(e.target.value)} />
-            </Field>
-            <Field label="Комментарий" error={errors.comment} hint="Необязательно">
-              <textarea className="textarea" style={{ minHeight: 64 }} value={comment} maxLength={COMMENT_MAX} onChange={(e) => setComment(e.target.value)} />
-            </Field>
-            <button className="btn btn-primary btn-lg btn-block" type="submit" disabled={busy}>
-              {busy ? <Spinner small /> : 'Записаться'}
-            </button>
+            {errors.form && (
+              <div className="notice error" role="alert">
+                {errors.form}
+              </div>
+            )}
           </form>
         )}
         {slug && <LostLink api={api} slug={slug} />}
-        <OwnSelfvoy refCode={page.ref} source="booking" />
-      </GuestLayout>
+      </GuestShell>
     );
   }
 
   return screens(loadError, () => void load(), 'Открываем страницу записи…');
+}
+
+/** «Вы записаны»: встречи, оплата (если нужна), Telegram, календарь, ссылка управления. */
+function BookedView({ booked, zone, api, onBooking }: { booked: Booked; zone: string; api: ReturnType<typeof makeBookingApi>; onBooking: (booking: GuestBooking) => void }) {
+  const booking = booked.booking;
+  const owner = booking.owner_name;
+  const payment = booking.payment;
+  const [claiming, setClaiming] = useState(false);
+  const [error, setError] = useState('');
+  const mustPay = payment?.status === 'pending';
+  const claim = async () => {
+    setClaiming(true);
+    setError('');
+    try {
+      onBooking((await api.paymentClaim(booked.token)).booking);
+    } catch (e) {
+      setError(guestErrorText(e));
+    } finally {
+      setClaiming(false);
+    }
+  };
+  return (
+    <GuestShell footer={<BrandingLink branding={booking.branding} refCode={booking.ref} />}>
+      <div className="g-done">
+        <span className="invite-done" aria-hidden="true">
+          <Check size={28} strokeWidth={2.6} />
+        </span>
+        <h1 className="title-lg">{mustPay ? 'Осталось оплатить' : 'Вы записаны'}</h1>
+        <p className="muted" style={{ margin: 0 }}>
+          {mustPay ? 'Время за вами — оплатите, чтобы запись осталась в силе.' : owner ? `${owner} получил(а) уведомление.` : 'Организатор получил уведомление.'}
+        </p>
+      </div>
+      <div className="group">
+        <div className="group-head">{booking.page_title || 'Встреча'}</div>
+        <OccurrenceList booking={booking} zone={zone} />
+        <div className="group-foot">{timeZoneLabel(zone)}</div>
+      </div>
+      {payment && <PaymentBlock payment={payment} note={booking.payment_note} onClaim={claim} claiming={claiming} />}
+      {error && <div className="notice error">{error}</div>}
+      <TelegramBlock url={booked.telegram_url || booking.telegram_url} linked={booking.telegram_linked} />
+      <CalendarButton booking={booking} icsKey={booked.token} />
+      <ManageLink token={booked.token} url={booked.url} />
+    </GuestShell>
+  );
 }
 
 /** «Уже записались?» — новая ссылка управления на email, указанный при записи. */
@@ -454,7 +592,7 @@ function LostLink({ api, slug }: { api: ReturnType<typeof makeBookingApi>; slug:
   const [error, setError] = useState('');
   if (!open) {
     return (
-      <button type="button" className="btn btn-ghost btn-sm" style={{ alignSelf: 'center' }} onClick={() => setOpen(true)}>
+      <button type="button" className="btn btn-ghost btn-sm" style={{ justifySelf: 'center' }} onClick={() => setOpen(true)}>
         Уже записались? Пришлём ссылку для переноса или отмены
       </button>
     );
@@ -464,7 +602,7 @@ function LostLink({ api, slug }: { api: ReturnType<typeof makeBookingApi>; slug:
   }
   return (
     <form
-      className="stack"
+      className="card stack"
       noValidate
       onSubmit={async (e) => {
         e.preventDefault();
@@ -496,13 +634,20 @@ function LostLink({ api, slug }: { api: ReturnType<typeof makeBookingApi>; slug:
 
 // ================================================================ #/m/<токен>
 
+/** Сколько раз перечитать запись после возврата с оплаты (ЮKassa отвечает не мгновенно). */
+const PAID_POLLS = 4;
+const PAID_POLL_MS = 4000;
+
 export function BookingManage() {
   const { token } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const { socket, conn, connError, retry } = useSession();
   const api = useMemo(() => makeBookingApi(socket), [socket]);
   const zone = useMemo(browserTimeZone, []);
   const screens = guestScreens(conn, connError, retry);
+  const query = useMemo(() => parseManageQuery(location.search), [location.search]);
+  const navState = location.state as { booked?: boolean; telegram_url?: string } | null;
 
   const [booking, setBooking] = useState<GuestBooking | null>(null);
   const [missing, setMissing] = useState(!isPlausibleToken(token));
@@ -513,38 +658,89 @@ export function BookingManage() {
   const [reason, setReason] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<'' | 'act' | 'confirm' | 'claim'>('');
+  const [thanks, setThanks] = useState(false);
+  const [checking, setChecking] = useState(query.paid);
   // Пришли сюда сразу после записи (готовой ссылки управления не было) — эту страницу и сохраняют.
-  const justBooked = Boolean((location.state as { booked?: boolean } | null)?.booked);
+  const justBooked = Boolean(navState?.booked);
   const seq = useRef(0);
   const connRef = useRef(conn);
   connRef.current = conn;
+  const confirmTried = useRef(false);
+  const polls = useRef(0);
 
   const load = useCallback(async () => {
-    if (!isPlausibleToken(token)) return;
+    if (!isPlausibleToken(token)) return null;
     const mine = ++seq.current;
     try {
       const reply = await api.manage(token);
-      if (mine !== seq.current) return;
+      if (mine !== seq.current) return null;
       setLoadError('');
       setBooking(reply.booking);
       setSelected((cur) => (cur && (reply.booking.slots ?? []).some((s) => s.start === cur) ? cur : null));
+      return reply.booking;
     } catch (e) {
-      if (mine !== seq.current) return;
+      if (mine !== seq.current) return null;
       const kind = guestErrorKind(e);
       if (kind === 'notFound') setMissing(true);
       else if (kind !== 'network' || connRef.current === 'open') setLoadError(guestErrorText(e));
+      return null;
     }
   }, [api, token]);
 
+  const confirm = useCallback(
+    async (occurrence?: string) => {
+      if (!token) return;
+      setBusy('confirm');
+      setError('');
+      try {
+        const reply = await api.confirm(token, occurrence);
+        seq.current += 1;
+        setBooking(reply.booking);
+        setThanks(true);
+        setNotice('');
+      } catch (e) {
+        if (guestErrorKind(e) === 'notFound') setMissing(true);
+        else setError(guestErrorKind(e) === 'conflict' ? 'Эта встреча уже прошла или отменена — подтверждать нечего.' : guestErrorText(e));
+      } finally {
+        setBusy('');
+      }
+    },
+    [api, token],
+  );
+
   useEffect(() => {
-    if (conn === 'open') void load();
-  }, [conn, load]);
+    if (conn !== 'open') return;
+    void (async () => {
+      const fresh = await load();
+      // «Приду» из напоминания: один раз за открытие ссылки, повтор на сервере ничего не меняет.
+      if (fresh && query.confirm && !confirmTried.current) {
+        confirmTried.current = true;
+        // Время из письма — в той записи, что прислал сервер (иначе сервер выберет ближайшую сам).
+        await confirm(occurrenceAt(fresh.occurrences, query.confirm)?.start ?? query.confirm);
+        navigate({ pathname: location.pathname, search: query.paid ? '?paid=1' : '' }, { replace: true, state: navState });
+      }
+    })();
+  }, [conn, load]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Вернулись со страницы оплаты (?paid=1): ЮKassa подтверждает не сразу — перечитываем несколько раз.
+  useEffect(() => {
+    if (!query.paid || conn !== 'open' || !booking) return;
+    if (booking.payment?.status !== 'pending' || polls.current >= PAID_POLLS) {
+      setChecking(false);
+      return;
+    }
+    const timer = setTimeout(() => {
+      polls.current += 1;
+      void load();
+    }, PAID_POLL_MS);
+    return () => clearTimeout(timer);
+  }, [query.paid, conn, booking, load]);
 
   const groups = useMemo(() => (booking ? groupSlotsByDay(booking.slots ?? [], zone) : []), [booking, zone]);
 
   const act = async (action: () => Promise<{ booking: GuestBooking }>, success: string) => {
-    setBusy(true);
+    setBusy('act');
     setError('');
     try {
       const reply = await action();
@@ -554,12 +750,29 @@ export function BookingManage() {
       setSelected(null);
       setReason('');
       setNotice(success);
+      setThanks(false);
     } catch (e) {
       if (guestErrorKind(e) === 'notFound') setMissing(true);
       else setError(guestErrorText(e));
       if (guestErrorKind(e) === 'conflict') void load();
     } finally {
-      setBusy(false);
+      setBusy('');
+    }
+  };
+
+  const claim = async () => {
+    if (!token) return;
+    setBusy('claim');
+    setError('');
+    try {
+      const reply = await api.paymentClaim(token);
+      seq.current += 1;
+      setBooking(reply.booking);
+      setNotice('Спасибо! Специалист проверит оплату.');
+    } catch (e) {
+      setError(guestErrorText(e));
+    } finally {
+      setBusy('');
     }
   };
 
@@ -574,79 +787,134 @@ export function BookingManage() {
     const { canCancel, canReschedule } = guestActions(booking);
     // Права могли смениться после перезагрузки (страницу поставили на паузу) — шаг пропадает.
     const step = (mode === 'move' && !canReschedule) || (mode === 'cancel' && !canCancel) ? 'view' : mode;
+    const telegramUrl = booking.telegram_url || navState?.telegram_url || '';
+    const paid = booking.payment?.status === 'paid' || booking.payment?.status === 'claimed';
+    const policy = booking.policy;
+    const lines = policyLines(policy, booking.payment ? 'full' : 'none');
+    const footer = <BrandingLink branding={booking.branding} refCode={booking.ref} />;
     const againLink = booking.page_slug ? (
-      <Link className="btn btn-secondary btn-block" to={pagePath(booking.page_slug)}>
-        Записаться снова
+      <Link className="btn btn-primary btn-lg btn-block" to={pagePath(booking.page_slug)}>
+        Выбрать другое время
       </Link>
     ) : null;
 
     if (booking.status === 'cancelled') {
       return (
-        <GuestLayout>
-          <div className="stack">
-            <h1 className="title-lg">Запись отменена</h1>
-            <p className="lead" style={{ margin: 0 }}>
-              {booking.cancelled_by === 'owner' ? `${owner} отменил(а) встречу. Можно выбрать другое время.` : `${owner} получил(а) уведомление об отмене.`}
+        <GuestShell footer={footer}>
+          <GuestHead owner={booking.owner_name} subtitle={booking.page_title} />
+          <div className="card stack" style={{ textAlign: 'center' }}>
+            <h1 className="title-md">Запись отменена</h1>
+            <p className="muted" style={{ margin: 0 }}>
+              {booking.cancelled_by === 'system'
+                ? 'Оплата не поступила вовремя, поэтому время освободилось. Можно записаться снова.'
+                : booking.cancelled_by === 'owner'
+                  ? `${owner} отменил(а) встречу. Можно выбрать другое время.`
+                  : `${owner} получил(а) уведомление об отмене.`}
             </p>
-            {notice && <div className="notice">{notice}</div>}
-            <div className="card stack" style={{ gap: 6 }}>
-              <div className="title-md">{booking.page_title || 'Встреча'}</div>
-              <OccurrenceList booking={booking} zone={zone} />
-            </div>
-            {againLink}
-            <OwnSelfvoy refCode={booking.ref} source="booking" />
           </div>
-        </GuestLayout>
+          {notice && <div className="notice ok">{notice}</div>}
+          <OccurrenceList booking={booking} zone={zone} />
+          {booking.payment && <PaymentBlock payment={booking.payment} />}
+          {againLink}
+        </GuestShell>
       );
     }
 
+    // «Приду» — липкой кнопкой; пока ждём оплату, главная кнопка — оплата, «Приду» — в карточке встречи.
+    const awaitingPay = booking.payment?.status === 'pending';
+    const needConfirm = step === 'view' && next && !next.confirmed_at && !awaitingPay;
+    const confirmedNext = next?.confirmed_at;
+    const cta = needConfirm ? (
+      <>
+        <button type="button" className="btn btn-primary btn-lg btn-block" disabled={busy === 'confirm'} onClick={() => void confirm(next.start)}>
+          {busy === 'confirm' ? <Spinner small /> : 'Приду'}
+        </button>
+        <small>{owner} увидит, что вы придёте</small>
+      </>
+    ) : undefined;
+
     return (
-      <GuestLayout>
-        <div>
-          <h1 className="title-lg">{booking.page_title || 'Ваша запись'}</h1>
-          <div className="facts" style={{ marginTop: 8 }}>
-            <span>{owner}</span>
-            <span>
-              <Clock size={14} /> {booking.duration_minutes} мин
+      <GuestShell cta={cta} footer={footer}>
+        <GuestHead owner={booking.owner_name} subtitle={booking.page_title || 'Ваша запись'} />
+        {thanks && (
+          <div className="g-done">
+            <span className="invite-done" aria-hidden="true">
+              <Check size={28} strokeWidth={2.6} />
             </span>
-            {booking.occurrences.length > 1 && (
-              <span>
-                <Repeat size={14} /> раз в неделю
-              </span>
-            )}
-          </div>
-        </div>
-        {conn !== 'open' && <div className="notice warn">Нет связи с сервером Selfvoy — переподключаемся…</div>}
-        {justBooked && !notice && (
-          <div className="notice">
-            <Check size={15} /> Вы записаны — {booking.owner_name ? `${booking.owner_name} получил(а) уведомление` : 'организатор получил уведомление'}. Сохраните
-            эту страницу в закладки: по ней можно перенести или отменить встречу.
+            <h1 className="title-lg">Спасибо, ждём вас</h1>
+            <p className="muted" style={{ margin: 0 }}>
+              {owner} увидит, что вы придёте.
+            </p>
           </div>
         )}
-        {notice && <div className="notice">{notice}</div>}
+        {justBooked && !thanks && !notice && (
+          <div className="notice ok">
+            <Check size={16} />
+            <span>
+              Вы записаны — {booking.owner_name ? `${booking.owner_name} получил(а) уведомление` : 'организатор получил уведомление'}. Сохраните эту страницу в закладки: по ней можно
+              перенести или отменить встречу.
+            </span>
+          </div>
+        )}
+        {conn !== 'open' && <div className="notice warn">Нет связи с сервером Selfvoy — переподключаемся…</div>}
+        {notice && <div className="notice ok">{notice}</div>}
         {error && <div className="notice error">{error}</div>}
 
-        <div className="card stack" style={{ gap: 6 }}>
-          <div className="small muted">{booking.guest_name}</div>
-          <OccurrenceList booking={booking} zone={zone} />
-          <div className="small faint">{timeZoneLabel(zone)}</div>
-        </div>
+        {next && (
+          <div className="card stack" style={{ gap: 4 }}>
+            <span className="small muted">Ближайшая встреча</span>
+            <span className="title-md">{slotPhrase(next, zone)}</span>
+            <span className="row wrap" style={{ gap: 6, marginTop: 4 }}>
+              {confirmedNext ? <StatusPill status={{ label: 'Вы подтвердили', tone: 'green', icon: 'check' }} /> : <StatusPill status={{ label: 'Ждём подтверждения', tone: 'new', icon: 'clock' }} />}
+              <span className="small faint">{timeZoneLabel(zone)}</span>
+            </span>
+            {!confirmedNext && awaitingPay && step === 'view' && (
+              <button type="button" className="btn btn-secondary btn-sm" style={{ justifySelf: 'start', marginTop: 6 }} disabled={busy === 'confirm'} onClick={() => void confirm(next.start)}>
+                {busy === 'confirm' ? <Spinner small /> : <Check size={15} />} Приду
+              </button>
+            )}
+          </div>
+        )}
+
+        {booking.occurrences.length > 1 && (
+          <div className="group">
+            <div className="group-head">{seriesLabel(booking.occurrences.length)}</div>
+            <OccurrenceList booking={booking} zone={zone} />
+          </div>
+        )}
 
         {upcoming === 0 && <div className="notice">Все встречи этой записи уже прошли.</div>}
+
+        {booking.payment && (
+          <PaymentBlock payment={booking.payment} note={booking.payment_note} onClaim={claim} claiming={busy === 'claim'} checking={checking} />
+        )}
+        {query.paid && !checking && booking.payment?.status === 'paid' && <div className="notice ok">Оплата получена — спасибо!</div>}
+
+        {upcoming > 0 && <TelegramBlock url={telegramUrl} linked={booking.telegram_linked} />}
+
+        {booking.late && policy && (
+          <div className="notice warn">
+            {policy.late_cancel === 'block'
+              ? `До встречи меньше ${policy.cancel_hours} ч — перенести или отменить можно только через специалиста.`
+              : paid
+                ? `До встречи меньше ${policy.cancel_hours} ч — при отмене оплата не вернётся.`
+                : `До встречи меньше ${policy.cancel_hours} ч — пожалуйста, предупредите специалиста.`}
+          </div>
+        )}
 
         {step === 'view' && upcoming > 0 && (
           <div className="stack">
             {token && <CalendarButton booking={booking} icsKey={token} />}
             {(canReschedule || canCancel) && (
-              <div className="row wrap" style={{ gap: 8 }}>
+              <div className="grid-2">
                 {canReschedule && (
-                  <button className="btn btn-secondary" onClick={() => setMode('move')}>
+                  <button className="btn btn-secondary btn-lg" onClick={() => setMode('move')}>
                     Перенести
                   </button>
                 )}
                 {canCancel && (
                   <button
-                    className="btn btn-ghost"
+                    className="btn btn-danger btn-lg"
                     onClick={() => {
                       setCancelTarget(null);
                       setMode('cancel');
@@ -657,12 +925,11 @@ export function BookingManage() {
                 )}
               </div>
             )}
-            {canCancel && !canReschedule &&
-              (booking.reschedules_left <= 0 ? (
-                <span className="hint">Перенести можно не больше трёх раз — дальше только отмена.</span>
-              ) : (
-                <span className="hint">Перенос временно недоступен: {owner} сейчас не принимает новые записи. Отменить встречу можно.</span>
-              ))}
+            {canCancel && !canReschedule && !booking.late && (
+              <span className="hint">
+                {booking.reschedules_left <= 0 ? 'Перенести можно не больше трёх раз — дальше только отмена.' : `Перенос временно недоступен: ${owner} сейчас не принимает новые записи. Отменить встречу можно.`}
+              </span>
+            )}
           </div>
         )}
 
@@ -681,15 +948,11 @@ export function BookingManage() {
                 <ZoneHint zone={zone} ownerZone={booking.owner_timezone} ownerName={booking.owner_name} />
               </>
             )}
-            <div className="row wrap" style={{ gap: 8 }}>
-              <button
-                className="btn btn-primary"
-                disabled={busy || !selected}
-                onClick={() => token && selected && void act(() => api.reschedule(token, selected, next.start), 'Встреча перенесена.')}
-              >
-                {busy ? <Spinner small /> : 'Перенести сюда'}
+            <div className="grid-2">
+              <button className="btn btn-primary btn-lg" disabled={Boolean(busy) || !selected} onClick={() => token && selected && void act(() => api.reschedule(token, selected, next.start), 'Встреча перенесена.')}>
+                {busy === 'act' ? <Spinner small /> : 'Перенести сюда'}
               </button>
-              <button className="btn btn-ghost" disabled={busy} onClick={() => setMode('view')}>
+              <button className="btn btn-ghost btn-lg" disabled={Boolean(busy)} onClick={() => setMode('view')}>
                 Назад
               </button>
             </div>
@@ -697,7 +960,7 @@ export function BookingManage() {
         )}
 
         {step === 'cancel' && (
-          <div className="stack">
+          <div className="card stack">
             {upcoming > 1 && (
               <Field label="Что отменить">
                 <select className="input" value={cancelTarget ?? ''} onChange={(e) => setCancelTarget(e.target.value || null)}>
@@ -715,28 +978,37 @@ export function BookingManage() {
             <Field label="Причина" hint="Необязательно — её увидит организатор">
               <textarea className="textarea" style={{ minHeight: 56 }} value={reason} maxLength={COMMENT_MAX} onChange={(e) => setReason(e.target.value)} />
             </Field>
-            <div className="row wrap" style={{ gap: 8 }}>
+            {booking.late && paid && <span className="hint">Оплата за позднюю отмену не возвращается.</span>}
+            <div className="grid-2">
               <button
-                className="btn btn-danger"
-                disabled={busy}
-                onClick={() =>
-                  token &&
-                  void act(
-                    () => api.cancel(token, { occurrence: cancelTarget ?? undefined, reason: reason.trim() || undefined }),
-                    cancelTarget ? 'Встреча отменена.' : 'Запись отменена.',
-                  )
-                }
+                className="btn btn-danger btn-lg"
+                disabled={Boolean(busy)}
+                onClick={() => token && void act(() => api.cancel(token, { occurrence: cancelTarget ?? undefined, reason: reason.trim() || undefined }), cancelTarget ? 'Встреча отменена.' : 'Запись отменена.')}
               >
-                {busy ? <Spinner small /> : 'Да, отменить'}
+                {busy === 'act' ? <Spinner small /> : 'Да, отменить'}
               </button>
-              <button className="btn btn-ghost" disabled={busy} onClick={() => setMode('view')}>
+              <button className="btn btn-ghost btn-lg" disabled={Boolean(busy)} onClick={() => setMode('view')}>
                 Назад
               </button>
             </div>
           </div>
         )}
-        <OwnSelfvoy refCode={booking.ref} source="booking" />
-      </GuestLayout>
+
+        {lines.length > 0 && (
+          <div className="group">
+            <div className="group-head">Условия</div>
+            <div className="group-body">
+              <div className="cell stacked">
+                <ul className="policy" style={{ margin: 0, padding: 0 }}>
+                  {lines.map((l) => (
+                    <li key={l}>{l}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+      </GuestShell>
     );
   }
 

@@ -25,6 +25,14 @@ describe('makeBookingApi', () => {
     await api.cancel('tok');
     await api.cancel('tok', { occurrence: '2026-10-27T07:00:00Z', reason: 'Заболела' });
     await api.resendLink('abcdefghij', 'a@b.ru');
+    await api.confirm('tok');
+    await api.confirm('tok', '2026-10-20T07:00:00Z');
+    await api.paymentClaim('tok');
+    await api.paymentSet(9, 'paid');
+    await api.paymentSet(9, 'refunded');
+    await api.slotsPost(3);
+    await api.slotsPost(3, { days: 14, format: 'vk' });
+    await api.updatePage(3, { price: 250000, currency: 'RUB', prepay: 'deposit', deposit: 50000, guest_reminders: false, hide_branding: true });
     expect(request.mock.calls).toEqual([
       ['booking.pageCreate', PAGE],
       ['booking.pageList', {}],
@@ -43,6 +51,14 @@ describe('makeBookingApi', () => {
       ['booking.cancel', { token: 'tok' }],
       ['booking.cancel', { token: 'tok', occurrence: '2026-10-27T07:00:00Z', reason: 'Заболела' }],
       ['booking.resendLink', { slug: 'abcdefghij', email: 'a@b.ru' }],
+      ['booking.confirm', { token: 'tok' }],
+      ['booking.confirm', { token: 'tok', occurrence: '2026-10-20T07:00:00Z' }],
+      ['booking.paymentClaim', { token: 'tok' }],
+      ['booking.paymentSet', { booking_id: 9, status: 'paid' }],
+      ['booking.paymentSet', { booking_id: 9, status: 'refunded' }],
+      ['booking.slotsPost', { page_id: 3 }, 60_000],
+      ['booking.slotsPost', { page_id: 3, days: 14, format: 'vk' }, 60_000],
+      ['booking.pageUpdate', { page_id: 3, price: 250000, currency: 'RUB', prepay: 'deposit', deposit: 50000, guest_reminders: false, hide_branding: true }],
     ]);
   });
 });

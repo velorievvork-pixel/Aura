@@ -40,15 +40,15 @@ type Outcome = { action: 'accept'; slot: InviteSlot | null } | { action: 'declin
 
 export function GuestLayout({ children }: { children: ReactNode }) {
   return (
-    <div className="auth">
-      <div className="auth-card invite-card">
-        <span className="logo">
-          <Logo />
+    <main className="guest no-cta">
+      <div className="g-head">
+        <span className="logo-tile">
+          <Logo size={30} />
         </span>
-        {children}
-        <div className="auth-foot small faint">Selfvoy — личный ИИ-агент, который договаривается о встречах.</div>
       </div>
-    </div>
+      {children}
+      <div className="auth-foot small">Selfvoy — личный ИИ-агент, который договаривается о встречах.</div>
+    </main>
   );
 }
 

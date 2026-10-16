@@ -5,7 +5,7 @@
 import { ChevronRight, Copy, Download, KeyRound, LogOut, Monitor, Share2, Shield, ShieldCheck, Smartphone, Trash2, Upload } from 'lucide-react';
 import QRCode from 'qrcode';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { ServerAddress } from '../components/ServerAddress';
 import { Avatar, Field, PasswordInput, Segmented, Spinner, Switch } from '../components/ui';
 import { bookingOwnerErrorText, publicLink, signupPath } from '../lib/booking';
@@ -20,9 +20,12 @@ import { isNative } from '../platform';
 import type { Permission, Privacy, SessionRow, TrustedDevice, TwoFaSetup } from '../net/api';
 import { useData } from '../state/data';
 import { errorText, useSession } from '../state/session';
+import { CalendarFeedSection, PaymentsSection, PlanCard, TelegramSection } from './Integrations';
+import { planView } from '../lib/integrations';
 
 const SECTIONS = [
   { id: 'profile', label: 'Профиль' },
+  { id: 'integrations', label: 'Подключения' },
   { id: 'selfvoy', label: 'Предпочтения' },
   { id: 'privacy', label: 'Приватность ИИ' },
   { id: 'security', label: 'Безопасность' },
@@ -31,8 +34,20 @@ const SECTIONS = [
 ] as const;
 type SectionId = (typeof SECTIONS)[number]['id'];
 
+const isSection = (value: string | null): value is SectionId => SECTIONS.some((s) => s.id === value);
+
 export function Settings() {
-  const [section, setSection] = useState<SectionId>('profile');
+  const [params, setParams] = useSearchParams();
+  const asked = params.get('s');
+  const [section, setSectionState] = useState<SectionId>(isSection(asked) ? asked : 'profile');
+  // Переход по ссылке «Ещё» → «Подключения» на уже открытых настройках.
+  useEffect(() => {
+    if (isSection(asked)) setSectionState(asked);
+  }, [asked]);
+  const setSection = (id: SectionId) => {
+    setSectionState(id);
+    setParams(id === 'profile' ? {} : { s: id }, { replace: true });
+  };
   return (
     <div className="page wide">
       <header className="page-head">
@@ -47,7 +62,19 @@ export function Settings() {
           ))}
         </nav>
         <div className="stack-lg">
-          {section === 'profile' && <ProfileSection />}
+          {section === 'profile' && (
+            <>
+              <ProfileSection />
+              <PlanCard />
+            </>
+          )}
+          {section === 'integrations' && (
+            <>
+              <TelegramSection />
+              <CalendarFeedSection />
+              <PaymentsSection />
+            </>
+          )}
           {section === 'selfvoy' && <PrefsSection />}
           {section === 'privacy' && <PrivacySection />}
           {section === 'security' && (
@@ -750,7 +777,7 @@ function ReferralSection() {
   const link = info ? publicLink(signupPath(info.code), info.url, typeof location === 'undefined' ? null : location) : null;
 
   return (
-    <Card title="Пригласить друзей" desc="Поделитесь ссылкой: друг заведёт свой Selfvoy, и ваши Selfvoy смогут договариваться о встречах напрямую. Регистрации со страниц записи и приглашений тоже засчитываются вам.">
+    <Card title="Пригласить друзей" desc="Поделитесь ссылкой: коллега заведёт свой Selfvoy — и вы оба получите месяц Pro. Регистрации со страниц записи и приглашений тоже засчитываются вам.">
       {error && <div className="notice error">{error}</div>}
       {!info && !error && <Spinner small />}
       {info && (
@@ -785,6 +812,15 @@ function ReferralSection() {
           <div className="small muted">
             Зарегистрировались: {info.joined} · подтвердили email: {info.verified}
           </div>
+          {typeof info.reward_days === 'number' && (
+            <div className="notice accent">
+              <span>
+                <b>+{info.reward_days} дней Pro вам и другу</b> — когда он подтвердит email. Наград получено: {info.rewarded ?? 0}
+                {info.reward_cap ? ` из ${info.reward_cap}` : ''}.
+                {planView(info.plan) ? ` Сейчас у вас: ${planView(info.plan)!.label}.` : ''}
+              </span>
+            </div>
+          )}
           {info.referrals.length > 0 && (
             <div className="list">
               {info.referrals.map((r, i) => (

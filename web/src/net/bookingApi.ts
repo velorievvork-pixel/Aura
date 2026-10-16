@@ -3,20 +3,82 @@
   реферальная программа (referral.*).
 
   Владелец (нужен вход): booking.pageCreate / pageList / pageUpdate / pageDelete,
-  booking.list, booking.ownerCancel, referral.get.
+  booking.list, booking.ownerCancel, booking.paymentSet (F4), booking.slotsPost (F6),
+  referral.get.
   Гость (без входа): booking.get (по slug страницы), booking.book, booking.manage /
-  reschedule / cancel (по токену ссылки управления — сервер отдаёт его один раз,
-  в ответе booking.book; в БД хранится только хэш).
+  reschedule / cancel / confirm (F1) / paymentClaim (F4) — по токену ссылки
+  управления: сервер отдаёт его один раз, в ответе booking.book; в БД только хэш.
+
+  Пакеты и второй получатель (F5: package.*, cc_email, #/p/<токен>) — следующим
+  шагом: объект оплаты Payment уже допускает kind: 'package'.
 */
+import type { Plan } from './api';
 import type { SelfvoySocket } from './socket';
 import type { InviteSlot } from './inviteApi';
 
 export type BookingPageStatus = 'active' | 'paused' | 'archived';
 export type BookingStatus = 'active' | 'cancelled';
 export type OccurrenceStatus = 'active' | 'cancelled';
+/** Кто отменил: system — оплата не поступила к сроку (F4). */
+export type CancelledBy = '' | 'guest' | 'owner' | 'system';
 
-/** Страница записи глазами владельца. `url` пуст, если на сервере не задан SELFVOY_PUBLIC_URL. */
-export interface BookingPage {
+// ------------------------------------------------ цена, оплата, политика (F4)
+
+export type Currency = 'RUB' | 'USD' | 'EUR' | 'KZT' | 'BYN';
+export type Prepay = 'none' | 'full' | 'deposit';
+export type LateCancel = 'allow' | 'block';
+export type PaymentStatus = 'pending' | 'claimed' | 'paid' | 'refunded' | 'waived' | 'expired';
+/** Что владелец может отметить сам (booking.paymentSet). */
+export type OwnerPaymentStatus = 'paid' | 'waived' | 'refunded';
+
+/** Оплата записи (тот же формат у пакетов F5). Суммы — в минимальных единицах (копейках). */
+export interface Payment {
+  status: PaymentStatus;
+  amount: number;
+  currency: Currency | string;
+  kind: 'full' | 'deposit' | 'package';
+  method: 'link' | 'yookassa';
+  /** Только у владельца. */
+  provider_id?: string;
+  /** Куда отправить гостя платить; "" — только реквизиты. */
+  action_url: string;
+  due_at: string;
+  paid_at: string;
+  refunded_at: string;
+}
+
+export interface Policy {
+  cancel_hours: number;
+  late_cancel: LateCancel;
+  text: string;
+}
+
+/** Подпись «Запись через Selfvoy» (F3): url пуст без SELFVOY_PUBLIC_URL. */
+export interface Branding {
+  show: boolean;
+  text: string;
+  url: string;
+}
+
+/** Поля цены и политики отмены страницы (booking.pageCreate / pageUpdate). */
+export interface PriceFields {
+  price: number;
+  currency: Currency;
+  prepay: Prepay;
+  deposit: number;
+  payment_url: string;
+  payment_note: string;
+  pay_within_minutes: number;
+  cancel_hours: number;
+  late_cancel: LateCancel;
+  policy_text: string;
+}
+
+/**
+  Страница записи глазами владельца. `url` пуст, если на сервере не задан SELFVOY_PUBLIC_URL.
+  Поля цены и политики (F4) необязательны: старый сервер их не присылает.
+*/
+export interface BookingPage extends Partial<PriceFields> {
   id: number;
   slug: string;
   url: string;
@@ -29,6 +91,10 @@ export interface BookingPage {
   max_series: number;
   weekends: boolean;
   status: BookingPageStatus;
+  /** Напоминать гостю за сутки и за 2 часа (F1, бесплатно). Старый сервер — нет поля. */
+  guest_reminders?: boolean;
+  /** Скрыть подпись «Запись через Selfvoy» (F3, Pro). */
+  hide_branding?: boolean;
   /** Предстоящих встреч по этой странице. */
   upcoming: number;
   created_at: string;
@@ -39,6 +105,16 @@ export interface Occurrence extends InviteSlot {
   status: OccurrenceStatus;
   /** Местное время владельца «YYYY-MM-DDTHH:MM» (старые записи — пусто). */
   local?: string;
+  /** Когда гость нажал «Приду» (F1); "" — не подтверждал. */
+  confirmed_at?: string;
+}
+
+/** Напоминание гостю (F1): sent_at "" — ещё не отправлено. */
+export interface Reminder {
+  start: string;
+  kind: '24h' | '2h';
+  due_at: string;
+  sent_at: string;
 }
 
 /** Запись гостя глазами владельца. */
@@ -50,9 +126,12 @@ export interface Booking {
   guest_email: string;
   guest_comment: string;
   status: BookingStatus;
-  cancelled_by: '' | 'guest' | 'owner';
+  cancelled_by: CancelledBy;
   reschedules: number;
   occurrences: Occurrence[];
+  reminders?: Reminder[];
+  /** Оплата целиком (null — без оплаты). */
+  payment?: Payment | null;
   created_at: string;
   updated_at: string;
 }
@@ -77,6 +156,15 @@ export interface GuestPage {
   slots_unavailable: boolean;
   /** Реферальный код владельца — для ссылки «Заведите свой Selfvoy». */
   ref: string;
+  branding?: Branding;
+  price?: number;
+  currency?: Currency | string;
+  prepay?: Prepay;
+  deposit?: number;
+  payment_note?: string;
+  payment_url?: string;
+  pay_within_minutes?: number;
+  policy?: Policy;
 }
 
 /** Запись глазами гостя (ссылка управления #/m/<токен>). */
@@ -89,7 +177,7 @@ export interface GuestBooking {
   duration_minutes: number;
   guest_name: string;
   status: BookingStatus;
-  cancelled_by: '' | 'guest' | 'owner';
+  cancelled_by: CancelledBy;
   occurrences: Occurrence[];
   /** Старое поле: равно can_reschedule (оставлено для совместимости). */
   can_change: boolean;
@@ -105,6 +193,17 @@ export interface GuestBooking {
   slots: InviteSlot[];
   slots_unavailable: boolean;
   ref: string;
+  branding?: Branding;
+  /** Ссылка подписки на напоминания в Telegram (F2); "" — бот не настроен или запись отменена. */
+  telegram_url?: string;
+  /** К записи уже подключён чат Telegram. */
+  telegram_linked?: boolean;
+  /** Оплата без provider_id; null — оплаты нет. */
+  payment?: Payment | null;
+  /** До ближайшей встречи меньше cancel_hours часов. */
+  late?: boolean;
+  policy?: Policy;
+  payment_note?: string;
 }
 
 export interface PageFields {
@@ -116,7 +215,12 @@ export interface PageFields {
   notice_hours: number;
   max_series: number;
   weekends: boolean;
+  guest_reminders?: boolean;
+  hide_branding?: boolean;
 }
+
+/** Всё, что редактирует форма страницы: основные поля + цена и политика отмены. */
+export type PageForm = PageFields & PriceFields & { guest_reminders: boolean; hide_branding: boolean };
 
 export interface BookRequest {
   start: string;
@@ -133,6 +237,8 @@ export interface Booked {
   token: string;
   /** Готовая ссылка управления или "" — если на сервере не задан SELFVOY_PUBLIC_URL. */
   url: string;
+  /** Ссылка на бота для напоминаний или "" (F2). */
+  telegram_url?: string;
 }
 
 export interface ReferralInfo {
@@ -140,7 +246,21 @@ export interface ReferralInfo {
   url: string;
   joined: number;
   verified: number;
+  /** Начислено наград пригласившему (≤ reward_cap), F3. */
+  rewarded?: number;
+  reward_days?: number;
+  reward_cap?: number;
+  plan?: Plan;
   referrals: { display_name: string; source: 'link' | 'booking' | 'invite'; joined_at: string; verified: boolean }[];
+}
+
+export type PostFormat = 'telegram' | 'vk' | 'plain';
+
+/** Пост «свободные окна» (F6): url — ссылка страницы или "" (клиент добавляет сам). */
+export interface SlotsPost {
+  text: string;
+  slots: number;
+  url: string;
 }
 
 /** Подбор свободного времени идёт через ИИ-сервис — гостевым запросам даём больше времени. */
@@ -151,9 +271,9 @@ export function makeBookingApi(socket: SelfvoySocket) {
     timeout === undefined ? socket.request<T>(type, payload) : socket.request<T>(type, payload, timeout);
   return {
     // -------- владелец
-    createPage: (fields: PageFields) => call<{ page: BookingPage }>('booking.pageCreate', { ...fields }),
+    createPage: (fields: PageFields | PageForm) => call<{ page: BookingPage }>('booking.pageCreate', { ...fields }),
     listPages: () => call<{ pages: BookingPage[] }>('booking.pageList'),
-    updatePage: (page_id: number, fields: Partial<PageFields> & { status?: 'active' | 'paused' }) =>
+    updatePage: (page_id: number, fields: Partial<PageForm> & { status?: 'active' | 'paused' }) =>
       call<{ page: BookingPage }>('booking.pageUpdate', { page_id, ...fields }),
     deletePage: (page_id: number) => call<{ deleted: boolean }>('booking.pageDelete', { page_id }),
     list: (limit = 50) => call<{ bookings: Booking[] }>('booking.list', { limit }),
@@ -161,6 +281,15 @@ export function makeBookingApi(socket: SelfvoySocket) {
       const payload: Record<string, unknown> = { booking_id };
       if (occurrence) payload.occurrence = occurrence;
       return call<{ booking: Booking }>('booking.ownerCancel', payload);
+    },
+    /** Отметка оплаты владельцем: paid / waived (без оплаты) / refunded. */
+    paymentSet: (booking_id: number, status: OwnerPaymentStatus) => call<{ booking: Booking }>('booking.paymentSet', { booking_id, status }),
+    /** Текст поста со свободными окнами страницы. Окна подбирает ИИ-сервис — ждём дольше. */
+    slotsPost: (page_id: number, options: { days?: number; format?: PostFormat } = {}) => {
+      const payload: Record<string, unknown> = { page_id };
+      if (options.days) payload.days = options.days;
+      if (options.format) payload.format = options.format;
+      return call<SlotsPost>('booking.slotsPost', payload, SLOTS_TIMEOUT_MS);
     },
     referral: () => call<ReferralInfo>('referral.get'),
 
@@ -187,6 +316,14 @@ export function makeBookingApi(socket: SelfvoySocket) {
       if (options.reason) payload.reason = options.reason;
       return call<{ booking: GuestBooking }>('booking.cancel', payload);
     },
+    /** «Приду»: без occurrence — ближайшая предстоящая встреча. Повтор ничего не меняет. */
+    confirm: (token: string, occurrence?: string) => {
+      const payload: Record<string, unknown> = { token };
+      if (occurrence) payload.occurrence = occurrence;
+      return call<{ booking: GuestBooking }>('booking.confirm', payload);
+    },
+    /** «Я оплатил(а)» для оплаты по ссылке: pending → claimed. */
+    paymentClaim: (token: string) => call<{ booking: GuestBooking }>('booking.paymentClaim', { token }),
   };
 }
 

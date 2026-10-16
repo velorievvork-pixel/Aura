@@ -19,7 +19,9 @@ export async function initPlatform(): Promise<void> {
 
   if (!isNative) return;
   try {
-    await StatusBar.setStyle({ style: Style.Dark });
+    // Цвет текста строки состояния — под тему системы (светлая/тёмная).
+    const dark = typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches;
+    await StatusBar.setStyle({ style: dark ? Style.Dark : Style.Light });
     if (platform === 'android') {
       await StatusBar.setOverlaysWebView({ overlay: true });
       await StatusBar.setBackgroundColor({ color: '#00000000' });

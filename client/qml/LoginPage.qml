@@ -96,6 +96,7 @@ Item {
                     model: [{ x: 0.12, y: 0.32 }, { x: 0.86, y: 0.78 }]
                     delegate: Canvas {
                         required property var modelData
+                        visible: false  // 2026: без свечения за карточкой
                         width: 260; height: 260
                         x: parent.width * modelData.x - width / 2
                         y: parent.height * modelData.y - height / 2
@@ -125,7 +126,7 @@ Item {
                 Canvas {
                     anchors.fill: parent
                     anchors.margins: -card.padding
-                    visible: page.wideCard
+                    visible: false  // 2026: текст на сплошном фоне, без сияния
                     onPaint: {
                         if (width <= 0 || height <= 0) return
                         const ctx = getContext("2d")
@@ -149,7 +150,7 @@ Item {
                     spacing: 6
                     Repeater {
                         model: [0.55, 0.55, 0.3]
-                        delegate: Rectangle { required property real modelData; width: 11; height: 11; radius: 5.5; color: Qt.rgba(1, 1, 1, modelData) }
+                        delegate: Rectangle { required property real modelData; width: 11; height: 11; radius: 5.5; color: SelfvoyTheme.glass(modelData) }
                     }
                 }
 

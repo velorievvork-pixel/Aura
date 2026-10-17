@@ -2,7 +2,7 @@ import QtQuick
 import Selfvoy
 
 /*
-  SelfvoyAvatar — круглый аватар с инициалами и градиентом «северного сияния».
+  SelfvoyAvatar — круглый аватар с инициалами на мягком оттенке (как Avatar в вебе).
   agent: true — обводка и значок Selfvoy.
 */
 Item {
@@ -25,11 +25,13 @@ Item {
         return (parts[0].substring(0, 1) + parts[1].substring(0, 1)).toUpperCase()
     }
 
-    // Оттенок — из имени: у каждого человека свой цвет шара, стабильный между запусками.
-    property real hue: {
-        let h = 0
-        for (let i = 0; i < name.length; ++i) h = (h * 31 + name.charCodeAt(i)) % 360
-        return agent ? 265 : h
+    // Оттенок — из имени: стабильный между запусками; тёмный текст на нём читается.
+    readonly property var hues: ["#CFE0FF", "#FFE2B3", "#D7F2E2", "#E9DDFF", "#FFD9E5", "#FFD8C7", "#D9F0F7"]
+    property color tone: {
+        if (agent) return SelfvoyTheme.accentTint
+        let sum = 0
+        for (let i = 0; i < name.length; ++i) sum += name.charCodeAt(i)
+        return hues[sum % hues.length]
     }
     property bool ring: false
 
@@ -40,20 +42,14 @@ Item {
         visible: root.ring
         color: "transparent"
         border.width: 3
-        border.color: SelfvoyTheme.lilacA(0.25)
+        border.color: SelfvoyTheme.accentA(0.25)
     }
 
     Rectangle {
         id: circle
         anchors.fill: parent
         radius: width / 2
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: Qt.hsla(root.hue / 360, 0.85, 0.74, 1) }
-            GradientStop { position: 0.55; color: Qt.hsla(root.hue / 360, 0.68, 0.52, 1) }
-            GradientStop { position: 1.0; color: Qt.hsla(((root.hue + 30) % 360) / 360, 0.7, 0.3, 1) }
-        }
-        border.width: 1
-        border.color: Qt.rgba(1, 1, 1, root.ring ? 0.3 : 0.14)
+        color: root.tone
     }
 
     Text {
@@ -61,8 +57,8 @@ Item {
         text: root.initials
         font.family: SelfvoyTheme.fontFamily
         font.pixelSize: Math.max(10, root.size * 0.36)
-        font.weight: Font.Bold
-        color: "#FFFFFF"
+        font.weight: Font.DemiBold
+        color: root.agent ? SelfvoyTheme.accent : "#1C1C1E"
     }
 
     // Индикатор «онлайн»
@@ -72,7 +68,7 @@ Item {
         radius: width / 2
         color: SelfvoyTheme.online
         border.width: 2
-        border.color: SelfvoyTheme.bgPanel
+        border.color: SelfvoyTheme.surface
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         visible: root.online

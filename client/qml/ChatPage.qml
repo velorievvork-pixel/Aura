@@ -76,7 +76,7 @@ Item {
             }
         }
 
-        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Qt.rgba(1, 1, 1, 0.08) }
+        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: SelfvoyTheme.glass(0.08) }
 
         // ---------------------------------------------------------- лента
         ListView {

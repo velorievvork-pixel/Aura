@@ -50,12 +50,9 @@ Item {
     // Декоративные сферы, как в макете
     component Sphere: Rectangle {
         radius: width / 2
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.32) }
-            GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.03) }
-        }
+        color: SelfvoyTheme.field
         border.width: 1
-        border.color: Qt.rgba(1, 1, 1, 0.25)
+        border.color: SelfvoyTheme.glass(0.25)
     }
 
     RowLayout {
@@ -97,7 +94,7 @@ Item {
                         onTextChanged: { page.query = text; searchDelay.restart() }
                     }
                 }
-                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Qt.rgba(1, 1, 1, search.activeFocus ? 0.4 : 0.18) }
+                Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: SelfvoyTheme.glass(search.activeFocus ? 0.4 : 0.18) }
             }
 
             RowLayout {
@@ -131,7 +128,7 @@ Item {
                     width: list.width
                     height: 70
                     radius: 16
-                    color: active ? SelfvoyTheme.accentA(0.12) : (rowArea.containsMouse ? Qt.rgba(1, 1, 1, 0.04) : "transparent")
+                    color: active ? SelfvoyTheme.accentA(0.12) : (rowArea.containsMouse ? SelfvoyTheme.glass(0.04) : "transparent")
                     border.width: active ? 1 : 0
                     border.color: SelfvoyTheme.lilacA(0.3)
 
@@ -254,8 +251,8 @@ Item {
             Layout.fillHeight: true
 
             // Сферы залезают в колонку списка — показываем, только пока она широкая.
-            Sphere { width: 120; height: 120; x: -70; y: -20; visible: !page.chatOpen && list.width >= 520 }
-            Sphere { width: 22; height: 22; x: -90; y: 150; visible: !page.chatOpen && list.width >= 520 }
+            Sphere { width: 120; height: 120; x: -70; y: -20; visible: false }  // 2026: без декоративных сфер
+            Sphere { width: 22; height: 22; x: -90; y: 150; visible: false }
 
             // Профиль
             Rectangle {
@@ -264,12 +261,9 @@ Item {
                 width: parent.width
                 height: Math.min(parent.height, 1 + 33 + profileCol.implicitHeight + 22 + actions.implicitHeight + 26)
                 radius: 30
-                gradient: Gradient {
-                    GradientStop { position: 0.0; color: Qt.rgba(0.43, 0.43, 0.47, 0.55) }
-                    GradientStop { position: 1.0; color: Qt.rgba(0.24, 0.23, 0.27, 0.6) }
-                }
+                color: SelfvoyTheme.surface
                 border.width: 1
-                border.color: Qt.rgba(1, 1, 1, 0.28)
+                border.color: SelfvoyTheme.glass(0.28)
 
                 // Если карточка не влезает по высоте (узкое/низкое окно), информация
                 // прокручивается внутри неё, а не выталкивает кнопки за край окна.

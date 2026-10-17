@@ -17,12 +17,9 @@ Rectangle {
     implicitWidth: 250
     implicitHeight: column.implicitHeight + 40
     radius: 24
-    gradient: Gradient {
-        GradientStop { position: 0.0; color: root.them ? Qt.rgba(0.75, 0.6, 1, 0.2) : Qt.rgba(0.6, 0.67, 1, 0.18) }
-        GradientStop { position: 1.0; color: root.them ? Qt.rgba(0.45, 0.32, 0.86, 0.1) : Qt.rgba(0.47, 0.35, 0.86, 0.1) }
-    }
+    color: SelfvoyTheme.surface
     border.width: 1
-    border.color: root.them ? Qt.rgba(0.8, 0.67, 1, 0.42) : Qt.rgba(0.7, 0.74, 1, 0.36)
+    border.color: root.them ? SelfvoyTheme.border : SelfvoyTheme.accentA(0.35)
 
     ColumnLayout {
         id: column
@@ -59,7 +56,7 @@ Rectangle {
             Layout.topMargin: 14
             implicitHeight: 74
             radius: 14
-            color: Qt.rgba(1, 1, 1, 0.86)
+            color: SelfvoyTheme.surface2
             Row {
                 anchors.fill: parent
                 anchors.margins: 10
@@ -73,10 +70,7 @@ Rectangle {
                         height: parent.height * (root.talking ? base * pulse.value : base * 0.35)
                         anchors.bottom: parent.bottom
                         radius: 2
-                        gradient: Gradient {
-                            GradientStop { position: 0.0; color: SelfvoyTheme.accent }
-                            GradientStop { position: 1.0; color: "#6366F1" }
-                        }
+                        color: SelfvoyTheme.accentSolid
                         Behavior on height { NumberAnimation { duration: 260 } }
                         QtObject {
                             id: pulse

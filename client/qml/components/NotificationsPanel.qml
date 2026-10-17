@@ -51,9 +51,9 @@ GlassPanel {
         Text {
             Layout.fillWidth: true
             visible: !panel.items || panel.items.length === 0
-            text: "Пока тихо. Сюда приходят напоминания о задачах, запросы "
-                  + "подтверждения, предложения других агентов и уведомления "
-                  + "безопасности (новый вход, 2FA)."
+            text: "Пока тихо. Сюда приходят записи и оплаты клиентов, «Приду», "
+                  + "абонементы, напоминания о задачах, запросы подтверждения, "
+                  + "предложения других агентов и уведомления безопасности."
             font.family: SelfvoyTheme.fontFamily
             font.pixelSize: SelfvoyTheme.fontSmall
             color: SelfvoyTheme.textMuted
@@ -68,10 +68,9 @@ GlassPanel {
                 Layout.fillWidth: true
                 implicitHeight: rowContent.implicitHeight + SelfvoyTheme.spaceSm
                 radius: SelfvoyTheme.radiusField
-                color: modelData.read ? "transparent" : SelfvoyTheme.accentA(0.08)
-                border.width: 1
-                border.color: modelData.read ? Qt.rgba(1, 1, 1, SelfvoyTheme.glassBorder)
-                                             : SelfvoyTheme.accentA(0.3)
+                color: modelData.read ? "transparent" : SelfvoyTheme.newSoft
+                border.width: modelData.read ? 1 : 0
+                border.color: SelfvoyTheme.border
 
                 RowLayout {
                     id: rowContent
@@ -79,12 +78,18 @@ GlassPanel {
                     anchors.margins: SelfvoyTheme.spaceSm
                     spacing: SelfvoyTheme.spaceSm
 
-                    Text {
-                        Layout.preferredWidth: 20
-                        horizontalAlignment: Text.AlignHCenter
-                        text: panel.glyphFor(modelData.kind)
-                        font.pixelSize: 16
-                        color: modelData.read ? SelfvoyTheme.textMuted : SelfvoyTheme.accent
+                    // Вид уведомления — значок на тоне статуса (новое — янтарное).
+                    Rectangle {
+                        Layout.alignment: Qt.AlignTop
+                        implicitWidth: 32; implicitHeight: 32; radius: 10
+                        readonly property string tone: F.notificationTone(modelData)
+                        color: SelfvoyTheme.toneBg(tone)
+                        Icon {
+                            anchors.centerIn: parent
+                            name: F.notificationIcon(modelData.kind)
+                            size: 17
+                            color: parent.tone === "new" ? SelfvoyTheme.warning : SelfvoyTheme.toneFg(parent.tone)
+                        }
                     }
 
                     ColumnLayout {
@@ -139,7 +144,7 @@ GlassPanel {
             Layout.fillWidth: true
             Layout.topMargin: SelfvoyTheme.spaceXs
             height: 1
-            color: Qt.rgba(1, 1, 1, SelfvoyTheme.glassBorder)
+            color: SelfvoyTheme.border
         }
 
         Text {
@@ -194,19 +199,6 @@ GlassPanel {
                     onClicked: App.revokePushDevice(modelData.id)
                 }
             }
-        }
-    }
-
-    // Пиктограмма по виду уведомления (те же kind, что на сервере).
-    function glyphFor(kind) {
-        switch (kind) {
-        case "task.due": return "⏰"
-        case "confirmation.requested": return "⚠"
-        case "a2a.proposal": return "🤝"
-        case "login.new": return "→"
-        case "twofactor.enabled": return "🛡"
-        case "twofactor.disabled": return "⛨"
-        default: return "🔔"
         }
     }
 }

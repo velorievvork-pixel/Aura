@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import Selfvoy
 
-// GlassComboBox — выпадающий список в стиле полей v3 (тёмное стекло, сиреневый фокус).
+// GlassComboBox — выпадающий список в стиле полей 2026 (серая подложка, акцентный фокус).
 ComboBox {
     id: control
     implicitHeight: 44
@@ -12,9 +12,9 @@ ComboBox {
 
     background: Rectangle {
         radius: SelfvoyTheme.radiusField
-        color: Qt.rgba(0.04, 0.03, 0.07, control.pressed ? 0.6 : 0.45)
-        border.width: 1
-        border.color: control.visualFocus || control.popup.visible ? SelfvoyTheme.accentA(0.8) : Qt.rgba(1, 1, 1, 0.16)
+        color: control.pressed ? SelfvoyTheme.fieldHover : SelfvoyTheme.field
+        border.width: control.visualFocus || control.popup.visible ? 1 : 0
+        border.color: SelfvoyTheme.accent
     }
     contentItem: Text {
         leftPadding: 14
@@ -48,7 +48,7 @@ ComboBox {
         }
         background: Rectangle {
             radius: 10
-            color: option.highlighted ? SelfvoyTheme.accentA(0.25) : "transparent"
+            color: option.highlighted ? SelfvoyTheme.accentTint : "transparent"
         }
     }
     popup: Popup {
@@ -66,7 +66,7 @@ ComboBox {
             radius: SelfvoyTheme.radiusField
             color: SelfvoyTheme.bgElevated
             border.width: 1
-            border.color: SelfvoyTheme.lilacA(0.3)
+            border.color: SelfvoyTheme.border
         }
     }
 }

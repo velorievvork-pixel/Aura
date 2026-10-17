@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-# Клиент использует QtWebSockets и MultiEffect (QtQuick.Effects) → нужен Qt 6.5+.
+# Клиент использует QtWebSockets, QtCore.Settings и Qt.styleHints.colorScheme (тема по системе) → нужен Qt 6.5+.
 # Multimedia — захват микрофона (STT), TextToSpeech — платформенная озвучка (TTS).
 find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Network Qml Quick QuickControls2 WebSockets Multimedia TextToSpeech)
 
@@ -42,6 +42,7 @@ qt_add_qml_module(selfvoy-client
         qml/SettingsPage.qml
         qml/InboxPage.qml
         qml/BookingPage.qml
+        qml/PackagesPage.qml
         qml/Format.js
         qml/icons/Icons.js
         qml/theme/SelfvoyTheme.qml
@@ -63,6 +64,15 @@ qt_add_qml_module(selfvoy-client
         qml/components/VoicePanel.qml
         qml/components/ConfirmationPanel.qml
         qml/components/NotificationsPanel.qml
+        qml/components/SelfvoyLogo.qml
+        qml/components/StatusPill.qml
+        qml/components/ProBadge.qml
+        qml/components/Segmented.qml
+        qml/components/Toggle.qml
+        qml/components/Group.qml
+        qml/components/Cell.qml
+        qml/components/SheetPopup.qml
+        qml/components/BookingDetailPanel.qml
 )
 
 # Manrope (SIL OFL 1.1, fonts/OFL.txt) — шрифт макетов, встроен в клиент.

@@ -28,10 +28,10 @@ Item {
             spacing: 22
 
             Text {
-                text: page.mode === "confirmations" ? "Подтверждения" : "Уведомления"
+                text: page.mode === "confirmations" ? "Подтверждения" : "Входящие"
                 font.family: SelfvoyTheme.fontFamily
-                font.pixelSize: 38
-                font.weight: Font.Bold
+                font.pixelSize: SelfvoyTheme.fontDisplay
+                font.weight: Font.Black
                 color: SelfvoyTheme.textPrimary
             }
             Text {
@@ -39,7 +39,7 @@ Item {
                 wrapMode: Text.WordWrap
                 text: page.mode === "confirmations"
                       ? "Письма, сообщения и брони Selfvoy не выполняет сам: каждое такое действие ждёт здесь вашего решения."
-                      : "Напоминания, переговоры, новые входы и изменения безопасности."
+                      : "Записи и оплаты клиентов, «Приду», абонементы, напоминания, переговоры, новые входы и изменения безопасности."
                 font.family: SelfvoyTheme.fontFamily
                 font.pixelSize: SelfvoyTheme.fontBody
                 color: SelfvoyTheme.textSecondary

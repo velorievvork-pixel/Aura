@@ -4,7 +4,7 @@ import Selfvoy
 /*
   ChatBubble — «пузырь» сообщения.
 
-  Свой текст — справа, акцентное стекло; чужой — слева, нейтральное стекло;
+  Свой текст — справа, мягкий акцент; чужой — слева, сплошная карточка;
   сообщения Selfvoy помечаются значком и холодным оттенком.
 */
 Item {
@@ -21,9 +21,8 @@ Item {
     implicitWidth: parent ? parent.width : maxBubbleWidth
     height: implicitHeight
 
-    readonly property color bubbleTint: root.agent ? SelfvoyTheme.accentSoft
-                                                 : (root.mine ? SelfvoyTheme.accent : SelfvoyTheme.glassTint)
-    readonly property real bubbleFill: root.agent ? 0.16 : (root.mine ? SelfvoyTheme.accentFill : SelfvoyTheme.glassFill)
+    // Свои — мягкий акцент, Selfvoy и собеседник — сплошная карточка.
+    readonly property color bubbleColor: root.mine ? SelfvoyTheme.accentTint : SelfvoyTheme.surface
 
     // Значок Selfvoy над сообщением агента
     Row {
@@ -77,24 +76,9 @@ Item {
                 text: root.text
                 font: bubbleText.font
             }
-            color: Qt.rgba(root.bubbleTint.r, root.bubbleTint.g, root.bubbleTint.b, root.bubbleFill)
-            border.width: 1
-            border.color: root.agent
-                          ? SelfvoyTheme.accentA(0.35)
-                          : Qt.rgba(1, 1, 1, root.mine ? 0.22 : SelfvoyTheme.glassBorder)
-
-            // Блик по верхнему краю пузыря (той же формы, что и пузырь, чтобы
-            // углы не вылезали за скругление у однострочных сообщений)
-            Rectangle {
-                anchors.fill: parent
-                anchors.margins: 1
-                radius: Math.max(0, parent.radius - 1)
-                gradient: Gradient {
-                    GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.16) }
-                    GradientStop { position: 0.45; color: Qt.rgba(1, 1, 1, 0.0) }
-                    GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.0) }
-                }
-            }
+            color: root.bubbleColor
+            border.width: root.agent ? 1 : 0
+            border.color: SelfvoyTheme.accentA(0.35)
 
             Text {
                 id: bubbleText

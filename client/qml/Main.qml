@@ -7,9 +7,9 @@ import Selfvoy
 /*
   Главное окно Qt-клиента Selfvoy (v3).
 
-  Фон — SelfvoyBackground (тёмный фиолет с орбитами); он же backdrop для
-  стеклянных панелей. Маршрут: вход → онбординг-анкета → оболочка с
-  сайдбаром (DesktopShell сама сворачивает сайдбар в рельс в узком окне).
+  Фон — SelfvoyBackground (сплошной цвет темы 2026: светлая или тёмная).
+  Маршрут: вход → онбординг-анкета → оболочка с сайдбаром (DesktopShell сама
+  сворачивает сайдбар в рельс в узком окне).
 */
 ApplicationWindow {
     id: window
@@ -82,9 +82,7 @@ ApplicationWindow {
         width: Math.min(parent.width - SelfvoyTheme.spaceXl * 2, toastText.implicitWidth + SelfvoyTheme.spaceLg * 2)
         height: 46
         radius: SelfvoyTheme.radiusPill
-        color: Qt.rgba(0.11, 0.09, 0.16, 0.96)
-        border.width: 1
-        border.color: toast.isError ? Qt.alpha(SelfvoyTheme.danger, 0.5) : SelfvoyTheme.lilacA(0.35)
+        color: toast.isError ? SelfvoyTheme.danger : SelfvoyTheme.text
         opacity: 0
         visible: opacity > 0
         z: 100
@@ -102,7 +100,7 @@ ApplicationWindow {
             font.family: SelfvoyTheme.fontFamily
             font.pixelSize: SelfvoyTheme.fontSmall
             font.weight: Font.Medium
-            color: toast.isError ? SelfvoyTheme.danger : SelfvoyTheme.textPrimary
+            color: toast.isError ? "#FFFFFF" : SelfvoyTheme.bg
             text: toast.isError ? (App ? App.errorMessage : "") : (App ? App.statusMessage : "")
         }
     }

@@ -5,11 +5,12 @@ import Selfvoy
 Text {
     id: root
     signal clicked()
-    property color normalColor: SelfvoyTheme.textSecondary
+    property color normalColor: SelfvoyTheme.accent
     font.family: SelfvoyTheme.fontFamily
     font.pixelSize: SelfvoyTheme.fontSmall
     font.weight: Font.Medium
-    color: area.containsMouse ? SelfvoyTheme.textPrimary : normalColor
+    color: normalColor
+    font.underline: area.containsMouse
     MouseArea {
         id: area
         anchors.fill: parent

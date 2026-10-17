@@ -1,66 +1,136 @@
 pragma Singleton
 import QtQuick
+import QtCore
 
 /*
-  SelfvoyTheme — дизайн-система «Dark Glassmorphism» v3 (макеты 30.09.2026).
+  SelfvoyTheme — дизайн-система Selfvoy 2026 (как web/src/styles/global.css).
 
-  Глубокий фиолетово-чёрный фон с размытыми орбитами, стеклянные панели с
-  сиреневым бликом по краю, CTA — градиент сирень → фиолет со свечением.
-  Значения один в один с preview/styles.css, client/styles/selfvoy_theme.qss,
-  android/.../ui/theme/Theme.kt, ios/Selfvoy/Support/Theme.swift и docs/DESIGN.md.
+  Сплошные поверхности без стекла, свечения и градиентов под текстом; один
+  акцент #3555F5, янтарный #FFB224 — «новое / внимание»; статус всегда
+  значок + слово. Светлая и тёмная темы: по системе или выбором пользователя
+  (mode: system | light | dark, хранится в настройках клиента).
+
+  Старые имена токенов (bgDeep, glassFill, lilac, textPrimary…) оставлены
+  синонимами новых, чтобы прежние экраны перекрасились без переписывания.
 */
 QtObject {
-    // --- фон ------------------------------------------------------------
-    readonly property color bgDeep:      "#09080E"   // фон окна
-    readonly property color bgBase:      "#0F0D17"   // нижний слой градиента
-    readonly property color bgRaised:    "#16131F"   // карточки, секции
-    readonly property color bgElevated:  "#1E1A2B"   // модалки, дропдауны
-    readonly property color bgPanel:     "#14111D"   // подложка стеклянных панелей
+    id: theme
 
-    // --- стекло ---------------------------------------------------------
-    readonly property real  glassFill:        0.055
-    readonly property real  glassFillHover:   0.09
-    readonly property real  glassFillPressed: 0.13
-    readonly property real  glassBorder:      0.10
-    readonly property real  glassBorderHover: 0.18
-    readonly property real  glassHighlight:   0.14   // верхний блик
-    readonly property color glassTint:        "#FFFFFF"
-    readonly property color glassEdge:        "#D9B8FF" // сиреневый блик по краю панели
+    // --- тема: system | light | dark ----------------------------------------
+    property Settings store: Settings {
+        category: "appearance"
+        property string mode: "system"
+    }
+    readonly property string mode: store.mode
+    function setMode(value) {
+        if (value === "light" || value === "dark" || value === "system") store.mode = value
+    }
+    readonly property bool systemDark: Qt.styleHints.colorScheme === Qt.Dark
+    readonly property bool dark: mode === "dark" || (mode === "system" && systemDark)
 
-    // --- акцент ---------------------------------------------------------
-    readonly property color accent:       "#8B5CF6"
-    readonly property color accentSoft:   "#A78BFA"  // сообщения Selfvoy, подсветка
-    readonly property color accentDeep:   "#6D28D9"
-    readonly property real  accentFill:   0.18
-    readonly property color accentGlow:   "#738B5CF6" // свечение акцентных кнопок (.45)
-    readonly property color gradStart:    "#E6B3FF"   // CTA: сирень →
-    readonly property color gradMid:      "#A77BFF"   //      фиолет →
-    readonly property color gradEnd:      "#7346F5"   //      индиго
-    readonly property color glowViolet:   "#6D28D9"   // фоновые орбиты
-    readonly property color glowMagenta:  "#4C1D95"
-    readonly property color glowIndigo:   "#3B3CC4"
-    readonly property color lilac:        "#D9B8FF"   // индикатор активного пункта, ссылки
-    readonly property color pink:         "#E8A8FF"
+    function pick(light, darkValue) { return theme.dark ? darkValue : light }
 
-    // --- текст ----------------------------------------------------------
-    readonly property color textPrimary:   "#F4F1FB"
-    readonly property color textSecondary: "#B9B3C9"
-    readonly property color textMuted:     "#7D768F"
-    readonly property color textOnAccent:  "#FFFFFF"
+    // --- поверхности -----------------------------------------------------------
+    readonly property color bg:        pick("#F2F2F7", "#000000")   // фон окна
+    readonly property color bgElev:    pick("#FFFFFF", "#0F0F11")   // сайдбар
+    readonly property color surface:   pick("#FFFFFF", "#1C1C1E")   // карточки, группы
+    readonly property color surface2:  pick("#F7F7FA", "#232326")
+    readonly property color surface3:  pick("#E5E5EA", "#3A3A3C")
+    readonly property color field:     pick(Qt.rgba(118 / 255, 118 / 255, 128 / 255, 0.12), Qt.rgba(118 / 255, 118 / 255, 128 / 255, 0.24))
+    readonly property color fieldHover: pick(Qt.rgba(118 / 255, 118 / 255, 128 / 255, 0.18), Qt.rgba(118 / 255, 118 / 255, 128 / 255, 0.32))
+    readonly property color border:    pick(Qt.rgba(60 / 255, 60 / 255, 67 / 255, 0.13), Qt.rgba(84 / 255, 84 / 255, 88 / 255, 0.45))
+    readonly property color borderStrong: pick(Qt.rgba(60 / 255, 60 / 255, 67 / 255, 0.24), Qt.rgba(84 / 255, 84 / 255, 88 / 255, 0.75))
+    readonly property color ter:       pick("#C4C4CA", "#48484A")   // пунктир ленты, пустые кружки
+    readonly property color dim:       pick(Qt.rgba(0, 0, 0, 0.32), Qt.rgba(0, 0, 0, 0.55))
 
-    // --- состояния ------------------------------------------------------
-    readonly property color success: "#4ADE80"
-    readonly property color warning: "#FBBF24"
-    readonly property color danger:  "#F87171"
-    readonly property color online:  "#4ADE80"
+    // --- текст -------------------------------------------------------------------
+    readonly property color text:   pick("#111114", "#F5F5F7")
+    readonly property color text2:  pick("#6C6C74", "#98989F")
+    readonly property color text3:  pick("#8A8A91", "#75757C")
 
-    // --- геометрия ------------------------------------------------------
+    // --- акцент и статусы ----------------------------------------------------------
+    readonly property color accent:      pick("#3555F5", "#7D93FF")   // текст ссылок, активный пункт
+    readonly property color accentSolid: "#3555F5"                    // заливка кнопок и карточки «Следующая»
+    readonly property color accentHover: pick("#2A47E0", "#4A67FF")
+    readonly property color accentTint:  pick("#E9EDFF", Qt.rgba(125 / 255, 147 / 255, 1, 0.18))
+    readonly property color amber:       "#FFB224"                    // новое / внимание (знак бренда)
+    readonly property color newSoft:     pick("#FFF1D6", Qt.rgba(1, 178 / 255, 36 / 255, 0.18))
+    readonly property color success:     pick("#1E8E50", "#4CD483")
+    readonly property color successSoft: pick("#E3F5EA", Qt.rgba(76 / 255, 212 / 255, 131 / 255, 0.15))
+    readonly property color warning:     pick("#A86400", "#FFC24D")
+    readonly property color warningSoft: pick("#FFF1D6", Qt.rgba(1, 194 / 255, 77 / 255, 0.15))
+    readonly property color danger:      pick("#D93A3F", "#FF6B6F")
+    readonly property color dangerSoft:  pick("#FDECEC", Qt.rgba(1, 107 / 255, 111 / 255, 0.15))
+    readonly property color toggleOn:    pick("#34C759", "#30D158")
+    readonly property color online:      toggleOn
+
+    // Цвета капсул ленты дня — по странице записи (5 по кругу).
+    readonly property var capsule: ["#3555F5", "#22A06B", "#F59E0B", "#E8618C", "#7C5CFC"]
+    // Карточка «Следующая» на тех же цветах, но темнее там, где белый текст иначе не читается.
+    readonly property var capsuleDeep: ["#3555F5", "#22A06B", "#C27803", "#C94473", "#7C5CFC"]
+    function capsuleColor(index) { return capsule[((index - 1) % 5 + 5) % 5] }
+    function capsuleDeepColor(index) { return capsuleDeep[((index - 1) % 5 + 5) % 5] }
+
+    // Тон статуса (как .status-pill в вебе): green | amber | new | red | accent | "".
+    function toneFg(tone) {
+        switch (tone) {
+        case "green": return success
+        case "amber": case "new": return warning
+        case "red": return danger
+        case "accent": return accent
+        default: return text2
+        }
+    }
+    function toneBg(tone) {
+        switch (tone) {
+        case "green": return successSoft
+        case "amber": return warningSoft
+        case "new": return newSoft
+        case "red": return dangerSoft
+        case "accent": return accentTint
+        default: return field
+        }
+    }
+
+    // --- синонимы прежней темы (экраны v3) ------------------------------------------
+    readonly property color bgDeep: bg
+    readonly property color bgBase: bg
+    readonly property color bgRaised: surface
+    readonly property color bgElevated: pick("#FFFFFF", "#232326")
+    readonly property color bgPanel: surface
+    readonly property real  glassFill: 0.06
+    readonly property real  glassFillHover: 0.09
+    readonly property real  glassFillPressed: 0.12
+    readonly property real  glassBorder: dark ? 0.16 : 0.12
+    readonly property real  glassBorderHover: dark ? 0.26 : 0.2
+    readonly property real  glassHighlight: 0
+    readonly property color glassTint: text
+    readonly property color glassEdge: border
+    readonly property color accentSoft: accent          // «акцентный текст» в старых экранах
+    readonly property color accentDeep: accentHover
+    readonly property real  accentFill: 0.16
+    readonly property color accentGlow: "transparent"
+    readonly property color gradStart: accentSolid
+    readonly property color gradMid: accentSolid
+    readonly property color gradEnd: accentSolid
+    readonly property color glowViolet: bg
+    readonly property color glowMagenta: bg
+    readonly property color glowIndigo: bg
+    readonly property color lilac: accent
+    readonly property color pink: capsule[3]
+    readonly property color textPrimary: text
+    readonly property color textSecondary: text2
+    readonly property color textMuted: text3
+    readonly property color textOnAccent: "#FFFFFF"
+
+    // --- геометрия (r-sm 10, r-md 12, r-lg 20, r-xl 28) -----------------------------
     readonly property int radiusPill:   999
-    readonly property int radiusShell:  32   // главные панели окна
-    readonly property int radiusCard:   24
+    readonly property int radiusShell:  28
+    readonly property int radiusSheet:  28
+    readonly property int radiusCard:   20
     readonly property int radiusBubble: 20
-    readonly property int radiusField:  14
-    readonly property int radiusSmall:  12
+    readonly property int radiusField:  12
+    readonly property int radiusSmall:  10
 
     readonly property int spaceXs: 4
     readonly property int spaceSm: 8
@@ -69,42 +139,43 @@ QtObject {
     readonly property int spaceXl: 32
     readonly property int spaceXxl: 48
 
-    // --- адаптивность: узкое окно — стек, широкое — сайдбар + контент ----
-    readonly property int breakpointWide: 1000   // ≥ — сайдбар с подписями
-    readonly property int sidebarWidth: 258
+    // --- раскладка: сайдбар + контент ----------------------------------------------
+    readonly property int breakpointWide: 1000
+    readonly property int sidebarWidth: 248
     readonly property int railWidth: 76
     readonly property int masterWidth: 340
 
-    // --- тень -----------------------------------------------------------
-    readonly property color shadowColor: "#99000000"
-    readonly property int   shadowBlur:  40
-    readonly property int   shadowY:     24
+    // --- тень (только у всплывающих окон) ---------------------------------------------
+    readonly property color shadowColor: pick(Qt.rgba(20 / 255, 24 / 255, 40 / 255, 0.22), Qt.rgba(0, 0, 0, 0.7))
+    readonly property int   shadowBlur:  30
+    readonly property int   shadowY:     10
 
-    // --- типографика: Manrope встроен в клиент (client/fonts, OFL) -------
-    readonly property string fontFamily: "Manrope"
-    readonly property int fontMicro:   11
+    // --- типографика: системный шрифт, крупные жирные заголовки -------------------------
+    readonly property string fontFamily: Qt.application.font.family
+    readonly property int fontMicro:   12
     readonly property int fontSmall:   13
     readonly property int fontBody:    15
-    readonly property int fontLead:    18
-    readonly property int fontTitle:   22
+    readonly property int fontLead:    17
+    readonly property int fontTitle:   20
     readonly property int fontHero:    34
-    readonly property int fontDisplay: 54
+    readonly property int fontDisplay: 40
 
-    // --- анимация: fade + slide-up, 200–300 мс ---------------------------
-    readonly property int  pressMs:  180
-    readonly property int  moveMs:   250
-    readonly property int  slowMs:   350
+    // --- анимация ---------------------------------------------------------------------
+    readonly property int  pressMs:  150
+    readonly property int  moveMs:   220
+    readonly property int  slowMs:   320
     readonly property real pressScale: 0.98
-    readonly property real hoverLift:  -2
+    readonly property real hoverLift:  0
     readonly property int  ease: Easing.OutCubic
 
-    // Вспомогательные цвета с прозрачностью
-    function glass(alpha)      { return Qt.rgba(1, 1, 1, alpha) }
-    function accentA(alpha)    { return Qt.rgba(accent.r, accent.g, accent.b, alpha) }
-    function lilacA(alpha)     { return Qt.rgba(lilac.r, lilac.g, lilac.b, alpha) }
-    function shade(alpha)      { return Qt.rgba(0, 0, 0, alpha) }
+    // Полупрозрачные оттенки. glass() — «чернила» поверх поверхности: в светлой
+    // теме тёмные, в тёмной — светлые (ховеры, разделители, подложки).
+    function glass(alpha)   { return dark ? Qt.rgba(1, 1, 1, alpha) : Qt.rgba(0.07, 0.07, 0.1, alpha * 0.9) }
+    function accentA(alpha) { return Qt.rgba(accent.r, accent.g, accent.b, alpha) }
+    function lilacA(alpha)  { return accentA(alpha) }
+    function shade(alpha)   { return Qt.rgba(0, 0, 0, alpha) }
 
-    // Приветствие по времени суток (Home)
+    // Приветствие по времени суток
     function greeting(date) {
         const h = date.getHours()
         if (h < 5) return "Доброй ночи"

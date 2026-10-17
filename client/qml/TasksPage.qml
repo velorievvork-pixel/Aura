@@ -13,6 +13,8 @@ Item {
     id: page
 
     signal navigate(string to)
+    // «Создать → Новая задача» из оболочки.
+    function runAction(action) { if (action === "new") addDialog.open() }
 
     property date now: new Date()
     property date day: new Date()
@@ -70,14 +72,9 @@ Item {
         implicitHeight: 58
         radius: 16
         opacity: isDone ? 0.62 : 1
-        gradient: Gradient {
-            orientation: Gradient.Horizontal
-            GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, rowArea.containsMouse ? 0.12 : 0.09) }
-            GradientStop { position: 0.6; color: SelfvoyTheme.accentA(0.08) }
-            GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.03) }
-        }
+        color: rowArea.containsMouse ? SelfvoyTheme.surface2 : SelfvoyTheme.surface
         border.width: 1
-        border.color: Qt.rgba(1, 1, 1, 0.16)
+        border.color: SelfvoyTheme.glass(0.16)
 
         MouseArea { id: rowArea; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
         Rectangle { x: 8; y: 8; width: 5; height: 5; radius: 2.5; color: SelfvoyTheme.accentSoft }
@@ -93,7 +90,7 @@ Item {
                 implicitWidth: 22; implicitHeight: 22; radius: 7
                 color: row.isDone ? SelfvoyTheme.accent : "transparent"
                 border.width: row.isDone ? 0 : 1.5
-                border.color: Qt.rgba(1, 1, 1, 0.3)
+                border.color: SelfvoyTheme.glass(0.3)
                 Icon { anchors.centerIn: parent; visible: row.isDone; name: "check"; size: 14; color: "#FFFFFF" }
                 MouseArea {
                     anchors.fill: parent
@@ -192,9 +189,9 @@ Item {
                             implicitHeight: 44
                             implicitWidth: weekNav.implicitWidth + 12
                             radius: 22
-                            color: Qt.rgba(1, 1, 1, 0.05)
+                            color: SelfvoyTheme.glass(0.05)
                             border.width: 1
-                            border.color: Qt.rgba(1, 1, 1, 0.14)
+                            border.color: SelfvoyTheme.glass(0.14)
                             RowLayout {
                                 id: weekNav
                                 anchors.centerIn: parent
@@ -224,7 +221,7 @@ Item {
                                 Layout.fillWidth: true
                                 implicitHeight: 84
                                 radius: 16
-                                color: selected ? SelfvoyTheme.accentA(0.2) : (dayArea.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent")
+                                color: selected ? SelfvoyTheme.accentA(0.2) : (dayArea.containsMouse ? SelfvoyTheme.glass(0.05) : "transparent")
                                 border.width: selected ? 1 : 0
                                 border.color: SelfvoyTheme.lilacA(0.45)
                                 ColumnLayout {
@@ -305,7 +302,7 @@ Item {
                                 visible: !!page.next
                                 implicitHeight: 6
                                 radius: 3
-                                color: Qt.rgba(1, 1, 1, 0.08)
+                                color: SelfvoyTheme.glass(0.08)
                                 Rectangle {
                                     height: parent.height
                                     radius: 3
@@ -314,11 +311,7 @@ Item {
                                         const min = (F.parse(F.taskWhen(page.next)) - page.now) / 60000
                                         return parent.width * Math.max(0.05, Math.min(1, 1 - min / 120))
                                     }
-                                    gradient: Gradient {
-                                        orientation: Gradient.Horizontal
-                                        GradientStop { position: 0.0; color: SelfvoyTheme.gradStart }
-                                        GradientStop { position: 1.0; color: SelfvoyTheme.gradEnd }
-                                    }
+                                    color: SelfvoyTheme.accentSolid
                                 }
                             }
                             Text {
@@ -379,7 +372,7 @@ Item {
         width: 420
         modal: true
         padding: 26
-        Overlay.modal: Rectangle { color: Qt.rgba(0.02, 0.01, 0.04, 0.6) }
+        Overlay.modal: Rectangle { color: SelfvoyTheme.dim }
         onOpened: { title.text = ""; time.text = "18:00"; title.forceActiveFocus() }
         background: GlassSurface { radius: 26; base: 0.97 }
 

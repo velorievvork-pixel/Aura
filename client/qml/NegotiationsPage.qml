@@ -136,7 +136,7 @@ Item {
                     radius: 20
                     color: "transparent"
                     border.width: 1
-                    border.color: Qt.rgba(1, 1, 1, 0.2)
+                    border.color: SelfvoyTheme.glass(0.2)
                     Text {
                         id: roundText
                         anchors.centerIn: parent
@@ -225,9 +225,9 @@ Item {
                                 implicitWidth: Math.min(380, stepCol.implicitWidth + 36)
                                 implicitHeight: stepCol.implicitHeight + 18
                                 radius: 22
-                                color: Qt.rgba(1, 1, 1, 0.05)
+                                color: SelfvoyTheme.glass(0.05)
                                 border.width: 1
-                                border.color: Qt.rgba(1, 1, 1, 0.18)
+                                border.color: SelfvoyTheme.glass(0.18)
                                 ColumnLayout {
                                     id: stepCol
                                     anchors.centerIn: parent
@@ -278,11 +278,7 @@ Item {
                 visible: page.accepted && !page.composing && page.revealed >= page.steps.length
                 implicitHeight: resultRow.implicitHeight + 56
                 radius: 26
-                gradient: Gradient {
-                    orientation: Gradient.Horizontal
-                    GradientStop { position: 0.0; color: Qt.rgba(0.47, 0.39, 1, 0.18) }
-                    GradientStop { position: 1.0; color: Qt.rgba(0.24, 0.47, 1, 0.12) }
-                }
+                color: SelfvoyTheme.accentTint
                 border.width: 1
                 border.color: page.booked ? Qt.alpha(SelfvoyTheme.success, 0.45) : SelfvoyTheme.accentA(0.45)
 

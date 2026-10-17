@@ -47,10 +47,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 1
                 radius: 33
-                gradient: Gradient {
-                    GradientStop { position: 0.0; color: SelfvoyTheme.lilacA(0.16) }
-                    GradientStop { position: 1.0; color: "transparent" }
-                }
+                color: "transparent"
             }
             RowLayout {
                 anchors.fill: parent
@@ -87,7 +84,7 @@ Item {
             Rectangle {
                 anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                 height: 1
-                color: Qt.rgba(1, 1, 1, 0.08)
+                color: SelfvoyTheme.glass(0.08)
             }
         }
 
@@ -253,14 +250,9 @@ Item {
                 Layout.fillWidth: true
                 implicitHeight: 56
                 radius: 28
-                gradient: Gradient {
-                    orientation: Gradient.Horizontal
-                    GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.05) }
-                    GradientStop { position: 0.5; color: SelfvoyTheme.accentA(0.13) }
-                    GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.05) }
-                }
+                color: SelfvoyTheme.surface
                 border.width: 1
-                border.color: input.activeFocus ? SelfvoyTheme.accentA(0.7) : Qt.rgba(1, 1, 1, 0.18)
+                border.color: input.activeFocus ? SelfvoyTheme.accentA(0.7) : SelfvoyTheme.glass(0.18)
                 TextField {
                     id: input
                     anchors.fill: parent

@@ -3,8 +3,8 @@ import QtQuick.Layouts
 import Selfvoy
 
 /*
-  Bubble — реплика в диалоге с Selfvoy. Пользователь — тёмное стекло слева,
-  Selfvoy — светлое стекло справа с фиолетовым свечением (макет Chat).
+  Bubble — реплика в диалоге с Selfvoy. Пользователь — мягкий акцентный фон,
+  Selfvoy — сплошная карточка (дизайн 2026, без стекла и свечения).
   Дети (кнопки действий) встают под текстом.
 */
 Item {
@@ -34,13 +34,9 @@ Item {
     Rectangle {
         anchors.fill: parent
         radius: SelfvoyTheme.radiusBubble
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: root.fromSelfvoy ? Qt.rgba(1, 1, 1, 0.2) : Qt.rgba(1, 1, 1, 0.09) }
-            GradientStop { position: 1.0; color: root.fromSelfvoy ? Qt.rgba(0.67, 0.63, 0.86, 0.12) : Qt.rgba(1, 1, 1, 0.06) }
-        }
-        border.width: 1
-        border.color: root.error ? Qt.alpha(SelfvoyTheme.danger, 0.6)
-                                 : Qt.rgba(1, 1, 1, root.fromSelfvoy ? 0.28 : 0.1)
+        color: root.fromSelfvoy ? SelfvoyTheme.surface : SelfvoyTheme.accentTint
+        border.width: root.error ? 1 : 0
+        border.color: SelfvoyTheme.danger
     }
     ColumnLayout {
         id: column
@@ -55,7 +51,7 @@ Item {
             wrapMode: Text.WordWrap
             font.family: SelfvoyTheme.fontFamily
             font.pixelSize: SelfvoyTheme.fontBody
-            font.weight: Font.DemiBold
+            font.weight: Font.Normal
             lineHeight: 1.3
             color: root.error ? SelfvoyTheme.danger : SelfvoyTheme.textPrimary
         }

@@ -105,6 +105,27 @@ class AppStore : public QObject {
     Q_PROPERTY(bool bookingBusy READ bookingBusy NOTIFY negotiationChanged)
     // v3: поиск людей для контактов (users.search).
     Q_PROPERTY(QVariantList userResults READ userResults NOTIFY userResultsChanged)
+    // 2026 (F1–F6): тариф, Telegram, оплата (ЮKassa), абонементы, свободные окна,
+    // ICS-подписка и пост со свободными окнами.
+    // plan: {name: pro|free, until, enforced} из объекта user (auth.me / login).
+    Q_PROPERTY(QVariantMap plan READ plan NOTIFY profileChanged)
+    // server.info → telegram_bot ("" — бот на сервере не настроен).
+    Q_PROPERTY(QString telegramBot READ telegramBot NOTIFY serverInfoChanged)
+    // Свободные окна первой открытой страницы записи (booking.get по своему slug):
+    // [{start, end, day, page_id}] — для ленты «Сегодня» и кнопки «Предложить».
+    Q_PROPERTY(QVariantList freeSlots READ freeSlots NOTIFY freeSlotsChanged)
+    Q_PROPERTY(QVariantList packages READ packages NOTIFY packagesChanged)
+    Q_PROPERTY(bool packagesLoaded READ packagesLoaded NOTIFY packagesChanged)
+    // payments.status: {connected, provider, shop_id, connected_at}. Секретный ключ
+    // ЮKassa здесь не хранится никогда — он уходит только в запрос payments.connect.
+    Q_PROPERTY(QVariantMap paymentsStatus READ paymentsStatus NOTIFY paymentsChanged)
+    Q_PROPERTY(bool paymentsBusy READ paymentsBusy NOTIFY paymentsChanged)
+    // telegram.status: {enabled, bot_username, linked, username}.
+    Q_PROPERTY(QVariantMap telegramStatus READ telegramStatus NOTIFY telegramChanged)
+    // calendar.feed*: {enabled, url} — url собран из адреса сервера, если сервер его не знает.
+    Q_PROPERTY(QVariantMap calendarFeed READ calendarFeed NOTIFY calendarFeedChanged)
+    // booking.slotsPost: {page_id, text, slots, url, loading, error}.
+    Q_PROPERTY(QVariantMap slotsPost READ slotsPost NOTIFY slotsPostChanged)
 
 public:
     explicit AppStore(QObject* parent = nullptr);
@@ -198,6 +219,17 @@ public:
     QVariantList negotiationHistory() const { return negotiationHistory_; }
     bool bookingBusy() const { return bookingBusy_; }
     QVariantList userResults() const { return userResults_; }
+    // 2026 (F1–F6)
+    QVariantMap plan() const { return plan_; }
+    QString telegramBot() const { return telegramBot_; }
+    QVariantList freeSlots() const { return freeSlots_; }
+    QVariantList packages() const { return packages_; }
+    bool packagesLoaded() const { return packagesLoaded_; }
+    QVariantMap paymentsStatus() const { return paymentsStatus_; }
+    bool paymentsBusy() const { return paymentsBusy_; }
+    QVariantMap telegramStatus() const { return telegramStatus_; }
+    QVariantMap calendarFeed() const { return calendarFeed_; }
+    QVariantMap slotsPost() const { return slotsPost_; }
 
 public slots:
     void login(const QString& email, const QString& password);
@@ -300,6 +332,37 @@ public slots:
     void markNotificationsRead(qint64 notificationId = 0);  // 0 — все
     void loadPushDevices();
     void revokePushDevice(qint64 deviceId);
+    // ------------------------------------------------ 2026 (F1–F6), сторона владельца
+    void loadServerInfo();                                   // server.info → telegram_bot
+    void refreshProfile();                                   // auth.me: свежий plan после награды
+    void loadFreeSlots();                                    // booking.get первой открытой страницы
+    // booking.paymentSet: status — paid | waived | refunded.
+    void setBookingPayment(qint64 bookingId, const QString& status);
+    // booking.ownerCancel одной встречи серии (occurrence — start встречи).
+    void cancelBookingOccurrence(qint64 bookingId, const QString& occurrence);
+    // Абонементы (package.*): status — фильтр списка ("" — все).
+    void loadPackages(const QString& status = QString());
+    // package.issue: {page_id, offer_id | title+sessions(+price, valid_days), guest_name,
+    // guest_email?, cc_email?, paid?} → packageIssued({package, token, url}) / packageFailed.
+    void issuePackage(const QVariantMap& fields);
+    void adjustPackage(qint64 packageId, int delta);
+    void cancelPackage(qint64 packageId);
+    void setPackagePayment(qint64 packageId, const QString& status);
+    // Оплата: ЮKassa владельца (payments.*). Ключ не сохраняется и не логируется.
+    void loadPayments();
+    void connectYooKassa(const QString& shopId, const QString& secretKey);
+    void disconnectPayments();
+    // Telegram-бот: статус, ссылка привязки (telegramLinkReady → Qt.openUrlExternally), отвязка.
+    void loadTelegram();
+    void linkTelegram();
+    void unlinkTelegram();
+    void setTelegramNotifications(bool enabled);             // prefs.notifications.telegram
+    // ICS-подписка на календарь.
+    void loadCalendarFeed();
+    void resetCalendarFeed();
+    void disableCalendarFeed();
+    // Пост со свободными окнами: days 1–14, format telegram | vk | plain.
+    void requestSlotsPost(qint64 pageId, int days, const QString& format);
 
 signals:
     void connectedChanged();
@@ -357,6 +420,21 @@ signals:
     void negotiationChanged();
     void selfvoyDialogChanged();
     void userResultsChanged();
+    // 2026 (F1–F6)
+    void serverInfoChanged();
+    void freeSlotsChanged();
+    void packagesChanged();
+    void paymentsChanged();
+    void telegramChanged();
+    void calendarFeedChanged();
+    void slotsPostChanged();
+    void proRequired(const QString& message);          // ответ pro_required: показать «как получить Pro»
+    void bookingUpdated(const QVariantMap& booking);   // запись изменилась (оплата, отмена встречи)
+    void packageIssued(const QVariantMap& result);     // {package, token, url} — токен показывается один раз
+    void packageFailed(const QString& message);
+    void paymentsConnected();
+    void paymentsFailed(const QString& message);
+    void telegramLinkReady(const QString& url);        // открыть Qt.openUrlExternally
 
 private:
     void handleEvent(const QString& name, const QJsonObject& payload);
@@ -476,6 +554,23 @@ private:
     QVariantList userResults_;           // результаты users.search
     qint64 dialogSeq_ = 0;
     void appendDialog(QVariantMap entry);
+    // 2026 (F1–F6)
+    // pro_required → сигнал proRequired и понятный текст; иначе — текст как есть.
+    QString explainError(const QString& error);
+    void putBooking(const QJsonObject& booking);      // заменить запись в guestBookings_
+    void putPackage(const QJsonObject& package);      // заменить пакет в packages_
+    void applyCalendarFeed(const QJsonObject& payload);
+    QVariantMap plan_;
+    QString telegramBot_;
+    QVariantList freeSlots_;
+    QVariantList packages_;
+    bool packagesLoaded_ = false;
+    QString packagesFilter_;
+    QVariantMap paymentsStatus_;
+    bool paymentsBusy_ = false;
+    QVariantMap telegramStatus_;
+    QVariantMap calendarFeed_;
+    QVariantMap slotsPost_;
     QString toolMode(const QString& tool) const;
 };
 

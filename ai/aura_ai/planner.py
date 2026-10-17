@@ -549,6 +549,10 @@ def _within_work_hours(start: datetime, end: datetime, zone: ZoneInfo, hours: fr
     return (end - timedelta(microseconds=1)).astimezone(zone).hour in hours
 
 
+# per_day больше этого — запрос страницы записи (все варианты дня), иначе приглашение.
+BOOKING_PER_DAY_THRESHOLD = 2
+
+
 def offer_slots(
     window: TimeWindow,
     calendar: Sequence[CalendarEvent],
@@ -638,12 +642,22 @@ def offer_slots(
             chosen.append((start, end))
         picks_by_day.append(chosen)
 
-    # По кругу: первый (лучший) слот каждого дня, затем второй и т.д.
     selected: List[Tuple[datetime, datetime]] = []
-    for rank in range(per_day):
+    if per_day > BOOKING_PER_DAY_THRESHOLD:
+        # Страница записи: ближайшие дни целиком (все их варианты), дальше — пока
+        # хватает max_slots. «По кругу» на окне в 60 дней оставило бы по паре
+        # вариантов даже на завтра.
         for chosen in picks_by_day:
-            if rank < len(chosen) and len(selected) < max_slots:
-                selected.append(chosen[rank])
+            for item in chosen:
+                if len(selected) >= max_slots:
+                    break
+                selected.append(item)
+    else:
+        # Приглашение: первый (лучший) слот каждого дня, затем второй и т.д.
+        for rank in range(per_day):
+            for chosen in picks_by_day:
+                if rank < len(chosen) and len(selected) < max_slots:
+                    selected.append(chosen[rank])
     selected.sort()
 
     result: List[Slot] = []

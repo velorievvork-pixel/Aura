@@ -60,7 +60,10 @@ public:
     const std::string& remoteAddr() const { return remoteAddr_; }
     // IP без порта: ключ для лимитов (переподключение не обнуляет счётчики).
     const std::string& remoteIp() const { return remoteIp_; }
+    // «ip:port» → ключ лимитов: IPv4 как есть, IPv6 — сеть /64.
     static std::string ipOf(const std::string& remoteAddr);
+    // IP без порта → ключ лимитов (IPv6 → «a:b:c:d::/64», IPv4-mapped → IPv4).
+    static std::string limitKey(const std::string& ip);
     const std::string& userAgent() const { return userAgent_; }
     bool alive() const { return alive_.load(); }
     std::string authorizationHeader() const { return authorization_; }

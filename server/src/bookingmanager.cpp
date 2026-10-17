@@ -24,13 +24,33 @@ namespace aura {
 
 namespace {
 
+// Ключ лимита писем: один почтовый ящик — один ключ. Регистр, «+метка» и точки
+// в Gmail не дают обойти лимит на адрес.
+std::string mailboxKey(const std::string& email) {
+    std::string address = email;
+    std::transform(address.begin(), address.end(), address.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    const std::size_t at = address.rfind('@');
+    if (at == std::string::npos) return address;
+    std::string local = address.substr(0, at);
+    const std::string domain = address.substr(at + 1);
+    if (const std::size_t plus = local.find('+'); plus != std::string::npos) local.resize(plus);
+    if (domain == "gmail.com" || domain == "googlemail.com") {
+        local.erase(std::remove(local.begin(), local.end(), '.'), local.end());
+        return local + "@gmail.com";
+    }
+    return local + "@" + domain;
+}
+
 constexpr std::size_t kTokenBytes = 32;   // 256 бит случайности
 constexpr std::size_t kTokenLength = 43;  // base64url без '=' от 32 байт
 constexpr std::size_t kSlugLength = 10;
 constexpr int kReminderLeadSec = 15 * 60;
 constexpr int kWeekSec = 7 * 24 * 3600;
-constexpr int kAiPerDay = 8;     // кандидатов в день от AI
-constexpr int kAiMaxSlots = 120;
+// Кандидатов в день от AI — не меньше максимума max_per_day страницы (16), иначе
+// настройка 9–16 записей в день не работала бы; AI отдаёт ближайшие дни целиком.
+constexpr int kAiPerDay = 16;
+constexpr int kAiMaxSlots = 400;
 constexpr int kCacheSeconds = 60;
 
 std::string trim(const std::string& value) {
@@ -223,12 +243,9 @@ void BookingManager::mailGuest(const BookingRecord& booking, const BookingPageRe
                                const std::string& subject, const std::string& title, const std::string& lead,
                                const std::string& token, bool onlyActive, bool reserved) {
     if (booking.guestEmail.empty() || !mail_) return;
-    std::string address = booking.guestEmail;
-    std::transform(address.begin(), address.end(), address.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     // Лимиты на адрес и на владельца: форма записи не должна превращаться в
     // рассылку на чужой email, а страница — в канал рассылки от имени Aura.
-    if (!reserved && limited("booking.mail:" + address, kMailPerAddressHour, 3600)) {
+    if (!reserved && limited("booking.mail:" + mailboxKey(booking.guestEmail), kMailPerAddressHour, 3600)) {
         AURA_LOG(log::Level::Warn, "booking") << "лимит писем на адрес исчерпан, письмо (" << kind << ") не отправлено";
         return;
     }
@@ -283,6 +300,15 @@ bool BookingManager::validSlug(const std::string& slug) {
     return std::all_of(slug.begin(), slug.end(), [](unsigned char ch) {
         return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
     });
+}
+
+bool BookingManager::underLimit(const std::string& key, int limit, int windowSeconds) {
+    if (database_.db().sharedRateLimits()) return database_.db().rateLimitCount(key) < limit;
+    std::lock_guard<std::mutex> lock(limitsMutex_);
+    const auto it = limits_.find(key);
+    return it == limits_.end() ||
+           std::chrono::steady_clock::now() - it->second.start > std::chrono::seconds(windowSeconds) ||
+           it->second.count < limit;
 }
 
 bool BookingManager::limited(const std::string& key, int perWindow, int windowSeconds) {
@@ -961,6 +987,13 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         return Result::failure(protocol::code::kNotFound, "страница не найдена");
     }
     if (page->status != "active") return Result::failure(protocol::code::kConflict, "запись временно закрыта");
+    // Записей на страницу в час: анонимно не забить календарь владельца. Считаются
+    // только состоявшиеся записи — чужие неудачные попытки квоту не тратят.
+    const std::string pageKey = "booking.page.h:" + std::to_string(page->id);
+    if (!underLimit(pageKey, kBookPerPageHour, 3600)) {
+        return Result::failure(protocol::code::kForbidden,
+                               "на эту страницу сейчас слишком много записей — попробуйте через час");
+    }
 
     BookingRecord booking;
     booking.pageId = page->id;
@@ -994,12 +1027,9 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     const auto offered = std::find_if(candidates.begin(), candidates.end(),
                                       [wanted](const Offer& o) { return o.start == wanted; });
     if (offered == candidates.end()) {
-        // Время могли занять только что (другой экземпляр сервера уже получил от AI
-        // список без него) — для гостя это «занято», а не ошибка запроса.
-        const std::time_t until = wanted + static_cast<std::time_t>(page->durationMinutes) * 60;
-        return isFree(memory_.busy(page->ownerId), wanted, until)
-                   ? Result::failure(protocol::code::kBadRequest, "этого времени нет среди свободных")
-                   : Result::failure(protocol::code::kConflict, "это время уже занято — выберите другое");
+        // Один ответ и для «такого слота нет», и для «уже занято»: отличая их,
+        // анонимный гость восстановил бы личное расписание владельца на любое время.
+        return Result::failure(protocol::code::kConflict, "это время уже занято — выберите другое");
     }
     // Серия: та же встреча каждую неделю в том же местном времени владельца
     // (AI-сервис считает её в поясе владельца) — до блокировки, чтобы сетевой
@@ -1054,6 +1084,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     }
     if (id == 0) return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
     booking.id = id;
+    limited(pageKey, kBookPerPageHour + 1, 3600);  // засчитываем состоявшуюся запись
 
     // Задачи с напоминанием — на каждую встречу.
     Json withTasks = Json::array();
@@ -1285,7 +1316,7 @@ BookingManager::Result BookingManager::resendLink(const Json& payload, const std
         std::transform(guest.begin(), guest.end(), guest.begin(),
                        [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
         if (guest != email || findOccurrence(booking, "", now) < 0) continue;
-        if (limited("booking.mail:" + email, kMailPerAddressHour, 3600)) break;  // лимит адреса — до замены
+        if (limited("booking.mail:" + mailboxKey(email), kMailPerAddressHour, 3600)) break;  // лимит адреса — до замены
         std::string token = crypto::base64UrlEncode(crypto::randomBytes(kTokenBytes));
         while (!token.empty() && token.back() == '=') token.pop_back();
         booking.manageHash = tokenHash(token);

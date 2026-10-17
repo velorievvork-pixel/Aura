@@ -154,6 +154,9 @@ std::size_t poolSizeFromEnv() {
     return static_cast<std::size_t>(value >= 1 && value <= 64 ? value : 8);
 }
 
+// Ответ счётчиков rate_limits при сбое БД: больше любого лимита (fail closed).
+constexpr int kRateLimitFailClosed = 1 << 20;
+
 class PostgresDatabase : public IDatabase {
 public:
     explicit PostgresDatabase(std::string url) : url_(std::move(url)), pool_(poolSizeFromEnv()), lockPool_(1) {}
@@ -1911,7 +1914,10 @@ private:
                      "< now() THEN EXCLUDED.window_sec ELSE rate_limits.window_sec END "
                      "RETURNING count",
                      {key, std::to_string(windowSec > 0 ? windowSec : 1)}, &result)) {
-            return 0;
+            // Fail closed: при сбое БД (нет прав на rate_limits, таймаут) защита от
+            // перебора паролей и кодов не должна молча отключаться.
+            AURA_LOG(log::Level::Error, "db") << "rate_limits недоступна, считаем лимит исчерпанным";
+            return kRateLimitFailClosed;
         }
         const int count = PQntuples(result) > 0 ? std::atoi(value_(result, 0, 0).c_str()) : 0;
         PQclear(result);
@@ -1924,7 +1930,8 @@ private:
         if (!execute("SELECT count FROM rate_limits WHERE key = $1 "
                      "AND window_start + make_interval(secs => window_sec) >= now()",
                      {key}, &result)) {
-            return 0;
+            AURA_LOG(log::Level::Error, "db") << "rate_limits недоступна, считаем лимит исчерпанным";
+            return kRateLimitFailClosed;
         }
         const int count = PQntuples(result) > 0 ? std::atoi(value_(result, 0, 0).c_str()) : 0;
         PQclear(result);

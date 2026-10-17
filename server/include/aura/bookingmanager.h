@@ -66,7 +66,11 @@ public:
     static constexpr int kBookPerHour = 30;
     static constexpr int kChangePerMinute = 10;
     static constexpr int kMailPerAddressHour = 10;
-    static constexpr int kMailPerOwnerHour = 200;
+    // Письма гостям несут текст владельца (название страницы, имя) с домена
+    // сервиса: 60 в час хватает живому репетитору, но не рассылке.
+    static constexpr int kMailPerOwnerHour = 60;
+    // Состоявшихся записей на одну страницу в час.
+    static constexpr int kBookPerPageHour = 20;
     static constexpr int kPageCreatesPerHour = 20;
     static constexpr int kResendPerMinute = 5;
 
@@ -144,6 +148,10 @@ private:
     // id их задач — в tasks (удалять после сохранения записи).
     int cancelOccurrences(BookingRecord& booking, int index, std::time_t now, std::vector<long long>& tasks);
     static int findOccurrence(const BookingRecord& booking, const std::string& start, std::time_t now);
+
+    // Лимит по ключу ещё не исчерпан (событие не засчитывается).
+
+    bool underLimit(const std::string& key, int limit, int windowSeconds);
 
     bool limited(const std::string& key, int perWindow, int windowSeconds = 60);
 

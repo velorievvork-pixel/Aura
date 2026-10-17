@@ -785,9 +785,9 @@ function ReferralSection() {
           <div className="small muted">
             Зарегистрировались: {info.joined} · подтвердили email: {info.verified}
           </div>
-          {info.referrals.length > 0 && (
+          {(info.referrals ?? []).length > 0 && (
             <div className="list">
-              {info.referrals.map((r, i) => (
+              {(info.referrals ?? []).map((r, i) => (
                 <div key={`${r.joined_at}-${i}`} className="list-row">
                   <Avatar name={r.display_name || '?'} size={28} />
                   <div className="body">
@@ -801,10 +801,10 @@ function ReferralSection() {
               ))}
             </div>
           )}
-          {info.referrals.length === 0 && <div className="small faint">Пока никто не зарегистрировался по вашей ссылке.</div>}
-          {info.joined > info.referrals.length && (
+          {(info.referrals ?? []).length === 0 && <div className="small faint">Пока никто не зарегистрировался по вашей ссылке.</div>}
+          {info.joined > (info.referrals ?? []).length && (
             <div className="small faint">
-              И ещё {info.joined - info.referrals.length} {plural(info.joined - info.referrals.length, 'человек', 'человека', 'человек')}.
+              И ещё {info.joined - (info.referrals ?? []).length} {plural(info.joined - (info.referrals ?? []).length, 'человек', 'человека', 'человек')}.
             </div>
           )}
         </>

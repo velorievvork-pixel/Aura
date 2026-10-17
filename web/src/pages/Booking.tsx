@@ -154,7 +154,17 @@ export function BookingPage() {
 
       <div className="stack-lg">
         {error && <div className="notice error">{error}</div>}
-        {editing !== null && <PageForm api={api} page={editing === 'new' ? null : editing} onSaved={saved} onClose={() => setEditing(null)} />}
+        {editing !== null && (
+          // key: при переходе к другой странице форма создаётся заново — иначе поля
+          // прежней страницы сохранились бы в выбранную.
+          <PageForm
+            key={editing === 'new' ? 'new' : editing.id}
+            api={api}
+            page={editing === 'new' ? null : editing}
+            onSaved={saved}
+            onClose={() => setEditing(null)}
+          />
+        )}
 
         <section className="stack">
           <h2 className="title-sm section-title">Страницы</h2>

@@ -14,6 +14,7 @@ import ai.aura.kit.obj
 import ai.aura.kit.str
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -1047,8 +1048,18 @@ object AppStore {
         _errorText.value = null
         try {
             block()
+        } catch (error: CancellationException) {
+            throw error  // отмена корутины (ушли с экрана) — не ошибка для пользователя
         } catch (error: AuraError) {
-            _errorText.value = describe(error)
+            if (error.code == "unauthorized" && _auth.value is AuthState.LoggedIn) {
+                // Сессию отозвали без события (перепроверка сервера, другой экземпляр):
+                // токены мёртвы — на вход, а не «Неверный email или пароль».
+                onSessionRevoked("expired")
+            } else if (error.code == "disconnected" && _auth.value !is AuthState.LoggedIn) {
+                // Запрос оборвался после выхода — причину выхода не перезаписываем.
+            } else {
+                _errorText.value = describe(error)
+            }
         } catch (error: Exception) {
             _errorText.value = error.message ?: "неизвестная ошибка"
         } finally {
@@ -1058,14 +1069,16 @@ object AppStore {
 
     private fun describe(error: AuraError): String = when (error.code) {
         "unauthorized" -> "Неверный email или пароль"
-        "forbidden" -> error.message ?: "доступ запрещён"
+        // forbidden/conflict/not_found: причину знает сервер («запись уже отменена»,
+        // «пользователь с таким email уже существует»…) — показываем её, без кода.
+        "forbidden" -> error.serverMessage.ifBlank { "Доступ запрещён" }
         "requires_2fa" -> "Нужен код двухфакторной аутентификации"
         "email_not_verified" -> "Email не подтверждён"
-        "conflict" -> "Такой email уже зарегистрирован"
-        "not_found" -> "Не найдено"
+        "conflict" -> error.serverMessage.ifBlank { "Действие уже недоступно — обновите экран" }
+        "not_found" -> error.serverMessage.ifBlank { "Не найдено" }
         "disconnected" -> "Нет соединения с сервером"
         "upstream_error" -> "AI-сервис недоступен, попробуйте позже"
-        else -> error.message ?: "ошибка (${error.code})"
+        else -> error.serverMessage.ifBlank { "Ошибка (${error.code})" }
     }
 
     fun clearError() { _errorText.value = null }

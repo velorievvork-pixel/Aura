@@ -579,7 +579,14 @@ void AppStore::changePassword(const QString& oldPassword, const QString& newPass
                              // Сервер отозвал все сессии и refresh-токены, включая наши, и выдал
                              // этому устройству новую пару — без неё следующий вход по токену
                              // (переподключение, перезапуск) выкинул бы на экран входа.
-                             storeTokens(response.value(QStringLiteral("payload")).toObject());
+                             const QJsonObject tokens = response.value(QStringLiteral("payload")).toObject();
+                             // Старый refresh-токен сервер уже отозвал: если новый не пришёл,
+                             // не храним мёртвый (иначе следующий refresh выкинет на вход).
+                             if (tokens.value(QStringLiteral("refresh_token")).toString().isEmpty()) {
+                                 refreshToken_.clear();
+                                 QSettings().remove(QLatin1String(kRefreshKey));
+                             }
+                             storeTokens(tokens);
                              setStatus(QStringLiteral("Пароль изменён, прочие устройства отключены"));
                          });
 }

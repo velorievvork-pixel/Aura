@@ -140,7 +140,8 @@ private struct BookingPageForm: View {
         problem = fields.validate()
         guard problem == nil else { return }
         busy = true
-        Task {
+        // Состояние View (@State busy, onClose) — только на главном потоке.
+        Task { @MainActor in
             let saved = await store.saveBookingPage(id: page?.id, fields: fields)
             busy = false
             if saved { onClose() }

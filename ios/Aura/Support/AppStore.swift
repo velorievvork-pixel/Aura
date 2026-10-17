@@ -1221,6 +1221,16 @@ final class AppStore: ObservableObject {
     }
 
     func fail(_ error: Error) {
+        if let error = error as? AuraError {
+            if error.code == "unauthorized" && authState == .loggedIn {
+                // Сессию отозвали без события (перепроверка сервера, другой экземпляр):
+                // токены мертвы — на вход, а не «Неверный email или пароль».
+                sessionRevoked(reason: "expired")
+                return
+            }
+            // Запрос оборвался уже после выхода — причину выхода не перезаписываем.
+            if error.code == "disconnected" && authState != .loggedIn { return }
+        }
         errorMessage = describe(error)
     }
 
@@ -1230,8 +1240,10 @@ final class AppStore: ObservableObject {
         case "unauthorized": return "Неверный email или пароль"
         case "requires_2fa": return "Нужен код двухфакторной аутентификации"
         case "email_not_verified": return "Email не подтверждён"
-        case "conflict": return "Такой email уже зарегистрирован"
-        case "not_found": return "Не найдено"
+        // conflict/not_found: причину знает сервер («запись уже отменена»,
+        // «пользователь с таким email уже существует»…) — показываем её.
+        case "conflict": return error.message.isEmpty ? "Действие уже недоступно — обновите экран" : error.message
+        case "not_found": return error.message.isEmpty ? "Не найдено" : error.message
         case "disconnected": return "Нет соединения с сервером"
         case "upstream_error": return "AI-сервис недоступен, попробуйте позже"
         default: return error.message.isEmpty ? "Ошибка (\(error.code))" : error.message

@@ -35,15 +35,6 @@ enum AppTab: Hashable {
         default: return false
         }
     }
-
-    /// Экран ещё в тёмном стекле v3 (не переведён на дизайн 2026): для него
-    /// приложение принудительно в тёмной теме, чтобы текст оставался читаемым.
-    var usesLegacyTheme: Bool {
-        switch self {
-        case .home, .booking, .more, .packages, .integrations: return false
-        default: return true
-        }
-    }
 }
 
 /// Что открыть на «Записи» по кнопке из «+» или «Сегодня».

@@ -1,6 +1,7 @@
-// TasksView.swift — задачи (макет Tasks): неделя, задачи выбранного дня,
+// TasksView.swift — задачи (дизайн 2026): неделя, задачи выбранного дня,
 // «Дальше», «Выполнено», подсказка «до следующего события» и «+» для новой
 // задачи (tasks.create с due_at). Долгое нажатие — перенос в «Напоминания» iOS.
+import SelfvoyKit
 import SwiftUI
 
 struct TasksView: View {
@@ -38,104 +39,122 @@ struct TasksView: View {
         let done = Array(store.tasks.filter(\.isDone).prefix(6))
         let next = open.first { (Format.parseISO($0.whenAt) ?? .distantPast) > Date() }
 
-        ZStack(alignment: .bottomTrailing) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    ScreenHeader("Задачи") {
-                        GradientButton(title: "Сегодня", height: 40, fullWidth: false) {
-                            day = calendar.startOfDay(for: Date())
-                        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                InkHeader(eyebrow: "\(Format.dateLabel(week.first ?? day)) – \(Format.dateLabel(week.last ?? day))",
+                          title: "Задачи") {
+                    if !calendar.isDateInToday(day) {
+                        Button("Сегодня") { day = calendar.startOfDay(for: Date()) }
+                            .buttonStyle(InkSecondaryButtonStyle())
                     }
-                    weekSwitcher
-                    weekStrip
-                    hint(next)
-                    section(calendar.isDateInToday(day) ? "Сегодня"
-                            : "\(Format.dayShort(day)), \(Format.dateLabel(day))", onDay, empty: "Свободный день")
-                    section("Дальше", later, empty: "Больше ничего не запланировано")
-                    section("Выполнено", done, empty: "Пока ничего")
-                    Spacer(minLength: 80)
+                    InkRoundButton(systemImage: "plus", label: "Новая задача") { adding = true }
                 }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 16)
+                weekStrip
+                hint(next)
+                section(calendar.isDateInToday(day) ? "Сегодня"
+                        : "\(Format.dayShort(day)), \(Format.dateLabel(day))", onDay, empty: "Свободный день")
+                section("Дальше", later, empty: "Больше ничего не запланировано")
+                section("Выполнено", done, empty: "Пока ничего")
             }
-            RoundIconButton(systemImage: "plus", label: "Новая задача", accent: true, size: 60) { adding = true }
-                .padding(20)
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 24)
         }
-        .sheet(isPresented: $adding) { AddTaskSheet(day: day) }
-    }
-
-    private var weekSwitcher: some View {
-        HStack(spacing: 12) {
-            RoundIconButton(systemImage: "chevron.left", label: "Предыдущая неделя", size: 34) {
-                day = calendar.date(byAdding: .day, value: -7, to: day) ?? day
-            }
-            Text("\(Format.dateLabel(week.first ?? day)) – \(Format.dateLabel(week.last ?? day))")
-                .font(SelfvoyFont.labelMedium)
-                .foregroundStyle(SelfvoyColor.textPrimary)
-            RoundIconButton(systemImage: "chevron.right", label: "Следующая неделя", size: 34) {
-                day = calendar.date(byAdding: .day, value: 7, to: day) ?? day
-            }
+        .inkScreen()
+        .refreshable { store.loadTasks() }
+        .sheet(isPresented: $adding) {
+            AddTaskSheet(day: day)
+                .inkSheet()
         }
     }
 
+    /// Неделя: стрелки по краям, дни — выбранный на акценте, сегодня — акцентной цифрой.
     private var weekStrip: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 2) {
+            weekArrow(systemName: "chevron.left", label: "Предыдущая неделя", days: -7)
             ForEach(week, id: \.self) { date in
                 let selected = date == day
+                let today = calendar.isDateInToday(date)
                 let has = open.contains { dateOf($0) == date }
                 Button {
                     day = date
                 } label: {
-                    VStack(spacing: 2) {
-                        Text(Format.dayShort(date)).font(SelfvoyFont.micro).foregroundStyle(SelfvoyColor.textMuted)
+                    VStack(spacing: 3) {
+                        Text(Format.dayShort(date))
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(selected ? Color.white.opacity(0.85) : Ink.secondary)
                         Text("\(calendar.component(.day, from: date))")
-                            .font(SelfvoyFont.manrope(20, .bold))
-                            .foregroundStyle(calendar.isDateInToday(date) ? SelfvoyColor.lilac : SelfvoyColor.textPrimary)
-                        Circle().fill(has ? SelfvoyColor.accentSoft : .clear).frame(width: 5, height: 5)
+                            .font(.system(size: 18, weight: .bold).monospacedDigit())
+                            .foregroundStyle(selected ? Color.white : today ? Ink.accent : Ink.label)
+                        Circle()
+                            .fill(has ? (selected ? Color.white : Ink.accent) : Color.clear)
+                            .frame(width: 5, height: 5)
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(selected ? SelfvoyColor.accent.opacity(0.2) : .clear))
-                    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(selected ? SelfvoyColor.lilac.opacity(0.45) : .clear, lineWidth: 1))
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(selected ? Ink.accent : Color.clear))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("\(Format.dayShort(date)), \(Format.dateLabel(date))"
+                                    + (today ? ", сегодня" : "") + (has ? ", есть задачи" : ""))
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
+            weekArrow(systemName: "chevron.right", label: "Следующая неделя", days: 7)
         }
+        .padding(4)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Ink.card))
+    }
+
+    private func weekArrow(systemName: String, label: String, days: Int) -> some View {
+        Button {
+            day = calendar.date(byAdding: .day, value: days, to: day) ?? day
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Ink.secondary)
+                .frame(width: 22, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     /// Подсказка Selfvoy: сколько осталось до следующего события.
     private func hint(_ next: SelfvoyTask?) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Подсказки Selfvoy").font(SelfvoyFont.manrope(20, .bold)).foregroundStyle(SelfvoyColor.textPrimary)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                InkMark(size: 22)
+                Text("Подсказка Selfvoy").font(InkFont.eyebrow).foregroundStyle(Ink.secondary)
+            }
             Text(next.map { "«\($0.title)» \(Format.untilText($0.whenAt))" } ?? "Впереди ничего не запланировано.")
-                .font(SelfvoyFont.titleSmall)
-                .foregroundStyle(SelfvoyColor.textPrimary)
+                .font(InkFont.headline)
+                .foregroundStyle(Ink.label)
             if let next, let at = Format.parseISO(next.whenAt) {
                 let minutes = at.timeIntervalSinceNow / 60
                 let progress = min(1, max(0.05, 1 - minutes / 120))
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(.white.opacity(0.08))
-                        Capsule().fill(SelfvoyColor.cta).frame(width: geo.size.width * progress)
-                    }
-                }
-                .frame(height: 6)
-                Muted("Время до следующего события")
+                ProgressView(value: progress)
+                    .tint(minutes < 30 ? Ink.amber : Ink.accent)
+                Text("Время до следующего события")
+                    .font(InkFont.caption)
+                    .foregroundStyle(Ink.secondary)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .glassCard()
+        .inkCard()
     }
 
+    @ViewBuilder
     private func section(_ title: String, _ items: [SelfvoyTask], empty: String) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(SelfvoyFont.title).foregroundStyle(SelfvoyColor.textPrimary)
-            if items.isEmpty { Muted(empty) }
-            ForEach(items) { task in
-                TaskRow(task: task, day: day)
+        InkSectionHeader(title: title, trailing: items.isEmpty ? "" : "\(items.count)")
+        if items.isEmpty {
+            InkEmpty(text: empty)
+        } else {
+            InkGroup {
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, task in
+                    if index > 0 { InkDivider(inset: 52) }
+                    TaskRow(task: task, day: day)
+                }
             }
         }
     }
@@ -147,61 +166,68 @@ private struct TaskRow: View {
     let task: SelfvoyTask
     let day: Date
 
+    /// Срок словом и значком (не только цветом): просрочено, скоро или выполнено.
+    private func dueStatus(_ at: Date?) -> StatusView? {
+        if task.isDone { return StatusView("Выполнено", .green, .check) }
+        guard let at else { return nil }
+        if at < Date() { return StatusView("Просрочено", .red, .clock) }
+        if at.timeIntervalSinceNow < 120 * 60 { return StatusView("Скоро", .attention, .clock) }
+        return nil
+    }
+
     var body: some View {
         let at = Format.parseISO(task.whenAt)
-        let tone: Color = {
-            if task.isDone { return SelfvoyColor.success }
-            guard let at else { return SelfvoyColor.accentSoft }
-            if at < Date() { return SelfvoyColor.danger }
-            if at.timeIntervalSinceNow < 120 * 60 { return SelfvoyColor.warning }
-            return SelfvoyColor.accentSoft
-        }()
-        let shape = RoundedRectangle(cornerRadius: 16, style: .continuous)
-        return HStack(spacing: 12) {
+        HStack(spacing: 12) {
             Button {
                 store.setTaskStatus(id: task.id, status: task.isDone ? "reopen" : "complete")
             } label: {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 7).fill(task.isDone ? SelfvoyColor.accent : .clear)
-                    RoundedRectangle(cornerRadius: 7)
-                        .strokeBorder(task.isDone ? SelfvoyColor.accent : .white.opacity(0.3), lineWidth: 1.5)
-                    if task.isDone {
-                        Image(systemName: "checkmark").font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
-                    }
-                }
-                .frame(width: 22, height: 22)
+                Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 22))
+                    .foregroundStyle(task.isDone ? Ink.accent : Ink.tertiary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(task.isDone ? "Вернуть в работу" : "Выполнено")
-            Text(task.title)
-                .font(SelfvoyFont.titleSmall)
-                .foregroundStyle(SelfvoyColor.textPrimary)
-                .strikethrough(task.isDone)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            if let at {
-                // День недели — только внутри показанной недели, иначе «11 октября».
-                let inWeek = Calendar(identifier: .iso8601).isDate(at, equalTo: day, toGranularity: .weekOfYear)
-                Muted(Calendar.current.isDate(at, inSameDayAs: day)
-                      ? Format.timeOf(task.whenAt)
-                      : "\(inWeek ? Format.dayShort(at) : Format.dateLabel(at)), \(Format.timeOf(task.whenAt))")
+            VStack(alignment: .leading, spacing: 3) {
+                Text(task.title)
+                    .font(InkFont.body)
+                    .foregroundStyle(task.isDone ? Ink.secondary : Ink.label)
+                    .strikethrough(task.isDone)
+                    .lineLimit(2)
+                HStack(spacing: 6) {
+                    if let at {
+                        // День недели — только внутри показанной недели, иначе «11 октября».
+                        let inWeek = Calendar(identifier: .iso8601).isDate(at, equalTo: day, toGranularity: .weekOfYear)
+                        Text(Calendar.current.isDate(at, inSameDayAs: day)
+                             ? Format.timeOf(task.whenAt)
+                             : "\(inWeek ? Format.dayShort(at) : Format.dateLabel(at)), \(Format.timeOf(task.whenAt))")
+                            .font(InkFont.footnote)
+                            .foregroundStyle(Ink.secondary)
+                    }
+                    if let status = dueStatus(at) {
+                        StatusBadge(status: status, compact: true)
+                    }
+                }
             }
+            Spacer(minLength: 4)
             Button {
                 store.deleteTask(id: task.id)
             } label: {
-                Image(systemName: "trash").font(.system(size: 14)).foregroundStyle(SelfvoyColor.textMuted)
+                Image(systemName: "trash")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Ink.tertiary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Удалить")
-            Circle().fill(tone).frame(width: 10, height: 10)
         }
-        .padding(.horizontal, 16)
-        .frame(height: 56)
-        .background(shape.fill(LinearGradient(colors: [.white.opacity(0.09), SelfvoyColor.accent.opacity(0.08),
-                                                       .white.opacity(0.03)],
-                                              startPoint: .leading, endPoint: .trailing)))
-        .overlay(shape.strokeBorder(.white.opacity(0.16), lineWidth: 1))
-        .opacity(task.isDone ? 0.62 : 1)
+        .padding(.leading, 12)
+        .padding(.trailing, 8)
+        .padding(.vertical, 8)
+        .frame(minHeight: 52)
+        .contentShape(Rectangle())
         .contextMenu {
             Button {
                 Task {
@@ -235,28 +261,32 @@ private struct AddTaskSheet: View {
     }
 
     var body: some View {
-        ZStack {
-            SelfvoyColor.bgElevated.ignoresSafeArea()
+        ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    Button("Отмена") { dismiss() }
+                        .buttonStyle(InkQuietButtonStyle())
+                    Spacer()
+                }
                 Text("Новая задача · \(Format.dateLabel(day))")
-                    .font(SelfvoyFont.titleMedium)
-                    .foregroundStyle(SelfvoyColor.textPrimary)
-                SelfvoyField(text: $title, placeholder: "Например, отправить питч-дек", label: "Что сделать")
+                    .font(InkFont.title)
+                    .foregroundStyle(Ink.label)
+                InkField(text: $title, placeholder: "Например, отправить питч-дек", label: "Что сделать")
                 DatePicker("Время", selection: $time, displayedComponents: .hourAndMinute)
-                    .font(SelfvoyFont.labelMedium)
-                    .foregroundStyle(SelfvoyColor.textPrimary)
-                GradientButton(title: "Добавить", enabled: !title.trimmingCharacters(in: .whitespaces).isEmpty) {
+                    .font(InkFont.body)
+                    .foregroundStyle(Ink.label)
+                    .inkRow(vertical: 6)
+                    .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Ink.card))
+                InkButton(title: "Добавить", enabled: !title.trimmingCharacters(in: .whitespaces).isEmpty) {
                     let parts = Calendar.current.dateComponents([.hour, .minute], from: time)
                     let due = Calendar.current.date(bySettingHour: parts.hour ?? 18, minute: parts.minute ?? 0,
                                                     second: 0, of: day) ?? time
                     store.createTask(title: title, dueAt: Format.isoString(due))
                     dismiss()
                 }
-                GlassButton(title: "Отмена", quiet: true) { dismiss() }
-                Spacer()
             }
-            .padding(24)
+            .padding(20)
         }
-        .presentationDetents([.medium])
+        .inkScreen()
     }
 }

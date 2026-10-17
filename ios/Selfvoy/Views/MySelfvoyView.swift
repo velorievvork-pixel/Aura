@@ -1,6 +1,8 @@
-// MySelfvoyView.swift — «Мой Selfvoy» (макет Chat): реплики пользователя слева,
-// ответы Selfvoy справа. Опасные действия (письмо, сообщение, бронь) Selfvoy сам
-// не выполняет: под ответом кнопки «Подтвердить / Отклонить».
+// MySelfvoyView.swift — «ИИ»: диалог с ассистентом (дизайн 2026). Ответы Selfvoy —
+// слева на карточке, реплики пользователя — справа на акценте. Опасные действия
+// (письмо, сообщение, бронь) Selfvoy сам не выполняет: под ответом карточка
+// «Ждёт решения» с кнопками «Подтвердить / Отклонить».
+import SelfvoyKit
 import SwiftUI
 
 struct MySelfvoyView: View {
@@ -17,23 +19,34 @@ struct MySelfvoyView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            InkHeader(eyebrow: store.busy ? "Думает…" : "Персональный ассистент", title: "Ассистент") {
+                InkRoundButton(systemImage: "brain", label: "Память") {
+                    store.loadMemory()
+                    showMemory = true
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 14) {
+                    LazyVStack(alignment: .leading, spacing: 12) {
                         if store.dialog.isEmpty { intro }
                         ForEach(store.dialog) { entry in
                             DialogRow(entry: entry, pending: Set(store.confirmations.map(\.id)))
                                 .id(entry.id)
                         }
                         if store.busy && store.dialog.last?.fromSelfvoy == false {
-                            Muted("Selfvoy думает…")
-                                .frame(maxWidth: .infinity, alignment: .trailing)
-                                .id("thinking")
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("Selfvoy думает…").font(InkFont.footnote).foregroundStyle(Ink.secondary)
+                            }
+                            .padding(.leading, 4)
+                            .id("thinking")
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 18)
+                    .padding(.vertical, 12)
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: store.dialog.count) {
@@ -42,60 +55,29 @@ struct MySelfvoyView: View {
                     }
                 }
             }
-            inputBar
+            ChatComposer(draft: $draft, placeholder: "Напишите или скажите…",
+                         canSend: !draft.trimmingCharacters(in: .whitespaces).isEmpty && !store.busy,
+                         onVoice: { store.voiceOverlayVisible = true },
+                         onSend: { send(draft) })
         }
-        .sheet(isPresented: $showMemory) { MemorySheet() }
-    }
-
-    private var header: some View {
-        HStack(spacing: 14) {
-            SelfvoyOrb(size: 52)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Selfvoy").font(SelfvoyFont.title).foregroundStyle(SelfvoyColor.textPrimary)
-                Text((store.busy ? "Думает" : "В сети") + " · Персональный ассистент")
-                    .font(SelfvoyFont.small)
-                    .foregroundStyle(SelfvoyColor.textSecondary)
-            }
-            Spacer()
-            RoundIconButton(systemImage: "brain", label: "Память", size: 42) {
-                store.loadMemory()
-                showMemory = true
-            }
+        .inkScreen()
+        .sheet(isPresented: $showMemory) {
+            MemorySheet()
+                .inkSheet()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
-        .background(LinearGradient(colors: [SelfvoyColor.lilac.opacity(0.16), .clear],
-                                   startPoint: .top, endPoint: .bottom))
     }
 
     private var intro: some View {
-        VStack(alignment: .trailing, spacing: 10) {
-            Bubble(fromSelfvoy: true,
+        VStack(alignment: .leading, spacing: 10) {
+            Bubble(mine: false,
                    text: "Привет, \(Format.firstName(store.userName))! Я ваш Selfvoy. Скажите, что нужно сделать, "
                        + "и я договорюсь с Selfvoy других людей, поставлю напоминание или подготовлю письмо.")
-            FlowLayout(spacing: 8, alignment: .trailing) {
+            FlowLayout(spacing: 8) {
                 ForEach(suggestions, id: \.self) { text in
-                    SelfvoyChip(title: text) { send(text) }
+                    InkChip(title: text) { send(text) }
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
-    }
-
-    private var inputBar: some View {
-        HStack(spacing: 10) {
-            RoundIconButton(systemImage: "mic", label: "Сказать голосом", size: 48) {
-                store.voiceOverlayVisible = true
-            }
-            SelfvoyField(text: $draft, placeholder: "Напишите что-нибудь…", submitLabel: .send, onSubmit: { send(draft) })
-            RoundIconButton(systemImage: "paperplane.fill", label: "Отправить", accent: true, size: 50,
-                            enabled: !draft.trimmingCharacters(in: .whitespaces).isEmpty && !store.busy) {
-                send(draft)
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 6)
-        .padding(.bottom, 12)
     }
 
     private func send(_ text: String) {
@@ -105,7 +87,7 @@ struct MySelfvoyView: View {
     }
 }
 
-/// Реплика диалога с кнопками решения под ответом Selfvoy.
+/// Реплика диалога с карточкой решения под ответом Selfvoy.
 private struct DialogRow: View {
 
     @EnvironmentObject private var store: AppStore
@@ -114,76 +96,132 @@ private struct DialogRow: View {
 
     var body: some View {
         HStack {
-            if entry.fromSelfvoy { Spacer(minLength: 40) }
-            Bubble(fromSelfvoy: entry.fromSelfvoy, text: entry.text, error: entry.error) {
+            if !entry.fromSelfvoy { Spacer(minLength: 40) }
+            Bubble(mine: !entry.fromSelfvoy, text: entry.text, error: entry.error) {
                 ForEach(entry.actions, id: \.confirmationId) { action in
                     let open = pending.contains(action.confirmationId)
-                    Text((open ? "Ждёт вашего решения: " : "Решено: ") + action.summary)
-                        .font(SelfvoyFont.small)
-                        .foregroundStyle(open ? SelfvoyColor.warning : SelfvoyColor.textSecondary)
-                    if open {
-                        HStack(spacing: 8) {
-                            SelfvoyChip(title: "Подтвердить") {
-                                store.decideConfirmation(id: action.confirmationId, approve: true)
-                            }
-                            SelfvoyChip(title: "Отклонить") {
-                                store.decideConfirmation(id: action.confirmationId, approve: false)
+                    VStack(alignment: .leading, spacing: 8) {
+                        StatusBadge(status: open ? StatusView("Ждёт вашего решения", .attention, .hand)
+                                                 : StatusView("Решено", .neutral, .check),
+                                    compact: true)
+                        Text(action.summary).font(InkFont.callout).foregroundStyle(Ink.label)
+                        if open {
+                            HStack(spacing: 8) {
+                                InkButton(title: "Подтвердить", kind: .secondary) {
+                                    store.decideConfirmation(id: action.confirmationId, approve: true)
+                                }
+                                InkButton(title: "Отклонить", kind: .destructive) {
+                                    store.decideConfirmation(id: action.confirmationId, approve: false)
+                                }
                             }
                         }
                     }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Ink.fill.opacity(0.6)))
                 }
                 if entry.hasA2a {
-                    SelfvoyChip(title: "Открыть переговоры") { store.selectTab(.negotiations) }
+                    InkButton(title: "Открыть переговоры", systemImage: "person.2.fill", kind: .secondary,
+                              fullWidth: false) {
+                        store.selectTab(.negotiations)
+                    }
                 }
             }
-            if !entry.fromSelfvoy { Spacer(minLength: 40) }
+            if entry.fromSelfvoy { Spacer(minLength: 40) }
         }
     }
 }
 
-/// Реплика: пользователь — тёмное стекло, Selfvoy — светлое стекло (макет Chat).
+/// Реплика: своя — справа на акценте, собеседника и Selfvoy — слева на карточке.
 struct Bubble<Extra: View>: View {
-    let fromSelfvoy: Bool
+    let mine: Bool
     let text: String
     var error = false
     @ViewBuilder var extra: () -> Extra
 
-    init(fromSelfvoy: Bool, text: String, error: Bool = false,
+    init(mine: Bool, text: String, error: Bool = false,
          @ViewBuilder extra: @escaping () -> Extra = { EmptyView() }) {
-        self.fromSelfvoy = fromSelfvoy
+        self.mine = mine
         self.text = text
         self.error = error
         self.extra = extra
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: SelfvoyRadius.bubble, style: .continuous)
+        let shape = UnevenRoundedRectangle(topLeadingRadius: 18,
+                                           bottomLeadingRadius: mine ? 18 : 6,
+                                           bottomTrailingRadius: mine ? 6 : 18,
+                                           topTrailingRadius: 18,
+                                           style: .continuous)
         VStack(alignment: .leading, spacing: 10) {
+            if error {
+                Label("Не получилось", systemImage: "exclamationmark.triangle.fill")
+                    .font(InkFont.caption)
+                    .foregroundStyle(Ink.red)
+            }
             Text(text)
-                .font(SelfvoyFont.body)
-                .foregroundStyle(error ? SelfvoyColor.danger : SelfvoyColor.textPrimary)
+                .font(InkFont.body)
+                .foregroundStyle(mine ? Color.white : Ink.label)
                 .fixedSize(horizontal: false, vertical: true)
             extra()
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .frame(maxWidth: 320, alignment: .leading)
-        // «Жидкое стекло»: системный материал с размытием, тонировка (у Selfvoy —
-        // сиреневая), блик сверху и светлый кант по верхнему краю.
-        .background {
-            shape.fill(.ultraThinMaterial)
-                .overlay(shape.fill(fromSelfvoy ? Color(hex: 0x3C2C64).opacity(0.38) : Color(hex: 0x120E1E).opacity(0.45)))
-                .overlay(shape.fill(LinearGradient(
-                    colors: [.white.opacity(fromSelfvoy ? 0.24 : 0.15), .white.opacity(0.04), .white.opacity(0.09)],
-                    startPoint: .top, endPoint: .bottom)))
-                .shadow(color: fromSelfvoy ? SelfvoyColor.accentSoft.opacity(0.35) : .black.opacity(0.4), radius: 16, y: 8)
+        .background(shape.fill(mine ? Ink.accent : Ink.card))
+        .overlay {
+            if error { shape.stroke(Ink.red.opacity(0.6), lineWidth: 1) }
         }
-        .overlay(shape.strokeBorder(error
-            ? AnyShapeStyle(SelfvoyColor.danger.opacity(0.6))
-            : AnyShapeStyle(LinearGradient(colors: [.white.opacity(0.45), .white.opacity(0.06)],
-                                           startPoint: .top, endPoint: .bottom)),
-            lineWidth: 1))
-        .environment(\.colorScheme, .dark)
+    }
+}
+
+/// Строка ввода внизу диалога: поле-капсула, голос (если есть) и «Отправить».
+struct ChatComposer: View {
+    @Binding var draft: String
+    let placeholder: String
+    /// Значок «Отправить»; nil — стрелка вверх.
+    var sendSymbol: String?
+    let canSend: Bool
+    var onVoice: (() -> Void)?
+    let onSend: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let onVoice {
+                Button(action: onVoice) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Ink.accent)
+                        .frame(width: 40, height: 40)
+                        .background(Circle().fill(Ink.card))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Сказать голосом")
+            }
+            TextField(placeholder, text: $draft)
+                .font(InkFont.body)
+                .foregroundStyle(Ink.label)
+                .submitLabel(.send)
+                .onSubmit(onSend)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 40)
+                .background(Capsule().fill(Ink.card))
+                .overlay(Capsule().strokeBorder(Ink.separator, lineWidth: 0.5))
+            Button(action: onSend) {
+                Image(systemName: sendSymbol ?? "arrow.up")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(Ink.accent))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSend)
+            .opacity(canSend ? 1 : 0.4)
+            .accessibilityLabel("Отправить")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Ink.bg)
     }
 }
 
@@ -194,31 +232,43 @@ private struct MemorySheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        ZStack {
-            SelfvoyColor.bgElevated.ignoresSafeArea()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Что Selfvoy знает о вас").font(SelfvoyFont.titleMedium).foregroundStyle(SelfvoyColor.textPrimary)
-                        Spacer()
-                        Button("Закрыть") { dismiss() }.font(SelfvoyFont.labelMedium)
-                    }
-                    Muted("Город")
-                    let city = store.prefs.string("city")
-                    Text(city.isEmpty ? "—" : city).font(SelfvoyFont.body).foregroundStyle(SelfvoyColor.textPrimary)
-                    Muted("Факты из разговоров")
-                    if store.memory.isEmpty {
-                        Text("Пока ничего").font(SelfvoyFont.body).foregroundStyle(SelfvoyColor.textSecondary)
-                    }
-                    ForEach(store.memory.prefix(12), id: \.self) { entry in
-                        Text("• \(entry.text)").font(SelfvoyFont.small).foregroundStyle(SelfvoyColor.textSecondary)
-                    }
-                    Muted("Другие Selfvoy видят только, свободны ли вы в предложенное время, а не ваш календарь и не эти записи.")
-                        .padding(.top, 8)
+        let city = store.prefs.string("city")
+        let facts = Array(store.memory.prefix(12))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Что Selfvoy знает о вас").font(InkFont.title).foregroundStyle(Ink.label)
+                    Spacer(minLength: 8)
+                    Button("Готово") { dismiss() }
+                        .buttonStyle(InkQuietButtonStyle())
                 }
-                .padding(24)
+                InkGroupHeader(title: "Город")
+                InkGroup {
+                    Text(city.isEmpty ? "Не указан" : city)
+                        .font(InkFont.body)
+                        .foregroundStyle(city.isEmpty ? Ink.secondary : Ink.label)
+                        .inkRow()
+                }
+                InkGroupHeader(title: "Факты из разговоров")
+                if facts.isEmpty {
+                    InkEmpty(text: "Пока ничего")
+                } else {
+                    InkGroup {
+                        ForEach(Array(facts.enumerated()), id: \.offset) { index, entry in
+                            if index > 0 { InkDivider(inset: 16) }
+                            Text(entry.text)
+                                .font(InkFont.callout)
+                                .foregroundStyle(Ink.label)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .inkRow()
+                        }
+                    }
+                }
+                InkFootnote("Другие Selfvoy видят только, свободны ли вы в предложенное время, а не ваш календарь и не эти записи.")
+                    .padding(.horizontal, 16)
             }
+            .padding(20)
         }
-        .presentationDetents([.medium, .large])
+        .inkScreen()
     }
 }

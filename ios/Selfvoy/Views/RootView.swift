@@ -7,19 +7,10 @@ struct RootView: View {
 
     @EnvironmentObject private var store: AppStore
 
-    /// Экраны v3 (вход, анкета, чат, переговоры…) рисуются тёмным стеклом;
-    /// экраны 2026 следуют системной светлой/тёмной теме.
-    private var legacy: Bool {
-        store.authState != .loggedIn || store.needOnboarding || store.tab.usesLegacyTheme
-    }
-
+    /// Все экраны — в дизайне 2026 и следуют системной светлой/тёмной теме.
     var body: some View {
         ZStack {
-            if legacy {
-                SelfvoyBackground()
-            } else {
-                Ink.bg.ignoresSafeArea()
-            }
+            Ink.bg.ignoresSafeArea()
             if store.authState == .loggedIn {
                 if store.needOnboarding {
                     OnboardingView()
@@ -31,8 +22,7 @@ struct RootView: View {
             }
         }
         .overlay(alignment: .top) { ToastView() }
-        .preferredColorScheme(legacy ? .dark : nil)
-        .tint(legacy ? SelfvoyColor.lilac : Ink.accent)
+        .tint(Ink.accent)
     }
 }
 
@@ -74,21 +64,6 @@ struct MainShell: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             keyboardShown = false
         }
-        // Затемнение под статус-баром у экранов v3: без него прокручиваемый контент
-        // шёл прямо под часами. У экранов 2026 фон сплошной — затемнение не нужно.
-        .overlay(alignment: .top) {
-            if store.tab.usesLegacyTheme {
-                GeometryReader { geo in
-                    LinearGradient(stops: [.init(color: SelfvoyColor.bgDeep.opacity(0.97), location: 0),
-                                           .init(color: SelfvoyColor.bgDeep.opacity(0.9), location: 0.7),
-                                           .init(color: SelfvoyColor.bgDeep.opacity(0), location: 1)],
-                                   startPoint: .top, endPoint: .bottom)
-                        .frame(height: geo.safeAreaInsets.top)
-                        .ignoresSafeArea(edges: .top)
-                        .allowsHitTesting(false)
-                }
-            }
-        }
         .overlay(alignment: .bottom) {
             if store.voiceOverlayVisible {
                 VoiceOverlay(speech: store.speech)
@@ -102,7 +77,7 @@ struct MainShell: View {
         }
     }
 
-    /// Разделы v3 без своей строки «назад» (раньше были вкладками).
+    /// Разделы без своей строки «назад» (раньше были вкладками).
     private func withBack<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         VStack(spacing: 0) {
             SubscreenBar()
@@ -280,16 +255,20 @@ struct ToastView: View {
         let text = error.isEmpty ? store.statusMessage : error
         Group {
             if !text.isEmpty {
+                // Статус — значком и словом, не только цветом.
                 HStack(spacing: 10) {
-                    Circle().fill(error.isEmpty ? SelfvoyColor.success : SelfvoyColor.danger).frame(width: 8, height: 8)
-                    Text(text).font(SelfvoyFont.small).foregroundStyle(SelfvoyColor.textPrimary)
+                    Image(systemName: error.isEmpty ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(error.isEmpty ? Ink.green : Ink.red)
+                        .accessibilityLabel(error.isEmpty ? "Готово" : "Ошибка")
+                    Text(text).font(InkFont.callout).foregroundStyle(Ink.label)
                         .multilineTextAlignment(.leading)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                .background(Capsule().fill(SelfvoyColor.bgElevated.opacity(0.96)))
-                .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 1))
-                .shadow(color: .black.opacity(0.4), radius: 16, y: 6)
+                .background(Capsule().fill(Ink.raised))
+                .overlay(Capsule().strokeBorder(Ink.separator, lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.14), radius: 16, y: 6)
                 .padding(.horizontal, 20)
                 .padding(.top, 6)
                 .onTapGesture { clear() }
@@ -315,7 +294,7 @@ struct BackToHomeButton: View {
     @EnvironmentObject private var store: AppStore
 
     var body: some View {
-        RoundIconButton(systemImage: "chevron.left", label: "Назад", size: 40) {
+        InkRoundButton(systemImage: "chevron.left", label: "Назад") {
             store.selectTab(store.rootTab)
         }
         .accessibilityIdentifier("nav.back")
@@ -334,13 +313,14 @@ struct SubscreenBar<Trailing: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             BackToHomeButton()
             Spacer(minLength: 8)
             trailing()
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 12)
-        .padding(.bottom, 6)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .background(Ink.bg)
     }
 }

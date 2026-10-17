@@ -1,8 +1,9 @@
-// NegotiationsView.swift — переговоры Selfvoy (макет Meeting arrangement).
+// NegotiationsView.swift — переговоры Selfvoy (дизайн 2026).
 //
 // Один agent.negotiate — один раунд; шаги строятся из ответа сервера и
 // появляются по очереди. Бронь — только по кнопке пользователя. После пяти
 // раундов без согласия решает человек (docs/A2A_PROTOCOL.md).
+import SelfvoyKit
 import SwiftUI
 
 private struct Step: Hashable {
@@ -21,20 +22,18 @@ struct NegotiationsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(alignment: .center) {
-                    Text("Организация\nвстречи").font(SelfvoyFont.headline).foregroundStyle(SelfvoyColor.textPrimary)
-                    Spacer()
+            VStack(alignment: .leading, spacing: 14) {
+                InkHeader(eyebrow: "Selfvoy договаривается с Selfvoy", title: "Переговоры") {
                     if store.negotiation != nil && !composing {
-                        GlassButton(title: "Новые", systemImage: "plus", height: 40, fullWidth: false) {
-                            composing = true
-                        }
+                        InkRoundButton(systemImage: "plus", label: "Новые переговоры") { composing = true }
                     }
                 }
                 // Страница записи: постоянная ссылка для людей без Selfvoy.
-                GlassButton(title: "Страница записи — пусть выбирают время сами", systemImage: "calendar.badge.plus",
-                            quiet: true, height: 42) {
-                    store.selectTab(.booking)
+                InkGroup {
+                    InkCell(symbol: "calendar.badge.plus", tint: Ink.accent,
+                            title: "Страница записи — пусть выбирают время сами") {
+                        store.selectTab(.booking)
+                    }
                 }
                 if let n = store.negotiation, !composing {
                     progress(n)
@@ -44,9 +43,11 @@ struct NegotiationsView: View {
                     }
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 24)
         }
+        .inkScreen()
         .scrollDismissesKeyboard(.interactively)
     }
 
@@ -58,23 +59,27 @@ struct NegotiationsView: View {
         let steps = buildSteps(n, me: me, them: them)
         let shown = store.revealedNegotiations.contains(n.id) ? steps.count : revealed
 
-        HStack(spacing: 10) {
-            Pill(text: statusText(n), color: n.booking != nil ? SelfvoyColor.success
-                 : !n.accepted ? SelfvoyColor.warning : SelfvoyColor.lilac)
-            Pill(text: "Раунд \(n.round) из \(AppStore.maxRounds)", color: SelfvoyColor.textPrimary)
+        HStack(spacing: 8) {
+            StatusBadge(status: status(n))
+            StatusBadge(status: StatusView("Раунд \(n.round) из \(AppStore.maxRounds)", .neutral, .clock))
         }
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             AgentCard(name: me, selfvoy: "Selfvoy \(Format.genitive(me))",
                       talking: shown < steps.count && steps[shown].mine, them: false)
             AgentCard(name: them, selfvoy: "Selfvoy \(Format.genitive(them))",
                       talking: shown < steps.count && !steps[shown].mine, them: true)
         }
         if !n.topic.isEmpty {
-            Muted("Тема: \(n.topic)", alignment: .center).frame(maxWidth: .infinity)
+            Text("Тема: \(n.topic)")
+                .font(InkFont.callout)
+                .foregroundStyle(Ink.secondary)
+                .frame(maxWidth: .infinity)
         }
-        ForEach(Array(steps.prefix(shown).enumerated()), id: \.offset) { index, step in
-            StepRow(number: index + 1, step: step)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
+        VStack(spacing: 8) {
+            ForEach(Array(steps.prefix(shown).enumerated()), id: \.offset) { index, step in
+                StepRow(number: index + 1, step: step)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
         }
         .task(id: n.id) {
             guard !store.revealedNegotiations.contains(n.id) else { return }
@@ -94,50 +99,72 @@ struct NegotiationsView: View {
             }
         }
         if store.negotiationHistory.count > 1 {
-            Text("Раунды за сессию").font(SelfvoyFont.titleSmall).foregroundStyle(SelfvoyColor.textPrimary)
-            ForEach(store.negotiationHistory.dropFirst()) { h in
-                Muted("\(h.target) · раунд \(h.round): "
-                      + (h.accepted ? "согласовано, \(h.place?.name ?? "")" : "без согласия"))
+            InkSectionHeader(title: "Раунды за сессию")
+            InkGroup {
+                ForEach(Array(store.negotiationHistory.dropFirst().enumerated()), id: \.element.id) { index, h in
+                    if index > 0 { InkDivider(inset: 16) }
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(h.target).font(InkFont.body).foregroundStyle(Ink.label).lineLimit(1)
+                            Text(historyLine(h))
+                                .font(InkFont.footnote)
+                                .foregroundStyle(Ink.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        StatusBadge(status: h.accepted ? StatusView("Согласовано", .green, .check)
+                                                       : StatusView("Без согласия", .neutral, .cross),
+                                    compact: true)
+                    }
+                    .inkRow()
+                }
             }
         }
     }
 
-    private func statusText(_ n: Negotiation) -> String {
-        if store.busy { return "Идут" }
-        if n.booking != nil { return "Забронировано" }
-        return n.accepted ? "Ждёт решения" : "Нужен ваш выбор"
+    /// «Раунд 2 · Кафе Пушкин» — место только у согласованного раунда.
+    private func historyLine(_ h: Negotiation) -> String {
+        let place = h.place?.name ?? ""
+        return h.accepted && !place.isEmpty ? "Раунд \(h.round) · \(place)" : "Раунд \(h.round)"
+    }
+
+    /// Статус переговоров — значком и словом.
+    private func status(_ n: Negotiation) -> StatusView {
+        if store.busy { return StatusView("Идут", .accent, .clock) }
+        if n.booking != nil { return StatusView("Забронировано", .green, .check) }
+        return n.accepted ? StatusView("Ждёт решения", .attention, .hand)
+                          : StatusView("Нужен ваш выбор", .attention, .hand)
     }
 
     private func counterOffers(_ n: Negotiation) -> some View {
         let exhausted = n.round >= AppStore.maxRounds
         return VStack(alignment: .leading, spacing: 12) {
             Text(exhausted ? "Лимит раундов исчерпан" : "Встречные варианты собеседника")
-                .font(SelfvoyFont.titleMedium)
-                .foregroundStyle(SelfvoyColor.textPrimary)
+                .font(InkFont.headline)
+                .foregroundStyle(Ink.label)
             Text(exhausted
                  ? "Оба Selfvoy провели \(AppStore.maxRounds) раундов без согласия. Дальше решаете вы: напишите собеседнику."
                  : "Без вас Selfvoy дальше не договаривается: можно начать следующий раунд с другим окном или написать в чат.")
-                .font(SelfvoyFont.small)
-                .foregroundStyle(SelfvoyColor.textSecondary)
+                .font(InkFont.footnote)
+                .foregroundStyle(Ink.secondary)
             if !n.counterSlots.isEmpty {
                 FlowLayout(spacing: 8) {
                     ForEach(n.counterSlots, id: \.self) { slot in
-                        SelfvoyChip(title: "\(Format.dayPhrase(slot.start)), \(Format.timeOf(slot.start))",
-                                 enabled: false) {}
+                        InkChip(title: "\(Format.dayPhrase(slot.start)), \(Format.timeOf(slot.start))",
+                                enabled: false) {}
                     }
                 }
             }
             if !exhausted {
-                GradientButton(title: "Следующий раунд: две недели", busy: store.busy) {
+                InkButton(title: "Следующий раунд: две недели", busy: store.busy) {
                     store.negotiate(target: n.target, topic: n.topic, durationMinutes: n.durationMinutes,
                                     windowHours: Format.windowHours("week"))
                 }
             }
-            GlassButton(title: "Написать собеседнику", systemImage: "bubble.left") {
+            InkButton(title: "Написать собеседнику", systemImage: "bubble.left.fill", kind: .secondary) {
                 store.openChat(contact: n.target)
             }
         }
-        .glassCard()
+        .inkCard()
     }
 
     private func buildSteps(_ n: Negotiation, me: String, them: String) -> [Step] {
@@ -169,7 +196,7 @@ struct NegotiationsView: View {
     }
 }
 
-/// Карточка агента: аватар с кольцом и «голос» — полосы активнее у того, кто говорит.
+/// Карточка агента: аватар и «голос» — полосы выше у того, кто говорит; рядом слово.
 private struct AgentCard: View {
     let name: String
     let selfvoy: String
@@ -177,36 +204,31 @@ private struct AgentCard: View {
     let them: Bool
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
         VStack(spacing: 4) {
-            SelfvoyAvatar(name: name, size: 56, ring: true)
-                .padding(.bottom, 6)
-            Text(name).font(SelfvoyFont.titleMedium).foregroundStyle(SelfvoyColor.textPrimary).lineLimit(1)
-            Text(selfvoy).font(SelfvoyFont.small).foregroundStyle(SelfvoyColor.textSecondary).lineLimit(1)
+            InkAvatar(name: name, size: 52)
+                .padding(.bottom, 4)
+            Text(name).font(InkFont.headline).foregroundStyle(Ink.label).lineLimit(1)
+            Text(selfvoy).font(InkFont.caption).foregroundStyle(Ink.secondary).lineLimit(1)
             HStack(alignment: .bottom, spacing: 2) {
-                ForEach(0..<18, id: \.self) { i in
+                ForEach(0..<16, id: \.self) { i in
                     let level = 0.25 + abs(sin(Double(i) * 1.7 + (them ? 2 : 0))) * 0.65
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(LinearGradient(colors: [SelfvoyColor.accent, Color(hex: 0x6366F1)],
-                                             startPoint: .top, endPoint: .bottom))
-                        .frame(height: 36 * (talking ? level : level * 0.35))
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(talking ? Ink.accent : Ink.tertiary)
+                        .frame(height: 28 * (talking ? level : level * 0.35))
                         .animation(.easeInOut(duration: 0.35), value: talking)
                 }
             }
-            .frame(height: 36, alignment: .bottom)
-            .padding(8)
-            .frame(maxWidth: .infinity)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.86)))
-            .padding(.top, 8)
+            .frame(height: 28, alignment: .bottom)
+            .padding(.top, 6)
+            .accessibilityHidden(true)
+            Text(talking ? "говорит" : "ждёт")
+                .font(InkFont.caption)
+                .foregroundStyle(talking ? Ink.accent : Ink.secondary)
         }
         .padding(14)
         .frame(maxWidth: .infinity)
-        .background(shape.fill(LinearGradient(
-            colors: them ? [Color(hex: 0xBF99FF, alpha: 0.2), Color(hex: 0x7352DB, alpha: 0.1)]
-                         : [Color(hex: 0x99ABFF, alpha: 0.18), Color(hex: 0x7859DB, alpha: 0.1)],
-            startPoint: .top, endPoint: .bottom)))
-        .overlay(shape.strokeBorder(them ? Color(hex: 0xCCAAFF, alpha: 0.42) : Color(hex: 0xB3BDFF, alpha: 0.36),
-                                    lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(Ink.card))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -215,35 +237,36 @@ private struct StepRow: View {
     let step: Step
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .top, spacing: 10) {
             if step.mine { badge } else { Spacer(minLength: 24) }
             VStack(alignment: step.mine ? .leading : .trailing, spacing: 2) {
-                Text(step.text).font(SelfvoyFont.labelMedium).foregroundStyle(SelfvoyColor.textPrimary)
+                Text(step.text).font(InkFont.callout.weight(.semibold)).foregroundStyle(Ink.label)
                 if !step.detail.isEmpty {
-                    Text(step.detail).font(SelfvoyFont.micro).foregroundStyle(SelfvoyColor.textMuted)
+                    Text(step.detail).font(InkFont.footnote).foregroundStyle(Ink.secondary)
                 }
             }
             .multilineTextAlignment(step.mine ? .leading : .trailing)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .background(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.white.opacity(0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).strokeBorder(.white.opacity(0.18), lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(Ink.card))
             if step.mine { Spacer(minLength: 24) } else { badge }
         }
     }
 
+    /// Номер шага; итог — значком: галочка (согласовано) или крестик (без согласия).
     private var badge: some View {
-        let color = step.fail ? SelfvoyColor.danger : SelfvoyColor.accentSoft
-        return ZStack {
-            Circle().fill((step.fail ? SelfvoyColor.danger : SelfvoyColor.accent).opacity(0.15))
-            Circle().strokeBorder(color, lineWidth: 1.5)
+        ZStack {
+            Circle().fill(step.fail ? Ink.red.opacity(0.14) : step.done ? Ink.green.opacity(0.16) : Ink.accentSoft)
             if step.done {
-                Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(SelfvoyColor.textPrimary)
+                Image(systemName: "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(Ink.green)
+            } else if step.fail {
+                Image(systemName: "xmark").font(.system(size: 13, weight: .bold)).foregroundStyle(Ink.red)
             } else {
-                Text("\(number)").font(SelfvoyFont.label).foregroundStyle(SelfvoyColor.textPrimary)
+                Text("\(number)").font(.system(size: 14, weight: .bold)).foregroundStyle(Ink.accent)
             }
         }
-        .frame(width: 32, height: 32)
+        .frame(width: 30, height: 30)
+        .accessibilityLabel(step.done ? "Согласовано" : step.fail ? "Без согласия" : "Шаг \(number)")
     }
 }
 
@@ -259,30 +282,28 @@ private struct ResultCard: View {
         var facts = ["Двое", "до \(Format.timeOf(slot.end))"]
         if let city = n.place?.city, !city.isEmpty { facts.append(city) }
         if let rating = n.place?.rating, !rating.isEmpty { facts.append("рейтинг \(rating)") }
-        let shape = RoundedRectangle(cornerRadius: 24, style: .continuous)
         return VStack(alignment: .leading, spacing: 10) {
-            Text("\(Format.dayTitle(slot.start)), \(Format.timeOf(slot.start))\n\(n.place?.name ?? "")")
-                .font(SelfvoyFont.headline)
-                .foregroundStyle(SelfvoyColor.textPrimary)
-            Muted(facts.joined(separator: "  ·  "))
+            Text("Общее время").font(InkFont.eyebrow).foregroundStyle(Ink.secondary).textCase(.uppercase)
+            Text("\(Format.dayTitle(slot.start)), \(Format.timeOf(slot.start))")
+                .font(InkFont.title)
+                .foregroundStyle(Ink.label)
+            if let place = n.place?.name, !place.isEmpty {
+                Text(place).font(InkFont.headline).foregroundStyle(Ink.label)
+            }
+            Text(facts.joined(separator: " · ")).font(InkFont.footnote).foregroundStyle(Ink.secondary)
             if let booking = n.booking {
-                Text("Столик забронирован · код \(booking) · встреча в задачах")
-                    .font(SelfvoyFont.labelMedium)
-                    .foregroundStyle(SelfvoyColor.success)
-                GlassButton(title: "Открыть задачи") { store.selectTab(.tasks) }
+                StatusBadge(status: StatusView("Столик забронирован · код \(booking)", .green, .check))
+                Text("Встреча — в задачах.").font(InkFont.footnote).foregroundStyle(Ink.secondary)
+                InkButton(title: "Открыть задачи", kind: .secondary) { store.selectTab(.tasks) }
             } else {
-                GradientButton(title: "Подтвердить и забронировать", systemImage: "checkmark.seal",
-                               busy: store.busy) {
+                InkButton(title: "Подтвердить и забронировать", systemImage: "checkmark.seal.fill",
+                          busy: store.busy) {
                     store.bookNegotiation()
                 }
-                GlassButton(title: "Остановить", quiet: true) { store.clearNegotiation() }
+                InkButton(title: "Остановить", kind: .quiet) { store.clearNegotiation() }
             }
         }
-        .padding(22)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(shape.fill(LinearGradient(colors: [Color(hex: 0x7863FF, alpha: 0.18), Color(hex: 0x3D78FF, alpha: 0.12)],
-                                              startPoint: .leading, endPoint: .trailing)))
-        .overlay(shape.strokeBorder((n.booking != nil ? SelfvoyColor.success : SelfvoyColor.accent).opacity(0.45), lineWidth: 1))
+        .inkCard(padding: 18)
     }
 }
 
@@ -317,49 +338,51 @@ private struct NegotiationForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("С кем договориться?").font(SelfvoyFont.titleMedium).foregroundStyle(SelfvoyColor.textPrimary)
+            Text("С кем договориться?").font(InkFont.headline).foregroundStyle(Ink.label)
             if !store.contacts.isEmpty {
                 FlowLayout(spacing: 8) {
                     ForEach(store.contacts) { contact in
-                        SelfvoyChip(title: contact.name, active: target == contact.email && email.isEmpty) {
+                        InkChip(title: contact.name, active: target == contact.email && email.isEmpty) {
                             target = contact.email
                             email = ""
                         }
                     }
                 }
             }
-            SelfvoyField(text: $email, placeholder: "или email собеседника", systemImage: "envelope",
-                      keyboard: .emailAddress)
+            InkField(text: $email, placeholder: "или email собеседника", systemImage: "envelope",
+                     inCard: true, keyboard: .emailAddress)
                 .onChange(of: email) {
                     if !email.trimmingCharacters(in: .whitespaces).isEmpty { target = email }
                 }
-            SelfvoyField(text: $topic, placeholder: "Тема, например «обсудить стартап»")
+            InkField(text: $topic, placeholder: "Тема, например «обсудить стартап»", inCard: true)
             VStack(alignment: .leading, spacing: 8) {
-                Text("Когда").font(SelfvoyFont.labelMedium).foregroundStyle(SelfvoyColor.textSecondary)
+                Text("Когда").font(InkFont.eyebrow).foregroundStyle(Ink.secondary)
                 FlowLayout(spacing: 8) {
                     ForEach(Self.windows, id: \.key) { option in
-                        SelfvoyChip(title: option.title, active: window == option.key) { window = option.key }
+                        InkChip(title: option.title, active: window == option.key) { window = option.key }
                     }
                 }
-                Text("Длительность").font(SelfvoyFont.labelMedium).foregroundStyle(SelfvoyColor.textSecondary)
-                HStack(spacing: 8) {
+                Text("Длительность").font(InkFont.eyebrow).foregroundStyle(Ink.secondary)
+                    .padding(.top, 4)
+                Picker("Длительность", selection: $duration) {
                     ForEach([30, 60, 90], id: \.self) { minutes in
-                        SelfvoyChip(title: "\(minutes) мин", active: duration == minutes) { duration = minutes }
+                        Text("\(minutes) мин").tag(minutes)
                     }
                 }
+                .pickerStyle(.segmented)
             }
-            GradientButton(title: "Начать переговоры", systemImage: "person.2.wave.2",
-                           enabled: !target.isEmpty && !store.busy, busy: store.busy) {
+            InkButton(title: "Начать переговоры", systemImage: "person.2.fill",
+                      busy: store.busy, enabled: !target.isEmpty && !store.busy) {
                 store.negotiate(target: target, topic: topic, durationMinutes: duration,
                                 windowHours: Format.windowHours(window))
                 onStart()
             }
             if let onCancel {
-                GlassButton(title: "Отмена", quiet: true, action: onCancel)
+                InkButton(title: "Отмена", kind: .quiet, action: onCancel)
             }
-            Muted("Оба Selfvoy сверят свободное время и подберут место с учётом питания обоих. Бронь только после вашего подтверждения.")
+            InkFootnote("Оба Selfvoy сверят свободное время и подберут место с учётом питания обоих. Бронь только после вашего подтверждения.")
         }
-        .glassCard(radius: 26, padding: 22)
+        .inkCard(padding: 18)
         .onAppear {
             if target.isEmpty, let first = store.contacts.first { target = first.email }
         }

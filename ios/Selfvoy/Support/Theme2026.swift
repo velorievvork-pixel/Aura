@@ -3,13 +3,22 @@
 // #3555F5, янтарь #FFB224 — «новое/внимание», светлая и тёмная темы, стекло —
 // только на плавающих панелях и кнопках; текст всегда на сплошном фоне.
 //
-// Экраны владельца (Сегодня, Запись, Ещё, Абонементы, Подключения) уже на нём;
-// остальные пока в тёмном стекле v3 (Theme.swift) — см. AppTab.usesLegacyTheme.
+// На нём все экраны приложения; тема — системная (светлая или тёмная), цвета
+// ниже сами меняются вместе с ней.
 import SelfvoyKit
 import SwiftUI
 import UIKit
 
 extension Color {
+    /// Цвет из 0xRRGGBB.
+    init(hex: UInt32, alpha: Double = 1) {
+        self.init(.sRGB,
+                  red: Double((hex >> 16) & 0xFF) / 255,
+                  green: Double((hex >> 8) & 0xFF) / 255,
+                  blue: Double(hex & 0xFF) / 255,
+                  opacity: alpha)
+    }
+
     /// Цвет, который сам меняется со светлой/тёмной темой.
     init(light: UInt32, dark: UInt32, lightAlpha: Double = 1, darkAlpha: Double = 1) {
         self.init(UIColor { traits in

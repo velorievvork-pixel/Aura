@@ -41,9 +41,8 @@ final class AppSmokeTests: XCTestCase {
         // Четыре вкладки снизу; вложенные разделы возвращают «назад» в них.
         XCTAssertEqual([AppTab.home, .booking, .selfvoy, .more].filter(\.isRoot).count, 4)
         XCTAssertFalse(AppTab.packages.isRoot)
-        XCTAssertFalse(AppTab.home.usesLegacyTheme)
-        XCTAssertFalse(AppTab.integrations.usesLegacyTheme)
-        XCTAssertTrue(AppTab.contacts.usesLegacyTheme)
+        XCTAssertFalse(AppTab.contacts.isRoot)
+        XCTAssertFalse(AppTab.settings.isRoot)
         let store = AppStore()
         store.selectTab(.more)
         store.selectTab(.packages)

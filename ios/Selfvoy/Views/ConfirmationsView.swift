@@ -1,5 +1,6 @@
 // ConfirmationsView.swift — опасные действия Selfvoy, ждущие решения человека
-// (confirmation.approve / confirmation.deny). Сам Selfvoy их не выполняет.
+// (confirmation.approve / confirmation.deny), в дизайне 2026. Сам Selfvoy их не выполняет.
+import SelfvoyKit
 import SwiftUI
 
 struct ConfirmationsView: View {
@@ -11,44 +12,44 @@ struct ConfirmationsView: View {
             SubscreenBar()
             list
         }
+        .inkScreen()
     }
 
     private var list: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                ScreenHeader("Подтверждения")
+                InkHeader(eyebrow: "Ждут решения", title: "Подтверждения")
                 Text("Письма, сообщения и брони Selfvoy не выполняет сам: каждое такое действие ждёт здесь вашего решения.")
-                    .font(SelfvoyFont.body)
-                    .foregroundStyle(SelfvoyColor.textSecondary)
+                    .font(InkFont.callout)
+                    .foregroundStyle(Ink.secondary)
                 if store.confirmations.isEmpty {
-                    Muted("Сейчас ничего не ждёт решения.")
+                    InkEmpty(text: "Сейчас ничего не ждёт решения.")
                 }
                 ForEach(store.confirmations) { action in
                     VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 8) {
-                            Circle().fill(SelfvoyColor.warning).frame(width: 8, height: 8)
-                            Text("Требуется подтверждение").font(SelfvoyFont.labelMedium).foregroundStyle(SelfvoyColor.warning)
-                        }
+                        StatusBadge(status: StatusView("Требуется подтверждение", .attention, .hand), compact: true)
                         Text(action.summary.isEmpty ? action.tool : action.summary)
-                            .font(SelfvoyFont.titleSmall)
-                            .foregroundStyle(SelfvoyColor.textPrimary)
-                        Muted("инструмент: \(Format.toolLabel(action.tool))")
+                            .font(InkFont.headline)
+                            .foregroundStyle(Ink.label)
+                        Text("Инструмент: \(Format.toolLabel(action.tool))")
+                            .font(InkFont.footnote)
+                            .foregroundStyle(Ink.secondary)
                         HStack(spacing: 10) {
-                            GradientButton(title: "Подтвердить", height: 44) {
+                            InkButton(title: "Подтвердить", systemImage: "checkmark", kind: .secondary) {
                                 store.decideConfirmation(id: action.id, approve: true)
                             }
-                            GlassButton(title: "Отклонить", danger: true, height: 44) {
+                            InkButton(title: "Отклонить", systemImage: "xmark", kind: .destructive) {
                                 store.decideConfirmation(id: action.id, approve: false)
                             }
                         }
+                        .padding(.top, 4)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .glassCard()
+                    .inkCard()
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 6)
-            .padding(.bottom, 20)
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 24)
         }
         .refreshable { await store.loadConfirmations() }
     }

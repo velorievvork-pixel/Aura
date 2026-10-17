@@ -1,4 +1,4 @@
-// OnboardingView.swift — анкета после регистрации: день рождения, аллергии,
+// OnboardingView.swift — анкета после регистрации (дизайн 2026): день рождения, аллергии,
 // диета, передвижение, город, бюджет. Всё необязательно («Пропустить»), но
 // заполненная анкета сразу попадает в контекст Selfvoy (prefs.set → AI context).
 import SwiftUI
@@ -20,42 +20,44 @@ struct OnboardingView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(spacing: 14) {
-                    SelfvoyEmblem(size: 56)
+            VStack(alignment: .leading, spacing: 16) {
+                InkMark(size: 40)
+                    .padding(.top, 24)
+                VStack(alignment: .leading, spacing: 6) {
                     Text("Расскажите о себе")
-                        .font(SelfvoyFont.headline)
-                        .foregroundStyle(SelfvoyColor.textPrimary)
-                    Muted("Selfvoy использует это для мест, времени и рекомендаций. Всё необязательно и меняется в настройках.",
-                          alignment: .center)
+                        .font(InkFont.largeTitle)
+                        .foregroundStyle(Ink.label)
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Selfvoy использует это для мест, времени и рекомендаций. Всё необязательно и меняется в настройках.")
+                        .font(InkFont.callout)
+                        .foregroundStyle(Ink.secondary)
                 }
-                .frame(maxWidth: .infinity)
-                SelfvoyField(text: $birthday, placeholder: "ГГГГ-ММ-ДД", label: "День рождения",
-                          keyboard: .numbersAndPunctuation)
-                SelfvoyField(text: $allergies, placeholder: "через запятую", label: "Аллергии")
+                InkField(text: $birthday, placeholder: "ГГГГ-ММ-ДД", label: "День рождения",
+                         keyboard: .numbersAndPunctuation)
+                InkField(text: $allergies, placeholder: "через запятую", label: "Аллергии")
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Диета").font(SelfvoyFont.labelMedium).foregroundStyle(SelfvoyColor.textSecondary)
+                    Text("Диета").font(InkFont.eyebrow).foregroundStyle(Ink.secondary)
                     FlowLayout(spacing: 8) {
                         ForEach(dietOptions.indices, id: \.self) { index in
                             let option = dietOptions[index]
-                            SelfvoyChip(title: option.1, active: diet.contains(option.0)) {
+                            InkChip(title: option.1, active: diet.contains(option.0)) {
                                 if diet.contains(option.0) { diet.remove(option.0) } else { diet.insert(option.0) }
                             }
                         }
                     }
                 }
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Передвижение").font(SelfvoyFont.labelMedium).foregroundStyle(SelfvoyColor.textSecondary)
+                    Text("Передвижение").font(InkFont.eyebrow).foregroundStyle(Ink.secondary)
                     FlowLayout(spacing: 8) {
                         ForEach(transportOptions.indices, id: \.self) { index in
                             let option = transportOptions[index]
-                            SelfvoyChip(title: option.1, active: transport == option.0) { transport = option.0 }
+                            InkChip(title: option.1, active: transport == option.0) { transport = option.0 }
                         }
                     }
                 }
-                SelfvoyField(text: $city, placeholder: "Например, Москва", label: "Город")
-                SelfvoyField(text: $budget, placeholder: "Например, 25", label: "Бюджет на встречу", keyboard: .decimalPad)
-                GradientButton(title: "Сохранить", busy: store.busy) {
+                InkField(text: $city, placeholder: "Например, Москва", label: "Город")
+                InkField(text: $budget, placeholder: "Например, 25", label: "Бюджет на встречу", keyboard: .decimalPad)
+                InkButton(title: "Сохранить", busy: store.busy) {
                     store.submitOnboarding(
                         birthday: birthday.trimmingCharacters(in: .whitespaces),
                         allergies: allergies.split(separator: ",")
@@ -66,13 +68,15 @@ struct OnboardingView: View {
                         city: city.trimmingCharacters(in: .whitespaces),
                         budget: budget.trimmingCharacters(in: .whitespaces))
                 }
-                GlassButton(title: "Пропустить", quiet: true) { store.skipOnboarding() }
+                .padding(.top, 4)
+                InkButton(title: "Пропустить", kind: .quiet) { store.skipOnboarding() }
             }
-            .glassCard(radius: 34, padding: 24)
-            .padding(20)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 32)
             .frame(maxWidth: 560)
             .frame(maxWidth: .infinity)
         }
+        .inkScreen()
         .scrollDismissesKeyboard(.interactively)
         .onAppear {
             let saved = store.prefs.string("city")

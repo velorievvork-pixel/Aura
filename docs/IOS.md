@@ -22,9 +22,8 @@ ios/
     SelfvoyApp.swift             # @main: bootstrap, onOpenURL, STT-fallback
     Support/AppStore.swift    # состояние UI: диалог с Selfvoy, переговоры, контакты,
                               # задачи, события chat.message/task.due/notification.new
-    Support/Theme.swift       # токены v3 (цвета, радиусы, Manrope) — как у Qt/Android
+    Support/Theme2026.swift   # токены дизайна 2026 (Ink): цвета, радиусы, системный шрифт
     Support/Format.swift      # даты и подписи по-русски (сегодня/завтра, склонения)
-    Resources/Fonts/          # Manrope (SIL OFL 1.1), подключён через UIAppFonts
     Support/SpeechService.swift   # гибрид: SFSpeechRecognizer + серверный STT; AVSpeechSynthesizer
     Support/EventKitService.swift # экспорт задач в напоминания iOS (по кнопке)
     Intents/                  # App Intents: «Спросить Selfvoy», «Создать задачу», фразы Siri

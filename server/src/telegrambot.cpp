@@ -164,6 +164,32 @@ std::string TelegramBot::guestPayload(long long bookingId, const std::string& ma
     return "g_" + id + "_" + sign("g:" + id + ":" + manageHash);
 }
 
+std::string TelegramBot::waitlistPayload(long long entryId, const std::string& tokenHash) const {
+    const std::string id = std::to_string(entryId);
+    return "w_" + id + "_" + sign("w:" + id + ":" + tokenHash);
+}
+
+bool TelegramBot::parseWaitlist(const std::string& payload, long long& entryId, std::string& signature) {
+    entryId = 0;
+    signature.clear();
+    if (payload.size() > kMaxPayload || payload.rfind("w_", 0) != 0) return false;
+    std::size_t pos = 2;
+    long long id = 0;
+    if (!takeNumber(payload, pos, id) || id <= 0) return false;
+    const std::string sig = payload.substr(pos);
+    if (!validSignature(sig)) return false;
+    entryId = id;
+    signature = sig;
+    return true;
+}
+
+bool TelegramBot::verifyWaitlist(const std::string& payload, long long entryId, const std::string& tokenHash) const {
+    long long id = 0;
+    std::string sig;
+    if (!parseWaitlist(payload, id, sig) || id != entryId || tokenHash.empty()) return false;
+    return crypto::constantTimeEquals(sig, sign("w:" + std::to_string(id) + ":" + tokenHash));
+}
+
 bool TelegramBot::verifyOwner(const std::string& payload, std::time_t now, long long& userId) const {
     userId = 0;
     if (payload.size() > kMaxPayload || payload.rfind("o_", 0) != 0) return false;
@@ -272,6 +298,8 @@ void TelegramBot::handleMessage(const Json& message) {
             linkOwner(chatId, message.get("from").getString("username"), argument);
         } else if (argument.rfind("g_", 0) == 0) {
             linkGuest(chatId, argument);
+        } else if (argument.rfind("w_", 0) == 0) {
+            linkWaitlist(chatId, argument);
         } else {
             reply(chatId, kHelp);
         }
@@ -338,6 +366,33 @@ void TelegramBot::linkGuest(long long chatId, const std::string& payload) {
     }
     reply(chatId, bookings_ ? bookings_->telegramGreeting(*booking)
                             : std::string("Готово: напоминания о записи будут приходить сюда. Отписаться — /stop"));
+}
+
+void TelegramBot::linkWaitlist(long long chatId, const std::string& payload) {
+    long long entryId = 0;
+    std::string sig;
+    if (!parseWaitlist(payload, entryId, sig)) {
+        reply(chatId, kInvalidLink);
+        return;
+    }
+    const auto entry = database_.db().findWaitlistEntry(entryId);
+    if (!entry || !verifyWaitlist(payload, entry->id, entry->tokenHash)) {
+        reply(chatId, kInvalidLink);
+        return;
+    }
+    if (entry->status != "waiting" && entry->status != "offered") {
+        reply(chatId, "Эта запись в листе ожидания уже закрыта — предлагать нечего.");
+        return;
+    }
+    const DatabaseError saved = database_.db().setWaitlistTelegram(entry->id, chatId);
+    if (!saved.ok) {
+        SELFVOY_LOG(log::Level::Warn, "telegram") << "подписка листа ожидания не сохранена: " << saved.message;
+        reply(chatId, "Не получилось подключить — попробуйте ещё раз чуть позже.");
+        return;
+    }
+    const auto page = database_.db().findBookingPage(entry->pageId);
+    reply(chatId, "Готово: как только на «" + (page ? page->title : std::string("Selfvoy")) +
+                      "» освободится подходящее время, напишу сюда. Отписаться — /stop");
 }
 
 void TelegramBot::handleCallback(const Json& callback) {

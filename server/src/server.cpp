@@ -234,6 +234,12 @@ void Server::schedulerLoop() {
             if (!stopping_.load()) bookings_->paymentTick(500, std::time(nullptr));
             // F5: оплата пакетов (опрос ЮKassa, истечение неоплаченных) и срок действия.
             if (!stopping_.load()) bookings_->packageTick(500, std::time(nullptr));
+            // F8: истёкшие предложения листа ожидания (время — следующему) и записи листа
+            // старше 30 дней; «пора записаться снова» (атомарный захват — один экземпляр на запись).
+            if (!stopping_.load()) bookings_->waitlistTick(500, std::time(nullptr));
+            for (int batch = 0; batch < 20 && !stopping_.load(); ++batch) {
+                if (bookings_->rebookTick(100, std::time(nullptr)) < 100) break;
+            }
         }
     }
 }
@@ -1095,6 +1101,41 @@ void Server::registerHandlers() {
         return bookingReply(request, bookings_->confirm(request.payload, session->remoteAddr()));
     });
 
+    // ------------------------------------- F8: лист ожидания (гость — по slug/токену)
+    registerHandler("booking.waitlistJoin", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                 const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistJoin(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.waitlistGet", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistGet(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.waitlistClaim", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                  const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistClaim(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.waitlistLeave", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                  const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistLeave(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.waitlist", [this, bookingReply](std::shared_ptr<Session> session,
+                                                             const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistList(session->userId(), request.payload));
+    });
+    registerHandler("booking.waitlistRemove", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                   const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistRemove(session->userId(), request.payload));
+    });
+    // ------------------------------------------------ F10: чеки «Мой налог»
+    registerHandler("tax.pending", [this, bookingReply](std::shared_ptr<Session> session,
+                                                        const protocol::Request& request) {
+        return bookingReply(request, bookings_->taxPending(session->userId(), request.payload));
+    });
+    registerHandler("tax.receiptDone", [this, bookingReply](std::shared_ptr<Session> session,
+                                                            const protocol::Request& request) {
+        return bookingReply(request, bookings_->taxReceiptDone(session->userId(), request.payload));
+    });
+
     // ---------------------------------------------------- F6: окна и ICS
     registerHandler("booking.slotsPost", [this, bookingReply](std::shared_ptr<Session> session,
                                                               const protocol::Request& request) {
@@ -1189,6 +1230,18 @@ void Server::registerHandlers() {
     });
 
     registerHandler("prefs.set", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        // F10: npd_receipts («я самозанятый, напоминать выдать чек») — bool, включение — Pro.
+        if (request.payload.contains("npd_receipts")) {
+            const Json value = request.payload.get("npd_receipts");
+            if (!value.isBool()) {
+                return protocol::error(request.id, protocol::code::kBadRequest, "npd_receipts — true или false");
+            }
+            if (value.asBool() && !memory_->preferences(session->userId()).getBool("npd_receipts") &&
+                !proAllowed(session->userId())) {
+                return protocol::error(request.id, protocol::code::kProRequired,
+                                       "напоминания о чеках «Мой налог» доступны на тарифе Pro");
+            }
+        }
         std::string error;
         bool invalid = false;
         if (!memory_->setPreferences(session->userId(), request.payload, error, &invalid)) {

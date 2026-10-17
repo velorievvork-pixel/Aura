@@ -40,25 +40,6 @@ constexpr int kAiPerDay = 8;     // кандидатов в день от AI
 constexpr int kAiMaxSlots = 120;
 constexpr int kCacheSeconds = 60;
 
-bool validDay(const std::string& day) {
-    if (day.size() != 10 || day[4] != '-' || day[7] != '-') return false;
-    for (std::size_t i = 0; i < day.size(); ++i) {
-        if (i == 4 || i == 7) continue;
-        if (std::isdigit(static_cast<unsigned char>(day[i])) == 0) return false;
-    }
-    std::time_t probe = 0;
-    return parseIsoUtc(day + "T00:00:00Z", probe);
-}
-
-// Местное время YYYY-MM-DDTHH:MM.
-bool validLocal(const std::string& local) {
-    return local.size() == 16 && local[10] == 'T' && local[13] == ':' && validDay(local.substr(0, 10)) &&
-           std::isdigit(static_cast<unsigned char>(local[11])) != 0 &&
-           std::isdigit(static_cast<unsigned char>(local[12])) != 0 &&
-           std::isdigit(static_cast<unsigned char>(local[14])) != 0 &&
-           std::isdigit(static_cast<unsigned char>(local[15])) != 0;
-}
-
 // day/local от AI-сервиса — не источник истины: они должны соответствовать start
 // (сдвиг пояса не больше 14 ч и кратен 15 мин; day — дата из local). Иначе
 // day — дата UTC, local пуст: лимит записей в день не обойти подменой даты.
@@ -76,27 +57,6 @@ void checkLocal(std::time_t start, std::string& day, std::string& local) {
     const bool plausible = validDay(day) && parseIsoUtc(day + "T00:00:00Z", midnight) &&
                            start - midnight >= -14 * 3600 && start - midnight < 38 * 3600;
     if (!plausible) day = isoUtc(start).substr(0, 10);
-}
-
-// «чт, 15 октября 2026, 10:30 (Europe/Moscow)» — время встречи в письме: местное
-// время владельца из AI (local), иначе UTC.
-std::string whenText(const Json& occurrence, const std::string& timezone) {
-    static const char* const kMonths[] = {"января", "февраля", "марта",    "апреля",  "мая",    "июня",
-                                          "июля",   "августа", "сентября", "октября", "ноября", "декабря"};
-    static const char* const kDays[] = {"вс", "пн", "вт", "ср", "чт", "пт", "сб"};
-    std::string local = occurrence.getString("local");
-    std::string zone = timezone.empty() ? "UTC" : timezone;
-    if (!validLocal(local)) {
-        local = occurrence.getString("start").substr(0, 16);
-        zone = "UTC";
-        if (!validLocal(local)) return occurrence.getString("start");
-    }
-    std::time_t date = 0;
-    parseIsoUtc(local.substr(0, 10) + "T00:00:00Z", date);
-    std::tm parts{};
-    gmtime_r(&date, &parts);
-    return std::string(kDays[parts.tm_wday]) + ", " + std::to_string(parts.tm_mday) + " " + kMonths[parts.tm_mon] +
-           " " + std::to_string(parts.tm_year + 1900) + ", " + local.substr(11, 5) + " (" + zone + ")";
 }
 
 // Дата YYYY-MM-DD плюс days суток.
@@ -709,13 +669,17 @@ Json BookingManager::pageJson(const BookingPageRecord& page) {
     json.set("late_cancel", Json(page.lateCancel));
     json.set("policy_text", Json(page.policyText));
     json.set("packages", page.packages.isArray() ? page.packages : Json::array());  // F5: предложения пакетов
+    // F8: лист ожидания и «пора на повторный приём».
+    json.set("waitlist", Json(page.waitlist));
+    json.set("waitlist_hold_minutes", Json(static_cast<long long>(page.waitlistHoldMinutes)));
+    json.set("rebook_after_days", Json(static_cast<long long>(page.rebookAfterDays)));
     json.set("upcoming", Json(upcoming));
     json.set("created_at", Json(page.createdAt));
     json.set("updated_at", Json(page.updatedAt));
     return json;
 }
 
-Json BookingManager::bookingJson(const BookingRecord& booking, const std::string& pageTitle) const {
+Json BookingManager::bookingJson(const BookingRecord& booking, const std::string& pageTitle, int rebookDays) const {
     Json occurrences = Json::array();
     for (const auto& occurrence : booking.occurrences.items()) occurrences.push(occurrenceView(occurrence));
     Json json = Json::object();
@@ -749,6 +713,16 @@ Json BookingManager::bookingJson(const BookingRecord& booking, const std::string
     }
     json.set("reminders", reminders);
     json.set("payment", booking.payment.isObject() ? booking.payment : Json());  // F4: целиком
+    // F8: «пора записаться снова» — когда уйдёт ("" — не запланировано: поле страницы
+    // выключено, запись отменена или уже обработана) и когда ушло ("" — не отправлялось).
+    std::string rebookDue;
+    const std::string endsAt = bookingEndsAt(booking.occurrences);
+    std::time_t ends = 0;
+    if (rebookDays > 0 && booking.status == "active" && booking.rebookSentAt.empty() && parseIsoUtc(endsAt, ends)) {
+        rebookDue = isoUtc(ends + static_cast<std::time_t>(rebookDays) * 86400);
+    }
+    json.set("rebook_due_at", Json(rebookDue));
+    json.set("rebook_sent_at", Json(booking.rebookStatus == "sent" ? booking.rebookSentAt : std::string()));
     json.set("created_at", Json(booking.createdAt));
     json.set("updated_at", Json(booking.updatedAt));
     return json;
@@ -835,6 +809,8 @@ Json BookingManager::guestBookingJson(const BookingRecord& booking, const Bookin
     json.set("telegram_linked", Json(booking.id > 0 && !database_.db().bookingTelegramChats(booking.id).empty()));
     // F4: оплата (без provider_id), поздно ли менять ближайшую встречу, политика отмены.
     json.set("payment", payments::guestView(booking.payment));
+    // F10: ссылка на чек «Мой налог», если специалист её указал ("" — нет).
+    json.set("receipt_url", Json(booking.payment.isObject() ? booking.payment.getString("receipt_url") : std::string()));
     json.set("late", Json(late));
     json.set("policy", policyJson(page));
     json.set("payment_note", Json(page.paymentNote));
@@ -977,7 +953,7 @@ bool BookingManager::series(const BookingPageRecord& page, const Offer& first, i
 }
 
 std::unordered_map<std::string, int> BookingManager::dayCounts(const BookingPageRecord& page, long long skipBooking,
-                                                               const std::string& skipStart) {
+                                                               const std::string& skipStart, long long skipHold) {
     std::unordered_map<std::string, int> counts;
     for (const auto& booking : database_.db().listUpcomingBookings(page.ownerId, page.id, 5000)) {
         for (const auto& occurrence : booking.occurrences.items()) {
@@ -986,15 +962,20 @@ std::unordered_map<std::string, int> BookingManager::dayCounts(const BookingPage
             ++counts[occurrence.getString("day")];
         }
     }
+    // F8: время, которое держится за гостем из листа ожидания этой страницы, — место в дне.
+    for (const auto& hold : database_.db().listWaitlistHolds(page.ownerId, isoUtc(std::time(nullptr)))) {
+        if (hold.pageId == page.id && hold.id != skipHold) ++counts[hold.offerDay];
+    }
     return counts;
 }
 
-std::vector<BookingManager::Offer> BookingManager::available(const BookingPageRecord& page,
-                                                             const std::vector<Offer>& candidates,
-                                                             long long skipBooking, const std::string& skipStart) {
-    const std::time_t now = std::time(nullptr);
-    const std::time_t earliest = now + static_cast<std::time_t>(page.noticeHours) * 3600;
-    Busy busy = memory_.busy(page.ownerId);
+BookingManager::Busy BookingManager::busyFor(long long ownerId, long long skipBooking, const std::string& skipStart,
+                                             long long skipHold) {
+    Busy busy = memory_.busy(ownerId);
+    const auto drop = [&busy](std::time_t start, std::time_t end) {
+        const auto it = std::find(busy.begin(), busy.end(), std::make_pair(start, end));
+        if (it != busy.end()) busy.erase(it);
+    };
     if (skipBooking > 0 && !skipStart.empty()) {
         // Переносимая встреча не мешает сама себе.
         if (const auto booking = database_.db().findBooking(skipBooking)) {
@@ -1006,12 +987,31 @@ std::vector<BookingManager::Offer> BookingManager::available(const BookingPageRe
                     !parseIsoUtc(occurrence.getString("end"), end)) {
                     continue;
                 }
-                const auto it = std::find(busy.begin(), busy.end(), std::make_pair(start, end));
-                if (it != busy.end()) busy.erase(it);
+                drop(start, end);
             }
         }
     }
-    const auto counts = dayCounts(page, skipBooking, skipStart);
+    if (skipHold > 0) {
+        // F8: время, которое держится за этим гостем из листа ожидания, ему не мешает.
+        if (const auto entry = database_.db().findWaitlistEntry(skipHold)) {
+            std::time_t start = 0;
+            std::time_t end = 0;
+            if (entry->status == "offered" && parseIsoUtc(entry->offerStart, start) && parseIsoUtc(entry->offerEnd, end)) {
+                drop(start, end);
+            }
+        }
+    }
+    return busy;
+}
+
+std::vector<BookingManager::Offer> BookingManager::available(const BookingPageRecord& page,
+                                                             const std::vector<Offer>& candidates,
+                                                             long long skipBooking, const std::string& skipStart,
+                                                             long long skipHold) {
+    const std::time_t now = std::time(nullptr);
+    const std::time_t earliest = now + static_cast<std::time_t>(page.noticeHours) * 3600;
+    const Busy busy = busyFor(page.ownerId, skipBooking, skipStart, skipHold);
+    const auto counts = dayCounts(page, skipBooking, skipStart, skipHold);
     std::vector<Offer> result;
     for (const auto& offer : candidates) {
         if (offer.start <= now || offer.start < earliest) continue;
@@ -1072,6 +1072,9 @@ BookingManager::Result BookingManager::pageCreate(long long ownerId, const Json&
     // F5: предложения пакетов.
     const Result packageOffers = applyPackageOffers(ownerId, payload, true, page);
     if (!packageOffers.ok) return packageOffers;
+    // F8: лист ожидания и повторный приём.
+    const Result waitlistFields = applyWaitlistFields(ownerId, payload, true, page);
+    if (!waitlistFields.ok) return waitlistFields;
     page.durationMinutes = static_cast<int>(duration);
     page.daysAhead = static_cast<int>(daysAhead);
     page.maxPerDay = static_cast<int>(maxPerDay);
@@ -1179,6 +1182,9 @@ BookingManager::Result BookingManager::pageUpdate(long long ownerId, const Json&
     if (!paymentFields.ok) return paymentFields;
     const Result packageOffers = applyPackageOffers(ownerId, payload, false, *page);
     if (!packageOffers.ok) return packageOffers;
+    const int rebookBefore = page->rebookAfterDays;
+    const Result waitlistFields = applyWaitlistFields(ownerId, payload, false, *page);
+    if (!waitlistFields.ok) return waitlistFields;
     if (payload.contains("status")) {
         const std::string status = payload.getString("status");
         if (status != "active" && status != "paused") {
@@ -1193,6 +1199,10 @@ BookingManager::Result BookingManager::pageUpdate(long long ownerId, const Json&
     page->maxSeries = static_cast<int>(maxSeries);
     const DatabaseError saved = database_.db().updateBookingPage(*page);
     if (!saved.ok) return Result::failure(protocol::code::kInternal, "не удалось сохранить страницу записи");
+    // F8: выключили «пора на повторный приём» — неотправленные напоминания отменяются.
+    if (rebookBefore > 0 && page->rebookAfterDays == 0) {
+        database_.db().cancelPendingRebooks(page->id, isoUtc(std::time(nullptr)));
+    }
     {
         std::lock_guard<std::mutex> lock(cacheMutex_);
         cache_.erase(page->id);
@@ -1226,16 +1236,18 @@ BookingManager::Result BookingManager::list(long long ownerId, const Json& paylo
     long long limit = payload.getInt("limit", 50);
     limit = std::max(1LL, std::min(200LL, limit));
     const long long pageId = std::max(0LL, payload.getInt("page_id"));
-    std::unordered_map<long long, std::string> titles;
+    std::unordered_map<long long, std::pair<std::string, int>> titles;  // page_id → (название, rebook_after_days)
     Json bookings = Json::array();
     for (const auto& booking : database_.db().listBookings(ownerId, pageId, payload.getBool("active_only", false),
                                                            static_cast<int>(limit))) {
         auto title = titles.find(booking.pageId);
         if (title == titles.end()) {
             const auto page = database_.db().findBookingPage(booking.pageId);
-            title = titles.emplace(booking.pageId, page ? page->title : std::string()).first;
+            title = titles.emplace(booking.pageId, page ? std::make_pair(page->title, page->rebookAfterDays)
+                                                         : std::make_pair(std::string(), 0))
+                        .first;
         }
-        bookings.push(bookingJson(booking, title->second));
+        bookings.push(bookingJson(booking, title->second.first, title->second.second));
     }
     Result result;
     result.ok = true;
@@ -1364,6 +1376,7 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
         if (auto fresh = database_.db().findBooking(booking->id)) booking = std::move(fresh);
     }
     if (returned > 0) footer.push_back("Занятия возвращены на абонемент: " + std::to_string(returned) + ".");
+    const auto freed = freedOccurrences(before, booking->occurrences, now);  // F8: время — листу ожидания
     const auto page = database_.db().findBookingPage(booking->pageId);
     if (page) {
         std::string ownerName;
@@ -1375,9 +1388,11 @@ BookingManager::Result BookingManager::ownerCancel(long long ownerId, const Json
                                                                 : " отменил(а) одну встречу. Расписание:"),
                     "", booking->status != "cancelled", false, footer);
     }
+    if (!freed.empty()) waitlistRelease(booking->pageId, freed, now);
     Result result;
     result.ok = true;
-    result.payload.set("booking", bookingJson(*booking, page ? page->title : std::string()));
+    result.payload.set("booking", bookingJson(*booking, page ? page->title : std::string(),
+                                              page ? page->rebookAfterDays : 0));
     return result;
 }
 
@@ -1436,6 +1451,10 @@ BookingManager::Result BookingManager::get(const Json& payload, const std::strin
     view.set("policy", policyJson(*page));
     // F5: предложения пакетов (абонементов).
     view.set("packages", page->packages.isArray() ? page->packages : Json::array());
+    // F8: «Встать в лист ожидания» и повторный приём.
+    view.set("waitlist", Json(page->waitlist));
+    view.set("waitlist_hold_minutes", Json(static_cast<long long>(page->waitlistHoldMinutes)));
+    view.set("rebook_after_days", Json(static_cast<long long>(page->rebookAfterDays)));
     Result result;
     result.ok = true;
     result.payload.set("page", view);
@@ -1464,7 +1483,7 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     PackageIntent intent;
     const Result packageCheck = packageIntent(*page, payload, count, intent);
     if (!packageCheck.ok) return packageCheck;
-    std::optional<PackagePurchaseRecord> held =
+    const std::optional<PackagePurchaseRecord> held =
         intent.packageId > 0 ? database_.db().findPackagePurchase(intent.packageId) : std::nullopt;
 
     BookingRecord booking;
@@ -1527,18 +1546,40 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     if (!series(*page, *offered, static_cast<int>(count), plan)) {
         return Result::failure(protocol::code::kUpstream, "не удалось рассчитать серию встреч — попробуйте позже");
     }
+    return commitBooking(*page, std::move(booking), intent, candidates, plan, count, 0);
+}
+
+BookingManager::Result BookingManager::commitBooking(const BookingPageRecord& pageRecord, BookingRecord booking,
+                                                     const PackageIntent& intent, const std::vector<Offer>& candidates,
+                                                     const std::vector<Offer>& plan, long long count,
+                                                     long long waitlistEntry) {
+    const BookingPageRecord* page = &pageRecord;
+    if (plan.empty()) return Result::failure(protocol::code::kBadRequest, "start — время одного из свободных слотов");
+    const std::time_t wanted = plan.front().start;
+    std::optional<PackagePurchaseRecord> held;
 
     auto lock = schedule_.acquire(page->ownerId);
     if (!lock.ok()) return Result::failure(protocol::code::kConflict, "сервер занят — попробуйте ещё раз");
-    const auto free = available(*page, candidates);
+    // F8: гость из листа ожидания забирает предложенное время — оно должно всё ещё держаться
+    // за ним (перечитываем под блокировкой: планировщик мог отдать его следующему).
+    std::optional<WaitlistEntryRecord> claim;
+    if (waitlistEntry > 0) {
+        claim = database_.db().findWaitlistEntry(waitlistEntry);
+        std::time_t until = 0;
+        if (!claim || claim->status != "offered" || claim->offerStart != isoUtc(wanted) ||
+            !parseIsoUtc(claim->offerExpiresAt, until) || until <= std::time(nullptr)) {
+            return Result::failure(protocol::code::kConflict, "время больше не держится за вами — выберите другое");
+        }
+    }
+    const auto free = available(*page, candidates, 0, "", waitlistEntry);
     if (std::none_of(free.begin(), free.end(), [wanted](const Offer& o) { return o.start == wanted; })) {
         return Result::failure(protocol::code::kConflict, "это время уже занято — выберите другое");
     }
     const Offer* chosen = &plan.front();
 
     // Каждая встреча серии должна быть свободна и не превышать лимит записей в свой день.
-    const Busy busy = memory_.busy(page->ownerId);
-    auto counts = dayCounts(*page, 0, "");
+    const Busy busy = busyFor(page->ownerId, 0, "", waitlistEntry);
+    auto counts = dayCounts(*page, 0, "", waitlistEntry);
     Json occurrences = Json::array();
     for (const auto& item : plan) {
         if (!isFree(busy, item.start, item.end) || counts[item.day] >= page->maxPerDay) {
@@ -1641,6 +1682,15 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     if (!database_.db().updateBooking(booking).ok) {
         SELFVOY_LOG(log::Level::Warn, "booking") << "id задач записи " << id << " не сохранены";
     }
+    if (claim) {
+        // F8: держание закрыто записью — запись листа ожидания выполнена.
+        claim->status = "booked";
+        claim->offerStatus = "claimed";
+        claim->bookingId = id;
+        if (!database_.db().updateWaitlistEntry(*claim).ok) {
+            SELFVOY_LOG(log::Level::Warn, "booking") << "запись листа ожидания " << claim->id << " не сохранена";
+        }
+    }
     lock.release();  // дальше — платёж, уведомление и письмо, расписание владельца не держим
 
     // F4: платёж в ЮKassa (Idempotence-Key bk-<id>; гость вернётся на ссылку управления).
@@ -1733,10 +1783,18 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         notify.set("count", Json(count));
         notify.set("guest_name", Json(booking.guestName));
         if (booking.packageId > 0) notify.set("package_id", Json(booking.packageId));
-        notifications_->create(page->ownerId, "booking.created",
-                               booking.guestName + (count > 1 ? " записался(ась) на серию встреч"
-                                                              : " записался(ась) на встречу"),
-                               page->title, notify);
+        if (claim) {
+            // F8: запись из листа ожидания — одно уведомление waitlist.booked (вместо booking.created).
+            notify.set("entry_id", Json(claim->id));
+            notifications_->create(page->ownerId, "waitlist.booked",
+                                   booking.guestName + " забрал(а) освободившееся время из листа ожидания",
+                                   page->title, notify);
+        } else {
+            notifications_->create(page->ownerId, "booking.created",
+                                   booking.guestName + (count > 1 ? " записался(ась) на серию встреч"
+                                                                  : " записался(ась) на встречу"),
+                                   page->title, notify);
+        }
     }
     {
         std::string ownerName;
@@ -1874,6 +1932,7 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
     }
 
     const long long oldTask = occurrence.getInt("task_id");
+    const Json previous = occurrence;  // F8: прежнее время освобождается — листу ожидания
     occurrence.set("start", Json(isoUtc(chosen->start)));
     occurrence.set("end", Json(isoUtc(chosen->end)));
     occurrence.set("day", Json(chosen->day));
@@ -1913,6 +1972,7 @@ BookingManager::Result BookingManager::reschedule(const Json& payload, const std
     }
     notifyGuest(*booking, *page, "booking.rescheduled", "Selfvoy: встреча перенесена", "Встреча перенесена",
                 "Новое расписание (перенести или отменить можно по ссылке из первого письма):", "", true);
+    waitlistRelease(page->id, {previous}, std::time(nullptr));
     Result result;
     result.ok = true;
     result.payload.set("booking", guestBookingJson(*booking, *page, true));
@@ -2021,6 +2081,9 @@ BookingManager::Result BookingManager::cancel(const Json& payload, const std::st
                 booking->status == "cancelled" ? "Организатор получил уведомление. Встречи записи:"
                                                : "Организатор получил уведомление. Остальные встречи в силе:",
                 "", booking->status != "cancelled", false, footer);
+    // F8: освободившееся время — первому подходящему из листа ожидания.
+    const auto freed = freedOccurrences(before, booking->occurrences, now);
+    if (!freed.empty()) waitlistRelease(page->id, freed, now);
     Result result;
     result.ok = true;
     result.payload.set("booking", guestBookingJson(*booking, *page, true));
@@ -2205,6 +2268,7 @@ void BookingManager::notifyOwnerPayment(const BookingRecord& booking, const std:
 }
 
 void BookingManager::announcePaid(const BookingRecord& booking, bool notifyOwner) {
+    taxReceiptForBooking(booking);  // F10: «выдать чек» (самозанятые, RUB)
     const auto page = database_.db().findBookingPage(booking.pageId);
     const std::string pageTitle = page ? page->title : std::string();
     if (notifyOwner) {
@@ -2222,9 +2286,11 @@ void BookingManager::announcePaid(const BookingRecord& booking, bool notifyOwner
 bool BookingManager::expireUnpaid(long long bookingId, std::time_t now) {
     std::vector<long long> tasks;
     int cancelled = 0;
+    Json before;
     std::optional<BookingRecord> booking;
     const bool changed = mutateBooking(bookingId, [&](BookingRecord& record) {
         if (!payments::awaiting(record.payment)) return false;  // оплачено или уже решено
+        before = record.occurrences;
         record.payment = withStatus(record.payment, "expired");
         if (record.status == "active") {
             cancelled = cancelOccurrences(record, -1, now, tasks);
@@ -2255,6 +2321,9 @@ bool BookingManager::expireUnpaid(long long bookingId, std::time_t now) {
                     "Оплата " + moneyOf(booking->payment) + " не поступила вовремя, поэтому время освобождено. Встречи:",
                     "", false);
     }
+    // F8: освобождённое время — листу ожидания (now — реальное время освобождения).
+    const auto freed = freedOccurrences(before, booking->occurrences, std::time(nullptr));
+    if (!freed.empty()) waitlistRelease(booking->pageId, freed, std::max(now, std::time(nullptr)));
     SELFVOY_LOG(log::Level::Info, "booking") << "запись " << booking->id << " отменена: оплата не поступила";
     return true;
 }
@@ -2275,6 +2344,7 @@ void BookingManager::refundAfterCancel(const BookingRecord& booking, bool provid
             }, updated);
             notifyOwnerPayment(updated ? *updated : booking, "refunded", "Оплата возвращена: " + booking.guestName,
                                money + " — возврат через ЮKassa");
+            if (updated) taxRefundForBooking(*updated);  // F10: чек уже выдан — аннулировать
             return;
         }
         notifyOwnerPayment(booking, "refund_due", "Верните оплату вручную: " + booking.guestName,
@@ -2393,10 +2463,12 @@ BookingManager::Result BookingManager::paymentSet(long long ownerId, const Json&
     if (!found->payment.isObject()) return Result::failure(protocol::code::kBadRequest, "у записи нет оплаты");
     const std::string at = isoUtc(std::time(nullptr));
     bool paidNow = false;
+    bool refundedNow = false;
     std::optional<BookingRecord> booking;
     mutateBooking(id, [&](BookingRecord& record) {
         if (!record.payment.isObject() || record.payment.getString("status") == status) return false;
         paidNow = status == "paid";
+        refundedNow = status == "refunded";
         Json payment = withStatus(record.payment, status);
         if (status == "paid") payment.set("paid_at", Json(at));
         if (status == "refunded") payment.set("refunded_at", Json(at));
@@ -2406,10 +2478,15 @@ BookingManager::Result BookingManager::paymentSet(long long ownerId, const Json&
     if (!booking) booking = database_.db().findBooking(id);
     if (!booking) return Result::failure(protocol::code::kNotFound, "запись не найдена");
     if (paidNow) announcePaid(*booking, false);  // владелец сам отметил — уведомлять его не нужно
+    if (refundedNow) taxRefundForBooking(*booking);  // F10: чек уже выдан — аннулировать
+    if (paidNow || refundedNow) {
+        if (auto fresh = database_.db().findBooking(id)) booking = std::move(fresh);  // F10: npd, receipt_*
+    }
     const auto page = database_.db().findBookingPage(booking->pageId);
     Result result;
     result.ok = true;
-    result.payload.set("booking", bookingJson(*booking, page ? page->title : std::string()));
+    result.payload.set("booking", bookingJson(*booking, page ? page->title : std::string(),
+                                              page ? page->rebookAfterDays : 0));
     return result;
 }
 

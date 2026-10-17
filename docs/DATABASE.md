@@ -9,7 +9,7 @@ e2e — на реальном PostgreSQL.
 изменения — файлами `schema/migrations/` (применяются по порядку имени).
 Демо-данные: `schema/seed.sql`.
 
-## 31 таблица и 2 представления по доменам
+## 32 таблицы и 2 представления по доменам
 
 ### Аутентификация и безопасность
 | таблица | назначение |
@@ -88,6 +88,7 @@ advisory lock'ов (их берут и отпускают в одной сесс
 | `server_state` | служебное состояние сервера ключ → значение (`telegram.offset` — смещение `getUpdates`), `updated_at` |
 | `payment_accounts` | магазин ЮKassa владельца (F4): `user_id` PK (ON DELETE CASCADE), `provider` CHECK (`yookassa`), `shop_id`, `secret_enc` (AES-256-GCM, AAD `selfvoy-payment-secret`), `connected_at` |
 | `package_purchases` | пакеты (абонементы) гостей (F5): `owner_id`, `page_id` (ON DELETE CASCADE), `offer_id` (id предложения страницы; 0 — выдан владельцем), снимок предложения `title`, `sessions_total` CHECK 1–1000, `sessions_used`, `valid_days`, `price`, `currency`; `valid_until` (NULL — ждёт оплату), `status` CHECK (`pending`/`active`/`used`/`expired`/`cancelled`), `payment` JSONB (как `bookings.payment`, `kind: package`), `guest_name/email`, `cc_email`, `token_hash` UNIQUE (sha256 токена ссылки `#/p/<токен>`), `token_enc` (тот же токен, AES-256-GCM, AAD `selfvoy-package-token` — для писем); индексы (owner_id, id DESC), частичные по `payment->>'due_at' WHERE status = 'pending'` и `valid_until WHERE status = 'active'` |
+| `waitlist_entries` | лист ожидания страницы записи (F8): `owner_id`, `page_id` (ON DELETE CASCADE), `guest_name`, `guest_email`, `days` JSONB (местные даты владельца; `[]` — любой день), `part_of_day` CHECK (`any`/`morning`/`afternoon`/`evening`), `comment`, `status` CHECK (`waiting`/`offered`/`booked`/`left`/`expired`), `token_hash` UNIQUE (sha256 токена ссылки `#/w/<токен>`), `token_enc` (тот же токен, AES-256-GCM, AAD `selfvoy-waitlist-token`), `telegram_chat_id` (подписка в боте; NULL — нет), предложение `offer_start` / `offer_end` / `offer_day` / `offer_local` / `offer_expires_at` / `offer_status` CHECK (`''`/`offered`/`claimed`/`expired`/`cancelled`), `booking_id` (ON DELETE SET NULL), `queued_at` (место в очереди), `expires_at` (+30 дней); уникальный частичный индекс `(page_id, lower(guest_email)) WHERE status IN ('waiting','offered')` (один email — одна активная запись), индексы (owner_id, id DESC), очередь `(page_id, queued_at) WHERE waiting`, держания `(owner_id, offer_expires_at) WHERE offered`, планировщик `offer_expires_at WHERE offered` и `expires_at WHERE waiting`, `telegram_chat_id` |
 | `booking_reminders` | напоминания гостю о встрече (F1): `booking_id` (ON DELETE CASCADE), `owner_id`, `occurrence_start`, `kind` CHECK (`24h`/`2h`), `due_at`, `sent_at` (NULL — не отправлено); UNIQUE (booking_id, occurrence_start, kind), частичный индекс `due_at WHERE sent_at IS NULL`. Создаются при записи/переносе, неотправленные удаляются при отмене/переносе встречи; планировщик захватывает наступившие одним `UPDATE … WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED) RETURNING` |
 
 Миграция `2026_10_16_telegram_pro.sql` (то же — блоком в конце таблиц `schema.sql`):
@@ -145,6 +146,23 @@ PROTOCOL.md) с частичным индексом `bookings_payment_pending_id
 (точнее для старых записей не узнать), все — валютой страницы; повторный запуск
 ничего не перезаписывает. Во встроенном хранилище — поля `price` / `currency` в тех
 же записях (нет поля — 0 и `RUB`).
+
+Миграция `2026_10_17_waitlist_rebook.sql` (F8/F10; то же — блоком в конце таблиц
+`schema.sql`): поля страницы `booking_pages.waitlist` (BOOLEAN, false; Pro),
+`waitlist_hold_minutes` (CHECK 15–240, 60), `rebook_after_days` (CHECK 0 или 7–180,
+0); `bookings.rebook_sent_at` (TIMESTAMPTZ, NULL — «пора записаться снова» ещё не
+обработано) и `bookings.rebook_status` (CHECK `''`/`claimed`/`sent`/`skipped`/`cancelled`)
+с частичным индексом `bookings_rebook_idx (ends_at) WHERE status = 'active' AND
+rebook_sent_at IS NULL` — планировщик захватывает наступившие одним `UPDATE …
+WHERE id IN (SELECT … FOR UPDATE OF b SKIP LOCKED)` (ровно один раз на запись при
+нескольких экземплярах); таблица `waitlist_entries`. Держание листа ожидания
+(`status = 'offered'`, `offer_expires_at > now()`) — занятость владельца. Изменения
+записи листа — под блокировкой расписания владельца. F10 («Мой налог»):
+`user_preferences.npd_receipts` (BOOLEAN, false; `prefs.npd_receipts`); `npd`,
+`receipt_task_id`, `receipt_url`, `receipt_at`, `receipt_refund_task_id` — поля
+`bookings.payment` / `package_purchases.payment` (JSONB). Миграция идемпотентна
+(`IF NOT EXISTS`). Во встроенном хранилище — поля в тех же записях и массив
+`waitlist_entries` (захват и уникальность — под мьютексом).
 
 Миграция `2026_10_15_audit_fixes.sql`: `users.email_verified DEFAULT FALSE`
 (новый аккаунт без явного значения не считается подтверждённым), `bookings.ends_at`

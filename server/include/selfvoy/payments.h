@@ -9,7 +9,8 @@
 // Оплата — JSON, общий для записей (bookings.payment) и пакетов (F5):
 //   {status: pending|claimed|paid|refunded|waived|expired, amount (мин. единицы),
 //    currency, kind: full|deposit|package, method: link|yookassa, provider_id,
-//    action_url, due_at, paid_at, refunded_at}
+//    action_url, due_at, paid_at, refunded_at}; F10 (чек «Мой налог»): npd (владельцу
+//    напомнили выдать чек), receipt_task_id, receipt_url, receipt_at, receipt_refund_task_id
 // PaymentManager — общий механизм «создать платёж / проверить статус / вернуть»:
 // begin() собирает JSON, submit() создаёт платёж у ЮKassa (Idempotence-Key от
 // вызывающего: bk-<booking_id>, для пакетов — свой префикс), poll() спрашивает
@@ -52,7 +53,8 @@ inline bool settled(const Json& payment) {
     const std::string status = payment.isObject() ? payment.getString("status") : std::string();
     return status == "paid" || status == "claimed";
 }
-// Вид для гостя: без provider_id.
+// Вид для гостя: без provider_id и служебных полей чека (npd, receipt_task_id,
+// receipt_refund_task_id).
 Json guestView(const Json& payment);
 
 }  // namespace payments

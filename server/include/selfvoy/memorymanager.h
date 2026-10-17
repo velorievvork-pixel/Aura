@@ -51,7 +51,8 @@ public:
 
     std::vector<MemoryRecord> schedule(long long userId);
     // Занятые интервалы [start, end) из расписания (те же, что уходят в AI как calendar).
-    // Плюс будущие встречи записей гостей (booking.*).
+    // Плюс будущие встречи записей гостей (booking.*) и время, которое держится за гостем
+    // из листа ожидания (F8).
     std::vector<std::pair<std::time_t, std::time_t>> busy(long long userId);
     // Будущие активные встречи со страниц записи: событие календаря для AI и интервал.
     std::vector<std::pair<Json, std::pair<std::time_t, std::time_t>>> bookingEvents(long long userId);

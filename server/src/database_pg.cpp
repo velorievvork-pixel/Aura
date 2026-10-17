@@ -1126,6 +1126,7 @@ public:
                 "'work_hours', work_hours, 'budget_limit', budget_limit, 'city', city, "
                 "'lat', lat, 'lon', lon, 'theme', theme, 'notifications', notifications, 'privacy', privacy, "
                 "'birthday', birthday, 'allergies', allergies, 'onboarded', onboarded, "
+                "'npd_receipts', npd_receipts, "
                 "'updated_at', to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))::text "
                 "FROM user_preferences WHERE user_id = $1",
                 {std::to_string(userId)}, &result)) {
@@ -1159,6 +1160,7 @@ public:
                 "birthday = COALESCE($2::jsonb->>'birthday', birthday), "
                 "allergies = COALESCE((SELECT array_agg(x) FROM jsonb_array_elements_text($2::jsonb->'allergies') x), allergies), "
                 "onboarded = COALESCE(($2::jsonb->>'onboarded')::boolean, onboarded), "
+                "npd_receipts = COALESCE(($2::jsonb->>'npd_receipts')::boolean, npd_receipts), "
                 "updated_at = now() "
                 "WHERE user_id = $1",
                 {std::to_string(userId), preferences.dump()}, &result)) {
@@ -2141,7 +2143,9 @@ private:
         const std::string chat = std::to_string(chatId);
         if (!execute("UPDATE users SET telegram_chat_id = NULL, telegram_username = '' WHERE telegram_chat_id = $1::bigint",
                      {chat}, nullptr) ||
-            !execute("DELETE FROM booking_telegram WHERE chat_id = $1::bigint", {chat}, nullptr)) {
+            !execute("DELETE FROM booking_telegram WHERE chat_id = $1::bigint", {chat}, nullptr) ||
+            !execute("UPDATE waitlist_entries SET telegram_chat_id = NULL WHERE telegram_chat_id = $1::bigint", {chat},
+                     nullptr)) {
             return DatabaseError::failure(lastError());
         }
         return DatabaseError::success();
@@ -2154,10 +2158,10 @@ private:
         if (!execute("INSERT INTO booking_pages (owner_id, slug, title, description, duration_minutes, days_ahead, "
                      "max_per_day, notice_hours, max_series, weekends, status, guest_reminders, hide_branding, "
                      "price, currency, prepay, deposit, payment_url, payment_note, pay_within_minutes, cancel_hours, "
-                     "late_cancel, policy_text, packages) "
+                     "late_cancel, policy_text, packages, waitlist, waitlist_hold_minutes, rebook_after_days) "
                      "VALUES ($1, $2, $3, $4, $5::int, $6::int, $7::int, $8::int, $9::int, $10::bool, $11, "
                      "$12::bool, $13::bool, $14::bigint, $15, $16, $17::bigint, $18, $19, $20::int, $21::int, $22, $23, "
-                     "$24::jsonb) "
+                     "$24::jsonb, $25::bool, $26::int, $27::int) "
                      "RETURNING id",
                      {std::to_string(record.ownerId), record.slug, record.title, record.description,
                       std::to_string(record.durationMinutes), std::to_string(record.daysAhead),
@@ -2167,7 +2171,9 @@ private:
                       std::to_string(record.price), record.currency, record.prepay, std::to_string(record.deposit),
                       record.paymentUrl, record.paymentNote, std::to_string(record.payWithinMinutes),
                       std::to_string(record.cancelHours), record.lateCancel, record.policyText,
-                      record.packages.isArray() ? record.packages.dump() : std::string("[]")},
+                      record.packages.isArray() ? record.packages.dump() : std::string("[]"),
+                      record.waitlist ? "true" : "false", std::to_string(record.waitlistHoldMinutes),
+                      std::to_string(record.rebookAfterDays)},
                      &result)) {
             PQclear(result);
             return DatabaseError::failure(lastError());
@@ -2207,7 +2213,8 @@ private:
                      "weekends = $9::bool, status = $10, guest_reminders = $11::bool, hide_branding = $12::bool, "
                      "price = $13::bigint, currency = $14, prepay = $15, deposit = $16::bigint, payment_url = $17, "
                      "payment_note = $18, pay_within_minutes = $19::int, cancel_hours = $20::int, late_cancel = $21, "
-                     "policy_text = $22, packages = $23::jsonb, updated_at = now() WHERE id = $1",
+                     "policy_text = $22, packages = $23::jsonb, waitlist = $24::bool, waitlist_hold_minutes = $25::int, "
+                     "rebook_after_days = $26::int, updated_at = now() WHERE id = $1",
                      {std::to_string(record.id), record.title, record.description,
                       std::to_string(record.durationMinutes), std::to_string(record.daysAhead),
                       std::to_string(record.maxPerDay), std::to_string(record.noticeHours),
@@ -2216,7 +2223,9 @@ private:
                       std::to_string(record.price), record.currency, record.prepay, std::to_string(record.deposit),
                       record.paymentUrl, record.paymentNote, std::to_string(record.payWithinMinutes),
                       std::to_string(record.cancelHours), record.lateCancel, record.policyText,
-                      record.packages.isArray() ? record.packages.dump() : std::string("[]")},
+                      record.packages.isArray() ? record.packages.dump() : std::string("[]"),
+                      record.waitlist ? "true" : "false", std::to_string(record.waitlistHoldMinutes),
+                      std::to_string(record.rebookAfterDays)},
                      &result)) {
             return DatabaseError::failure(lastError());
         }
@@ -2231,7 +2240,8 @@ private:
                "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "guest_reminders, hide_branding, price, currency, prepay, deposit, payment_url, payment_note, "
-               "pay_within_minutes, cancel_hours, late_cancel, policy_text, packages::text "
+               "pay_within_minutes, cancel_hours, late_cancel, policy_text, packages::text, "
+               "waitlist, waitlist_hold_minutes, rebook_after_days "
                "FROM booking_pages";
     }
 
@@ -2275,6 +2285,11 @@ private:
         record.policyText = value_(result, row, 25);
         const Json packages = Json::parse(value_(result, row, 26));
         if (packages.isArray()) record.packages = packages;
+        if (PQnfields(result) > 29) {
+            record.waitlist = value_(result, row, 27) == "t";
+            record.waitlistHoldMinutes = std::atoi(value_(result, row, 28).c_str());
+            record.rebookAfterDays = std::atoi(value_(result, row, 29).c_str());
+        }
         return record;
     }
 
@@ -2450,7 +2465,9 @@ private:
                "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "COALESCE(manage_token_enc, ''), COALESCE(payment::text, ''), cc_email, COALESCE(package_id, 0), "
-               "price, currency "
+               "price, currency, "
+               "COALESCE(to_char(rebook_sent_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), ''), "
+               "rebook_status "
                "FROM bookings";
     }
 
@@ -2549,6 +2566,10 @@ private:
             record.price = std::atoll(value_(result, row, 17).c_str());
             const std::string currency = value_(result, row, 18);
             if (!currency.empty()) record.currency = currency;
+        }
+        if (PQnfields(result) > 20) {
+            record.rebookSentAt = value_(result, row, 19);
+            record.rebookStatus = value_(result, row, 20);
         }
         return record;
     }
@@ -2687,6 +2708,258 @@ private:
         return packagesWhere(" WHERE status = 'active' AND valid_until <= $1::timestamptz ORDER BY valid_until, id "
                              "LIMIT $2",
                              {nowIso, std::to_string(limit > 0 ? limit : 100)});
+    }
+
+    // ------------------------------------------------------ waitlist_entries (F8)
+    static std::string waitlistSelect() {
+        const std::string iso = "'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'";
+        return "SELECT id, owner_id, page_id, guest_name, guest_email, days::text, part_of_day, comment, status, "
+               "token_hash, COALESCE(token_enc, ''), COALESCE(telegram_chat_id, 0), "
+               "COALESCE(to_char(offer_start AT TIME ZONE 'UTC', " + iso + "), ''), "
+               "COALESCE(to_char(offer_end AT TIME ZONE 'UTC', " + iso + "), ''), offer_day, offer_local, "
+               "COALESCE(to_char(offer_expires_at AT TIME ZONE 'UTC', " + iso + "), ''), offer_status, "
+               "COALESCE(booking_id, 0), "
+               "to_char(queued_at AT TIME ZONE 'UTC', " + iso + "), "
+               "to_char(expires_at AT TIME ZONE 'UTC', " + iso + "), "
+               "to_char(created_at AT TIME ZONE 'UTC', " + iso + "), "
+               "to_char(updated_at AT TIME ZONE 'UTC', " + iso + ") "
+               "FROM waitlist_entries";
+    }
+
+    WaitlistEntryRecord readWaitlist(PGresult* result, int row) const {
+        WaitlistEntryRecord record;
+        record.id = std::atoll(value_(result, row, 0).c_str());
+        record.ownerId = std::atoll(value_(result, row, 1).c_str());
+        record.pageId = std::atoll(value_(result, row, 2).c_str());
+        record.guestName = value_(result, row, 3);
+        record.guestEmail = value_(result, row, 4);
+        const Json days = Json::parse(value_(result, row, 5));
+        record.days = days.isArray() ? days : Json::array();
+        record.partOfDay = value_(result, row, 6);
+        record.comment = value_(result, row, 7);
+        record.status = value_(result, row, 8);
+        record.tokenHash = value_(result, row, 9);
+        record.tokenEnc = value_(result, row, 10);
+        record.telegramChatId = std::atoll(value_(result, row, 11).c_str());
+        record.offerStart = value_(result, row, 12);
+        record.offerEnd = value_(result, row, 13);
+        record.offerDay = value_(result, row, 14);
+        record.offerLocal = value_(result, row, 15);
+        record.offerExpiresAt = value_(result, row, 16);
+        record.offerStatus = value_(result, row, 17);
+        record.bookingId = std::atoll(value_(result, row, 18).c_str());
+        record.queuedAt = value_(result, row, 19);
+        record.expiresAt = value_(result, row, 20);
+        record.createdAt = value_(result, row, 21);
+        record.updatedAt = value_(result, row, 22);
+        return record;
+    }
+
+    std::vector<WaitlistEntryRecord> waitlistWhere(const std::string& tail, const std::vector<std::string>& args) {
+        Lease lease(pool_);
+        std::vector<WaitlistEntryRecord> entries;
+        PGresult* result = nullptr;
+        if (!execute(waitlistSelect() + tail, args, &result)) return entries;
+        for (int row = 0; row < PQntuples(result); ++row) entries.push_back(readWaitlist(result, row));
+        PQclear(result);
+        return entries;
+    }
+
+    DatabaseError createWaitlistEntry(const WaitlistEntryRecord& record, long long& outId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO waitlist_entries (owner_id, page_id, guest_name, guest_email, days, part_of_day, "
+                     "comment, status, token_hash, token_enc, queued_at, expires_at) "
+                     "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, NULLIF($10, ''), "
+                     "COALESCE(NULLIF($11, '')::timestamptz, now()), $12::timestamptz) RETURNING id",
+                     {std::to_string(record.ownerId), std::to_string(record.pageId), record.guestName,
+                      record.guestEmail, record.days.isArray() ? record.days.dump() : std::string("[]"),
+                      record.partOfDay, record.comment, record.status, record.tokenHash, record.tokenEnc,
+                      record.queuedAt, record.expiresAt},
+                     &result)) {
+            PQclear(result);
+            return DatabaseError::failure(lastError());
+        }
+        outId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    std::optional<WaitlistEntryRecord> findWaitlistEntry(long long id) override {
+        auto found = waitlistWhere(" WHERE id = $1", {std::to_string(id)});
+        if (found.empty()) return std::nullopt;
+        return found.front();
+    }
+
+    std::optional<WaitlistEntryRecord> findWaitlistEntryByToken(const std::string& tokenHash) override {
+        if (tokenHash.empty()) return std::nullopt;
+        auto found = waitlistWhere(" WHERE token_hash = $1", {tokenHash});
+        if (found.empty()) return std::nullopt;
+        return found.front();
+    }
+
+    std::optional<WaitlistEntryRecord> findActiveWaitlistEntry(long long pageId, const std::string& emailLower) override {
+        auto found = waitlistWhere(" WHERE page_id = $1 AND lower(guest_email) = $2 AND status IN ('waiting', 'offered') "
+                                   "ORDER BY id DESC LIMIT 1",
+                                   {std::to_string(pageId), emailLower});
+        if (found.empty()) return std::nullopt;
+        return found.front();
+    }
+
+    std::vector<WaitlistEntryRecord> listWaitlistEntries(long long ownerId, long long pageId, const std::string& status,
+                                                         int limit) override {
+        return waitlistWhere(" WHERE owner_id = $1 AND ($2::bigint = 0 OR page_id = $2::bigint) "
+                             "AND ($3::text = '' OR status = $3::text) ORDER BY id DESC LIMIT $4",
+                             {std::to_string(ownerId), std::to_string(pageId), status,
+                              std::to_string(limit > 0 ? limit : 100)});
+    }
+
+    std::vector<WaitlistEntryRecord> listWaitingEntries(long long pageId, const std::string& nowIso, int limit) override {
+        return waitlistWhere(" WHERE page_id = $1 AND status = 'waiting' AND expires_at > $2::timestamptz "
+                             "ORDER BY queued_at, id LIMIT $3",
+                             {std::to_string(pageId), nowIso, std::to_string(limit > 0 ? limit : 100)});
+    }
+
+    int countActiveWaitlistEntries(long long pageId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT count(*) FROM waitlist_entries WHERE page_id = $1 AND status IN ('waiting', 'offered')",
+                     {std::to_string(pageId)}, &result)) {
+            return 0;
+        }
+        const int count = PQntuples(result) > 0 ? std::atoi(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return count;
+    }
+
+    DatabaseError updateWaitlistEntry(const WaitlistEntryRecord& record) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE waitlist_entries SET guest_name = $2, days = $3::jsonb, part_of_day = $4, comment = $5, "
+                     "status = $6, offer_start = NULLIF($7, '')::timestamptz, offer_end = NULLIF($8, '')::timestamptz, "
+                     "offer_day = $9, offer_local = $10, offer_expires_at = NULLIF($11, '')::timestamptz, "
+                     "offer_status = $12, booking_id = NULLIF($13::bigint, 0), "
+                     "queued_at = COALESCE(NULLIF($14, '')::timestamptz, queued_at), "
+                     "expires_at = COALESCE(NULLIF($15, '')::timestamptz, expires_at), updated_at = now() "
+                     "WHERE id = $1",
+                     {std::to_string(record.id), record.guestName,
+                      record.days.isArray() ? record.days.dump() : std::string("[]"), record.partOfDay,
+                      record.comment, record.status, record.offerStart, record.offerEnd, record.offerDay,
+                      record.offerLocal, record.offerExpiresAt, record.offerStatus, std::to_string(record.bookingId),
+                      record.queuedAt, record.expiresAt},
+                     &result)) {
+            return DatabaseError::failure(lastError());
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched ? DatabaseError::success() : DatabaseError::failure("запись листа ожидания не найдена");
+    }
+
+    DatabaseError setWaitlistTelegram(long long entryId, long long chatId) override {
+        Lease lease(pool_);
+        if (!execute("UPDATE waitlist_entries SET telegram_chat_id = NULLIF($2::bigint, 0) WHERE id = $1",
+                     {std::to_string(entryId), std::to_string(chatId)}, nullptr)) {
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
+    }
+
+    std::vector<WaitlistEntryRecord> listWaitlistHolds(long long ownerId, const std::string& nowIso) override {
+        return waitlistWhere(" WHERE owner_id = $1 AND status = 'offered' AND offer_expires_at > $2::timestamptz "
+                             "AND offer_start IS NOT NULL AND offer_end IS NOT NULL ORDER BY offer_start LIMIT 1000",
+                             {std::to_string(ownerId), nowIso});
+    }
+
+    std::vector<WaitlistEntryRecord> listDueWaitlist(const std::string& nowIso, int limit) override {
+        return waitlistWhere(" WHERE (status = 'offered' AND offer_expires_at <= $1::timestamptz) "
+                             "OR (status = 'waiting' AND expires_at <= $1::timestamptz) "
+                             "ORDER BY COALESCE(offer_expires_at, expires_at), id LIMIT $2",
+                             {nowIso, std::to_string(limit > 0 ? limit : 100)});
+    }
+
+    // ------------------------------------------------------- повторный приём (F8)
+    // Захват одним UPDATE: строки, уже взятые другим экземпляром, пропускаются (SKIP LOCKED).
+    std::vector<BookingRecord> claimDueRebooks(const std::string& nowIso, int limit) override {
+        std::vector<std::string> ids;
+        {
+            Lease lease(pool_);
+            PGresult* result = nullptr;
+            if (!execute("UPDATE bookings SET rebook_sent_at = $1::timestamptz, rebook_status = 'claimed' "
+                         "WHERE id IN (SELECT b.id FROM bookings b JOIN booking_pages p ON p.id = b.page_id "
+                         "WHERE b.status = 'active' AND b.rebook_sent_at IS NULL AND b.ends_at IS NOT NULL "
+                         "AND p.rebook_after_days > 0 "
+                         "AND b.ends_at + make_interval(days => p.rebook_after_days) <= $1::timestamptz "
+                         "ORDER BY b.ends_at LIMIT $2 FOR UPDATE OF b SKIP LOCKED) RETURNING id",
+                         {nowIso, std::to_string(limit > 0 ? limit : 100)}, &result)) {
+                return {};
+            }
+            for (int row = 0; row < PQntuples(result); ++row) ids.push_back(value_(result, row, 0));
+            PQclear(result);
+        }
+        std::vector<BookingRecord> bookings;
+        for (const auto& id : ids) {
+            if (auto booking = findBookingWhere("id = $1", id)) bookings.push_back(std::move(*booking));
+        }
+        std::sort(bookings.begin(), bookings.end(), [](const BookingRecord& a, const BookingRecord& b) {
+            return bookingEndsAt(a.occurrences) < bookingEndsAt(b.occurrences);
+        });
+        return bookings;
+    }
+
+    DatabaseError setRebookStatus(long long bookingId, const std::string& status) override {
+        Lease lease(pool_);
+        if (!execute("UPDATE bookings SET rebook_status = $2 WHERE id = $1", {std::to_string(bookingId), status},
+                     nullptr)) {
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
+    }
+
+    DatabaseError cancelPendingRebooks(long long pageId, const std::string& nowIso) override {
+        Lease lease(pool_);
+        if (!execute("UPDATE bookings SET rebook_sent_at = $2::timestamptz, rebook_status = 'cancelled' "
+                     "WHERE page_id = $1 AND status = 'active' AND rebook_sent_at IS NULL AND ends_at <= $2::timestamptz",
+                     {std::to_string(pageId), nowIso}, nullptr)) {
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
+    }
+
+    bool hasLaterBooking(long long pageId, const std::string& emailLower, long long exceptBookingId,
+                         const std::string& endsAtIso) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (emailLower.empty() ||
+            !execute("SELECT 1 FROM bookings WHERE page_id = $1 AND lower(guest_email) = $2 AND id <> $3 "
+                     "AND status = 'active' AND ends_at > $4::timestamptz LIMIT 1",
+                     {std::to_string(pageId), emailLower, std::to_string(exceptBookingId), endsAtIso}, &result)) {
+            return false;
+        }
+        const bool found = PQntuples(result) > 0;
+        PQclear(result);
+        return found;
+    }
+
+    // ----------------------------------------------------------- чеки (F10)
+    std::vector<BookingRecord> listReceiptPendingBookings(long long ownerId, int limit) override {
+        Lease lease(pool_);
+        std::vector<BookingRecord> bookings;
+        PGresult* result = nullptr;
+        if (!execute(bookingSelect() +
+                         " WHERE owner_id = $1 AND payment->>'npd' = 'true' AND payment->>'status' = 'paid' "
+                         "AND COALESCE(payment->>'receipt_at', '') = '' ORDER BY id DESC LIMIT $2",
+                     {std::to_string(ownerId), std::to_string(limit > 0 ? limit : 100)}, &result)) {
+            return bookings;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) bookings.push_back(readBooking(result, row));
+        PQclear(result);
+        return bookings;
+    }
+
+    std::vector<PackagePurchaseRecord> listReceiptPendingPackages(long long ownerId, int limit) override {
+        return packagesWhere(" WHERE owner_id = $1 AND payment->>'npd' = 'true' AND payment->>'status' = 'paid' "
+                             "AND COALESCE(payment->>'receipt_at', '') = '' ORDER BY id DESC LIMIT $2",
+                             {std::to_string(ownerId), std::to_string(limit > 0 ? limit : 100)});
     }
 
     // ------------------------------------------------------------- referrals

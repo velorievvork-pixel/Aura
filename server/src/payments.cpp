@@ -37,6 +37,11 @@ Json guestView(const Json& payment) {
     if (!payment.isObject()) return Json();
     Json view = payment;
     view.erase("provider_id");
+    // F10: служебные поля напоминания о чеке «Мой налог» — только владельцу
+    // (receipt_url / receipt_at гость видит).
+    view.erase("npd");
+    view.erase("receipt_task_id");
+    view.erase("receipt_refund_task_id");
     return view;
 }
 

@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <ctime>
 #include <string>
 
 #include "selfvoy/json.h"
+#include "selfvoy/memorymanager.h"  // parseIsoUtc / isoUtc
 #include "selfvoy/slotspost.h"
 
 namespace selfvoy::bookingutil {
@@ -85,6 +87,54 @@ inline Json withStatus(const Json& payment, const std::string& status) {
     Json updated = payment;
     updated.set("status", Json(status));
     return updated;
+}
+
+inline bool validDay(const std::string& day) {
+    if (day.size() != 10 || day[4] != '-' || day[7] != '-') return false;
+    for (std::size_t i = 0; i < day.size(); ++i) {
+        if (i == 4 || i == 7) continue;
+        if (std::isdigit(static_cast<unsigned char>(day[i])) == 0) return false;
+    }
+    std::time_t probe = 0;
+    return parseIsoUtc(day + "T00:00:00Z", probe);
+}
+
+// Местное время YYYY-MM-DDTHH:MM.
+inline bool validLocal(const std::string& local) {
+    return local.size() == 16 && local[10] == 'T' && local[13] == ':' && validDay(local.substr(0, 10)) &&
+           std::isdigit(static_cast<unsigned char>(local[11])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(local[12])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(local[14])) != 0 &&
+           std::isdigit(static_cast<unsigned char>(local[15])) != 0;
+}
+
+// «чт, 15 октября 2026, 10:30 (Europe/Moscow)» — время встречи в письме: местное
+// время владельца из AI (local), иначе UTC.
+inline std::string whenText(const Json& occurrence, const std::string& timezone) {
+    static const char* const kMonths[] = {"января", "февраля", "марта",    "апреля",  "мая",    "июня",
+                                          "июля",   "августа", "сентября", "октября", "ноября", "декабря"};
+    static const char* const kDays[] = {"вс", "пн", "вт", "ср", "чт", "пт", "сб"};
+    std::string local = occurrence.getString("local");
+    std::string zone = timezone.empty() ? "UTC" : timezone;
+    if (!validLocal(local)) {
+        local = occurrence.getString("start").substr(0, 16);
+        zone = "UTC";
+        if (!validLocal(local)) return occurrence.getString("start");
+    }
+    std::time_t date = 0;
+    parseIsoUtc(local.substr(0, 10) + "T00:00:00Z", date);
+    std::tm parts{};
+    gmtime_r(&date, &parts);
+    return std::string(kDays[parts.tm_wday]) + ", " + std::to_string(parts.tm_mday) + " " + kMonths[parts.tm_mon] +
+           " " + std::to_string(parts.tm_year + 1900) + ", " + local.substr(11, 5) + " (" + zone + ")";
+}
+
+// Ссылка https:// без пробелов и управляющих символов, ≤ 500 (оплата F4, чек F10).
+inline bool validHttpsUrl(const std::string& url) {
+    if (url.size() > 500 || url.size() <= 8 || url.rfind("https://", 0) != 0) return false;
+    return std::none_of(url.begin(), url.end(), [](unsigned char ch) {
+        return ch <= 0x20 || ch == 0x7F || ch == '"' || ch == '<' || ch == '>' || ch == '\\';
+    });
 }
 
 }  // namespace selfvoy::bookingutil

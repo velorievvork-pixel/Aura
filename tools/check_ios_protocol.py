@@ -68,6 +68,10 @@ KINDS = {
     "package.purchased",
     "package.payment",
     "package.low",
+    "waitlist.joined",
+    "waitlist.booked",
+    "tax.receipt",
+    "tax.refund",
 }
 
 

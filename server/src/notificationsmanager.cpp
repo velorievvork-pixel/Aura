@@ -50,7 +50,7 @@ long long NotificationsManager::create(long long userId,
 }
 
 bool NotificationsManager::telegramKind(const std::string& kind) {
-    for (const char* prefix : {"booking.", "package.", "invite.", "referral."}) {
+    for (const char* prefix : {"booking.", "package.", "invite.", "referral.", "waitlist.", "tax."}) {
         if (kind.rfind(prefix, 0) == 0) return true;
     }
     return kind == "task.due";

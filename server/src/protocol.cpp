@@ -54,6 +54,8 @@ bool isPublicType(const std::string& type) {
            type == "booking.reschedule" || type == "booking.cancel" || type == "booking.resendLink" ||
            type == "booking.confirm" || type == "booking.paymentClaim" ||
            type == "package.get" || type == "package.paymentClaim" ||
+           type == "booking.waitlistJoin" || type == "booking.waitlistGet" || type == "booking.waitlistClaim" ||
+           type == "booking.waitlistLeave" ||
            type == "ping" || type == "server.info";
 }
 

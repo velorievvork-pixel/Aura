@@ -339,6 +339,8 @@ Json MemoryManager::preferences(long long userId) {
         }
     }
     preferences.set("privacy", privacy);
+    // F10: «я самозанятый, напоминать выдать чек „Мой налог“» — по умолчанию выключено.
+    if (!preferences.get("npd_receipts").isBool()) preferences.set("npd_receipts", Json(false));
     return preferences;
 }
 
@@ -402,6 +404,15 @@ std::vector<std::pair<std::time_t, std::time_t>> MemoryManager::busy(long long u
     for (const auto& [event, interval] : bookingEvents(userId)) {
         (void)event;
         intervals.push_back(interval);
+    }
+    // F8: время, которое держится за гостем из листа ожидания, занято до конца держания.
+    const std::time_t now = std::time(nullptr);
+    for (const auto& hold : database_.db().listWaitlistHolds(userId, isoUtc(now))) {
+        std::time_t start = 0;
+        std::time_t end = 0;
+        if (parseIsoUtc(hold.offerStart, start) && parseIsoUtc(hold.offerEnd, end) && end > start && end > now) {
+            intervals.emplace_back(start, end);
+        }
     }
     return intervals;
 }

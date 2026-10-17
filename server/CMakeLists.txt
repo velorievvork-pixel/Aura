@@ -35,6 +35,8 @@ set(SELFVOY_SOURCES
     src/slotspost.cpp
     src/payments.cpp
     src/packages.cpp
+    src/waitlist.cpp
+    src/tax.cpp
     src/referralmanager.cpp
     src/schedulelock.cpp
     src/agentmanager.cpp

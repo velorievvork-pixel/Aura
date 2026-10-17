@@ -208,6 +208,8 @@ Json BookingManager::packageGuestJson(const PackagePurchaseRecord& record, const
     json.set("price", Json(record.price));
     json.set("currency", Json(record.currency));
     json.set("payment", payments::guestView(record.payment));
+    // F10: ссылка на чек «Мой налог», если специалист её указал ("" — нет).
+    json.set("receipt_url", Json(record.payment.isObject() ? record.payment.getString("receipt_url") : std::string()));
     json.set("payment_note", Json(page.paymentNote));
     json.set("guest_name", Json(record.guestName));
     json.set("cc_email", Json(maskEmail(record.ccEmail)));
@@ -584,6 +586,7 @@ void BookingManager::packageLow(const PackagePurchaseRecord& record) {
 // ------------------------------------------------------------ оплата пакета
 
 void BookingManager::announcePackagePaid(const PackagePurchaseRecord& record, bool notifyOwner) {
+    taxReceiptForPackage(record);  // F10: «выдать чек» (самозанятые, RUB)
     const auto page = database_.db().findBookingPage(record.pageId);
     const std::string money = moneyOf(record.payment);
     if (notifyOwner && notifications_) {
@@ -606,9 +609,11 @@ void BookingManager::announcePackagePaid(const PackagePurchaseRecord& record, bo
 void BookingManager::cancelBySystem(long long bookingId, std::time_t now, const std::string& reason) {
     std::vector<long long> tasks;
     int cancelled = 0;
+    Json before;
     std::optional<BookingRecord> booking;
     const bool changed = mutateBooking(bookingId, [&](BookingRecord& record) {
         if (record.status != "active") return false;
+        before = record.occurrences;
         cancelled = cancelOccurrences(record, -1, now, tasks);
         if (record.status == "cancelled") record.cancelledBy = "system";
         return cancelled > 0;
@@ -628,6 +633,9 @@ void BookingManager::cancelBySystem(long long bookingId, std::time_t now, const 
         notifications_->create(booking->ownerId, "booking.cancelled", booking->guestName + ": " + reason + " — запись отменена",
                                page ? page->title : std::string(), notify);
     }
+    // F8: освобождённое время — листу ожидания.
+    const auto freed = freedOccurrences(before, booking->occurrences, std::time(nullptr));
+    if (!freed.empty()) waitlistRelease(booking->pageId, freed, std::max(now, std::time(nullptr)));
 }
 
 bool BookingManager::expirePackagePayment(long long packageId, std::time_t now) {
@@ -693,6 +701,7 @@ void BookingManager::refundPackage(const PackagePurchaseRecord& record, bool pro
             }, updated);
             notifyOwner(updated ? *updated : record, "refunded", "Оплата пакета возвращена: " + record.guestName,
                         money + " — возврат через ЮKassa");
+            if (updated) taxRefundForPackage(*updated);  // F10: чек уже выдан — аннулировать
             return;
         }
         notifyOwner(record, "refund_due", "Верните оплату пакета вручную: " + record.guestName,
@@ -988,6 +997,9 @@ BookingManager::Result BookingManager::packageIssue(long long ownerId, const Jso
                           sessionsText(record.sessionsTotal) + ", действует до " + dateText(record.validUntil) + ".",
                       {}, url, "Записаться по абонементу", footer);
     }
+    // F10: продажа вне сайта с отметкой «оплачено» — «выдать чек».
+    if (record.payment.isObject() && record.payment.getString("status") == "paid") taxReceiptForPackage(record);
+    if (const auto fresh = database_.db().findPackagePurchase(id)) record = *fresh;
     Result result;
     result.ok = true;
     result.payload.set("package", packageOwnerJson(record, page->title));
@@ -1088,10 +1100,12 @@ BookingManager::Result BookingManager::packagePaymentSet(long long ownerId, cons
     if (!found->payment.isObject()) return Result::failure(protocol::code::kBadRequest, "у абонемента нет оплаты");
     const std::time_t now = std::time(nullptr);
     bool paidNow = false;
+    bool refundedNow = false;
     bool activated = false;
     std::optional<PackagePurchaseRecord> record;
     mutatePackage(id, [&](PackagePurchaseRecord& item) {
         if (!item.payment.isObject() || item.payment.getString("status") == status) return false;
+        refundedNow = status == "refunded";
         Json payment = withStatus(item.payment, status);
         if (status == "paid") payment.set("paid_at", Json(isoUtc(now)));
         if (status == "refunded") payment.set("refunded_at", Json(isoUtc(now)));
@@ -1105,6 +1119,10 @@ BookingManager::Result BookingManager::packagePaymentSet(long long ownerId, cons
     if (!record) record = database_.db().findPackagePurchase(id);
     if (!record) return Result::failure(protocol::code::kNotFound, "абонемент не найден");
     if (paidNow) announcePackagePaid(*record, false);  // владелец сам отметил — уведомлять его не нужно
+    if (refundedNow) taxRefundForPackage(*record);  // F10: чек уже выдан — аннулировать
+    if (paidNow || refundedNow) {
+        if (auto fresh = database_.db().findPackagePurchase(id)) record = std::move(fresh);  // F10: npd, receipt_*
+    }
     if (activated && record->sessionsUsed > 0 && leftOf(*record) <= kPackageLowLeft) packageLow(*record);
     const auto page = database_.db().findBookingPage(record->pageId);
     Result result;

@@ -1181,6 +1181,256 @@ async def s2b_packages(anna: "Client", yookassa: "YooKassaMock | None") -> None:
         await anna.call("booking.pageDelete", {"page_id": page_id})
 
 
+def server_log_link(kind: str, to: str) -> str | None:
+    """Ссылка последнего письма вида kind на адрес to из лога C++-сервера (dev-почта:
+    «[dev] письмо (kind) для to: <тема> — <ссылка>»). None — лога нет (проверка пропускается)."""
+    path = os.environ.get("SELFVOY_E2E_SERVER_LOG", "")
+    if not path or not os.path.exists(path):
+        return None
+    link = ""
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if f"[dev] письмо ({kind}) для {to}:" in line and " — " in line:
+                link = line.rstrip("\n").rsplit(" — ", 1)[-1].strip()
+    return link
+
+
+async def s3_waitlist_rebook_tax(anna: "Client", telegram_mock: "TelegramMock | None") -> None:
+    """F8: лист ожидания (держание, предложение, «забрать»), повторный приём; F10: чек «Мой налог»."""
+    print("\n5a+++. Лист ожидания, повторный приём (F8) и чек «Мой налог» (F10)")
+
+    def at(value: str) -> float:
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except (AttributeError, ValueError):
+            return 0.0
+
+    def owner_events(kind: str) -> list[Dict[str, Any]]:
+        return [e.get("payload", {}) for e in anna.events_of("notification.new")
+                if e.get("payload", {}).get("kind") == kind]
+
+    async def wait_events(kind: str, count: int, timeout: float = 5.0) -> list[Dict[str, Any]]:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and len(owner_events(kind)) < count:
+            await asyncio.sleep(0.1)
+        return owner_events(kind)
+
+    async def mailed_link(kind: str, to: str) -> str | None:
+        """Ссылка из письма: dev-почта пишет его в лог из фоновой очереди — ждём до 5 с."""
+        for _ in range(50):
+            link = server_log_link(kind, to)
+            if link is None or link:
+                return link
+            await asyncio.sleep(0.1)
+        return ""
+
+    base = {"duration_minutes": 30, "days_ahead": 14, "max_per_day": 6, "notice_hours": 1}
+    created = await anna.call("booking.pageCreate", dict(base, title=f"Лист ожидания {RUN}", waitlist=True,
+                                                         waitlist_hold_minutes=30, rebook_after_days=14))
+    page = created.get("payload", {}).get("page", {})
+    pages = [page.get("id", 0)]
+    check(page.get("waitlist") is True and page.get("waitlist_hold_minutes") == 30
+          and page.get("rebook_after_days") == 14,
+          "booking.pageCreate: waitlist, waitlist_hold_minutes, rebook_after_days", page)
+    bad = await anna.call("booking.pageUpdate", {"page_id": page.get("id", 0), "rebook_after_days": 3})
+    check(bad.get("code") == "bad_request", "rebook_after_days 3 (не 0 и не 7–180) — bad_request", bad)
+    plain = await anna.call("booking.pageCreate", dict(base, title=f"Без листа {RUN}"))
+    plain_page = plain.get("payload", {}).get("page", {})
+    pages.append(plain_page.get("id", 0))
+    slug = page.get("slug", "")
+
+    guest = Client("s3-guest", "127.0.0.4")
+    waiter = Client("s3-waiter", "127.0.0.5")
+    rival = Client("s3-rival", "127.0.0.6")
+    for client in (guest, waiter, rival):
+        await client.connect()
+
+    async def finish() -> None:
+        for client in (guest, waiter, rival):
+            await client.close()
+        for item in (await anna.call("booking.list", {"limit": 200})).get("payload", {}).get("bookings", []):
+            if item.get("status") == "active" and item.get("page_id") in pages:
+                await anna.call("booking.ownerCancel", {"booking_id": item.get("id", 0)})
+        for entry in (await anna.call("booking.waitlist", {})).get("payload", {}).get("entries", []):
+            if entry.get("page_id") in pages and entry.get("status") in ("waiting", "offered"):
+                await anna.call("booking.waitlistRemove", {"entry_id": entry.get("id", 0)})
+        await anna.call("prefs.set", {"npd_receipts": False})
+        for page_id in pages:
+            await anna.call("booking.pageDelete", {"page_id": page_id})
+
+    view = (await guest.call("booking.get", {"slug": slug}, timeout=40)).get("payload", {}).get("page", {})
+    check(view.get("waitlist") is True and view.get("waitlist_hold_minutes") == 30
+          and view.get("rebook_after_days") == 14, "booking.get: гость видит лист ожидания", view)
+    far = [s for s in view.get("slots", []) if at(s.get("start", "")) > time.time() + 3 * 3600]
+    if len(far) < 2:
+        check(False, "есть 2 свободных окна позже чем через 3 ч", view.get("slots", [])[:3])
+        await finish()
+        return
+    slot = far[0]
+    start, day = slot.get("start", ""), slot.get("day", "")
+
+    booked = await guest.call("booking.book", {"slug": slug, "start": start, "guest_name": "Гость",
+                                               "guest_email": f"s3.guest.{RUN}@example.com"}, timeout=40)
+    check(booked.get("type") == "ok", "booking.book на странице с листом ожидания", booked)
+    owned = (await anna.call("booking.list", {"page_id": page.get("id", 0)})).get("payload", {}).get("bookings", [])
+    first = owned[0] if owned else {}
+    end = first.get("occurrences", [{}])[0].get("end", "")
+    check(at(first.get("rebook_due_at", "")) == at(end) + 14 * 86400 and first.get("rebook_sent_at") == "",
+          "вид владельца: rebook_due_at = конец встречи + 14 дней, rebook_sent_at пуст",
+          {"due": first.get("rebook_due_at"), "end": end})
+
+    # Гость без свободного времени встаёт в лист ожидания.
+    forbidden = await waiter.call("booking.waitlistJoin", {"slug": plain_page.get("slug", ""), "guest_name": "Вера",
+                                                           "guest_email": f"s3.vera.{RUN}@example.com"})
+    check(forbidden.get("code") == "forbidden", "booking.waitlistJoin: страница без листа — forbidden", forbidden)
+    no_email = await waiter.call("booking.waitlistJoin", {"slug": slug, "guest_name": "Вера"})
+    check(no_email.get("code") == "bad_request", "booking.waitlistJoin без email — bad_request", no_email)
+    vera_email = f"s3.vera.{RUN}@example.com"
+    joined_before = len(owner_events("waitlist.joined"))
+    joined = await waiter.call("booking.waitlistJoin", {"slug": slug, "guest_name": "Вера", "guest_email": vera_email,
+                                                        "days": [day], "part_of_day": "any",
+                                                        "comment": "Любое время в этот день"})
+    entry = joined.get("payload", {}).get("entry", {})
+    telegram_url = joined.get("payload", {}).get("telegram_url", "")
+    check(joined.get("type") == "ok" and entry.get("status") == "waiting" and entry.get("days") == [day]
+          and bool(entry.get("expires_at")), "booking.waitlistJoin: запись waiting, день, срок", joined)
+    if telegram_mock is not None:
+        check(telegram_url.startswith("https://t.me/selfvoy_e2e_bot?start=w_"),
+              "booking.waitlistJoin: telegram_url — подписка на предложения в боте", telegram_url)
+    events = await wait_events("waitlist.joined", joined_before + 1)
+    check(len(events) == joined_before + 1 and events[-1].get("payload", {}).get("entry_id") == entry.get("id"),
+          "владелец получил waitlist.joined", events[-1:])
+    again = await waiter.call("booking.waitlistJoin", {"slug": slug, "guest_name": "Вера",
+                                                       "guest_email": vera_email.upper(), "days": [day]})
+    check(again.get("payload", {}).get("entry", {}).get("id") == entry.get("id"),
+          "повтор с тем же email (другой регистр) обновляет ту же запись", again)
+    chat = 7_300_000 + int(RUN[:4], 16)
+    if telegram_mock is not None and telegram_url:
+        mark = len(telegram_mock.sent)
+        telegram_mock.text(chat, "/start " + telegram_url.split("?start=", 1)[-1])
+        greeting = await telegram_mock.wait_for("sendMessage", chat, mark, contains="Готово: как только")
+        check(greeting is not None, "бот: подписка на предложения листа ожидания (/start w_…)", greeting)
+
+    # Отмена освобождает время — оно держится за Верой и не видно другим.
+    mark = len(telegram_mock.sent) if telegram_mock is not None else 0
+    cancelled = await guest.call("booking.cancel", {"token": booked.get("payload", {}).get("token", "")})
+    check(cancelled.get("type") == "ok", "гость отменил запись — время освободилось", cancelled)
+    entries = (await anna.call("booking.waitlist", {"page_id": page.get("id", 0)})).get("payload", {}).get("entries", [])
+    mine = next((e for e in entries if e.get("id") == entry.get("id")), {})
+    check(mine.get("status") == "offered" and at(mine.get("offer", {}).get("start", "")) == at(start)
+          and mine.get("guest_email", "").startswith("s***@"),
+          "booking.waitlist: время предложено Вере (offer.start), email замаскирован", mine)
+    taken = await rival.call("booking.book", {"slug": slug, "start": start, "guest_name": "Соперник"}, timeout=40)
+    check(taken.get("code") == "conflict", "держание: другой гость не записывается на это время", taken)
+    view = (await rival.call("booking.get", {"slug": slug}, timeout=40)).get("payload", {}).get("page", {})
+    check(all(at(s.get("start", "")) != at(start) for s in view.get("slots", [])),
+          "держание: время не видно в booking.get", start)
+
+    token = ""
+    if telegram_mock is not None and telegram_url:
+        offer_message = await telegram_mock.wait_for("sendMessage", chat, mark, contains="Освободилось время")
+        buttons = (offer_message or {}).get("reply_markup", {}).get("inline_keyboard", [[{}]])
+        link = buttons[0][0].get("url", "") if buttons and buttons[0] else ""
+        check("/#/w/" in link, "бот: предложение времени с кнопкой «Записаться на это время»", offer_message)
+        token = link.rsplit("/", 1)[-1] if "/#/w/" in link else ""
+    mail_link = await mailed_link("booking.waitlist_offer", vera_email)
+    if mail_link is not None:
+        check("/#/w/" in mail_link, "письмо Вере: «Освободилось время» со ссылкой #/w/<токен>", mail_link)
+        token = token or mail_link.rsplit("/", 1)[-1]
+    if not token:
+        print("  (пропущено: нет ни лога сервера, ни мока Telegram — ссылку листа ожидания не достать)")
+        await finish()
+        return
+    got = (await waiter.call("booking.waitlistGet", {"token": token})).get("payload", {}).get("offer", {})
+    check(got.get("status") == "offered" and at(got.get("start", "")) == at(start) and bool(got.get("expires_at"))
+          and got.get("page_title") == page.get("title") and got.get("guest_name") == "Вера",
+          "booking.waitlistGet: предложение offered, время, срок держания", got)
+    booked_before = len(owner_events("waitlist.booked"))
+    claimed = await waiter.call("booking.waitlistClaim", {"token": token}, timeout=40)
+    info = claimed.get("payload", {})
+    check(claimed.get("type") == "ok" and info.get("booking", {}).get("guest_name") == "Вера"
+          and info.get("manage_url", "").endswith("/#/m/" + info.get("token", "-")),
+          "booking.waitlistClaim: обычная запись (ссылка управления)", claimed)
+    events = await wait_events("waitlist.booked", booked_before + 1)
+    check(len(events) == booked_before + 1 and events[-1].get("payload", {}).get("entry_id") == entry.get("id"),
+          "владелец получил waitlist.booked", events[-1:])
+    after = (await waiter.call("booking.waitlistGet", {"token": token})).get("payload", {}).get("offer", {})
+    check(after.get("status") == "claimed", "booking.waitlistGet после записи: claimed", after)
+    twice = await waiter.call("booking.waitlistClaim", {"token": token}, timeout=40)
+    check(twice.get("code") == "conflict", "повторный booking.waitlistClaim — conflict", twice)
+
+    # Выход из листа (из письма) и удаление владельцем.
+    leaver_email = f"s3.leave.{RUN}@example.com"
+    await waiter.call("booking.waitlistJoin", {"slug": slug, "guest_name": "Лев", "guest_email": leaver_email})
+    join_link = await mailed_link("booking.waitlist_joined", leaver_email)
+    if join_link:
+        left = await waiter.call("booking.waitlistLeave", {"token": join_link.rsplit("/", 1)[-1]})
+        check(left.get("payload", {}).get("entry", {}).get("status") == "left",
+              "booking.waitlistLeave по ссылке из письма — left", left)
+    removed_email = f"s3.removed.{RUN}@example.com"
+    removed = await waiter.call("booking.waitlistJoin", {"slug": slug, "guest_name": "Рита", "guest_email": removed_email})
+    gone = await anna.call("booking.waitlistRemove",
+                           {"entry_id": removed.get("payload", {}).get("entry", {}).get("id", 0)})
+    check(gone.get("payload", {}).get("entry", {}).get("status") == "left", "booking.waitlistRemove — left", gone)
+
+    # F10: «Мой налог» — оплата получена → tax.receipt и задача; чек отмечен; возврат.
+    enabled = await anna.call("prefs.set", {"npd_receipts": True})
+    check(enabled.get("payload", {}).get("npd_receipts") is True, "prefs.set npd_receipts = true", enabled)
+    paid_page = (await anna.call("booking.pageCreate", dict(base, title=f"Самозанятый {RUN}", price=150000,
+                                                           prepay="full",
+                                                           payment_url="https://pay.example.com/e2e"))).get(
+        "payload", {}).get("page", {})
+    pages.append(paid_page.get("id", 0))
+    pay_view = (await guest.call("booking.get", {"slug": paid_page.get("slug", "")}, timeout=40)).get(
+        "payload", {}).get("page", {})
+    pay_slots = [s.get("start", "") for s in pay_view.get("slots", []) if at(s.get("start", "")) > time.time() + 3 * 3600]
+    if not pay_slots:
+        check(False, "есть свободное окно для записи с оплатой", pay_view.get("slots", [])[:2])
+        await finish()
+        return
+    paid_booking = await guest.call("booking.book", {"slug": paid_page.get("slug", ""), "start": pay_slots[-1],
+                                                     "guest_name": "Тимур"}, timeout=40)
+    paid_token = paid_booking.get("payload", {}).get("token", "")
+    paid_list = (await anna.call("booking.list", {"page_id": paid_page.get("id", 0)})).get("payload", {}).get("bookings", [])
+    paid_id = paid_list[0].get("id", 0) if paid_list else 0
+    receipts_before = len(owner_events("tax.receipt"))
+    marked = await anna.call("booking.paymentSet", {"booking_id": paid_id, "status": "paid"})
+    check(marked.get("payload", {}).get("booking", {}).get("payment", {}).get("npd") is True,
+          "оплата получена: payment.npd (владельцу напомнили выдать чек)", marked)
+    events = await wait_events("tax.receipt", receipts_before + 1)
+    receipt_event = events[-1].get("payload", {}) if events else {}
+    service = paid_page.get("title", "")
+    check(len(events) == receipts_before + 1 and receipt_event.get("booking_id") == paid_id
+          and receipt_event.get("amount") == 150000 and receipt_event.get("client") == "Тимур"
+          and receipt_event.get("text") == f"Наименование: {service}; Сумма: 1 500 ₽; Покупатель: физическое лицо"
+          and receipt_event.get("url") == "https://lknpd.nalog.ru/",
+          "tax.receipt: текст для «Мой налог», сумма, клиент", receipt_event)
+    tasks = (await anna.call("tasks.list", {"limit": 200})).get("payload", {}).get("tasks", [])
+    check(any(t.get("title") == f"Выдать чек: {service}, 1 500 ₽" and t.get("status") == "pending" for t in tasks),
+          "задача «Выдать чек: <услуга>, <сумма>»", [t.get("title") for t in tasks][:5])
+    pending = (await anna.call("tax.pending", {})).get("payload", {}).get("items", [])
+    check(any(i.get("kind") == "booking" and i.get("id") == paid_id for i in pending),
+          "tax.pending: оплата без отмеченного чека", pending[:2])
+    receipt_url = f"https://lknpd.nalog.ru/api/v1/receipt/{RUN}/print"
+    done = await anna.call("tax.receiptDone", {"booking_id": paid_id, "receipt_url": receipt_url})
+    check(done.get("payload", {}).get("booking", {}).get("payment", {}).get("receipt_url") == receipt_url,
+          "tax.receiptDone: receipt_url сохранён", done)
+    bad_url = await anna.call("tax.receiptDone", {"booking_id": paid_id, "receipt_url": "http://insecure.example"})
+    check(bad_url.get("code") == "bad_request", "tax.receiptDone: не https — bad_request", bad_url)
+    managed = (await guest.call("booking.manage", {"token": paid_token})).get("payload", {}).get("booking", {})
+    check(managed.get("receipt_url") == receipt_url and "npd" not in managed.get("payment", {}),
+          "гость видит ссылку на чек (служебные поля скрыты)", managed.get("payment"))
+    pending = (await anna.call("tax.pending", {})).get("payload", {}).get("items", [])
+    check(all(i.get("id") != paid_id for i in pending), "tax.pending: после отметки чека — пусто", pending[:2])
+    refunds_before = len(owner_events("tax.refund"))
+    await anna.call("booking.paymentSet", {"booking_id": paid_id, "status": "refunded"})
+    events = await wait_events("tax.refund", refunds_before + 1)
+    check(len(events) == refunds_before + 1 and events[-1].get("payload", {}).get("receipt_url") == receipt_url,
+          "возврат оплаты с чеком — tax.refund «Аннулируйте чек»", events[-1:])
+
+    await finish()
+
+
 async def main() -> int:
     print(f"Selfvoy E2E → {SERVER_URL} (прогон {RUN})\n")
 
@@ -2544,6 +2794,7 @@ async def main() -> int:
 
     await s2a_payments(anna, yookassa_mock)
     await s2b_packages(anna, yookassa_mock)
+    await s3_waitlist_rebook_tax(anna, telegram_mock)
 
     # -------------------------------------------------------------- итоги
     # ---------------------------------------- безопасность (этап 14)

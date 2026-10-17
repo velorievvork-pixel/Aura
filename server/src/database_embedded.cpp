@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <sstream>
 
@@ -1597,7 +1598,11 @@ public:
     DatabaseError unlinkTelegramChat(long long chatId) override {
         std::lock_guard<std::mutex> lock(mutex_);
         if (chatId == 0) return DatabaseError::success();
-        table("booking_telegram");  // ключ создаётся до взятия ссылок на таблицы
+        table("booking_telegram");  // ключи создаются до взятия ссылок на таблицы
+        table("waitlist_entries");
+        for (auto& item : mutableTable("waitlist_entries")) {
+            if (item.getInt("telegram_chat_id") == chatId) item.set("telegram_chat_id", Json(0LL));
+        }
         for (auto& item : mutableTable("users")) {
             if (item.getInt("telegram_chat_id") != chatId) continue;
             item.set("telegram_chat_id", Json(0LL));
@@ -1919,6 +1924,9 @@ private:
         entry.set("late_cancel", Json(record.lateCancel));
         entry.set("policy_text", Json(record.policyText));
         entry.set("packages", record.packages.isArray() ? record.packages : Json::array());
+        entry.set("waitlist", Json(record.waitlist));
+        entry.set("waitlist_hold_minutes", Json(static_cast<long long>(record.waitlistHoldMinutes)));
+        entry.set("rebook_after_days", Json(static_cast<long long>(record.rebookAfterDays)));
         entry.set("updated_at", Json(isoNow()));
     }
 
@@ -1951,6 +1959,9 @@ private:
         record.lateCancel = entry.getString("late_cancel", "allow");
         record.policyText = entry.getString("policy_text");
         if (entry.get("packages").isArray()) record.packages = entry.get("packages");
+        record.waitlist = entry.getBool("waitlist", false);
+        record.waitlistHoldMinutes = static_cast<int>(entry.getInt("waitlist_hold_minutes", 60));
+        record.rebookAfterDays = static_cast<int>(entry.getInt("rebook_after_days", 0));
         return record;
     }
 
@@ -2168,6 +2179,8 @@ private:
         record.price = entry.getInt("price");
         record.currency = entry.getString("currency", "RUB");
         if (record.currency.empty()) record.currency = "RUB";
+        record.rebookSentAt = entry.getString("rebook_sent_at");
+        record.rebookStatus = entry.getString("rebook_status");
         return record;
     }
 
@@ -2337,6 +2350,335 @@ private:
             return a.payment.getString("due_at") < b.payment.getString("due_at");
         });
         if (limit > 0 && static_cast<int>(result.size()) > limit) result.resize(static_cast<std::size_t>(limit));
+        return result;
+    }
+
+    // ------------------------------------------------------ waitlist_entries (F8)
+    static bool activeWaitlist(const Json& entry) {
+        const std::string status = entry.getString("status");
+        return status == "waiting" || status == "offered";
+    }
+
+    static void writeWaitlist(Json& entry, const WaitlistEntryRecord& record) {
+        entry.set("guest_name", Json(record.guestName));
+        entry.set("days", record.days.isArray() ? record.days : Json::array());
+        entry.set("part_of_day", Json(record.partOfDay));
+        entry.set("comment", Json(record.comment));
+        entry.set("status", Json(record.status));
+        entry.set("offer_start", Json(record.offerStart));
+        entry.set("offer_end", Json(record.offerEnd));
+        entry.set("offer_day", Json(record.offerDay));
+        entry.set("offer_local", Json(record.offerLocal));
+        entry.set("offer_expires_at", Json(record.offerExpiresAt));
+        entry.set("offer_status", Json(record.offerStatus));
+        entry.set("booking_id", Json(record.bookingId));
+        if (!record.queuedAt.empty()) entry.set("queued_at", Json(record.queuedAt));
+        if (!record.expiresAt.empty()) entry.set("expires_at", Json(record.expiresAt));
+        entry.set("updated_at", Json(isoNow()));
+    }
+
+    static WaitlistEntryRecord toWaitlist(const Json& entry) {
+        WaitlistEntryRecord record;
+        record.id = entry.getInt("id");
+        record.ownerId = entry.getInt("owner_id");
+        record.pageId = entry.getInt("page_id");
+        record.guestName = entry.getString("guest_name");
+        record.guestEmail = entry.getString("guest_email");
+        record.days = entry.get("days").isArray() ? entry.get("days") : Json::array();
+        record.partOfDay = entry.getString("part_of_day", "any");
+        record.comment = entry.getString("comment");
+        record.status = entry.getString("status", "waiting");
+        record.tokenHash = entry.getString("token_hash");
+        record.tokenEnc = entry.getString("token_enc");
+        record.telegramChatId = entry.getInt("telegram_chat_id");
+        record.offerStart = entry.getString("offer_start");
+        record.offerEnd = entry.getString("offer_end");
+        record.offerDay = entry.getString("offer_day");
+        record.offerLocal = entry.getString("offer_local");
+        record.offerExpiresAt = entry.getString("offer_expires_at");
+        record.offerStatus = entry.getString("offer_status");
+        record.bookingId = entry.getInt("booking_id");
+        record.queuedAt = entry.getString("queued_at");
+        record.expiresAt = entry.getString("expires_at");
+        record.createdAt = entry.getString("created_at");
+        record.updatedAt = entry.getString("updated_at");
+        return record;
+    }
+
+    static bool validWaitlistStatus(const std::string& status) {
+        return status == "waiting" || status == "offered" || status == "booked" || status == "left" ||
+               status == "expired";
+    }
+
+    DatabaseError createWaitlistEntry(const WaitlistEntryRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.tokenHash.empty() || record.guestEmail.empty() || record.expiresAt.empty()) {
+            return DatabaseError::failure("запись листа без токена, email или срока");
+        }
+        if (!validWaitlistStatus(record.status)) return DatabaseError::failure("некорректный статус листа ожидания");
+        const std::string email = lower(record.guestEmail);
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getString("token_hash") == record.tokenHash) return DatabaseError::failure("токен уже существует");
+            // Частичный UNIQUE (page_id, lower(guest_email)) WHERE status IN (waiting, offered).
+            if (entry.getInt("page_id") == record.pageId && activeWaitlist(entry) &&
+                lower(entry.getString("guest_email")) == email) {
+                return DatabaseError::failure("гость уже в листе ожидания этой страницы");
+            }
+        }
+        const long long id = nextId("waitlist_entries");
+        const std::string now = isoNow();
+        Json entry = Json::object();
+        entry.set("id", Json(id));
+        entry.set("owner_id", Json(record.ownerId));
+        entry.set("page_id", Json(record.pageId));
+        entry.set("guest_email", Json(record.guestEmail));
+        entry.set("token_hash", Json(record.tokenHash));
+        entry.set("token_enc", Json(record.tokenEnc));
+        entry.set("telegram_chat_id", Json(0LL));
+        entry.set("queued_at", Json(record.queuedAt.empty() ? now : record.queuedAt));
+        entry.set("created_at", Json(now));
+        writeWaitlist(entry, record);
+        table("waitlist_entries").push(entry);
+        flush();
+        outId = id;
+        return DatabaseError::success();
+    }
+
+    std::optional<WaitlistEntryRecord> findWaitlistEntry(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getInt("id") == id) return toWaitlist(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::optional<WaitlistEntryRecord> findWaitlistEntryByToken(const std::string& tokenHash) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (tokenHash.empty()) return std::nullopt;
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getString("token_hash") == tokenHash) return toWaitlist(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::optional<WaitlistEntryRecord> findActiveWaitlistEntry(long long pageId, const std::string& emailLower) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getInt("page_id") == pageId && activeWaitlist(entry) &&
+                lower(entry.getString("guest_email")) == emailLower) {
+                return toWaitlist(entry);
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::vector<WaitlistEntryRecord> listWaitlistEntries(long long ownerId, long long pageId, const std::string& status,
+                                                         int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<WaitlistEntryRecord> result;
+        const auto& entries = table("waitlist_entries").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId) continue;
+            if (pageId > 0 && it->getInt("page_id") != pageId) continue;
+            if (!status.empty() && it->getString("status") != status) continue;
+            result.push_back(toWaitlist(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    std::vector<WaitlistEntryRecord> listWaitingEntries(long long pageId, const std::string& nowIso, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<WaitlistEntryRecord> result;
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getInt("page_id") != pageId || entry.getString("status") != "waiting") continue;
+            if (entry.getString("expires_at") <= nowIso) continue;
+            result.push_back(toWaitlist(entry));
+        }
+        std::stable_sort(result.begin(), result.end(), [](const WaitlistEntryRecord& a, const WaitlistEntryRecord& b) {
+            return a.queuedAt != b.queuedAt ? a.queuedAt < b.queuedAt : a.id < b.id;
+        });
+        if (limit > 0 && static_cast<int>(result.size()) > limit) result.resize(static_cast<std::size_t>(limit));
+        return result;
+    }
+
+    int countActiveWaitlistEntries(long long pageId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        int count = 0;
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getInt("page_id") == pageId && activeWaitlist(entry)) ++count;
+        }
+        return count;
+    }
+
+    DatabaseError updateWaitlistEntry(const WaitlistEntryRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!validWaitlistStatus(record.status)) return DatabaseError::failure("некорректный статус листа ожидания");
+        const bool active = record.status == "waiting" || record.status == "offered";
+        if (active) {
+            const std::string email = lower(record.guestEmail);
+            for (const auto& entry : table("waitlist_entries").items()) {
+                if (entry.getInt("id") != record.id && entry.getInt("page_id") == record.pageId &&
+                    activeWaitlist(entry) && lower(entry.getString("guest_email")) == email) {
+                    return DatabaseError::failure("гость уже в листе ожидания этой страницы");
+                }
+            }
+        }
+        for (auto& entry : mutableTable("waitlist_entries")) {
+            if (entry.getInt("id") != record.id) continue;
+            writeWaitlist(entry, record);
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("запись листа ожидания не найдена");
+    }
+
+    DatabaseError setWaitlistTelegram(long long entryId, long long chatId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : mutableTable("waitlist_entries")) {
+            if (entry.getInt("id") != entryId) continue;
+            entry.set("telegram_chat_id", Json(chatId));
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("запись листа ожидания не найдена");
+    }
+
+    std::vector<WaitlistEntryRecord> listWaitlistHolds(long long ownerId, const std::string& nowIso) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<WaitlistEntryRecord> result;
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getInt("owner_id") != ownerId || entry.getString("status") != "offered") continue;
+            if (entry.getString("offer_expires_at") <= nowIso || entry.getString("offer_start").empty()) continue;
+            result.push_back(toWaitlist(entry));
+        }
+        return result;
+    }
+
+    std::vector<WaitlistEntryRecord> listDueWaitlist(const std::string& nowIso, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<WaitlistEntryRecord> result;
+        for (const auto& entry : table("waitlist_entries").items()) {
+            const std::string status = entry.getString("status");
+            const bool offerDue = status == "offered" && entry.getString("offer_expires_at") <= nowIso;
+            const bool entryDue = status == "waiting" && entry.getString("expires_at") <= nowIso;
+            if (offerDue || entryDue) result.push_back(toWaitlist(entry));
+        }
+        std::stable_sort(result.begin(), result.end(), [](const WaitlistEntryRecord& a, const WaitlistEntryRecord& b) {
+            const std::string& left = a.status == "offered" ? a.offerExpiresAt : a.expiresAt;
+            const std::string& right = b.status == "offered" ? b.offerExpiresAt : b.expiresAt;
+            return left < right;
+        });
+        if (limit > 0 && static_cast<int>(result.size()) > limit) result.resize(static_cast<std::size_t>(limit));
+        return result;
+    }
+
+    // ------------------------------------------------------- повторный приём (F8)
+    // Эквивалент UPDATE … FOR UPDATE SKIP LOCKED: выбор и отметка — под одним мьютексом.
+    std::vector<BookingRecord> claimDueRebooks(const std::string& nowIso, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        table("booking_pages");  // ключи создаются до взятия ссылок на таблицы
+        table("bookings");
+        std::map<long long, int> days;
+        for (const auto& page : table("booking_pages").items()) {
+            const long long after = page.getInt("rebook_after_days");
+            if (after > 0) days[page.getInt("id")] = static_cast<int>(after);
+        }
+        std::vector<std::pair<std::string, Json*>> due;
+        for (auto& entry : mutableTable("bookings")) {
+            if (entry.getString("status", "active") != "active" || !entry.getString("rebook_sent_at").empty()) continue;
+            const auto page = days.find(entry.getInt("page_id"));
+            if (page == days.end()) continue;
+            const std::string ends = bookingEndsAt(entry.get("occurrences"));
+            std::time_t endsAt = 0;
+            if (ends.empty() || !parseIsoUtc(ends, endsAt)) continue;
+            if (isoUtc(endsAt + static_cast<std::time_t>(page->second) * 86400) > nowIso) continue;
+            due.emplace_back(ends, &entry);
+        }
+        std::stable_sort(due.begin(), due.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        if (limit > 0 && static_cast<int>(due.size()) > limit) due.resize(static_cast<std::size_t>(limit));
+        std::vector<BookingRecord> claimed;
+        for (auto& [ends, entry] : due) {
+            (void)ends;
+            entry->set("rebook_sent_at", Json(nowIso));
+            entry->set("rebook_status", Json(std::string("claimed")));
+            claimed.push_back(toBooking(*entry));
+        }
+        if (!claimed.empty()) flush();
+        return claimed;
+    }
+
+    DatabaseError setRebookStatus(long long bookingId, const std::string& status) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : mutableTable("bookings")) {
+            if (entry.getInt("id") != bookingId) continue;
+            entry.set("rebook_status", Json(status));
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("запись не найдена");
+    }
+
+    DatabaseError cancelPendingRebooks(long long pageId, const std::string& nowIso) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        bool changed = false;
+        for (auto& entry : mutableTable("bookings")) {
+            if (entry.getInt("page_id") != pageId || entry.getString("status", "active") != "active" ||
+                !entry.getString("rebook_sent_at").empty()) {
+                continue;
+            }
+            const std::string ends = bookingEndsAt(entry.get("occurrences"));
+            if (ends.empty() || ends > nowIso) continue;
+            entry.set("rebook_sent_at", Json(nowIso));
+            entry.set("rebook_status", Json(std::string("cancelled")));
+            changed = true;
+        }
+        if (changed) flush();
+        return DatabaseError::success();
+    }
+
+    bool hasLaterBooking(long long pageId, const std::string& emailLower, long long exceptBookingId,
+                         const std::string& endsAtIso) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (emailLower.empty()) return false;
+        for (const auto& entry : table("bookings").items()) {
+            if (entry.getInt("page_id") != pageId || entry.getInt("id") == exceptBookingId) continue;
+            if (entry.getString("status", "active") != "active" || lower(entry.getString("guest_email")) != emailLower) {
+                continue;
+            }
+            const std::string ends = bookingEndsAt(entry.get("occurrences"));
+            if (!ends.empty() && ends > endsAtIso) return true;
+        }
+        return false;
+    }
+
+    // ----------------------------------------------------------- чеки (F10)
+    static bool receiptPending(const Json& payment) {
+        return payment.isObject() && payment.getBool("npd") && payment.getString("status") == "paid" &&
+               payment.getString("receipt_at").empty();
+    }
+
+    std::vector<BookingRecord> listReceiptPendingBookings(long long ownerId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingRecord> result;
+        const auto& entries = table("bookings").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId || !receiptPending(it->get("payment"))) continue;
+            result.push_back(toBooking(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    std::vector<PackagePurchaseRecord> listReceiptPendingPackages(long long ownerId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<PackagePurchaseRecord> result;
+        const auto& entries = table("package_purchases").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId || !receiptPending(it->get("payment"))) continue;
+            result.push_back(toPackage(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
         return result;
     }
 

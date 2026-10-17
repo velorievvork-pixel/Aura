@@ -7,7 +7,9 @@
 // "selfvoy-telegram-link"), подпись — первые 16 байт в base64url (22 символа):
 //   o_<user_id>_<expires_unix>_<sig>  — владелец, sig над "o:<user_id>:<expires>", 15 минут;
 //   g_<booking_id>_<sig>              — гость, sig над "g:<booking_id>:<manage_hash>"
-//                                       (перевыпуск ссылки управления делает её недействительной).
+//                                       (перевыпуск ссылки управления делает её недействительной);
+//   w_<entry_id>_<sig>                — гость листа ожидания (F8), sig над "w:<entry_id>:<token_hash>":
+//                                       предложения освободившегося времени приходят в этот чат.
 // Команды: /start <payload>, /stop (отвязать чат везде), иное — справка.
 // Кнопка «Приду» (callback cf:<booking_id>:<start_unix>, F1) — только из чата,
 // привязанного к записи; подтверждение выполняет BookingManager::telegramConfirm.
@@ -80,6 +82,10 @@ public:
     std::string sign(const std::string& data) const;
     std::string ownerPayload(long long userId, std::time_t expires) const;
     std::string guestPayload(long long bookingId, const std::string& manageHash) const;
+    std::string waitlistPayload(long long entryId, const std::string& tokenHash) const;
+    // Разбор w_<id>_<sig> без проверки подписи (её сверяют с token_hash записи листа).
+    static bool parseWaitlist(const std::string& payload, long long& entryId, std::string& signature);
+    bool verifyWaitlist(const std::string& payload, long long entryId, const std::string& tokenHash) const;
     // true — подпись верна и срок не истёк; userId — из payload.
     bool verifyOwner(const std::string& payload, std::time_t now, long long& userId) const;
     // Разбор g_<id>_<sig> без проверки подписи (её сверяют с manage_hash записи).
@@ -125,6 +131,7 @@ private:
     void handleCallback(const Json& callback);
     void linkOwner(long long chatId, const std::string& username, const std::string& payload);
     void linkGuest(long long chatId, const std::string& payload);
+    void linkWaitlist(long long chatId, const std::string& payload);
     void reply(long long chatId, const std::string& text) { sendMessage(chatId, text); }
 
     DatabaseManager& database_;

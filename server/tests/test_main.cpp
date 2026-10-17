@@ -8407,3 +8407,943 @@ TEST(pg_packages_methods) {
     }
     CHECK(withPackage && withPackage->price == 0 && withPackage->currency == "RUB");
 }
+
+// ------------------------------- F8: лист ожидания и «пора на повторный приём»; F10: «Мой налог»
+namespace waitlist_test {
+
+using namespace packages_test;
+using booking_test::isBusy;
+
+// Слоты AI с местным временем владельца (пояс UTC: local = время UTC).
+std::string localSlots(const std::vector<std::time_t>& starts) {
+    Json slots = Json::array();
+    for (const std::time_t at : starts) {
+        Json slot = daySlot(at, 60, selfvoy::isoUtc(at).substr(0, 10));
+        slot.set("local", Json(selfvoy::isoUtc(at).substr(0, 16)));
+        slots.push(slot);
+    }
+    Json body = Json::object();
+    body.set("slots", slots);
+    return body.dump();
+}
+
+Json waitPage(const std::string& title, long long hold = 60) {
+    Json payload = payPage(title);
+    payload.set("waitlist", Json(true));
+    payload.set("waitlist_hold_minutes", Json(hold));
+    return payload;
+}
+
+Json joinPayload(const std::string& slug, const std::string& name, const std::string& email) {
+    Json payload = slugPayload(slug);
+    payload.set("guest_name", Json(name));
+    payload.set("guest_email", Json(email));
+    return payload;
+}
+
+// Токен из ссылки последнего письма вида kind на адрес (…/#/w/<токен>, …/#/m/<токен>).
+std::string tokenFromMail(const std::string& to, const std::string& kind) {
+    const auto mail = lastMail(to, kind);
+    if (!mail) return "";
+    const std::size_t at = mail->linkUrl.rfind('/');
+    return at == std::string::npos ? std::string() : mail->linkUrl.substr(at + 1);
+}
+
+std::string codeOf(const Json& response) {
+    return response.getString("type") == "ok" ? std::string("ok") : response.getString("code");
+}
+
+std::optional<selfvoy::WaitlistEntryRecord> entryOf(selfvoy::IDatabase& db, long long ownerId,
+                                                    const std::string& email) {
+    for (const auto& entry : db.listWaitlistEntries(ownerId, 0, "", 200)) {
+        if (entry.guestEmail == email) return entry;  // новые сверху
+    }
+    return std::nullopt;
+}
+
+long long bookingIdOf(selfvoy::IDatabase& db, const Json& booked) {
+    const auto stored = db.findBookingByToken(selfvoy::BookingManager::tokenHash(integration::payloadOf(booked).getString("token")));
+    return stored ? stored->id : 0;
+}
+
+Json pageId(long long id) {
+    Json payload = Json::object();
+    payload.set("page_id", Json(id));
+    return payload;
+}
+
+std::size_t taskCount(selfvoy::IDatabase& db, long long ownerId, const std::string& title) {
+    std::size_t count = 0;
+    for (const auto& task : db.listTasks(ownerId, "", 500)) {
+        if (task.title == title) ++count;
+    }
+    return count;
+}
+
+}  // namespace waitlist_test
+
+// F8: поля страницы (Pro, диапазоны), вход в лист, повтор обновляет, лимит по IP, выход.
+TEST(waitlist_join_validation_limits_and_pro) {
+    using namespace waitlist_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::string dayA = selfvoy::isoUtc(slotA).substr(0, 10);
+    invite_test::FakeAi ai([&] { return localSlots({slotA}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url(), true);
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "wl-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "wlowner@example.com", "Ольга"));
+    auto& db = fixture.server->database().db();
+    auto& bookings = fixture.server->bookings();
+
+    // Без Pro (SELFVOY_PLANS_ENFORCED=1) лист и повторный приём не включить; диапазоны.
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.pageCreate", waitPage("Лист"))), std::string("pro_required"));
+    Json rebook = payPage("Повтор");
+    rebook.set("rebook_after_days", Json(30LL));
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.pageCreate", rebook)), std::string("pro_required"));
+    Json badHold = waitPage("Лист", 10);
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.pageCreate", badHold)), std::string("bad_request"));
+    for (const long long days : {3LL, 181LL, -1LL}) {
+        Json badRebook = payPage("Повтор");
+        badRebook.set("rebook_after_days", Json(days));
+        CHECK_EQ(codeOf(fixture.call(owner, "booking.pageCreate", badRebook)), std::string("bad_request"));
+    }
+    Json notBool = payPage("Лист");
+    notBool.set("waitlist", Json("да"));
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.pageCreate", notBool)), std::string("bad_request"));
+    const std::string plainSlug =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", payPage("Без листа"))).get("page").getString("slug");
+
+    CHECK(db.setUserPlanDays(ownerId, 30).ok);
+    Json withAll = waitPage("Разбор", 45);
+    withAll.set("rebook_after_days", Json(14LL));
+    const Json created = integration::payloadOf(fixture.call(owner, "booking.pageCreate", withAll)).get("page");
+    CHECK(created.getBool("waitlist") && created.getInt("waitlist_hold_minutes") == 45 &&
+          created.getInt("rebook_after_days") == 14);
+    const std::string slug = created.getString("slug");
+    const long long page = created.getInt("id");
+    const Json view = integration::payloadOf(fixture.call(owner, "booking.get", slugPayload(slug))).get("page");
+    CHECK(view.getBool("waitlist") && view.getInt("waitlist_hold_minutes") == 45 && view.getInt("rebook_after_days") == 14);
+    // Pro закончился: править включённое можно, включить заново — нет.
+    CHECK(db.setUserPlanDays(ownerId, 0).ok);
+    Json hold = pageId(page);
+    hold.set("waitlist_hold_minutes", Json(60LL));
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.pageUpdate", hold)), std::string("ok"));
+    Json off = pageId(page);
+    off.set("waitlist", Json(false));
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.pageUpdate", off)), std::string("ok"));
+    Json on = pageId(page);
+    on.set("waitlist", Json(true));
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.pageUpdate", on)), std::string("pro_required"));
+    CHECK(db.setUserPlanDays(ownerId, 30).ok);
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.pageUpdate", on)), std::string("ok"));
+    selfvoy::plan::setEnforced(false);
+
+    auto guest = openFrom(fixture, sockets, "wl-guest", "203.0.113.10:5000");
+    CHECK_EQ(codeOf(fixture.call(guest, "booking.waitlistJoin", joinPayload(plainSlug, "Анна", "wl-anna@example.com"))),
+             std::string("forbidden"));
+    CHECK_EQ(codeOf(fixture.call(guest, "booking.waitlistJoin", joinPayload("zzzzzzzzzz", "Анна", "wl-anna@example.com"))),
+             std::string("not_found"));
+    CHECK_EQ(codeOf(fixture.call(guest, "booking.waitlistJoin", joinPayload(slug, "Анна", ""))), std::string("bad_request"));
+    Json badPart = joinPayload(slug, "Анна", "wl-anna@example.com");
+    badPart.set("part_of_day", Json("night"));
+    CHECK_EQ(codeOf(fixture.call(guest, "booking.waitlistJoin", badPart)), std::string("bad_request"));
+    Json tooMany = joinPayload(slug, "Анна", "wl-anna@example.com");
+    Json fifteen = Json::array();
+    for (int i = 0; i < 15; ++i) fifteen.push(Json(selfvoy::isoUtc(slotA + i * 86400).substr(0, 10)));
+    tooMany.set("days", fifteen);
+    CHECK_EQ(codeOf(fixture.call(guest, "booking.waitlistJoin", tooMany)), std::string("bad_request"));
+    Json farDay = joinPayload(slug, "Анна", "wl-anna@example.com");
+    Json far = Json::array();
+    far.push(Json("2099-01-01"));
+    farDay.set("days", far);
+    CHECK_EQ(codeOf(fixture.call(guest, "booking.waitlistJoin", farDay)), std::string("bad_request"));
+
+    // Вход: дни без повторов, срок 30 дней, уведомление владельцу, письмо со ссылкой #/w/<токен>.
+    auto other = openFrom(fixture, sockets, "wl-guest2", "203.0.113.11:5000");
+    Json join = joinPayload(slug, "Анна", "wl-anna@example.com");
+    Json days = Json::array();
+    days.push(Json(dayA));
+    days.push(Json(dayA));
+    join.set("days", days);
+    join.set("comment", Json("Лучше после обеда"));
+    const std::time_t before = std::time(nullptr);
+    const Json joined = fixture.call(other, "booking.waitlistJoin", join);
+    CHECK_EQ(codeOf(joined), std::string("ok"));
+    const Json entry = integration::payloadOf(joined).get("entry");
+    CHECK_EQ(entry.getString("status"), std::string("waiting"));
+    CHECK(entry.get("days").size() == 1 && entry.get("days").at(0).asString() == dayA);
+    CHECK_EQ(entry.getString("part_of_day"), std::string("any"));
+    CHECK_EQ(integration::payloadOf(joined).getString("telegram_url"), std::string());  // бот не настроен
+    std::time_t expires = 0;
+    CHECK(selfvoy::parseIsoUtc(entry.getString("expires_at"), expires) && expires >= before + 30 * 86400 &&
+          expires <= std::time(nullptr) + 30 * 86400);
+    CHECK_EQ(ownerNotices(db, ownerId, "waitlist.joined"), std::size_t(1));
+    CHECK_EQ(lastNotice(db, ownerId, "waitlist.joined").getInt("entry_id"), entry.getInt("id"));
+    const auto joinMail = lastMail("wl-anna@example.com", "booking.waitlist_joined");
+    CHECK(joinMail && joinMail->linkUrl.rfind("https://selfvoy.example.com/#/w/", 0) == 0 &&
+          joinMail->subject == "Selfvoy: вы в листе ожидания — Разбор");
+    const std::string token = tokenFromMail("wl-anna@example.com", "booking.waitlist_joined");
+    const auto stored = db.findWaitlistEntryByToken(selfvoy::BookingManager::tokenHash(token));
+    CHECK(stored && stored->id == entry.getInt("id") && stored->tokenEnc.find(token) == std::string::npos &&
+          bookings.waitlistTokenOf(*stored) == token && stored->comment == "Лучше после обеда");
+    const Json got = integration::payloadOf(fixture.call(other, "booking.waitlistGet", tokenPayload(token))).get("offer");
+    CHECK(got.getString("status") == "waiting" && got.getString("start").empty() && got.getString("page_title") == "Разбор" &&
+          got.getString("owner_name") == "Ольга" && got.getString("guest_name") == "Анна");
+    CHECK_EQ(codeOf(fixture.call(other, "booking.waitlistGet", tokenPayload(growth_test::newToken()))), std::string("not_found"));
+
+    // Повтор с тем же email (регистр не важен) — та же запись, пожелания обновлены, без второго письма.
+    Json again = joinPayload(slug, "Анна К.", "WL-Anna@Example.com");
+    again.set("part_of_day", Json("morning"));
+    const Json rejoined = integration::payloadOf(fixture.call(other, "booking.waitlistJoin", again)).get("entry");
+    CHECK_EQ(rejoined.getInt("id"), entry.getInt("id"));
+    CHECK(rejoined.getString("part_of_day") == "morning" && rejoined.get("days").size() == 0);
+    CHECK_EQ(ownerNotices(db, ownerId, "waitlist.joined"), std::size_t(1));
+    CHECK_EQ(mailCount("wl-anna@example.com", "booking.waitlist_joined"), std::size_t(1));
+
+    // Вид владельца: email замаскирован; фильтры.
+    const Json listed = integration::payloadOf(fixture.call(owner, "booking.waitlist", pageId(page))).get("entries");
+    CHECK(listed.size() == 1 && listed.at(0).getString("guest_email") == "w***@example.com" &&
+          listed.at(0).getString("guest_name") == "Анна К." && listed.at(0).getString("status") == "waiting" &&
+          !listed.at(0).contains("offer") && listed.at(0).getString("page_title") == "Разбор");
+    Json offeredOnly = Json::object();
+    offeredOnly.set("status", Json("offered"));
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "booking.waitlist", offeredOnly)).get("entries").size(),
+             std::size_t(0));
+    Json bogus = Json::object();
+    bogus.set("status", Json("bogus"));
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.waitlist", bogus)), std::string("bad_request"));
+
+    // Выход по ссылке; повтор — без изменений; гость видит cancelled.
+    const Json left = fixture.call(other, "booking.waitlistLeave", tokenPayload(token));
+    CHECK_EQ(integration::payloadOf(left).get("entry").getString("status"), std::string("left"));
+    CHECK_EQ(codeOf(fixture.call(other, "booking.waitlistLeave", tokenPayload(token))), std::string("ok"));
+    CHECK_EQ(integration::payloadOf(fixture.call(other, "booking.waitlistGet", tokenPayload(token))).get("offer").getString("status"),
+             std::string("cancelled"));
+    // Снова в лист — новая запись; владелец убирает её; чужой владелец — not_found.
+    const long long second =
+        integration::payloadOf(fixture.call(other, "booking.waitlistJoin", join)).get("entry").getInt("id");
+    CHECK(second > 0 && second != entry.getInt("id"));
+    auto stranger = sockets.open(fixture, "wl-stranger");
+    fixture.registerUser(stranger, "wlstranger@example.com", "Чужой");
+    Json remove = Json::object();
+    remove.set("entry_id", Json(second));
+    CHECK_EQ(codeOf(fixture.call(stranger, "booking.waitlistRemove", remove)), std::string("not_found"));
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "booking.waitlistRemove", remove)).get("entry").getString("status"),
+             std::string("left"));
+
+    // Лимит — как у booking.book: 10 в минуту с IP.
+    auto flood = openFrom(fixture, sockets, "wl-flood", "203.0.113.12:5000");
+    int refused = 0;
+    for (int i = 0; i < 11; ++i) {
+        const Json answer = fixture.call(flood, "booking.waitlistJoin",
+                                         joinPayload(slug, "Гость", "wl-flood" + std::to_string(i) + "@example.com"));
+        if (answer.getString("code") == "forbidden") ++refused;
+    }
+    CHECK_EQ(refused, 1);
+}
+
+// F8: отмена → время держится за старейшим подходящим; держание — занятость для других
+// гостей; не забрал → следующему; забрал → обычная запись; затем — освобождение.
+TEST(waitlist_offer_hold_claim_and_expiry) {
+    using namespace waitlist_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    const std::string dayA = selfvoy::isoUtc(slotA).substr(0, 10);
+    const std::string dayB = selfvoy::isoUtc(slotB).substr(0, 10);
+    invite_test::FakeAi ai([&] { return localSlots({slotA, slotB}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "wo-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "woowner@example.com", "Ольга"));
+    auto& db = fixture.server->database().db();
+    auto& bookings = fixture.server->bookings();
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", waitPage("Консультация"))).get("page");
+    const std::string slug = page.getString("slug");
+
+    auto first = openFrom(fixture, sockets, "wo-g1", "198.51.100.1:1");
+    Json bookA = bookPayload(slug, slotA, "Гость");
+    bookA.set("guest_email", Json("wo-g1@example.com"));
+    const Json bookedA = fixture.call(first, "booking.book", bookA);
+    CHECK_EQ(codeOf(bookedA), std::string("ok"));
+    auto waiter = openFrom(fixture, sockets, "wo-w", "198.51.100.2:1");
+    CHECK_EQ(codeOf(fixture.call(waiter, "booking.waitlistJoin", joinPayload(slug, "Первая", "wo-w1@example.com"))),
+             std::string("ok"));
+    Json second = joinPayload(slug, "Вторая", "wo-w2@example.com");
+    Json onlyA = Json::array();
+    onlyA.push(Json(dayA));
+    second.set("days", onlyA);
+    CHECK_EQ(codeOf(fixture.call(waiter, "booking.waitlistJoin", second)), std::string("ok"));
+    Json third = joinPayload(slug, "Третья", "wo-w3@example.com");
+    Json onlyB = Json::array();
+    onlyB.push(Json(dayB));
+    third.set("days", onlyB);
+    CHECK_EQ(codeOf(fixture.call(waiter, "booking.waitlistJoin", third)), std::string("ok"));
+    CHECK(!isBusy(fixture, ownerId, slotB));
+
+    // Гость отменил — время A держится за первой (самой старой подходящей).
+    CHECK_EQ(codeOf(fixture.call(first, "booking.cancel", tokenPayload(integration::payloadOf(bookedA).getString("token")))),
+             std::string("ok"));
+    auto w1 = entryOf(db, ownerId, "wo-w1@example.com");
+    auto w2 = entryOf(db, ownerId, "wo-w2@example.com");
+    CHECK(w1 && w1->status == "offered" && w1->offerStart == selfvoy::isoUtc(slotA) && w1->offerStatus == "offered");
+    CHECK(w2 && w2->status == "waiting");
+    std::time_t holdUntil = 0;
+    CHECK(w1 && selfvoy::parseIsoUtc(w1->offerExpiresAt, holdUntil) && holdUntil > std::time(nullptr) + 3500 &&
+          holdUntil <= std::time(nullptr) + 3600);
+    // Держание — занятость: время не видно и не записывается другим гостем.
+    CHECK(isBusy(fixture, ownerId, slotA));
+    const Json view = integration::payloadOf(fixture.call(first, "booking.get", slugPayload(slug))).get("page");
+    CHECK(!booking_test::hasSlot(view, slotA) && booking_test::hasSlot(view, slotB));
+    auto rival = openFrom(fixture, sockets, "wo-rival", "198.51.100.3:1");
+    CHECK_EQ(codeOf(fixture.call(rival, "booking.book", bookPayload(slug, slotA, "Соперник"))), std::string("conflict"));
+    const Json listed = integration::payloadOf(fixture.call(owner, "booking.waitlist")).get("entries");
+    bool shown = false;
+    for (const auto& item : listed.items()) {
+        if (item.getString("status") == "offered") shown = item.get("offer").getString("start") == selfvoy::isoUtc(slotA);
+    }
+    CHECK(shown);
+    const auto offerMail = lastMail("wo-w1@example.com", "booking.waitlist_offer");
+    CHECK(offerMail && offerMail->subject == "Selfvoy: освободилось время — Консультация" &&
+          offerMail->lead.find("Время держится за вами до ") != std::string::npos &&
+          offerMail->linkUrl.rfind("https://selfvoy.example.com/#/w/", 0) == 0);
+    CHECK_EQ(mailCount("wo-w2@example.com", "booking.waitlist_offer"), std::size_t(0));
+    const std::string token1 = tokenFromMail("wo-w1@example.com", "booking.waitlist_offer");
+    const Json offered = integration::payloadOf(fixture.call(waiter, "booking.waitlistGet", tokenPayload(token1))).get("offer");
+    CHECK(offered.getString("status") == "offered" && offered.getString("start") == selfvoy::isoUtc(slotA) &&
+          offered.getString("expires_at") == w1->offerExpiresAt);
+
+    // Не забрала за час — время уходит второй (её день), первая — снова в листе.
+    const std::time_t now = std::time(nullptr);
+    CHECK_EQ(bookings.waitlistTick(100, now + 30 * 60), std::size_t(0));
+    CHECK_EQ(bookings.waitlistTick(100, now + 61 * 60), std::size_t(1));
+    w1 = entryOf(db, ownerId, "wo-w1@example.com");
+    w2 = entryOf(db, ownerId, "wo-w2@example.com");
+    CHECK(w1 && w1->status == "waiting" && w1->offerStatus == "expired");
+    CHECK(w2 && w2->status == "offered" && w2->offerStart == selfvoy::isoUtc(slotA));
+    CHECK_EQ(integration::payloadOf(fixture.call(waiter, "booking.waitlistGet", tokenPayload(token1))).get("offer").getString("status"),
+             std::string("expired"));
+    CHECK_EQ(codeOf(fixture.call(waiter, "booking.waitlistClaim", tokenPayload(token1))), std::string("conflict"));
+    CHECK(isBusy(fixture, ownerId, slotA));
+
+    // Вторая забирает — обычная запись (ссылка управления), запись листа — booked.
+    const std::string token2 = tokenFromMail("wo-w2@example.com", "booking.waitlist_offer");
+    const std::size_t createdBefore = ownerNotices(db, ownerId, "booking.created");
+    const Json claimed = fixture.call(waiter, "booking.waitlistClaim", tokenPayload(token2));
+    CHECK_EQ(codeOf(claimed), std::string("ok"));
+    const Json claimedPayload = integration::payloadOf(claimed);
+    CHECK_EQ(claimedPayload.get("booking").getString("guest_name"), std::string("Вторая"));
+    CHECK(claimedPayload.getString("manage_url").rfind("https://selfvoy.example.com/#/m/", 0) == 0 &&
+          claimedPayload.getString("manage_url") == claimedPayload.getString("url") &&
+          claimedPayload.getString("token").size() == 43 && claimedPayload.get("payment").isNull());
+    const auto claimedBooking =
+        db.findBookingByToken(selfvoy::BookingManager::tokenHash(claimedPayload.getString("token")));
+    CHECK(claimedBooking && claimedBooking->guestEmail == "wo-w2@example.com" &&
+          claimedBooking->occurrences.at(0).getString("start") == selfvoy::isoUtc(slotA));
+    w2 = entryOf(db, ownerId, "wo-w2@example.com");
+    CHECK(w2 && w2->status == "booked" && w2->offerStatus == "claimed" && claimedBooking &&
+          w2->bookingId == claimedBooking->id);
+    CHECK_EQ(ownerNotices(db, ownerId, "waitlist.booked"), std::size_t(1));
+    CHECK_EQ(lastNotice(db, ownerId, "waitlist.booked").getInt("entry_id"), w2 ? w2->id : -1);
+    CHECK_EQ(ownerNotices(db, ownerId, "booking.created"), createdBefore);  // одно уведомление, не два
+    CHECK_EQ(mailCount("wo-w2@example.com", "booking.created"), std::size_t(1));
+    CHECK_EQ(integration::payloadOf(fixture.call(waiter, "booking.waitlistGet", tokenPayload(token2))).get("offer").getString("status"),
+             std::string("claimed"));
+    CHECK_EQ(codeOf(fixture.call(waiter, "booking.waitlistClaim", tokenPayload(token2))), std::string("conflict"));
+
+    // Вторая отменила — время снова первой; не забрала — подходящих больше нет, время свободно.
+    CHECK_EQ(codeOf(fixture.call(waiter, "booking.cancel", tokenPayload(claimedPayload.getString("token")))),
+             std::string("ok"));
+    w1 = entryOf(db, ownerId, "wo-w1@example.com");
+    CHECK(w1 && w1->status == "offered" && w1->offerStart == selfvoy::isoUtc(slotA));
+    CHECK_EQ(bookings.waitlistTick(100, std::time(nullptr) + 61 * 60), std::size_t(1));
+    w1 = entryOf(db, ownerId, "wo-w1@example.com");
+    const auto w3 = entryOf(db, ownerId, "wo-w3@example.com");
+    CHECK(w1 && w1->status == "waiting" && w3 && w3->status == "waiting");
+    CHECK(!isBusy(fixture, ownerId, slotA));
+    const Json freed = integration::payloadOf(fixture.call(first, "booking.get", slugPayload(slug))).get("page");
+    CHECK(booking_test::hasSlot(freed, slotA));
+
+    // Выход из листа с предложением — держание снимается сразу.
+    auto again = openFrom(fixture, sockets, "wo-g5", "198.51.100.5:1");
+    const Json rebooked = fixture.call(again, "booking.book", bookPayload(slug, slotA, "Пятый"));
+    CHECK_EQ(codeOf(rebooked), std::string("ok"));
+    CHECK_EQ(codeOf(fixture.call(again, "booking.cancel", tokenPayload(integration::payloadOf(rebooked).getString("token")))),
+             std::string("ok"));
+    w1 = entryOf(db, ownerId, "wo-w1@example.com");
+    CHECK(w1 && w1->status == "offered");
+    const std::string token1b = tokenFromMail("wo-w1@example.com", "booking.waitlist_offer");
+    CHECK_EQ(token1b, token1);  // одна ссылка на запись листа
+    CHECK_EQ(integration::payloadOf(fixture.call(waiter, "booking.waitlistLeave", tokenPayload(token1))).get("entry").getString("status"),
+             std::string("left"));
+    CHECK(!isBusy(fixture, ownerId, slotA));
+    // Запись листа старше 30 дней — expired.
+    CHECK_EQ(bookings.waitlistTick(100, std::time(nullptr) + 31 * 86400), std::size_t(1));
+    CHECK_EQ(entryOf(db, ownerId, "wo-w3@example.com")->status, std::string("expired"));
+}
+
+// F8: перенос освобождает прежнее время; часть дня; забрать — тот же путь оплаты (предоплата).
+TEST(waitlist_reschedule_frees_old_slot_and_payment_path) {
+    using namespace waitlist_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    invite_test::FakeAi ai([&] { return localSlots({slotA, slotB}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "wr-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "wrowner@example.com", "Ольга"));
+    auto& db = fixture.server->database().db();
+    Json pageReq = waitPage("Массаж");
+    pageReq.set("price", Json(250000LL));
+    pageReq.set("prepay", Json("full"));
+    pageReq.set("payment_url", Json("https://pay.example/p"));
+    const std::string slug =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageReq)).get("page").getString("slug");
+    auto guest = openFrom(fixture, sockets, "wr-g", "192.0.2.1:1");
+    const Json booked = fixture.call(guest, "booking.book", bookPayload(slug, slotA, "Гость"));
+    CHECK_EQ(codeOf(booked), std::string("ok"));
+
+    const int hour = std::atoi(selfvoy::isoUtc(slotA).substr(11, 2).c_str());
+    const std::string right = hour < 12 ? "morning" : hour < 17 ? "afternoon" : "evening";
+    const std::string wrong = right == "morning" ? "evening" : "morning";
+    auto waiter = openFrom(fixture, sockets, "wr-w", "192.0.2.2:1");
+    Json early = joinPayload(slug, "Не то время", "wr-wrong@example.com");
+    early.set("part_of_day", Json(wrong));
+    CHECK_EQ(codeOf(fixture.call(waiter, "booking.waitlistJoin", early)), std::string("ok"));
+    Json fits = joinPayload(slug, "Мария", "wr-right@example.com");
+    fits.set("part_of_day", Json(right));
+    fits.set("comment", Json("Из листа ожидания"));
+    CHECK_EQ(codeOf(fixture.call(waiter, "booking.waitlistJoin", fits)), std::string("ok"));
+
+    // Перенос A → B: прежнее время предлагается листу (часть дня — по местному времени).
+    Json move = tokenPayload(integration::payloadOf(booked).getString("token"));
+    move.set("start", Json(selfvoy::isoUtc(slotB)));
+    CHECK_EQ(codeOf(fixture.call(guest, "booking.reschedule", move)), std::string("ok"));
+    CHECK_EQ(entryOf(db, ownerId, "wr-wrong@example.com")->status, std::string("waiting"));
+    const auto offered = entryOf(db, ownerId, "wr-right@example.com");
+    CHECK(offered && offered->status == "offered" && offered->offerStart == selfvoy::isoUtc(slotA));
+
+    // Забрать — как booking.book: снимок цены, предоплата по ссылке, письмо с суммой.
+    const Json claimed = fixture.call(waiter, "booking.waitlistClaim",
+                                      tokenPayload(tokenFromMail("wr-right@example.com", "booking.waitlist_offer")));
+    CHECK_EQ(codeOf(claimed), std::string("ok"));
+    const Json payment = integration::payloadOf(claimed).get("payment");
+    CHECK(payment.getString("status") == "pending" && payment.getString("kind") == "full" &&
+          payment.getInt("amount") == 250000 && payment.getString("method") == "link" &&
+          payment.getString("action_url") == "https://pay.example/p" && !payment.contains("provider_id"));
+    const Json bookingView = integration::payloadOf(claimed).get("booking");
+    CHECK(bookingView.getInt("price") == 250000 && bookingView.getString("guest_name") == "Мария");
+    const auto stored = db.findBookingByToken(selfvoy::BookingManager::tokenHash(integration::payloadOf(claimed).getString("token")));
+    CHECK(stored && stored->guestComment == "Из листа ожидания" && stored->payment.getString("status") == "pending");
+    const auto created = lastMail("wr-right@example.com", "booking.created");
+    CHECK(created && footerHas(*created, "Предоплата: 2 500 ₽ — оплатите в течение"));
+}
+
+// F8: «пора записаться снова» — ровно один раз, только без более поздних записей гостя,
+// не позже 3 дней после срока; выключение поля отменяет неотправленные.
+TEST(rebook_reminder_once_later_booking_stale_and_disable) {
+    using namespace waitlist_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    const std::time_t slotC = invite_test::future(78);
+    const std::time_t slotD = invite_test::future(102);
+    invite_test::FakeAi ai([&] { return localSlots({slotA, slotB, slotC, slotD}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "rb-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "rbowner@example.com", "Ольга"));
+    auto& db = fixture.server->database().db();
+    auto& bookings = fixture.server->bookings();
+    Json pageReq = payPage("Стрижка");
+    pageReq.set("rebook_after_days", Json(7LL));
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageReq)).get("page");
+    const std::string slug = page.getString("slug");
+    auto guest = openFrom(fixture, sockets, "rb-g", "192.0.2.10:1");
+    const auto book = [&](std::time_t at, const std::string& email) {
+        Json payload = bookPayload(slug, at, "Гость");
+        payload.set("guest_email", Json(email));
+        return bookingIdOf(db, fixture.call(guest, "booking.book", payload));
+    };
+    const long long bookingA = book(slotA, "rb-one@example.com");
+    const long long bookingB = book(slotB, "rb-two@example.com");
+    const long long bookingC = book(slotC, "RB-Two@example.com");
+    const long long bookingD = book(slotD, "rb-late@example.com");
+    CHECK(bookingA > 0 && bookingB > 0 && bookingC > 0 && bookingD > 0);
+    const std::time_t endA = slotA + 3600;
+    const auto ownerView = [&](long long id) {
+        const Json list = integration::payloadOf(fixture.call(owner, "booking.list")).get("bookings");
+        for (const auto& item : list.items()) {
+            if (item.getInt("id") == id) return item;
+        }
+        return Json();
+    };
+    CHECK_EQ(ownerView(bookingA).getString("rebook_due_at"), selfvoy::isoUtc(endA + 7 * 86400));
+    CHECK_EQ(ownerView(bookingA).getString("rebook_sent_at"), std::string());
+
+    CHECK_EQ(bookings.rebookTick(100, std::time(nullptr)), std::size_t(0));
+    CHECK_EQ(bookings.rebookTick(100, endA + 7 * 86400 - 60), std::size_t(0));
+    CHECK_EQ(bookings.rebookTick(100, endA + 7 * 86400 + 60), std::size_t(1));
+    const auto mail = lastMail("rb-one@example.com", "booking.rebook");
+    CHECK(mail && mail->subject == "Selfvoy: пора записаться снова — Стрижка" &&
+          mail->linkUrl == "https://selfvoy.example.com/#/b/" + slug && mail->linkText == "Записаться снова" &&
+          mail->lead.find("С последней встречи прошло 7 дней.") == 0);
+    CHECK(!ownerView(bookingA).getString("rebook_sent_at").empty());
+    CHECK_EQ(ownerView(bookingA).getString("rebook_due_at"), std::string());
+    // Ровно один раз.
+    CHECK_EQ(bookings.rebookTick(100, endA + 7 * 86400 + 3600), std::size_t(0));
+    CHECK_EQ(mailCount("rb-one@example.com", "booking.rebook"), std::size_t(1));
+    // У гостя есть более поздняя запись (C) — за B не пишем, напишет C.
+    CHECK_EQ(bookings.rebookTick(100, slotB + 3600 + 7 * 86400 + 60), std::size_t(1));
+    CHECK_EQ(db.findBooking(bookingB)->rebookStatus, std::string("skipped"));
+    CHECK_EQ(mailCount("rb-two@example.com", "booking.rebook"), std::size_t(0));
+    CHECK_EQ(bookings.rebookTick(100, slotC + 3600 + 7 * 86400 + 60), std::size_t(1));
+    CHECK_EQ(mailCount("RB-Two@example.com", "booking.rebook"), std::size_t(1));
+    CHECK_EQ(db.findBooking(bookingC)->rebookStatus, std::string("sent"));
+    // Сервер стоял больше 3 дней после срока — старое не шлём.
+    CHECK_EQ(bookings.rebookTick(100, slotD + 3600 + 11 * 86400), std::size_t(1));
+    CHECK_EQ(db.findBooking(bookingD)->rebookStatus, std::string("skipped"));
+    CHECK_EQ(mailCount("rb-late@example.com", "booking.rebook"), std::size_t(0));
+
+    // Прошедшая запись ждёт напоминания; выключение поля его отменяет, включение не возвращает.
+    selfvoy::BookingRecord past;
+    past.pageId = page.getInt("id");
+    past.ownerId = ownerId;
+    past.manageHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+    past.guestName = "Прошлый";
+    past.guestEmail = "rb-past@example.com";
+    const std::time_t pastEnd = std::time(nullptr) - 86400;
+    Json occurrence = Json::object();
+    occurrence.set("start", Json(selfvoy::isoUtc(pastEnd - 3600)));
+    occurrence.set("end", Json(selfvoy::isoUtc(pastEnd)));
+    occurrence.set("day", Json(selfvoy::isoUtc(pastEnd).substr(0, 10)));
+    occurrence.set("status", Json("active"));
+    occurrence.set("task_id", Json(0LL));
+    past.occurrences = Json::array();
+    past.occurrences.push(occurrence);
+    long long pastId = 0;
+    CHECK(db.createBooking(past, pastId).ok);
+    CHECK_EQ(ownerView(pastId).getString("rebook_due_at"), selfvoy::isoUtc(pastEnd + 7 * 86400));
+    Json off = pageId(page.getInt("id"));
+    off.set("rebook_after_days", Json(0LL));
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.pageUpdate", off)), std::string("ok"));
+    CHECK_EQ(db.findBooking(pastId)->rebookStatus, std::string("cancelled"));
+    CHECK_EQ(ownerView(pastId).getString("rebook_due_at"), std::string());
+    Json on = pageId(page.getInt("id"));
+    on.set("rebook_after_days", Json(7LL));
+    CHECK_EQ(codeOf(fixture.call(owner, "booking.pageUpdate", on)), std::string("ok"));
+    CHECK_EQ(bookings.rebookTick(100, pastEnd + 7 * 86400 + 60), std::size_t(0));
+    CHECK_EQ(mailCount("rb-past@example.com", "booking.rebook"), std::size_t(0));
+}
+
+// F8: подписка на предложения в боте (w_<entry>_<sig>) и сообщение о свободном времени.
+TEST(waitlist_telegram_subscription_and_offer) {
+    using namespace waitlist_test;
+    using growth_test::startPayload;
+    using growth_test::textUpdate;
+    const std::time_t slotA = invite_test::future(30);
+    invite_test::FakeAi ai([&] { return localSlots({slotA}); });
+    Fixture fixture;
+    growth_test::FakeTelegram* fake = growth_test::enableBot(fixture, ai.url(), "https://selfvoy.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "wt-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "wtowner@example.com", "Ольга"));
+    auto& db = fixture.server->database().db();
+    const std::string slug =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", waitPage("Разбор"))).get("page").getString("slug");
+    auto guest = sockets.open(fixture, "wt-guest");
+    const Json booked = fixture.call(guest, "booking.book", bookPayload(slug, slotA, "Гость"));
+    const Json joined = integration::payloadOf(fixture.call(guest, "booking.waitlistJoin",
+                                                            joinPayload(slug, "Вера", "wt-vera@example.com")));
+    const std::string url = joined.getString("telegram_url");
+    CHECK(url.rfind("https://t.me/selfvoy_test_bot?start=w_", 0) == 0);
+    auto& bot = fixture.server->telegram();
+    std::string forged = startPayload(url);
+    forged.back() = forged.back() == 'A' ? 'B' : 'A';
+    bot.handleUpdate(textUpdate(9101, "/start " + forged));
+    bot.handleUpdate(textUpdate(9102, "/start " + startPayload(url)));
+    bot.flush();
+    CHECK(fake->last(9101).find("Ссылка недействительна") == 0);
+    CHECK(fake->last(9102).find("Готово: как только на «Разбор» освободится подходящее время, напишу сюда.") == 0);
+    CHECK_EQ(entryOf(db, ownerId, "wt-vera@example.com")->telegramChatId, 9102LL);
+    CHECK(integration::payloadOf(fixture.call(owner, "booking.waitlist")).get("entries").at(0).getBool("telegram_linked"));
+
+    CHECK_EQ(codeOf(fixture.call(guest, "booking.cancel", tokenPayload(integration::payloadOf(booked).getString("token")))),
+             std::string("ok"));
+    fixture.server->bookings().flushMail();
+    bot.flush();
+    bool button = false;
+    for (const auto& call : fake->of("sendMessage")) {
+        if (call.body.getInt("chat_id") != 9102 || call.body.getString("text").find("Освободилось время") != 0) continue;
+        const Json keyboard = call.body.get("reply_markup").get("inline_keyboard");
+        button = keyboard.at(0).at(0).getString("url").rfind("https://selfvoy.example.com/#/w/", 0) == 0;
+    }
+    CHECK(button);
+    // /stop — подписка листа снимается.
+    bot.handleUpdate(textUpdate(9102, "/stop"));
+    bot.flush();
+    CHECK_EQ(entryOf(db, ownerId, "wt-vera@example.com")->telegramChatId, 0LL);
+}
+
+// F10: оплата получена → задача и tax.receipt (RUB, настройка включена); tax.pending,
+// tax.receiptDone (гость видит чек), возврат → tax.refund; пакеты; депозит.
+TEST(npd_receipt_task_pending_done_and_refund) {
+    using namespace waitlist_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    const std::time_t slotC = invite_test::future(78);
+    const std::time_t slotD = invite_test::future(102);
+    invite_test::FakeAi ai([&] { return localSlots({slotA, slotB, slotC, slotD}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "tx-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "txowner@example.com", "Ольга"));
+    auto& db = fixture.server->database().db();
+    const auto prepaid = [&](const std::string& title, const std::string& currency, const std::string& prepay) {
+        Json payload = payPage(title);
+        payload.set("price", Json(250000LL));
+        payload.set("currency", Json(currency));
+        payload.set("prepay", Json(prepay));
+        if (prepay == "deposit") payload.set("deposit", Json(50000LL));
+        payload.set("payment_url", Json("https://pay.example/p"));
+        return integration::payloadOf(fixture.call(owner, "booking.pageCreate", payload)).get("page").getString("slug");
+    };
+    const std::string rub = prepaid("Массаж", "RUB", "full");
+    const std::string usd = prepaid("Coaching", "USD", "full");
+    const std::string deposit = prepaid("Депозит", "RUB", "deposit");
+    auto guest = openFrom(fixture, sockets, "tx-g", "192.0.2.20:1");
+    const auto book = [&](const std::string& slug, std::time_t at, const std::string& name, std::string& token) {
+        const Json booked = fixture.call(guest, "booking.book", bookPayload(slug, at, name));
+        token = integration::payloadOf(booked).getString("token");
+        return bookingIdOf(db, booked);
+    };
+    const auto setPayment = [&](long long id, const std::string& status) {
+        Json payload = Json::object();
+        payload.set("booking_id", Json(id));
+        payload.set("status", Json(status));
+        return fixture.call(owner, "booking.paymentSet", payload);
+    };
+    const std::string taskTitle = "Выдать чек: Массаж, 2 500 ₽";
+
+    // Настройка выключена — ничего.
+    std::string token1;
+    const long long booking1 = book(rub, slotA, "Тимур", token1);
+    CHECK_EQ(codeOf(setPayment(booking1, "paid")), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "tax.receipt"), std::size_t(0));
+    CHECK_EQ(taskCount(db, ownerId, taskTitle), std::size_t(0));
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "tax.pending")).get("items").size(), std::size_t(0));
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "prefs.get")).getBool("npd_receipts", true), false);
+    Json wrong = Json::object();
+    wrong.set("npd_receipts", Json("да"));
+    CHECK_EQ(codeOf(fixture.call(owner, "prefs.set", wrong)), std::string("bad_request"));
+    Json enable = Json::object();
+    enable.set("npd_receipts", Json(true));
+    CHECK(integration::payloadOf(fixture.call(owner, "prefs.set", enable)).getBool("npd_receipts"));
+
+    // Оплата получена (отметка владельца) → tax.receipt и задача со сроком «сегодня 23:59».
+    std::string token2;
+    const long long booking2 = book(rub, slotB, "Тимур", token2);
+    CHECK_EQ(codeOf(setPayment(booking2, "paid")), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "tax.receipt"), std::size_t(1));
+    const Json notice = lastNotice(db, ownerId, "tax.receipt");
+    const std::string text = "Наименование: Массаж; Сумма: 2 500 ₽; Покупатель: физическое лицо";
+    CHECK(notice.getInt("booking_id") == booking2 && notice.getString("service") == "Массаж" &&
+          notice.getInt("amount") == 250000 && notice.getString("currency") == "RUB" &&
+          notice.getString("client") == "Тимур" && !notice.getString("paid_at").empty() &&
+          notice.getString("text") == text && notice.getString("url") == "https://lknpd.nalog.ru/");
+    CHECK_EQ(taskCount(db, ownerId, taskTitle), std::size_t(1));
+    const long long taskId = db.findBooking(booking2)->payment.getInt("receipt_task_id");
+    const auto task = db.findTask(taskId);
+    std::time_t due = 0;
+    CHECK(task && task->status == "pending" && selfvoy::parseIsoUtc(task->dueAt, due) && due > std::time(nullptr) &&
+          due <= std::time(nullptr) + 86400 && (due + 60) % 3600 == 0);  // 23:59 (пояс UTC)
+    CHECK(db.findBooking(booking2)->payment.getBool("npd"));
+    // Повторная отметка paid — второй задачи нет.
+    CHECK_EQ(codeOf(setPayment(booking2, "waived")), std::string("ok"));
+    CHECK_EQ(codeOf(setPayment(booking2, "paid")), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "tax.receipt"), std::size_t(1));
+    CHECK_EQ(taskCount(db, ownerId, taskTitle), std::size_t(1));
+    const Json pending = integration::payloadOf(fixture.call(owner, "tax.pending")).get("items");
+    CHECK(pending.size() == 1 && pending.at(0).getString("kind") == "booking" && pending.at(0).getInt("id") == booking2 &&
+          pending.at(0).getString("text") == text && pending.at(0).getString("client") == "Тимур");
+    // Гость не видит служебных полей.
+    const Json managed = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(token2))).get("booking");
+    CHECK(!managed.get("payment").contains("npd") && !managed.get("payment").contains("receipt_task_id") &&
+          managed.getString("receipt_url").empty());
+
+    // Чек отмечен: ссылка у гостя, задача закрыта, в tax.pending пусто.
+    CHECK_EQ(codeOf(fixture.call(owner, "tax.receiptDone", Json::object())), std::string("bad_request"));
+    Json badUrl = Json::object();
+    badUrl.set("booking_id", Json(booking2));
+    badUrl.set("receipt_url", Json("http://lknpd.nalog.ru/x"));
+    CHECK_EQ(codeOf(fixture.call(owner, "tax.receiptDone", badUrl)), std::string("bad_request"));
+    const std::string receipt = "https://lknpd.nalog.ru/api/v1/receipt/770000000000/200abc/print";
+    Json done = Json::object();
+    done.set("booking_id", Json(booking2));
+    done.set("receipt_url", Json(receipt));
+    auto stranger = sockets.open(fixture, "tx-stranger");
+    fixture.registerUser(stranger, "txstranger@example.com", "Чужой");
+    CHECK_EQ(codeOf(fixture.call(stranger, "tax.receiptDone", done)), std::string("not_found"));
+    const Json marked = integration::payloadOf(fixture.call(owner, "tax.receiptDone", done)).get("booking");
+    CHECK(marked.get("payment").getString("receipt_url") == receipt && !marked.get("payment").getString("receipt_at").empty());
+    CHECK_EQ(db.findTask(taskId)->status, std::string("done"));
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "tax.pending")).get("items").size(), std::size_t(0));
+    const Json withReceipt = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(token2))).get("booking");
+    CHECK(withReceipt.getString("receipt_url") == receipt && withReceipt.get("payment").getString("receipt_url") == receipt);
+
+    // Возврат по оплате с чеком → tax.refund и задача «Аннулировать чек».
+    CHECK_EQ(codeOf(setPayment(booking2, "refunded")), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "tax.refund"), std::size_t(1));
+    CHECK(lastNotice(db, ownerId, "tax.refund").getInt("booking_id") == booking2 &&
+          lastNotice(db, ownerId, "tax.refund").getString("receipt_url") == receipt);
+    CHECK_EQ(taskCount(db, ownerId, "Аннулировать чек: Массаж, 2 500 ₽"), std::size_t(1));
+    // Без чека возврат — без tax.refund (booking1 оплачен до включения настройки).
+    CHECK_EQ(codeOf(setPayment(booking1, "refunded")), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "tax.refund"), std::size_t(1));
+
+    // Не рубли — ничего; депозит — сумма депозита.
+    std::string token3;
+    CHECK_EQ(codeOf(setPayment(book(usd, slotC, "Джон", token3), "paid")), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "tax.receipt"), std::size_t(1));
+    std::string token4;
+    CHECK_EQ(codeOf(setPayment(book(deposit, slotD, "Дина", token4), "paid")), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "tax.receipt"), std::size_t(2));
+    CHECK(lastNotice(db, ownerId, "tax.receipt").getInt("amount") == 50000 &&
+          lastNotice(db, ownerId, "tax.receipt").getString("text") ==
+              "Наименование: Депозит; Сумма: 500 ₽; Покупатель: физическое лицо");
+
+    // Пакет: выдан с отметкой «оплачено» → чек; отметка чека — гость видит ссылку; возврат.
+    Json offers = Json::array();
+    offers.push(offer("3 занятия", 3, 900000));
+    const long long packagesPage =
+        integration::payloadOf(fixture.call(owner, "booking.pageCreate", offersPage("Тренировки", offers))).get("page").getInt("id");
+    Json issue = Json::object();
+    issue.set("page_id", Json(packagesPage));
+    issue.set("offer_id", Json(1LL));
+    issue.set("guest_name", Json("Пётр"));
+    issue.set("paid", Json(true));
+    const Json issued = integration::payloadOf(fixture.call(owner, "package.issue", issue));
+    const long long packageId = issued.get("package").getInt("id");
+    CHECK_EQ(ownerNotices(db, ownerId, "tax.receipt"), std::size_t(3));
+    CHECK(lastNotice(db, ownerId, "tax.receipt").getInt("package_id") == packageId &&
+          lastNotice(db, ownerId, "tax.receipt").getString("service") == "Тренировки: абонемент «3 занятия»");
+    CHECK(issued.get("package").get("payment").getBool("npd"));
+    bool listedPackage = false;
+    for (const auto& item : integration::payloadOf(fixture.call(owner, "tax.pending")).get("items").items()) {
+        listedPackage = listedPackage || (item.getString("kind") == "package" && item.getInt("id") == packageId);
+    }
+    CHECK(listedPackage);
+    Json packageDone = Json::object();
+    packageDone.set("package_id", Json(packageId));
+    packageDone.set("receipt_url", Json(receipt));
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "tax.receiptDone", packageDone)).get("package").get("payment").getString("receipt_url"),
+             receipt);
+    const Json packageView =
+        integration::payloadOf(fixture.call(guest, "package.get", tokenPayload(issued.getString("token")))).get("package");
+    CHECK(packageView.getString("receipt_url") == receipt && !packageView.get("payment").contains("npd"));
+    Json refund = packageIdPayload(packageId);
+    refund.set("status", Json("refunded"));
+    CHECK_EQ(codeOf(fixture.call(owner, "package.paymentSet", refund)), std::string("ok"));
+    CHECK_EQ(ownerNotices(db, ownerId, "tax.refund"), std::size_t(2));
+    CHECK_EQ(lastNotice(db, ownerId, "tax.refund").getInt("package_id"), packageId);
+
+    // Включение настройки — Pro (при SELFVOY_PLANS_ENFORCED=1).
+    selfvoy::plan::setEnforced(true);
+    auto free = sockets.open(fixture, "tx-free");
+    fixture.registerUser(free, "txfree@example.com", "Без Pro");
+    CHECK_EQ(codeOf(fixture.call(free, "prefs.set", enable)), std::string("pro_required"));
+    Json disable = Json::object();
+    disable.set("npd_receipts", Json(false));
+    CHECK_EQ(codeOf(fixture.call(free, "prefs.set", disable)), std::string("ok"));
+    selfvoy::plan::setEnforced(false);
+}
+
+// PostgreSQL: лист ожидания (уникальность активной записи, держания, планировщик), захват
+// «пора записаться снова» (один раз, SKIP LOCKED), отмена, поздние записи, оплаты к чеку.
+TEST(pg_waitlist_rebook_tax_methods) {
+    const char* url = std::getenv("SELFVOY_TEST_PG_URL");
+    if (url == nullptr || *url == '\0') {
+        std::cout << "  (пропущен: SELFVOY_TEST_PG_URL не задан)\n";
+        return;
+    }
+    auto db = selfvoy::makePostgresDatabase(url);
+    auto other = selfvoy::makePostgresDatabase(url);  // «второй экземпляр сервера»
+    std::string error;
+    CHECK(db && db->connect(error));
+    CHECK(other && other->connect(error));
+    if (!db || !other) return;
+    long long owner = 0;
+    const std::string suffix = selfvoy::crypto::randomHex(4);
+    CHECK(db->createUser("pg-wl-" + suffix + "@example.com", "argon2id$x", "Лист", owner).ok);
+    selfvoy::BookingPageRecord page;
+    page.ownerId = owner;
+    page.slug = "wl" + suffix;
+    page.slug.resize(10, '0');
+    page.title = "Лист";
+    page.waitlist = true;
+    page.waitlistHoldMinutes = 45;
+    page.rebookAfterDays = 7;
+    long long pageId = 0;
+    CHECK(db->createBookingPage(page, pageId).ok);
+    auto storedPage = db->findBookingPage(pageId);
+    CHECK(storedPage && storedPage->waitlist && storedPage->waitlistHoldMinutes == 45 && storedPage->rebookAfterDays == 7);
+    if (storedPage) {
+        storedPage->rebookAfterDays = 200;  // CHECK в схеме
+        CHECK(!db->updateBookingPage(*storedPage).ok);
+        storedPage->rebookAfterDays = 7;
+        storedPage->waitlistHoldMinutes = 90;
+        CHECK(db->updateBookingPage(*storedPage).ok);
+        CHECK_EQ(db->findBookingPage(pageId)->waitlistHoldMinutes, 90);
+    }
+
+    // F10: настройка npd_receipts хранится колонкой user_preferences.
+    Json npd = Json::object();
+    npd.set("npd_receipts", Json(true));
+    CHECK(db->setPreferences(owner, npd).ok);
+    CHECK(db->getPreferences(owner).getBool("npd_receipts"));
+    npd.set("npd_receipts", Json(false));
+    CHECK(db->setPreferences(owner, npd).ok);
+    CHECK(!db->getPreferences(owner).getBool("npd_receipts", true));
+
+    // Лист ожидания.
+    selfvoy::WaitlistEntryRecord entry;
+    entry.ownerId = owner;
+    entry.pageId = pageId;
+    entry.guestName = "Гость";
+    entry.guestEmail = "Wait@Example.com";
+    Json days = Json::array();
+    days.push(Json("2030-01-02"));
+    entry.days = days;
+    entry.partOfDay = "evening";
+    entry.comment = "после 18";
+    entry.tokenHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+    entry.tokenEnc = "sealed";
+    entry.expiresAt = "2030-02-01T00:00:00Z";
+    long long entryId = 0;
+    CHECK(db->createWaitlistEntry(entry, entryId).ok && entryId > 0);
+    selfvoy::WaitlistEntryRecord duplicate = entry;
+    duplicate.tokenHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+    duplicate.guestEmail = "wait@example.COM";
+    long long duplicateId = 0;
+    CHECK(!db->createWaitlistEntry(duplicate, duplicateId).ok);  // одна активная запись на email
+    auto found = db->findWaitlistEntry(entryId);
+    CHECK(found && found->guestEmail == "Wait@Example.com" && found->days.size() == 1 && found->partOfDay == "evening" &&
+          found->comment == "после 18" && found->status == "waiting" && found->tokenEnc == "sealed" &&
+          found->expiresAt == "2030-02-01T00:00:00Z" && !found->queuedAt.empty() && found->offerStart.empty());
+    CHECK(db->findWaitlistEntryByToken(entry.tokenHash).has_value());
+    CHECK(db->findActiveWaitlistEntry(pageId, "wait@example.com").has_value());
+    CHECK_EQ(db->countActiveWaitlistEntries(pageId), 1);
+    CHECK_EQ(db->listWaitingEntries(pageId, "2030-01-01T00:00:00Z", 10).size(), std::size_t(1));
+    CHECK_EQ(db->listWaitingEntries(pageId, "2030-03-01T00:00:00Z", 10).size(), std::size_t(0));
+    if (found) {
+        found->status = "offered";
+        found->offerStart = "2030-01-02T18:00:00Z";
+        found->offerEnd = "2030-01-02T19:00:00Z";
+        found->offerDay = "2030-01-02";
+        found->offerLocal = "2030-01-02T21:00";
+        found->offerExpiresAt = "2030-01-01T12:00:00Z";
+        found->offerStatus = "offered";
+        CHECK(db->updateWaitlistEntry(*found).ok);
+        const auto holds = db->listWaitlistHolds(owner, "2030-01-01T11:00:00Z");
+        CHECK(holds.size() == 1 && holds.front().offerStart == "2030-01-02T18:00:00Z" &&
+              holds.front().offerLocal == "2030-01-02T21:00");
+        CHECK_EQ(db->listWaitlistHolds(owner, "2030-01-01T12:30:00Z").size(), std::size_t(0));
+        bool due = false;
+        for (const auto& item : db->listDueWaitlist("2030-01-01T12:30:00Z", 1000)) due = due || item.id == entryId;
+        CHECK(due);
+        for (const auto& item : db->listDueWaitlist("2030-01-01T11:30:00Z", 1000)) CHECK(item.id != entryId);
+        CHECK(db->setWaitlistTelegram(entryId, 777001).ok);
+        CHECK_EQ(db->findWaitlistEntry(entryId)->telegramChatId, 777001LL);
+        CHECK(db->unlinkTelegramChat(777001).ok);
+        CHECK_EQ(db->findWaitlistEntry(entryId)->telegramChatId, 0LL);
+        found->status = "left";
+        found->offerStatus = "cancelled";
+        CHECK(db->updateWaitlistEntry(*found).ok);
+        CHECK(db->createWaitlistEntry(duplicate, duplicateId).ok);  // прежняя закрыта — можно снова
+        found->status = "lost";  // CHECK в схеме
+        CHECK(!db->updateWaitlistEntry(*found).ok);
+    }
+    CHECK_EQ(db->listWaitlistEntries(owner, pageId, "", 10).size(), std::size_t(2));
+    CHECK_EQ(db->listWaitlistEntries(owner, pageId, "left", 10).size(), std::size_t(1));
+
+    // «Пора записаться снова»: два экземпляра захватывают каждую запись один раз.
+    const auto makeBooking = [&](const std::string& email, const std::string& start, const std::string& end) {
+        selfvoy::BookingRecord booking;
+        booking.pageId = pageId;
+        booking.ownerId = owner;
+        booking.manageHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+        booking.guestName = "Гость";
+        booking.guestEmail = email;
+        Json occurrence = Json::object();
+        occurrence.set("start", Json(start));
+        occurrence.set("end", Json(end));
+        occurrence.set("status", Json("active"));
+        booking.occurrences = Json::array();
+        booking.occurrences.push(occurrence);
+        long long id = 0;
+        CHECK(db->createBooking(booking, id).ok);
+        return id;
+    };
+    const long long early = makeBooking("one@example.com", "2001-01-01T10:00:00Z", "2001-01-01T11:00:00Z");
+    const long long later = makeBooking("ONE@example.com", "2001-01-05T10:00:00Z", "2001-01-05T11:00:00Z");
+    const long long future = makeBooking("two@example.com", "2001-03-01T10:00:00Z", "2001-03-01T11:00:00Z");
+    CHECK(db->hasLaterBooking(pageId, "one@example.com", early, "2001-01-01T11:00:00Z"));
+    CHECK(!db->hasLaterBooking(pageId, "one@example.com", later, "2001-01-05T11:00:00Z"));
+    CHECK(!db->hasLaterBooking(pageId, "", later, "2001-01-05T11:00:00Z"));
+    std::vector<long long> claimed;
+    for (const auto& booking : db->claimDueRebooks("2001-01-20T00:00:00Z", 100)) claimed.push_back(booking.id);
+    for (const auto& booking : other->claimDueRebooks("2001-01-20T00:00:00Z", 100)) claimed.push_back(booking.id);
+    CHECK(std::count(claimed.begin(), claimed.end(), early) == 1 && std::count(claimed.begin(), claimed.end(), later) == 1);
+    CHECK(std::count(claimed.begin(), claimed.end(), future) == 0);
+    auto claimedBooking = db->findBooking(early);
+    CHECK(claimedBooking && claimedBooking->rebookStatus == "claimed" &&
+          claimedBooking->rebookSentAt == "2001-01-20T00:00:00Z");
+    CHECK(db->setRebookStatus(early, "sent").ok);
+    CHECK_EQ(db->findBooking(early)->rebookStatus, std::string("sent"));
+    CHECK(!db->setRebookStatus(later, "bogus").ok);  // CHECK в схеме
+    CHECK(db->cancelPendingRebooks(pageId, "2001-03-02T00:00:00Z").ok);
+    CHECK_EQ(db->findBooking(future)->rebookStatus, std::string("cancelled"));
+    for (const auto& booking : db->claimDueRebooks("2001-12-01T00:00:00Z", 100)) CHECK(booking.pageId != pageId);
+
+    // Оплаты, ждущие чек «Мой налог».
+    selfvoy::BookingRecord paid;
+    paid.pageId = pageId;
+    paid.ownerId = owner;
+    paid.manageHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+    paid.guestName = "Плательщик";
+    Json payment = Json::object();
+    payment.set("status", Json("paid"));
+    payment.set("amount", Json(100000LL));
+    payment.set("currency", Json("RUB"));
+    payment.set("npd", Json(true));
+    payment.set("receipt_at", Json(""));
+    paid.payment = payment;
+    long long paidId = 0;
+    CHECK(db->createBooking(paid, paidId).ok);
+    const auto pendingReceipts = db->listReceiptPendingBookings(owner, 10);
+    CHECK(pendingReceipts.size() == 1 && pendingReceipts.front().id == paidId);
+    auto receipted = db->findBooking(paidId);
+    if (receipted) {
+        Json withReceipt = receipted->payment;
+        withReceipt.set("receipt_at", Json("2001-01-01T00:00:00Z"));
+        receipted->payment = withReceipt;
+        CHECK(db->updateBooking(*receipted).ok);
+    }
+    CHECK_EQ(db->listReceiptPendingBookings(owner, 10).size(), std::size_t(0));
+    selfvoy::PackagePurchaseRecord purchase;
+    purchase.ownerId = owner;
+    purchase.pageId = pageId;
+    purchase.title = "Абонемент";
+    purchase.sessionsTotal = 3;
+    purchase.status = "active";
+    purchase.payment = payment;
+    purchase.guestName = "Плательщик";
+    purchase.tokenHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+    long long purchaseId = 0;
+    CHECK(db->createPackagePurchase(purchase, purchaseId).ok);
+    const auto pendingPackages = db->listReceiptPendingPackages(owner, 10);
+    CHECK(pendingPackages.size() == 1 && pendingPackages.front().id == purchaseId);
+}

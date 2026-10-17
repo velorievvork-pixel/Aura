@@ -311,6 +311,12 @@ struct BookingPageRecord {
     std::string policyText;              // текст политики отмены
     // F5: предложения пакетов (абонементов) — [{id, title, sessions, price, valid_days}], ≤ 5.
     Json packages = Json::array();
+    // F8: лист ожидания (Pro) — сколько минут освободившееся время держится за человеком из
+    // листа (15–240) — и «пора на повторный приём» через N дней после последней встречи
+    // (0 — выкл., иначе 7–180; Pro).
+    bool waitlist = false;
+    int waitlistHoldMinutes = 60;
+    int rebookAfterDays = 0;
 };
 
 // Запись гостя на странице. occurrences — встречи (одна или еженедельная серия):
@@ -347,6 +353,44 @@ struct BookingRecord {
     // перенос и отмена её не меняют.
     long long price = 0;
     std::string currency = "RUB";
+    // F8: «пора записаться снова» — когда планировщик обработал запись (ISO UTC, "" — ещё нет)
+    // и итог: "" | claimed (взята планировщиком) | sent | skipped | cancelled (поле страницы
+    // выключено). Пишутся только claimDueRebooks / setRebookStatus / cancelPendingRebooks.
+    std::string rebookSentAt;
+    std::string rebookStatus;
+};
+
+// Лист ожидания страницы записи (F8, waitlist_entries). Гость оставляет имя и email,
+// желаемые дни (местные даты владельца; пусто — любой) и часть дня. Освободилось
+// подходящее время — оно держится за самой старой записью листа offer_expires_at
+// (предложение: offer_*), гость забирает его по ссылке #/w/<токен> (в БД — sha256 и шифр
+// токена, AAD "selfvoy-waitlist-token"). status: waiting | offered | booked | left | expired;
+// offerStatus: "" (не было) | offered | claimed | expired | cancelled. Одна активная
+// (waiting/offered) запись на страницу и email (без учёта регистра).
+struct WaitlistEntryRecord {
+    long long id = 0;
+    long long ownerId = 0;
+    long long pageId = 0;
+    std::string guestName;
+    std::string guestEmail;
+    Json days = Json::array();        // ["YYYY-MM-DD", …], ≤ 14
+    std::string partOfDay = "any";    // any | morning | afternoon | evening
+    std::string comment;
+    std::string status = "waiting";
+    std::string tokenHash;
+    std::string tokenEnc;
+    long long telegramChatId = 0;     // 0 — бот не подписан
+    std::string offerStart;           // ISO UTC; "" — предложения не было
+    std::string offerEnd;
+    std::string offerDay;             // местная дата владельца
+    std::string offerLocal;           // местное время владельца YYYY-MM-DDTHH:MM
+    std::string offerExpiresAt;
+    std::string offerStatus;
+    long long bookingId = 0;          // запись, созданная по предложению
+    std::string queuedAt;             // место в очереди (старше — раньше)
+    std::string expiresAt;            // запись листа живёт 30 дней
+    std::string createdAt;
+    std::string updatedAt;
 };
 
 // Покупка пакета (абонемента) гостем, F5 (package_purchases). Пакет — снимок
@@ -685,7 +729,8 @@ public:
     // false — у записи уже maxChats чатов или ошибка.
     virtual bool linkBookingTelegram(long long bookingId, long long chatId, int maxChats) = 0;
     virtual std::vector<long long> bookingTelegramChats(long long bookingId) = 0;
-    // /stop или 403 от Telegram: чат отвязывается от пользователя и от всех записей.
+    // /stop или 403 от Telegram: чат отвязывается от пользователя, от всех записей и от
+    // подписок листа ожидания (F8).
     virtual DatabaseError unlinkTelegramChat(long long chatId) = 0;
 
     // Страницы записи (booking.*).
@@ -729,6 +774,49 @@ public:
     virtual std::vector<PackagePurchaseRecord> listPendingPackagePurchases(int limit) = 0;
     // Активные пакеты с valid_until <= nowIso (планировщик переводит их в expired).
     virtual std::vector<PackagePurchaseRecord> listExpiredPackagePurchases(const std::string& nowIso, int limit) = 0;
+
+    // F8: лист ожидания (waitlist_entries). create — failure, если у страницы уже есть
+    // активная (waiting/offered) запись с этим email (без учёта регистра) или токен занят.
+    virtual DatabaseError createWaitlistEntry(const WaitlistEntryRecord& record, long long& outId) = 0;
+    virtual std::optional<WaitlistEntryRecord> findWaitlistEntry(long long id) = 0;
+    virtual std::optional<WaitlistEntryRecord> findWaitlistEntryByToken(const std::string& tokenHash) = 0;
+    // Активная (waiting/offered) запись страницы с этим email (emailLower — в нижнем регистре).
+    virtual std::optional<WaitlistEntryRecord> findActiveWaitlistEntry(long long pageId,
+                                                                       const std::string& emailLower) = 0;
+    // Записи владельца (pageId = 0 — всех страниц; status "" — любые), новые сверху.
+    virtual std::vector<WaitlistEntryRecord> listWaitlistEntries(long long ownerId, long long pageId,
+                                                                 const std::string& status, int limit) = 0;
+    // Очередь страницы: waiting с expires_at > nowIso, по queued_at (старые первыми), затем id.
+    virtual std::vector<WaitlistEntryRecord> listWaitingEntries(long long pageId, const std::string& nowIso,
+                                                                int limit) = 0;
+    virtual int countActiveWaitlistEntries(long long pageId) = 0;
+    // Перезаписывает guest_name, days, part_of_day, comment, status, offer_*, booking_id,
+    // queued_at, expires_at; updated_at = now. Вызывающий держит блокировку расписания владельца.
+    virtual DatabaseError updateWaitlistEntry(const WaitlistEntryRecord& record) = 0;
+    // Telegram-чат подписки на предложения (0 — отвязать); остальные поля не меняются.
+    virtual DatabaseError setWaitlistTelegram(long long entryId, long long chatId) = 0;
+    // Держания владельца: offered с offer_expires_at > nowIso (занятость при подборе времени).
+    virtual std::vector<WaitlistEntryRecord> listWaitlistHolds(long long ownerId, const std::string& nowIso) = 0;
+    // Планировщик: offered с offer_expires_at <= nowIso и waiting с expires_at <= nowIso.
+    virtual std::vector<WaitlistEntryRecord> listDueWaitlist(const std::string& nowIso, int limit) = 0;
+
+    // F8: «пора записаться снова». Атомарный захват (PostgreSQL — FOR UPDATE SKIP LOCKED):
+    // до limit активных записей, у страницы которых rebook_after_days > 0, ещё не
+    // обработанных (rebook_sent_at пуст), с ends_at + rebook_after_days <= nowIso, получают
+    // rebook_sent_at = nowIso, rebook_status = claimed и возвращаются (раньше закончившиеся — первыми).
+    virtual std::vector<BookingRecord> claimDueRebooks(const std::string& nowIso, int limit) = 0;
+    virtual DatabaseError setRebookStatus(long long bookingId, const std::string& status) = 0;
+    // Выключение поля страницы: необработанные активные записи с ends_at <= nowIso → cancelled.
+    virtual DatabaseError cancelPendingRebooks(long long pageId, const std::string& nowIso) = 0;
+    // У гостя (email без учёта регистра) есть другая активная запись этой страницы,
+    // заканчивающаяся позже endsAtIso (будущая или более поздняя прошедшая).
+    virtual bool hasLaterBooking(long long pageId, const std::string& emailLower, long long exceptBookingId,
+                                 const std::string& endsAtIso) = 0;
+
+    // F10: оплаты, по которым владельцу напомнили выдать чек «Мой налог» (payment.npd = true),
+    // получены (status paid) и чек не отмечен (receipt_at пуст) — новые сверху.
+    virtual std::vector<BookingRecord> listReceiptPendingBookings(long long ownerId, int limit) = 0;
+    virtual std::vector<PackagePurchaseRecord> listReceiptPendingPackages(long long ownerId, int limit) = 0;
 
     // F4: магазин ЮKassa владельца (payment_accounts). set — вставка или замена.
     virtual std::optional<PaymentAccountRecord> findPaymentAccount(long long userId) = 0;

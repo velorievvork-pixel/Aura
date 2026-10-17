@@ -16,7 +16,8 @@
 // Встречи записей занимают время владельца (MemoryManager::busy) — в переговорах,
 // приглашениях и на других страницах. Гостю — напоминания за сутки и за 2 часа
 // (booking_reminders, F1) и подпись «Запись через Selfvoy» (F3). Пакеты/абонементы
-// и второй получатель извещений (F5) — packages.cpp.
+// и второй получатель извещений (F5) — packages.cpp. Лист ожидания и «пора на повторный
+// приём» (F8) — waitlist.cpp, чеки «Мой налог» (F10) — tax.cpp.
 #pragma once
 
 #include <chrono>
@@ -50,6 +51,7 @@ struct BookingRecord;
 struct BookingReminderRecord;
 struct Config;
 struct PackagePurchaseRecord;
+struct WaitlistEntryRecord;
 
 // Извещение гостю: одно сообщение уходит на все каналы записи — email гостя (и
 // второго получателя, F5), привязанные Telegram-чаты (booking_telegram). Тексты
@@ -208,6 +210,40 @@ public:
     // «m***@example.com» — адрес второго получателя в виде гостя.
     static std::string maskEmail(const std::string& email);
 
+    // --- F8: лист ожидания и «пора на повторный приём» (waitlist.cpp) --------
+    // Гость встаёт в лист ожидания страницы (поле waitlist, Pro): освободилось подходящее
+    // время (отмена гостем/владельцем/системой, перенос) — оно держится за самой старой
+    // записью листа waitlist_hold_minutes (держание — занятость владельца: MemoryManager::busy),
+    // гостю — письмо (и бот) со ссылкой #/w/<токен>; забрал — обычная запись (booking.book:
+    // та же проверка и оплата), не забрал — время уходит следующему, затем освобождается.
+    static constexpr const char* kWaitlistTokenAad = "selfvoy-waitlist-token";
+    static constexpr int kWaitlistLifeDays = 30;     // запись листа живёт 30 дней
+    static constexpr int kMaxWaitlistDays = 14;      // желаемых дней — не больше 14
+    static constexpr int kMaxWaitlistPerPage = 200;  // активных записей листа на страницу
+    static constexpr int kRebookStaleSec = 3 * 86400;  // «пора записаться снова» опоздало больше чем на 3 дня — не шлём
+    // Гость (публичные).
+    Result waitlistJoin(const Json& payload, const std::string& remoteAddr);
+    Result waitlistGet(const Json& payload, const std::string& remoteAddr);
+    Result waitlistClaim(const Json& payload, const std::string& remoteAddr);
+    Result waitlistLeave(const Json& payload, const std::string& remoteAddr);
+    // Владелец.
+    Result waitlistList(long long ownerId, const Json& payload);
+    Result waitlistRemove(long long ownerId, const Json& payload);
+    // Планировщик: истёкшие предложения (время — следующему в листе) и записи листа старше
+    // 30 дней. now — параметр (юнит-тесты). Возвращает число просмотренных записей листа.
+    std::size_t waitlistTick(int limit, std::time_t now);
+    // Планировщик: «пора записаться снова» — атомарный захват наступивших (ровно один раз на
+    // запись), письмо (+ бот, если подписан на запись). Возвращает число захваченных.
+    std::size_t rebookTick(int limit, std::time_t now);
+    // Токен ссылки листа ожидания из token_enc ("" — не расшифровался).
+    std::string waitlistTokenOf(const WaitlistEntryRecord& entry) const;
+
+    // --- F10: чек «Мой налог» (tax.cpp) ---------------------------------------
+    // tax.pending {limit?} → {items}; tax.receiptDone {booking_id | package_id, receipt_url?}.
+    static constexpr int kTaxPendingMax = 200;
+    Result taxPending(long long ownerId, const Json& payload);
+    Result taxReceiptDone(long long ownerId, const Json& payload);
+
 private:
     // Пакет записи (booking.book): покупка (offerId > 0, offer — предложение страницы)
     // или запись по пакету (packageId > 0, найден по package_token).
@@ -230,7 +266,8 @@ private:
     };
 
     Json pageJson(const BookingPageRecord& page);
-    Json bookingJson(const BookingRecord& booking, const std::string& pageTitle) const;
+    // rebookDays — rebook_after_days страницы записи (F8: rebook_due_at в виде владельца).
+    Json bookingJson(const BookingRecord& booking, const std::string& pageTitle, int rebookDays = 0) const;
     Json guestBookingJson(const BookingRecord& booking, const BookingPageRecord& page, bool withSlots);
     void ownerInfo(long long ownerId, std::string& name, std::string& timezone) const;
 
@@ -241,12 +278,25 @@ private:
     // Кандидаты от AI-сервиса (кэш на минуту); false — сервис недоступен.
     bool offers(const BookingPageRecord& page, std::vector<Offer>& out);
     // Свободное время страницы сейчас: запас, занятость, лимит в день. skipBooking/skipStart —
-    // встреча, которую переносят: её интервал и место в лимите дня не учитываются.
+    // встреча, которую переносят: её интервал и место в лимите дня не учитываются; skipHold —
+    // запись листа ожидания, чьё держание не мешает (гость забирает предложенное время, F8).
     std::vector<Offer> available(const BookingPageRecord& page, const std::vector<Offer>& candidates,
-                                 long long skipBooking = 0, const std::string& skipStart = "");
-    // Активные встречи страницы по местным дням (для лимита max_per_day).
+                                 long long skipBooking = 0, const std::string& skipStart = "",
+                                 long long skipHold = 0);
+    // Занятость владельца (MemoryManager::busy: расписание, записи, держания листа ожидания)
+    // без переносимой встречи и без держания skipHold.
+    Busy busyFor(long long ownerId, long long skipBooking, const std::string& skipStart, long long skipHold);
+    // booking.book после разбора запроса (кандидаты и серия уже получены): проверка под
+    // блокировкой расписания, оплата, сохранение, задачи, уведомления, письмо. waitlistEntry —
+    // гость забирает предложение листа ожидания (F8): держание проверяется и закрывается
+    // под той же блокировкой, владельцу — waitlist.booked вместо booking.created.
+    Result commitBooking(const BookingPageRecord& page, BookingRecord booking, const PackageIntent& intent,
+                         const std::vector<Offer>& candidates, const std::vector<Offer>& plan, long long count,
+                         long long waitlistEntry);
+    // Активные встречи страницы по местным дням (для лимита max_per_day) и держания листа
+    // ожидания этой страницы (F8), кроме держания skipHold.
     std::unordered_map<std::string, int> dayCounts(const BookingPageRecord& page, long long skipBooking,
-                                                   const std::string& skipStart);
+                                                   const std::string& skipStart, long long skipHold = 0);
 
     long long createTask(const BookingRecord& booking, const std::string& pageTitle, std::time_t start);
     // Удалить задачу встречи — только если она принадлежит владельцу записи.
@@ -358,6 +408,38 @@ private:
     void refundPackage(const PackagePurchaseRecord& record, bool provider);
     // Отмена записи системой (оплата пакета не поступила) — задачи, напоминания, извещения.
     void cancelBySystem(long long bookingId, std::time_t now, const std::string& reason);
+    // --- F8 (waitlist.cpp) ---
+    // Поля страницы waitlist / waitlist_hold_minutes / rebook_after_days: проверка, Pro.
+    Result applyWaitlistFields(long long ownerId, const Json& payload, bool creating, BookingPageRecord& page);
+    // Встречи, ставшие cancelled (before → after) и ещё не начавшиеся: освободившееся время.
+    static std::vector<Json> freedOccurrences(const Json& before, const Json& after, std::time_t now);
+    // Освободилось время страницы: каждому интервалу — самая старая подходящая запись листа
+    // (кроме excludeEntry), держание и извещение гостю. Блокировку расписания берёт сама.
+    void waitlistRelease(long long pageId, const std::vector<Json>& freed, std::time_t now, long long excludeEntry = 0);
+    // Изменение записи листа под блокировкой расписания владельца (как mutateBooking).
+    bool mutateWaitlist(long long entryId, const std::function<bool(WaitlistEntryRecord&)>& change,
+                        std::optional<WaitlistEntryRecord>& out);
+    Json waitlistGuestJson(const WaitlistEntryRecord& entry) const;
+    Json waitlistOwnerJson(const WaitlistEntryRecord& entry, const std::string& pageTitle) const;
+    std::string waitlistUrl(const std::string& token) const;
+    std::string waitlistTelegramUrl(const WaitlistEntryRecord& entry) const;
+    // Извещение записи листа: email гостя (лимит на адрес и на владельца) и чат бота, если подписан.
+    void notifyWaitlist(const WaitlistEntryRecord& entry, const BookingPageRecord& page, const std::string& kind,
+                        const std::string& subject, const std::string& title, const std::string& lead,
+                        const std::vector<std::string>& lines, const std::string& linkUrl,
+                        const std::string& linkText, const std::vector<std::string>& footer);
+    // Одно наступившее «пора записаться снова» (false — пропущено).
+    bool sendRebook(const BookingRecord& booking, std::time_t now);
+    // --- F10 (tax.cpp) ---
+    // Оплата записи / пакета стала paid: при npd_receipts и RUB — задача и tax.receipt.
+    void taxReceiptForBooking(const BookingRecord& booking);
+    void taxReceiptForPackage(const PackagePurchaseRecord& record);
+    // Оплата стала refunded, а чек уже отмечен: tax.refund и задача «Аннулировать чек».
+    void taxRefundForBooking(const BookingRecord& booking);
+    void taxRefundForPackage(const PackagePurchaseRecord& record);
+    // Конец текущего местного дня владельца (23:59) в UTC: пояс — AI-сервис (POST
+    // /v1/agent/series), иначе сдвиг из local встречи (hint), иначе UTC.
+    std::time_t ownerDayEnd(long long ownerId, std::time_t now, const Json& hint);
     void mailLoop();
     std::string sealManageToken(const std::string& token) const;
     std::string manageUrl(const std::string& token) const;

@@ -205,7 +205,7 @@ AVSpeechSynthesizer), отдельного сетевого метода не т
 | `memory.add` | `text`/`entries[]`, `kind?` | `saved` |
 | `memory.extract` | `message`, `commit?` | `entries[]`, `source` (`ai` или `local`) |
 | `prefs.get` | — | настройки |
-| `prefs.set` | любые поля `user_preferences` | обновлённые настройки |
+| `prefs.set` | любые поля `user_preferences` (в корне payload; `npd_receipts` — bool, включение — Pro, F10) | обновлённые настройки |
 
 Онбординг-опрос после регистрации: клиенты показывают анкету (день
 рождения, аллергии, диета, город, транспорт, бюджет), пока
@@ -353,7 +353,9 @@ Access-токен автоматически обновляется по `refres
 `{package_id, page_id, guest_name, status, amount, currency}`, `status` —
 `claimed` / `paid` / `refunded` / `refund_due` как у записи, `expired` — оплата не
 поступила, покупка отменена), `package.low` (у пакета осталось 1 или 0 занятий:
-`{package_id, page_id, guest_name, left}`), `referral.joined`
+`{package_id, page_id, guest_name, left}`), `waitlist.joined` / `waitlist.booked`
+(лист ожидания, F8), `tax.receipt` / `tax.refund` (чек «Мой налог», F10),
+`referral.joined`
 (приглашённый по реферальной ссылке подтвердил email), `referral.reward`
 (приглашённому начислен месяц Pro). Push-доставка — через устройства в `push_devices`
 (платформы `apns` | `fcm` | `webhook` | `dev`); платформенный конверт
@@ -464,7 +466,7 @@ guest_name, comment}`).
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `booking.pageCreate` | `{title (1–120, одна строка), description? (≤ 1000), duration_minutes? (15–240, 30), days_ahead? (1–60, 14), max_per_day? (1–16, 4), notice_hours? (0–168, 2), max_series? (1–12, 1), weekends? (bool, false), guest_reminders? (bool, true), hide_branding? (bool, false), …поля цены и политики отмены (F4, ниже), packages? (предложения пакетов, F5, ниже)}` | `{page}`; больше 10 страниц → `forbidden`; `hide_branding: true`, `prepay` ≠ `none` или непустой `packages` без Pro при `SELFVOY_PLANS_ENFORCED=1` → `pro_required` |
+| `booking.pageCreate` | `{title (1–120, одна строка), description? (≤ 1000), duration_minutes? (15–240, 30), days_ahead? (1–60, 14), max_per_day? (1–16, 4), notice_hours? (0–168, 2), max_series? (1–12, 1), weekends? (bool, false), guest_reminders? (bool, true), hide_branding? (bool, false), …поля цены и политики отмены (F4, ниже), packages? (предложения пакетов, F5, ниже), waitlist? / waitlist_hold_minutes? / rebook_after_days? (лист ожидания и повторный приём, F8, ниже)}` | `{page}`; больше 10 страниц → `forbidden`; `hide_branding: true`, `prepay` ≠ `none`, непустой `packages`, `waitlist: true` или `rebook_after_days` > 0 без Pro при `SELFVOY_PLANS_ENFORCED=1` → `pro_required` |
 | `booking.pageList` | — | `{pages: [page]}` — новые сверху, без удалённых |
 | `booking.pageUpdate` | `{page_id, …любые поля pageCreate, status? (active \| paused)}` | `{page}` — меняются только переданные поля (`packages` — целым массивом); включить `hide_branding`, предоплату (`prepay` из `none`) или пакеты (непустой `packages` у страницы без пакетов) без Pro (при `SELFVOY_PLANS_ENFORCED=1`) → `pro_required`, выключить и править уже включённое можно всегда |
 | `booking.pageDelete` | `{page_id}` | `{deleted: true}` — ссылка перестаёт работать, сделанные записи остаются |
@@ -476,7 +478,7 @@ guest_name, comment}`).
 max_per_day, notice_hours, max_series, weekends, status (active | paused),
 guest_reminders, hide_branding, price, currency, prepay, deposit, payment_url,
 payment_note, pay_within_minutes, cancel_hours, late_cancel, policy_text, packages,
-upcoming, created_at, updated_at}`; `url` пуст
+waitlist, waitlist_hold_minutes, rebook_after_days (F8), upcoming, created_at, updated_at}`; `url` пуст
 без `SELFVOY_PUBLIC_URL`. `guest_reminders` — напоминать гостю о встрече
 (бесплатно), `hide_branding` — скрыть подпись «Запись через Selfvoy» (Pro).
 `booking` (вид владельца): `{id, page_id, page_title, guest_name, guest_email,
@@ -484,7 +486,7 @@ guest_comment, cc_email (второй получатель, "" — нет; F5), 
 0 — без пакета; F5), price, currency, status (active | cancelled), cancelled_by ("" | guest | owner),
 reschedules, occurrences: [{start, end, local, status (active | cancelled),
 confirmed_at}], reminders: [{start, kind (24h | 2h), due_at, sent_at}],
-payment (объект оплаты целиком или null), created_at, updated_at}`;
+payment (объект оплаты целиком или null), rebook_due_at, rebook_sent_at (F8), created_at, updated_at}`;
 `price` — цена услуги (одной встречи) на момент записи, в минимальных единицах
 `currency` (0 — по абонементу или бесплатно): снимок цены страницы при
 `booking.book`, последующая смена цены страницы (`booking.pageUpdate`), перенос и
@@ -529,7 +531,8 @@ https); лимит — 10 в час на адрес (у `cc_email` — свой)
 max_series, owner_name, owner_timezone, status, slots: [{start, end, day}],
 slots_unavailable, ref, branding, price, currency, prepay, deposit, payment_note,
 payment_url, pay_within_minutes, policy: {cancel_hours, late_cancel, text},
-packages: [{id, title, sessions, price, valid_days}]}` —
+packages: [{id, title, sessions, price, valid_days}], waitlist, waitlist_hold_minutes,
+rebook_after_days (F8)}` —
 без email владельца и чужих записей; `day` —
 местная дата владельца; `slots_unavailable: true` — AI-сервис недоступен
 (страница видна, время не подобрано); `ref` — реферальный код владельца для
@@ -540,8 +543,8 @@ by_package (запись по пакету), price, currency (цена встр�
 виде владельца; 0 — по абонементу или бесплатно), status, cancelled_by, occurrences, can_cancel,
 can_reschedule, can_change, reschedules_left, slots (свободное время для
 переноса ближайшей встречи), slots_unavailable, ref, branding, telegram_url,
-telegram_linked, payment (без `provider_id`; null — оплаты нет), late, policy,
-payment_note}`, у каждой встречи в `occurrences` — `confirmed_at` ("" — не
+telegram_linked, payment (без `provider_id`; null — оплаты нет), receipt_url (ссылка на
+чек «Мой налог», "" — нет; F10), late, policy, payment_note}`, у каждой встречи в `occurrences` — `confirmed_at` ("" — не
 подтверждена); `telegram_url` — ссылка подписки на напоминания в Telegram
 ("" — бот не настроен или запись отменена; после `booking.resendLink` прежняя
 ссылка перестаёт работать), `telegram_linked` — к записи уже подключён чат. `can_cancel` — есть
@@ -649,7 +652,8 @@ AAD `selfvoy-payment-secret`), наружу и в журнал не попада
 `{status, amount, currency, kind (full | deposit | package), method (link |
 yookassa), provider_id (id платежа ЮKassa; гостю не отдаётся), action_url
 (куда отправить гостя платить; "" — только реквизиты), due_at, paid_at,
-refunded_at}`; `status`: `pending` (ждём оплату) → `paid` / `claimed` (гость
+refunded_at}` (+ поля чека «Мой налог», F10: `npd`, `receipt_task_id`, `receipt_url`,
+`receipt_at`, `receipt_refund_task_id`); `status`: `pending` (ждём оплату) → `paid` / `claimed` (гость
 сказал, что оплатил) / `expired` (не оплачено к сроку или запись отменена до
 оплаты); владелец может поставить `paid`, `waived` (без оплаты) или `refunded`.
 
@@ -756,7 +760,7 @@ sha256 и шифр AES-256-GCM, AAD `selfvoy-package-token`, для писем).
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `package.get` | `{token}` | `{package}` — вид гостя: `{title, sessions_total, sessions_left, valid_until ("" — ещё не оплачен), valid_days, status, price, currency, payment (без provider_id; null — без оплаты), payment_note, guest_name, cc_email (замаскирован), page_slug ("" — запись на странице закрыта), page_title, owner_name, owner_timezone, bookings: [{start, status}], branding, ref}` (`ref` — реферальный код владельца, как у `booking.get` / `invite.get`: клиент добавляет его в ссылку «Запись через Selfvoy», даже если `branding.url` пуст); ЮKassa — статус платежа проверяется при каждом открытии; неизвестный токен → `not_found`; 30 в минуту с IP |
+| `package.get` | `{token}` | `{package}` — вид гостя: `{title, sessions_total, sessions_left, valid_until ("" — ещё не оплачен), valid_days, status, price, currency, payment (без provider_id; null — без оплаты), receipt_url (чек «Мой налог», "" — нет; F10), payment_note, guest_name, cc_email (замаскирован), page_slug ("" — запись на странице закрыта), page_title, owner_name, owner_timezone, bookings: [{start, status}], branding, ref}` (`ref` — реферальный код владельца, как у `booking.get` / `invite.get`: клиент добавляет его в ссылку «Запись через Selfvoy», даже если `branding.url` пуст); ЮKassa — статус платежа проверяется при каждом открытии; неизвестный токен → `not_found`; 30 в минуту с IP |
 | `package.paymentClaim` | `{token}` | `{package}` — «Я оплатил(а)» за пакет (способ `link`): оплата `pending` → `claimed`, покупка `pending` → `active`; владельцу `package.payment` (`claimed`); повтор — без изменений; ЮKassa / нет оплаты → `bad_request`; покупка отменена → `conflict`; лимит — как у переноса/отмены |
 
 Методы владельца:
@@ -773,6 +777,148 @@ sha256 и шифр AES-256-GCM, AAD `selfvoy-package-token`, для писем).
 предложений), title, sessions_total, sessions_used, sessions_left, valid_days,
 valid_until, price, currency, status, payment (целиком или null), guest_name,
 guest_email, cc_email, created_at, updated_at}`. Чужой пакет → `not_found`.
+
+### Лист ожидания и «пора на повторный приём» (F8)
+
+Поля страницы записи (`booking.pageCreate` / `booking.pageUpdate`; есть в виде
+владельца `page` и в виде гостя `booking.get`):
+
+| поле | значение |
+| --- | --- |
+| `waitlist` | bool, `false` — показывать гостю «Встать в лист ожидания» (Pro) |
+| `waitlist_hold_minutes` | 15–240, 60 — сколько освободившееся время держится за человеком из листа |
+| `rebook_after_days` | 0 (выкл., по умолчанию) или 7–180 — через сколько дней после последней встречи записи напомнить гостю записаться снова (Pro) |
+
+Pro — как у пакетов F5 (при `SELFVOY_PLANS_ENFORCED=1`): включить `waitlist`
+(`false` → `true`) или `rebook_after_days` (0 → N) без Pro → `pro_required`;
+править и выключать уже включённое можно всегда. Значения вне диапазонов →
+`bad_request`.
+
+**Лист ожидания.** Гость оставляет имя, email (обязателен — туда придёт
+предложение), желаемые дни и часть дня. Запись листа живёт 30 дней; один email —
+одна активная (`waiting` / `offered`) запись на страницу (без учёта регистра;
+повтор `booking.waitlistJoin` обновляет имя, дни, часть дня, комментарий и
+продлевает срок — место в очереди сохраняется, письма и уведомления повторно не
+уходят). Не больше 200 активных записей на страницу (`forbidden` «лист ожидания
+этой страницы заполнен»). Ссылка гостя — `<SELFVOY_PUBLIC_URL>/#/w/<токен>` (43
+символа base64url; одна на запись листа — и для предложения, и для выхода; в БД —
+sha256 и шифр AES-256-GCM, AAD `selfvoy-waitlist-token`, для писем и бота): токен
+приходит **только письмом** (подтверждение «Вы в листе ожидания» и каждое
+предложение), в ответах API его нет.
+
+Освобождение времени — отмена гостем (`booking.cancel`), владельцем
+(`booking.ownerCancel`) или системой (оплата записи/пакета не поступила), перенос
+(`booking.reschedule` — прежнее время), выход/удаление записи листа с
+предложением, неотвеченное предложение (планировщик). Для каждого освободившегося
+интервала сервер под блокировкой расписания владельца (общей для экземпляров на
+PostgreSQL) выбирает **самую старую** подходящую запись листа (`waiting`, срок не
+истёк): день в `days` (пусто — любой), часть дня по местному времени владельца
+(`morning` — до 12:00, `afternoon` — 12:00–17:00, `evening` — с 17:00; `any` —
+любое; местное время встречи неизвестно — подходит только `any`); время должно
+укладываться в правила страницы: длительность страницы, начало ≥ сейчас +
+`waitlist_hold_minutes` + `notice_hours` (гость успевает забрать с запасом),
+конец — в окне `days_ahead`, лимит `max_per_day` дня не превышен, время свободно.
+Запись листа → `offered`, время держится до `offer.expires_at` = сейчас +
+`waitlist_hold_minutes`. **Держание — занятость владельца**: его нет в слотах
+`booking.get` / переноса / `booking.slotsPost`, оно занимает место в лимите
+дня, `booking.book` других гостей на это время → `conflict` «это время уже
+занято», его не займут приглашения и переговоры. Гостю — письмо «Selfvoy:
+освободилось время — <страница>» (время встречи, «держится за вами до HH:MM
+(<пояс>)», цена и предоплата, кнопка «Записаться на это время» —
+`#/w/<токен>`) и, если подписан, сообщение бота с url-кнопкой. Подходящих нет —
+время просто освобождается (и сразу видно в `booking.get` этого экземпляра).
+
+Не забрал за время держания — планировщик сервера: предложение `expired`, запись
+листа снова `waiting` **в конце очереди** (`queued_at` = момент истечения; срок
+записи листа вышел — `expired`), время — следующей подходящей записи (кроме этой),
+затем освобождается. Записи листа старше 30 дней → `expired`. На PostgreSQL каждое
+истечение обрабатывает один экземпляр (условный переход под блокировкой
+расписания), письмо о предложении уходит один раз.
+
+Методы гостя (публичные, без входа):
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `booking.waitlistJoin` | `{slug, guest_name (1–80), guest_email (≤ 254, обязателен), days? (["YYYY-MM-DD", …], ≤ 14, местные даты владельца от вчера до конца окна `days_ahead`; повторы убираются; пусто/нет — любой день), part_of_day? (any \| morning \| afternoon \| evening, any), comment? (≤ 500)}` | `{entry: {id, status (waiting \| offered), days, part_of_day, expires_at}, telegram_url}` — `telegram_url`: `https://t.me/<бот>?start=w_<entry_id>_<sig>` (подпись над `token_hash` записи листа) или "" (бот не настроен); новая запись — владельцу `waitlist.joined`, гостю письмо «Вы в листе ожидания» со ссылкой `#/w/<токен>`. Страница без `waitlist` → `forbidden`; на паузе → `conflict`; неизвестный slug → `not_found`; лимиты — как у `booking.book` (10 в минуту и 30 в час с IP, свои счётчики) |
+| `booking.waitlistGet` | `{token}` | `{offer: {status, entry_status, start, end, local, expires_at, page_title, page_slug ("" — запись на странице закрыта), owner_name, owner_timezone, duration_minutes, price, currency, prepay, deposit, policy_text, guest_name, days, part_of_day, waitlist_expires_at, telegram_url, telegram_linked, branding, ref}}` — `status`: `offered` (время держится сейчас), `claimed` (записались), `expired` (не забрали вовремя или срок записи листа вышел), `cancelled` (вышли из листа / владелец удалил), `waiting` (предложения ещё не было; `start`/`end`/`expires_at` — ""); `entry_status` — статус записи листа (`waiting \| offered \| booked \| left \| expired`); после истёкшего предложения запись снова `waiting`, а `status` — `expired` с прежним временем, пока не придёт новое предложение; неизвестный токен → `not_found`; 30 в минуту с IP |
+| `booking.waitlistClaim` | `{token}` | как `booking.book`: `{booking, token, url, telegram_url, manage_url (= url), payment (вид гостя оплаты или null)}` — та же проверка (под блокировкой расписания: держание ещё за этим гостем, запас до начала, занятость кроме своего держания, лимит дня) и тот же путь оплаты (снимок цены, предоплата F4: ЮKassa или ссылка/реквизиты, письмо «Вы записаны» со ссылкой управления, задача, напоминания); имя, email и комментарий — из записи листа; одна встреча. Запись листа → `booked`. Владельцу — **одно** уведомление `waitlist.booked` (вместо `booking.created`). Время больше не держится (истекло, ушло другому) → `conflict` «время больше не держится за вами — выберите другое»; уже записаны → `conflict`; длительность страницы изменилась → `conflict`; лимиты — как у `booking.book` (общие счётчики) |
+| `booking.waitlistLeave` | `{token}` | `{entry}` (как в `waitlistJoin`) — запись листа → `left`; держание снимается, время уходит следующему; уже закрытая — без изменений; лимит — как у переноса/отмены |
+
+Методы владельца:
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `booking.waitlist` | `{page_id? (0 — все), status? (waiting \| offered \| booked \| left \| expired), limit? (1–200, 100)}` | `{entries: [{id, page_id, page_title, guest_name, guest_email (замаскирован, как `cc_email` у гостя: `m***@example.com`), days, part_of_day, comment, status, booking_id (0 — нет), telegram_linked, created_at, expires_at, offer? ({start, end, expires_at} — только у `offered`)}]}` — новые сверху |
+| `booking.waitlistRemove` | `{entry_id}` | `{entry}` (вид владельца) — запись листа → `left` (держание снимается, время уходит следующему); уже закрытая — без изменений; чужая → `not_found` |
+
+Уведомления владельцу: `waitlist.joined` (`{entry_id, page_id, guest_name, days,
+part_of_day}`), `waitlist.booked` (гость забрал предложенное время: `{booking_id,
+page_id, start, end, count, guest_name, entry_id}`).
+
+Бот: `/start w_<entry_id>_<sig>` — чат подписывается на предложения этой записи
+листа (ответ «Готово: как только на «<страница>» освободится подходящее время,
+напишу сюда»); запись закрыта — «уже закрыта»; поддельная ссылка — «Ссылка
+недействительна или устарела»; `/stop` снимает и эти подписки.
+
+**«Пора записаться снова».** Если у страницы `rebook_after_days` > 0: когда
+последняя активная встреча записи (одиночной или последняя в серии) прошла,
+запись активна, а у гостя нет **другой активной записи этой страницы с более
+поздним концом** (будущей или более поздней прошедшей; сравнение по email без
+учёта регистра), в `конец + rebook_after_days` гостю письмо (копия — `cc_email`;
+и в Telegram-чаты, подключённые к этой записи) «Selfvoy: пора записаться снова —
+<страница>» со ссылкой «Записаться снова» `<SELFVOY_PUBLIC_URL>/#/b/<slug>` (в
+боте — url-кнопкой). **Ровно один раз на запись**: планировщик атомарно
+захватывает наступившие (PostgreSQL — `UPDATE … FOR UPDATE SKIP LOCKED`,
+`bookings.rebook_sent_at`); не отправилось (есть более поздняя запись, страница
+на паузе/удалена, некому писать, опоздали больше чем на 3 дня — сервер стоял) —
+запись помечается пропущенной и больше не рассматривается. Выключение поля
+(`rebook_after_days: 0`) отменяет неотправленные напоминания прошедших записей
+(включение их не возвращает). Вид владельца `booking` (`booking.list`,
+`booking.ownerCancel`, `booking.paymentSet`, `tax.receiptDone`):
+`rebook_due_at` — когда уйдёт напоминание ("" — не запланировано: поле
+выключено, запись отменена или уже обработана), `rebook_sent_at` — когда ушло
+("" — не отправлялось).
+
+### Чек «Мой налог» (F10, самозанятые)
+
+Настройка владельца — `prefs.set` в **корне** payload: `npd_receipts` (bool,
+`false`; «я самозанятый, напоминать выдать чек»; не bool → `bad_request`;
+включение без Pro при `SELFVOY_PLANS_ENFORCED=1` → `pro_required`, выключить можно
+всегда). `prefs.get` всегда отдаёт `npd_receipts`.
+
+Когда оплата записи или пакета становится `paid` (ЮKassa — планировщик /
+`booking.manage` / `package.get`; отметка владельца `booking.paymentSet` /
+`package.paymentSet`; `package.issue` с `paid: true`), валюта `RUB`, сумма > 0 и
+`npd_receipts` включено — владельцу уведомление `tax.receipt` и задача «Выдать
+чек: <услуга>, <сумма>» (срок `due_at` — сегодня 23:59 по поясу владельца;
+напоминание — за 3 часа до срока, не раньше «сейчас»; пояс — через AI-сервис, без
+него — по местному времени встречи, иначе UTC). В `payment` записи/пакета
+появляются `npd: true` и `receipt_task_id` (повторная отметка `paid` второй
+задачи не создаёт). Payload `tax.receipt`: `{booking_id | package_id, page_id,
+service, amount, currency: "RUB", client (имя гостя), paid_at, text, url:
+"https://lknpd.nalog.ru/", task_id}`; `text` — готово для копирования в «Мой
+налог»: `Наименование: <услуга>; Сумма: <сумма>; Покупатель: физическое лицо`;
+`service` — название страницы (пакет — «<страница>: абонемент «<пакет>»»);
+сумма — то, что реально получено (`payment.amount`: депозит, полная предоплата или
+цена пакета; в `text` — «2 500 ₽»).
+
+| тип | payload | ответ |
+| --- | --- | --- |
+| `tax.pending` | `{limit? (1–200, 50)}` | `{items: [{kind: booking \| package, id, service, amount, currency, client, paid_at, text, url}]}` — оплаты с `npd: true`, `status: paid`, чек не отмечен (`receipt_at` пуст); новые сверху |
+| `tax.receiptDone` | `{booking_id \| package_id (ровно одно), receipt_url? (https://, ≤ 500)}` | `{booking}` или `{package}` (вид владельца) — в `payment` пишутся `receipt_url` ("" — без ссылки) и `receipt_at` (сейчас), задача «Выдать чек» закрывается (`done`); повтор обновляет ссылку. Нет id или оба → `bad_request`; ссылка не https / длиннее 500 → `bad_request`; у записи нет оплаты → `bad_request`; оплата не `paid` → `conflict`; чужая → `not_found` |
+
+Гость видит ссылку «Чек» в виде записи (`booking.manage` и др.: поле
+`receipt_url`, и `payment.receipt_url`) и пакета (`package.get`: `receipt_url`),
+если `receipt_url` задан. Служебные `npd`, `receipt_task_id`,
+`receipt_refund_task_id` гостю не отдаются (вид владельца — `payment` целиком).
+
+Возврат (`refunded`: `booking.paymentSet` / `package.paymentSet`, автоматический
+возврат ЮKassa) оплаты с отмеченным чеком (`receipt_at` задан) — уведомление
+`tax.refund` «Аннулируйте чек в «Мой налог»» (`{booking_id | package_id, page_id,
+service, amount, currency, client, receipt_url, refunded_at, url, task_id}`) и
+задача «Аннулировать чек: <услуга>, <сумма>»; один раз на оплату
+(`payment.receipt_refund_task_id`). Без отмеченного чека возврат `tax.refund` не
+создаёт.
 
 ### Пост «свободные окна» (F6)
 
@@ -889,7 +1035,9 @@ IP клиента за доверенным прокси — из `X-Forwarded-F
 подписан сервером (HMAC-SHA256, 16 байт подписи в base64url):
 `o_<user_id>_<expires_unix>_<sig>` — владелец, ссылка живёт 15 минут;
 `g_<booking_id>_<sig>` — гость записи, подпись над `manage_hash` (после
-перевыпуска ссылки управления прежняя ссылка бота не работает).
+перевыпуска ссылки управления прежняя ссылка бота не работает);
+`w_<entry_id>_<sig>` — гость листа ожидания (F8), подпись над `token_hash` записи
+листа: предложения освободившегося времени приходят в этот чат.
 
 | тип | payload | ответ |
 | --- | --- | --- |
@@ -900,13 +1048,13 @@ IP клиента за доверенным прокси — из `X-Forwarded-F
 Команды бота (только личные чаты): `/start o_…` — чат привязывается к аккаунту
 (если он был привязан к другому — перепривязывается); `/start g_…` — к записи
 (запись активна, не больше 3 чатов), ответ — ближайшая встреча в местном времени
-владельца; `/start` без payload и любой текст — справка; `/stop` — чат
-отвязывается от аккаунта и от всех записей. Поддельная или просроченная ссылка —
+владельца; `/start w_…` — подписка на предложения листа ожидания (F8); `/start` без payload и любой текст — справка; `/stop` — чат
+отвязывается от аккаунта, от всех записей и подписок листа ожидания. Поддельная или просроченная ссылка —
 ответ «Ссылка недействительна или устарела». Если пользователь заблокировал бота
 (Telegram отвечает 403), чат отвязывается везде.
 
 Владельцу в привязанный чат дублируются уведомления видов `booking.*`,
-`package.*`, `invite.*`, `referral.*`, `task.due` текстом «<title>\n<body>» —
+`package.*`, `invite.*`, `referral.*`, `waitlist.*`, `tax.*`, `task.due` текстом «<title>\n<body>» —
 если вид не в `prefs.notifications.muted_kinds`, сейчас не тихие часы и
 `prefs.notifications.telegram` не `false`. Гостю — те же извещения, что письмом
 (см. «Страницы записи»). Кнопка «Приду» (callback `cf:<booking_id>:<start_unix>`)

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeServerUrl, platformDefault, sameServers, serverCandidates, type ServerEnv } from './config';
+import { isLocalHost, normalizeServerUrl, platformDefault, sameServers, serverCandidates, type ServerEnv } from './config';
 
 const web: ServerEnv = { platform: 'web', location: { protocol: 'http:', hostname: 'localhost', host: 'localhost:5173' } };
 
@@ -13,10 +13,43 @@ describe('normalizeServerUrl', () => {
     expect(normalizeServerUrl('http://10.0.2.2:9000')).toBe('ws://10.0.2.2:9000');
     expect(normalizeServerUrl('wss://aura.example.com/ws')).toBe('wss://aura.example.com/ws');
   });
+  it('голый публичный хост — wss:// без порта (не открытым текстом)', () => {
+    expect(normalizeServerUrl('aura.example.com')).toBe('wss://aura.example.com');
+    expect(normalizeServerUrl('aura.example.com/ws')).toBe('wss://aura.example.com/ws');
+    expect(normalizeServerUrl('aura.example.com:8443')).toBe('wss://aura.example.com:8443');
+    expect(normalizeServerUrl('8.8.8.8')).toBe('wss://8.8.8.8');
+    expect(normalizeServerUrl('172.32.0.1')).toBe('wss://172.32.0.1');
+  });
+  it('голый локальный/частный хост — ws:// и порт сервера', () => {
+    expect(normalizeServerUrl('localhost')).toBe('ws://localhost:9000');
+    expect(normalizeServerUrl('127.0.0.1')).toBe('ws://127.0.0.1:9000');
+    expect(normalizeServerUrl('10.0.2.2')).toBe('ws://10.0.2.2:9000');
+    expect(normalizeServerUrl('172.20.1.1')).toBe('ws://172.20.1.1:9000');
+    expect(normalizeServerUrl('aura.local:9100')).toBe('ws://aura.local:9100');
+    expect(normalizeServerUrl('dev.localhost')).toBe('ws://dev.localhost:9000');
+    expect(normalizeServerUrl('192.168.1.5/ws')).toBe('ws://192.168.1.5:9000/ws');
+  });
+  it('явная схема ws:// остаётся как есть, даже для публичного хоста', () => {
+    expect(normalizeServerUrl('ws://aura.example.com:9000')).toBe('ws://aura.example.com:9000');
+    expect(normalizeServerUrl('http://aura.example.com')).toBe('ws://aura.example.com');
+  });
   it('мусор и чужие схемы отклоняются', () => {
     expect(normalizeServerUrl('')).toBeNull();
     expect(normalizeServerUrl('ftp://host')).toBeNull();
     expect(normalizeServerUrl('ws://')).toBeNull();
+  });
+});
+
+describe('isLocalHost', () => {
+  it('loopback, частные сети, .local/.localhost, имя без точки', () => {
+    for (const host of ['localhost', 'LOCALHOST', 'a.localhost', 'printer.local', 'server', '127.0.0.1', '127.8.8.8', '10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.0.1', '169.254.1.1', '[::1]', 'fd00::1', 'fe80::1']) {
+      expect(isLocalHost(host), host).toBe(true);
+    }
+  });
+  it('публичные имена и адреса', () => {
+    for (const host of ['aura.example.com', 'example.local.com', '8.8.8.8', '172.15.0.1', '172.32.0.1', '192.169.0.1', '11.0.0.1', '2001:db8::1', '']) {
+      expect(isLocalHost(host), host).toBe(false);
+    }
   });
 });
 

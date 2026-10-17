@@ -1,9 +1,11 @@
 // aura/database_records.cpp — сериализация записей и служебные хелперы.
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
 
 #include "aura/idatabase.h"
+#include "aura/memorymanager.h"
 
 namespace aura {
 
@@ -178,6 +180,17 @@ Json TaskRecord::toJson() const {
     json.set("created_at", Json(createdAt));
     if (!completedAt.empty()) json.set("completed_at", Json(completedAt));
     return json;
+}
+
+std::string bookingEndsAt(const Json& occurrences) {
+    std::time_t latest = 0;
+    for (const auto& occurrence : occurrences.items()) {
+        std::time_t end = 0;
+        if (occurrence.getString("status") == "active" && parseIsoUtc(occurrence.getString("end"), end)) {
+            latest = std::max(latest, end);
+        }
+    }
+    return latest > 0 ? isoUtc(latest) : std::string();
 }
 
 }  // namespace aura

@@ -60,7 +60,7 @@ fun MainScaffold() {
     val tab by AppStore.tab.collectAsState()
 
     // Вложенные разделы и открытый чат закрываются системной кнопкой «назад».
-    BackHandler(enabled = tab in setOf(AppStore.Tab.SETTINGS, AppStore.Tab.CONFIRMATIONS, AppStore.Tab.NOTICES)) {
+    BackHandler(enabled = tab in setOf(AppStore.Tab.SETTINGS, AppStore.Tab.CONFIRMATIONS, AppStore.Tab.NOTICES, AppStore.Tab.BOOKING)) {
         AppStore.selectTab(AppStore.Tab.HOME)
     }
 
@@ -76,6 +76,7 @@ fun MainScaffold() {
                     AppStore.Tab.SETTINGS -> SettingsScreen()
                     AppStore.Tab.CONFIRMATIONS -> ConfirmationsScreen()
                     AppStore.Tab.NOTICES -> NotificationsScreen()
+                    AppStore.Tab.BOOKING -> BookingScreen()
                 }
             }
             // Пока открыта клавиатура, панель вкладок не нужна и не должна висеть над ней.

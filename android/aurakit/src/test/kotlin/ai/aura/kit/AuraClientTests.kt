@@ -143,3 +143,129 @@ class PrivacyTests {
     /** Эхо сервера: prefs.set возвращает обновлённые настройки целиком. */
     private fun buildPrefs(payload: JsonObject): JsonObject = JsonObject(mapOf("privacy" to payload.obj("privacy")!!))
 }
+
+class BookingTests {
+
+    @Test
+    fun `page create sends all fields and parses page`() = runBlocking {
+        val transport = RecordingTransport { _, _ ->
+            json("""{"page":{"id":3,"slug":"abc123def4","url":"","title":"Консультация","description":"",
+                "duration_minutes":60,"days_ahead":14,"max_per_day":4,"notice_hours":2,"max_series":3,
+                "weekends":false,"status":"active","upcoming":0}}""")
+        }
+        val page = AuraClient(transport).bookingPageCreate(
+            BookingPageFields(" Консультация ", durationMinutes = 60, maxSeries = 3))
+        val (type, payload) = transport.sent.single()
+        assertEquals("booking.pageCreate", type)
+        assertEquals(setOf("title", "description", "duration_minutes", "days_ahead", "max_per_day",
+            "notice_hours", "max_series", "weekends"), payload.keys)
+        assertEquals("Консультация", payload.str("title"))
+        assertEquals(60L, payload.long("duration_minutes"))
+        assertEquals(3, page.maxSeries)
+        assertEquals("#/b/abc123def4", page.link)
+    }
+
+    @Test
+    fun `invalid page fails locally without a request`() = runBlocking {
+        val transport = RecordingTransport { _, _ -> fail("запрос не должен уходить"); null }
+        for (bad in listOf(BookingPageFields(""), BookingPageFields("X", durationMinutes = 10),
+                BookingPageFields("X", maxSeries = 13), BookingPageFields("X", noticeHours = 169))) {
+            try {
+                AuraClient(transport).bookingPageCreate(bad)
+                fail("ожидалась ошибка для $bad")
+            } catch (error: AuraError) {
+                assertEquals("bad_request", error.code)
+            }
+        }
+        assertTrue(transport.sent.isEmpty())
+    }
+
+    @Test
+    fun `pause sends only status`() = runBlocking {
+        val transport = RecordingTransport { _, _ -> json("""{"page":{"id":3,"status":"paused"}}""") }
+        val page = AuraClient(transport).bookingPageUpdate(3, status = "paused")
+        assertEquals(setOf("page_id", "status"), transport.sent.single().second.keys)
+        assertEquals("paused", page.status)
+    }
+
+    @Test
+    fun `bookings and referral are parsed`() = runBlocking {
+        val transport = RecordingTransport { type, _ ->
+            when (type) {
+                "booking.list" -> json("""{"bookings":[{"id":9,"page_id":3,"page_title":"Консультация",
+                    "guest_name":"Пётр","guest_email":"p@x.ru","guest_comment":"","status":"active",
+                    "cancelled_by":"","reschedules":1,"occurrences":[
+                    {"start":"2026-10-28T07:00:00Z","end":"2026-10-28T08:00:00Z","status":"cancelled"},
+                    {"start":"2026-10-21T07:00:00Z","end":"2026-10-21T08:00:00Z","status":"active","local":"2026-10-21T10:00"}]}]}""")
+                "referral.get" -> json("""{"code":"ABCD2345","url":"","joined":2,"verified":1,
+                    "referrals":[{"display_name":"Фёдор","source":"booking","joined_at":"2026-10-14T08:00:00Z","verified":true}]}""")
+                else -> json("{}")
+            }
+        }
+        val client = AuraClient(transport)
+        val booking = client.bookingList().single()
+        assertEquals("2026-10-21T07:00:00Z", booking.occurrences.first().start)
+        assertEquals("2026-10-21T10:00", booking.occurrences.first().local)
+        assertFalse(booking.occurrences.last().active)
+        val referral = client.referralGet()
+        // Без AURA_PUBLIC_URL делимся кодом, а не голым «#/signup?ref=…».
+        assertFalse(referral.hasLink)
+        assertEquals("ABCD2345", referral.link)
+        assertEquals("Код приглашения в Aura: ABCD2345", referral.shareText)
+        assertEquals(Referral("Фёдор", "booking", "2026-10-14T08:00:00Z", true), referral.referrals.single())
+        client.bookingOwnerCancel(9, "2026-10-21T07:00:00Z")
+        assertEquals(mapOf("booking_id" to JsonPrimitive(9L), "occurrence" to JsonPrimitive("2026-10-21T07:00:00Z")),
+            transport.sent.last().second.toMap())
+    }
+}
+
+class ReferralTests {
+
+    @Test
+    fun `referral with public url shares the link`() {
+        val info = ReferralInfo.from(json("""{"code":"ABCD2345","url":"https://aura.example/#/signup?ref=ABCD2345"}"""))
+        assertTrue(info.hasLink)
+        assertEquals("https://aura.example/#/signup?ref=ABCD2345", info.link)
+        assertEquals("Заведи свою Ауру: https://aura.example/#/signup?ref=ABCD2345", info.shareText)
+    }
+
+    @Test
+    fun `code is normalized and validated`() {
+        assertEquals("ABCD2345", ReferralCode.normalize(" abcd2345 "))
+        assertEquals(null, ReferralCode.normalize(""))
+        assertEquals(null, ReferralCode.normalize(null))
+        assertEquals(null, ReferralCode.normalize("ABCD234"))
+        assertEquals(null, ReferralCode.normalize("ABCD-2345"))
+        assertEquals(null, ReferralCode.normalize("АБВГ2345"))
+    }
+
+    @Test
+    fun `register without ref sends no ref fields`() = runBlocking {
+        val transport = RecordingTransport { _, _ -> json("{}") }
+        AuraClient(transport).register("a@b.c", "secret123", "Аня")
+        val (type, payload) = transport.sent.single()
+        assertEquals("auth.register", type)
+        assertEquals(setOf("email", "password", "display_name"), payload.keys)
+    }
+
+    @Test
+    fun `register with ref sends normalized code and link source`() = runBlocking {
+        val transport = RecordingTransport { _, _ -> json("{}") }
+        AuraClient(transport).register("a@b.c", "secret123", "Аня", ref = " abcd2345")
+        val payload = transport.sent.single().second
+        assertEquals(setOf("email", "password", "display_name", "ref", "ref_source"), payload.keys)
+        assertEquals("ABCD2345", payload.str("ref"))
+        assertEquals("link", payload.str("ref_source"))
+    }
+
+    @Test
+    fun `register drops invalid or blank ref`() = runBlocking {
+        val transport = RecordingTransport { _, _ -> json("{}") }
+        val client = AuraClient(transport)
+        client.register("a@b.c", "secret123", "Аня", ref = "bad")
+        client.register("a@b.c", "secret123", "Аня", ref = "  ")
+        transport.sent.forEach { (_, payload) ->
+            assertEquals(setOf("email", "password", "display_name"), payload.keys)
+        }
+    }
+}

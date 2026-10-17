@@ -40,6 +40,13 @@ public:
     void authenticate(long long userId, std::string displayName, std::string email, std::string jwtId);
     void resetAuth();
     bool authenticated() const { return userId_.load() != 0; }
+    // Соединение гостя (страница приглашения или записи без входа): ему положено
+    // жить дольше AURA_AUTH_TIMEOUT — человек читает страницу и выбирает время.
+    // Отмечается только успешным гостевым вызовом; срок считается от последнего
+    // такого вызова (мусорный запрос не продлевает анонимный сокет).
+    void markGuest();
+    static constexpr long long kGuestIdleSec = 10 * 60;
+    bool guest() const { return lastGuestMs_.load() != 0; }
     long long userId() const { return userId_.load(); }
     std::string displayName() const;
     std::string email() const;
@@ -53,7 +60,10 @@ public:
     const std::string& remoteAddr() const { return remoteAddr_; }
     // IP без порта: ключ для лимитов (переподключение не обнуляет счётчики).
     const std::string& remoteIp() const { return remoteIp_; }
+    // «ip:port» → ключ лимитов: IPv4 как есть, IPv6 — сеть /64.
     static std::string ipOf(const std::string& remoteAddr);
+    // IP без порта → ключ лимитов (IPv6 → «a:b:c:d::/64», IPv4-mapped → IPv4).
+    static std::string limitKey(const std::string& ip);
     const std::string& userAgent() const { return userAgent_; }
     bool alive() const { return alive_.load(); }
     std::string authorizationHeader() const { return authorization_; }
@@ -66,8 +76,8 @@ private:
 
     const int socket_;
     const std::string sessionId_;
-    const std::string remoteAddr_;
-    const std::string remoteIp_;
+    std::string remoteAddr_;  // меняется только в рукопожатии (X-Forwarded-For доверенного прокси)
+    std::string remoteIp_;
     const Config& config_;
 
     mutable std::mutex sendMutex_;
@@ -80,6 +90,7 @@ private:
     std::string jwtId_;
     std::chrono::steady_clock::time_point lastAuthCheck_;
     std::chrono::steady_clock::time_point unauthSince_;  // с какого момента соединение без входа
+    std::atomic<long long> lastGuestMs_{0};              // steady_clock, мс: последний гостевой вызов
     std::string userAgent_;
     std::string authorization_;
     std::chrono::steady_clock::time_point lastActivity_;

@@ -575,3 +575,112 @@ def test_suggest_time_clamps_huge_values():
     )
     assert result["duration_minutes"] == 24 * 60
     assert len(result["slots"]) <= 20
+
+
+# ------------------------------------------- аудит: режим разработки и /docs
+@pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.10", "::"])
+def test_insecure_dev_refused_on_non_loopback_host(env, host):
+    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("AURA_AI_HOST", host)
+    with _client() as client:
+        assert client.get("/v1/tools").status_code == 503
+        assert client.post("/v1/agent/run", json={"context": {"message": "привет"}}).status_code == 503
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
+def test_insecure_dev_allowed_on_loopback_host(env, host):
+    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("AURA_AI_HOST", host)
+    with _client() as client:
+        assert client.get("/v1/tools").status_code == 200
+
+
+def test_insecure_dev_refused_when_uvicorn_binds_all_interfaces(env):
+    # uvicorn aura_ai.app:app --host 0.0.0.0 — AURA_AI_HOST по умолчанию 127.0.0.1.
+    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setattr("sys.argv", ["uvicorn", "aura_ai.app:app", "--host", "0.0.0.0", "--port", "8000"])
+    with _client() as client:
+        assert client.get("/v1/tools").status_code == 503
+    env.setattr("sys.argv", ["uvicorn", "aura_ai.app:app", "--host=0.0.0.0"])
+    assert not app_module.insecure_dev_allowed(Settings())
+    env.setattr("sys.argv", ["uvicorn", "aura_ai.app:app"])
+    env.setenv("UVICORN_HOST", "0.0.0.0")
+    assert not app_module.insecure_dev_allowed(Settings())
+
+
+def test_api_docs_disabled_outside_dev(env):
+    assert app_module.docs_options(Settings()) == {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    env.setenv("AURA_AI_HOST", "0.0.0.0")
+    assert app_module.docs_options(Settings())["openapi_url"] is None
+    env.setenv("AURA_AI_HOST", "127.0.0.1")
+    assert app_module.docs_options(Settings())["openapi_url"] == "/openapi.json"
+
+
+def test_api_docs_not_served_without_dev_flag():
+    if app_module.app.openapi_url is not None:
+        pytest.skip("тесты запущены с AURA_AI_INSECURE_DEV=1 — /docs включены намеренно")
+    with TestClient(app_module.app) as client:
+        assert client.get("/docs").status_code == 404
+        assert client.get("/redoc").status_code == 404
+        assert client.get("/openapi.json").status_code == 404
+
+
+# ------------------------------------------- аудит: огромные числа и время
+def test_agent_run_huge_relative_time_is_not_500(dev_client):
+    for message in (
+        "напомни через 99999999 недель позвонить",
+        "встреча через " + "9" * 4400 + " дней на " + "9" * 3000 + " минут",
+    ):
+        response = dev_client.post(
+            "/v1/agent/run", json={"context": {"message": message, "now": NOW.isoformat()}}
+        )
+        assert response.status_code == 200, response.text
+
+
+def test_agent_run_time_out_of_range_is_422(env):
+    env.setenv("AURA_AI_INSECURE_DEV", "1")
+    with _client(raise_server_exceptions=False) as client:
+        response = client.post(
+            "/v1/agent/run",
+            json={"context": {"message": "встреча завтра в 10", "now": "9999-12-31T22:00:00Z"}},
+        )
+    assert response.status_code == 422
+    assert response.json() == {"detail": "time is out of range"}
+
+
+# ------------------------------------------- аудит: пределы размера запроса
+def _events(count: int):
+    return [
+        {"start": (NOW + timedelta(hours=i)).isoformat(), "end": (NOW + timedelta(hours=i, minutes=30)).isoformat()}
+        for i in range(count)
+    ]
+
+
+def test_calendar_limit_enforced(dev_client):
+    from aura_ai.models import MAX_CALENDAR_EVENTS
+
+    ok = dev_client.post("/v1/agent/slots", json={"context": {"calendar": _events(MAX_CALENDAR_EVENTS)}})
+    assert ok.status_code == 200, ok.text
+    for path, body in (
+        ("/v1/agent/slots", {"context": {"calendar": _events(MAX_CALENDAR_EVENTS + 1)}}),
+        ("/v1/agent/run", {"context": {"message": "привет", "calendar": _events(MAX_CALENDAR_EVENTS + 1)}}),
+        ("/v1/planner/slots", {"calendar": _events(MAX_CALENDAR_EVENTS + 1)}),
+    ):
+        assert dev_client.post(path, json=body).status_code == 422, path
+
+
+def test_context_list_and_message_limits_enforced(dev_client):
+    from aura_ai.models import MAX_HISTORY_ITEMS, MAX_MEMORY_ENTRIES, MAX_MESSAGE_CHARS, MAX_PEERS
+
+    def run(context, **extra):
+        return dev_client.post("/v1/agent/run", json={"context": context, **extra}).status_code
+
+    assert run({"message": "x" * MAX_MESSAGE_CHARS}) == 200
+    assert run({"message": "x" * (MAX_MESSAGE_CHARS + 1)}) == 422
+    assert run({"message": "привет", "history": [{"body": "a"}] * MAX_HISTORY_ITEMS}) == 200
+    assert run({"message": "привет", "history": [{"body": "a"}] * (MAX_HISTORY_ITEMS + 1)}) == 422
+    assert run({"message": "привет", "memory": [{"text": "факт"}] * (MAX_MEMORY_ENTRIES + 1)}) == 422
+    assert run({"message": "привет"}, peers=[{}] * (MAX_PEERS + 1)) == 422
+    response = dev_client.post("/v1/memory/extract", json={"message": "x" * (MAX_MESSAGE_CHARS + 1)})
+    assert response.status_code == 422

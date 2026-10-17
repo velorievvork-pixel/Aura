@@ -45,6 +45,9 @@ services:
       AURA_LLM_PROVIDER: ${AURA_LLM_PROVIDER:-mock}
       AURA_LLM_MODEL: ${AURA_LLM_MODEL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Другой OpenAI-совместимый провайдер (пусто — api.openai.com).
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      AURA_LLM_TIMEOUT: ${AURA_LLM_TIMEOUT:-20}
       AURA_RAG_MODE: ${AURA_RAG_MODE:-auto}
       AURA_CORS_ORIGINS: http://server:9000
     healthcheck:
@@ -69,6 +72,7 @@ services:
     environment:
       # Роль aura_app: только DML, не суперпользователь.
       AURA_DATABASE_URL: postgresql://aura_app:${AURA_DB_PASSWORD:?AURA_DB_PASSWORD is required}@postgres/aura
+      AURA_DB_POOL_SIZE: ${AURA_DB_POOL_SIZE:-8}
       AURA_AI_URL: http://ai:8000
       AURA_AI_TOKEN: ${AURA_AI_TOKEN:?AURA_AI_TOKEN is required (openssl rand -hex 32)}
       AURA_JWT_SECRET: ${AURA_JWT_SECRET:?AURA_JWT_SECRET is required (openssl rand -hex 32)}
@@ -93,6 +97,7 @@ services:
       AURA_LOG_LEVEL: ${AURA_LOG_LEVEL:-info}
       # Админ-панель: email первых администраторов (только подтверждённые адреса).
       AURA_ADMIN_EMAILS: ${AURA_ADMIN_EMAILS:-}
+      AURA_TRUSTED_PROXIES: ${AURA_TRUSTED_PROXIES:-}
       AURA_PUBLIC_URL: ${AURA_PUBLIC_URL:-}
     healthcheck:
       # Порт 9000 принимает соединения (в образе есть bash, curl — нет).

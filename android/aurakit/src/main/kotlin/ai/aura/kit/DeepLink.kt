@@ -12,6 +12,7 @@ import java.net.URLDecoder
  *   aura://ask?text=...                      — сразу спросить Ауру
  *   aura://tasks                             — список задач
  *   aura://settings                          — настройки
+ *   aura://signup?ref=CODE                   — регистрация с кодом приглашения
  *   aura://oauth?provider=&code=&state=...   — возврат из Google OAuth
  *
  * Неизвестные пути → null (вызывающий код их игнорирует, без краша).
@@ -23,6 +24,8 @@ sealed class DeepLink {
     data object Tasks : DeepLink()
     data object Notifications : DeepLink()
     data object Settings : DeepLink()
+    /** [ref] — нормализованный реферальный код или "" (неверный код отбрасывается). */
+    data class Signup(val ref: String) : DeepLink()
     data class OAuth(val provider: String, val code: String, val state: String) : DeepLink()
 
     companion object {
@@ -48,6 +51,7 @@ sealed class DeepLink {
                 "tasks" -> Tasks
                 "notifications" -> Notifications
                 "settings" -> Settings
+                "signup" -> Signup(ReferralCode.normalize(query["ref"]) ?: "")
                 "oauth" -> {
                     val provider = query["provider"] ?: return null
                     val code = query["code"] ?: return null

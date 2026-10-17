@@ -2,6 +2,8 @@
 #include "aura/mailprovider.h"
 
 #include <algorithm>
+#include <deque>
+#include <mutex>
 
 #include "aura/config.h"
 #include "aura/log.h"
@@ -11,6 +13,9 @@ namespace aura {
 
 namespace {
 
+std::mutex outboxMutex;
+std::deque<MailNotice> outbox;
+
 // dev (AURA_DEV_MODE=1): код пишется в лог и возвращается в ответе API.
 // log: в лог попадает только факт выдачи кода — сам код не раскрывается
 // (стенд без почты: код получить нельзя, нужен SMTP).
@@ -19,6 +24,7 @@ public:
     explicit LogMailProvider(bool expose) : expose_(expose) {}
 
     bool exposesCodes() const override { return expose_; }
+    bool delivers() const override { return expose_; }  // dev — во «входящие» devOutbox, log — никуда
 
     bool sendVerificationCode(const std::string& to, const std::string& code) override {
         if (expose_) {
@@ -40,9 +46,72 @@ public:
         return true;
     }
 
+    bool sendNotice(const MailNotice& notice) override {
+        if (expose_) {
+            AURA_LOG(log::Level::Info, "mail") << "[dev] письмо (" << notice.kind << ") для " << notice.to << ": "
+                                               << notice.subject << (notice.linkUrl.empty() ? "" : " — ")
+                                               << notice.linkUrl;
+            std::lock_guard<std::mutex> lock(outboxMutex);
+            outbox.push_back(notice);
+            if (outbox.size() > 50) outbox.pop_front();
+        } else {
+            AURA_LOG(log::Level::Info, "mail") << "письмо (" << notice.kind << ") для " << notice.to
+                                               << " (драйвер log: письмо не отправляется)";
+        }
+        return true;
+    }
+
 private:
     bool expose_;
 };
+
+std::string htmlEscape(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (const char ch : text) {
+        switch (ch) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            case '"': out += "&quot;"; break;
+            case '\'': out += "&#39;"; break;
+            case '\n': out += "<br>"; break;
+            case '\r': break;
+            default: out.push_back(ch);
+        }
+    }
+    return out;
+}
+
+// Только http(s)-ссылки попадают в href (адрес собирает сервер из AURA_PUBLIC_URL).
+bool safeLink(const std::string& url) {
+    return url.rfind("https://", 0) == 0 || url.rfind("http://", 0) == 0;
+}
+
+// HTML-уведомление в той же тёмной карточке, что письма с кодами; весь текст экранирован.
+std::string htmlNotice(const MailNotice& notice) {
+    std::string lines;
+    for (const auto& line : notice.lines) {
+        lines += "<div style=\"background:#0b0c10;border-radius:10px;padding:10px 14px;margin:0 0 8px;"
+                 "font-variant-numeric:tabular-nums\">" + htmlEscape(line) + "</div>";
+    }
+    std::string button;
+    if (!notice.linkUrl.empty() && safeLink(notice.linkUrl)) {
+        button = "<p style=\"margin:20px 0 0\"><a href=\"" + htmlEscape(notice.linkUrl) +
+                 "\" style=\"display:inline-block;background:#7c7cf5;color:#fff;text-decoration:none;"
+                 "padding:12px 18px;border-radius:10px;font-weight:600\">" + htmlEscape(notice.linkText) + "</a></p>";
+    }
+    return "<!doctype html><html lang=\"ru\"><body style=\"margin:0;background:#0b0c10;padding:32px 16px;"
+           "font-family:-apple-system,Segoe UI,Inter,Roboto,sans-serif;color:#e8e9ee\">"
+           "<div style=\"max-width:440px;margin:0 auto;background:#12141c;border:1px solid rgba(255,255,255,.08);"
+           "border-radius:16px;padding:28px\">"
+           "<div style=\"font-weight:700;font-size:18px;margin-bottom:20px\">Aura</div>"
+           "<h1 style=\"font-size:20px;margin:0 0 8px\">" + htmlEscape(notice.title) + "</h1>"
+           "<p style=\"color:#a1a4ae;line-height:1.5;margin:0 0 16px\">" + htmlEscape(notice.lead) + "</p>" +
+           lines + button +
+           "<p style=\"color:#6c717e;font-size:13px;line-height:1.5;margin:20px 0 0\">" + htmlEscape(notice.note) +
+           "</p></div></body></html>";
+}
 
 // «24 часа», «1 час», «30 минут» — срок действия кода в тексте письма.
 std::string ttlText(long long seconds) {
@@ -92,6 +161,7 @@ public:
     }
 
     bool exposesCodes() const override { return false; }
+    bool delivers() const override { return true; }
 
     bool sendVerificationCode(const std::string& to, const std::string& code) override {
         smtp::Message message;
@@ -119,6 +189,21 @@ public:
         return deliver(message, "сброс пароля");
     }
 
+    bool sendNotice(const MailNotice& notice) override {
+        smtp::Message message;
+        message.to = notice.to;
+        message.subject = notice.subject;
+        std::string text = notice.title + "\r\n\r\n" + notice.lead + "\r\n\r\n";
+        for (const auto& line : notice.lines) text += "  " + line + "\r\n";
+        if (!notice.linkUrl.empty() && safeLink(notice.linkUrl)) {
+            text += "\r\n" + notice.linkText + ": " + notice.linkUrl + "\r\n";
+        }
+        if (!notice.note.empty()) text += "\r\n" + notice.note + "\r\n";
+        message.text = text;
+        message.html = htmlNotice(notice);
+        return deliver(message, notice.kind.c_str());
+    }
+
 private:
     bool deliver(const smtp::Message& message, const char* kind) {
         std::string error;
@@ -136,6 +221,11 @@ private:
 };
 
 }  // namespace
+
+std::vector<MailNotice> devOutbox() {
+    std::lock_guard<std::mutex> lock(outboxMutex);
+    return {outbox.begin(), outbox.end()};
+}
 
 std::unique_ptr<MailProvider> makeMailProvider(const Config& config) {
     if (config.mailDriver == "smtp") return std::make_unique<SmtpMailProvider>(config);

@@ -446,7 +446,7 @@ void Json::set(const std::string& key, Json value) {
     object_.emplace_back(key, std::move(value));
 }
 
-const Json* Json::find(const std::string& key) const {
+const Json* Json::find(const std::string& key) const& {
     if (type_ != Type::Object) return nullptr;
     for (const auto& member : object_) {
         if (member.first == key) return &member.second;
@@ -514,10 +514,15 @@ std::size_t Json::size() const {
     return 0;
 }
 
-const Json& Json::at(std::size_t index) const {
+const Json& Json::at(std::size_t index) const& {
     static const Json nullJson;
     if (type_ != Type::Array || index >= array_.size()) return nullJson;
     return array_[index];
+}
+
+Json Json::at(std::size_t index) && {
+    if (type_ != Type::Array || index >= array_.size()) return Json();
+    return std::move(array_[index]);
 }
 
 }  // namespace aura

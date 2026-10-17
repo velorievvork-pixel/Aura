@@ -31,6 +31,11 @@ struct NegotiationsView: View {
                         }
                     }
                 }
+                // Страница записи: постоянная ссылка для людей без Aura.
+                GlassButton(title: "Страница записи — пусть выбирают время сами", systemImage: "calendar.badge.plus",
+                            quiet: true, height: 42) {
+                    store.selectTab(.booking)
+                }
                 if let n = store.negotiation, !composing {
                     progress(n)
                 } else {

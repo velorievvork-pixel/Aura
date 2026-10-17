@@ -15,9 +15,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Deque, Dict, List, Optional, Sequence
 
 from .models import MAX_DURATION_MINUTES, MAX_WINDOW_HOURS, AgentContext, Preferences, utcnow
 from .planner import TimeWindow, free_slots
@@ -308,12 +309,19 @@ HANDLERS: Dict[str, Callable[..., Dict[str, Any]]] = {
 }
 
 
+#: Сколько последних вызовов инструментов хранит ToolManager.log.
+TOOL_LOG_LIMIT = 200
+
+
 class ToolManager:
     """Выполняет действия модели: валидация → handler → результат."""
 
     def __init__(self, backends: Optional[ToolBackends] = None):
         self.backends = backends or ToolBackends()
-        self.log: List[Dict[str, Any]] = []
+        # Журнал последних вызовов (отладка, тесты). ToolManager живёт весь процесс
+        # (агент — синглтон), поэтому журнал ограничен: иначе каждая
+        # negotiate-операция навсегда добавляла бы запись и память росла бы без конца.
+        self.log: Deque[Dict[str, Any]] = deque(maxlen=TOOL_LOG_LIMIT)
 
     def list(self) -> List[Dict[str, Any]]:
         return [

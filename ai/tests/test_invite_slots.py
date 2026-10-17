@@ -11,7 +11,13 @@ from aura_ai import planner
 from aura_ai.agent import AuraAgent
 from aura_ai.config import Settings, reset_settings
 from aura_ai.llm import MockLLM
-from aura_ai.models import MAX_WINDOW_HOURS, CalendarEvent, Preferences
+from aura_ai.models import (
+    OFFER_MAX_PER_DAY,
+    OFFER_MAX_SLOTS,
+    OFFER_MAX_WINDOW_HOURS,
+    CalendarEvent,
+    Preferences,
+)
 from aura_ai.tools import ToolManager
 
 MONDAY = datetime(2026, 9, 14, 0, 0, tzinfo=timezone.utc)  # понедельник, 03:00 по Москве
@@ -241,7 +247,7 @@ def test_slots_endpoint_moscow(client):
     assert response.status_code == 200, response.text
     slots = response.json()["slots"]
     assert len(slots) == 6
-    assert set(slots[0]) == {"start", "end", "score", "reason"}
+    assert set(slots[0]) == {"start", "end", "score", "reason", "day", "local"}
     starts = [_parse(s["start"]) for s in slots]
     assert starts == sorted(starts)
     for slot in slots:
@@ -277,9 +283,14 @@ def test_slots_endpoint_defaults(client):
         {"duration_minutes": 14},
         {"duration_minutes": 241},
         {"window_hours": 0},
-        {"window_hours": MAX_WINDOW_HOURS + 1},
+        {"window_hours": OFFER_MAX_WINDOW_HOURS + 1},
         {"max_slots": 0},
-        {"max_slots": 13},
+        {"max_slots": OFFER_MAX_SLOTS + 1},
+        {"per_day": 0},
+        {"per_day": OFFER_MAX_PER_DAY + 1},
+        {"lead_minutes": -1},
+        {"lead_minutes": 7 * 24 * 60 + 1},
+        {"weekends": "иногда"},
         {"duration_minutes": "долго"},
     ],
 )
@@ -312,3 +323,105 @@ def test_slots_endpoint_auth_like_negotiate(env):
             assert test_client.post(path, json=body).status_code == 401
             assert test_client.post(path, json=body, headers={"X-Aura-Token": "wrong"}).status_code == 401
             assert test_client.post(path, json=body, headers={"X-Aura-Token": "secret"}).status_code == 200
+
+
+# ------------------------------------------------- страница записи: per_day, lead, weekends, day
+SATURDAY = MONDAY + timedelta(days=5)
+
+
+def test_lead_shifts_first_slot():
+    # Без запаса — первый слот в 09:00; запас 3 часа от 08:00 → не раньше 11:00.
+    now = MONDAY + timedelta(hours=8)
+    first = planner.offer_slots(_window(now, 24), [], _prefs(), "UTC", max_slots=50, per_day=50, now=now,
+                                lead=timedelta(0))[0]
+    assert first.start == MONDAY + timedelta(hours=9)
+    first = planner.offer_slots(_window(now, 24), [], _prefs(), "UTC", max_slots=50, per_day=50, now=now,
+                                lead=timedelta(hours=3))[0]
+    assert first.start == MONDAY + timedelta(hours=11)
+
+
+def test_negative_lead_is_clamped_to_zero():
+    now = MONDAY + timedelta(hours=9)
+    slots = planner.offer_slots(_window(now, 24), [], _prefs(), "UTC", now=now, lead=timedelta(hours=-5))
+    assert slots and slots[0].start >= now
+
+
+def test_weekends_true_mixes_weekdays_and_weekends():
+    # Пятница + суббота: True — слоты обоих дней, None — только пятница, False — только пятница.
+    friday = MONDAY + timedelta(days=4)
+    kwargs = dict(max_slots=50, per_day=1, now=friday)
+    both = planner.offer_slots(_window(friday, 48), [], _prefs(), "UTC", weekends=True, **kwargs)
+    assert {s.start.weekday() for s in both} == {4, 5}
+    assert [s.start for s in both] == sorted(s.start for s in both)
+    fallback = planner.offer_slots(_window(friday, 48), [], _prefs(), "UTC", weekends=None, **kwargs)
+    assert {s.start.weekday() for s in fallback} == {4}
+    strict = planner.offer_slots(_window(friday, 48), [], _prefs(), "UTC", weekends=False, **kwargs)
+    assert {s.start.weekday() for s in strict} == {4}
+
+
+def test_weekends_false_never_falls_back():
+    # Окно только из выходных: None отдаёт выходные, False — пусто.
+    assert planner.offer_slots(_window(SATURDAY, 48), [], _prefs(), "UTC", now=SATURDAY, weekends=None)
+    assert planner.offer_slots(_window(SATURDAY, 48), [], _prefs(), "UTC", now=SATURDAY, weekends=False) == []
+
+
+def test_weekend_reason_depends_on_mode():
+    slot = planner.offer_slots(_window(SATURDAY, 24), [], _prefs(), "UTC", now=SATURDAY, weekends=True)[0]
+    assert slot.reason == "выходной день"
+
+
+def test_per_day_many_slots_do_not_overlap():
+    slots = _offer(per_day=8, max_slots=50)
+    assert len(slots) == 8
+    for first, second in zip(slots, slots[1:]):
+        assert first.end <= second.start
+
+
+def test_day_is_owner_local_date():
+    # 23:30 UTC воскресенья = 09:30 понедельника во Владивостоке (UTC+10).
+    sunday_late = MONDAY - timedelta(minutes=30)
+    slots = planner.offer_slots(_window(sunday_late, 24), [], _prefs(), "Asia/Vladivostok",
+                                max_slots=50, per_day=50, now=sunday_late - timedelta(hours=2))
+    assert slots[0].start == sunday_late
+    assert slots[0].day == "2026-09-14"
+    assert all(s.day == s.start.astimezone(planner._zone("Asia/Vladivostok")).date().isoformat() for s in slots)
+
+
+def test_slots_endpoint_booking_params(client):
+    monday = _future_monday()
+    body = {
+        "context": {"timezone": "UTC", "preferences": {"work_hours": WORK}, "now": monday.isoformat()},
+        "duration_minutes": 30,
+        "window_hours": 24 * 7,
+        "max_slots": 100,
+        "per_day": 6,
+        "lead_minutes": 0,
+        "weekends": False,
+    }
+    response = client.post("/v1/agent/slots", json=body)
+    assert response.status_code == 200, response.text
+    slots = response.json()["slots"]
+    days = {}
+    for slot in slots:
+        start = _parse(slot["start"])
+        assert start.weekday() < 5
+        assert slot["day"] == start.date().isoformat()
+        days[slot["day"]] = days.get(slot["day"], 0) + 1
+    assert days and max(days.values()) == 6
+
+
+def test_local_is_owner_wall_time():
+    slot = _offer(tz="Europe/Moscow")[0]
+    assert slot.local == "2026-09-14T09:00"
+
+
+def test_booking_mode_fills_nearest_days_first():
+    # Страница записи (per_day > 2) на длинном окне: ближайшие дни — целиком,
+    # а не по паре вариантов на каждый из 60 дней.
+    slots = _offer(hours=60 * 24, per_day=16, max_slots=20, duration=60)
+    days = sorted({slot.start.date() for slot in slots})
+    first_day = [slot for slot in slots if slot.start.date() == days[0]]
+    assert len(slots) == 20
+    assert len(first_day) == len(WORK)  # весь рабочий день: по слоту на час
+    assert len(days) <= 3
+    assert slots == sorted(slots, key=lambda slot: slot.start)

@@ -78,7 +78,8 @@ access-токену (поле `token` ответа входа), при истё�
 
 `aura://chats/{id}`, `aura://voice`, `aura://ask?text=…`, `aura://tasks`,
 `aura://settings`, `aura://oauth?provider&code&state` (возврат из Google
-OAuth — клиент сам передаёт code/state в `integrations.callback`).
+OAuth — клиент сам передаёт code/state в `integrations.callback`),
+`aura://signup?ref=CODE` (регистрация с кодом приглашения).
 В продакшене схему дополняют Universal Links — роутинг тот же (DeepLink.swift).
 
 ## Безопасность

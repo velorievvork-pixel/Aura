@@ -91,12 +91,13 @@ struct ContactsView: View {
                             AuraAvatar(name: user.name, size: 38)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(user.name).font(AuraFont.titleSmall).foregroundStyle(AuraColor.textPrimary)
-                                Muted(user.email)
+                                Muted(user.online ? "в сети" : "есть Аура")
                             }
                             Spacer()
                             GlassButton(title: "Добавить", systemImage: "person.badge.plus", height: 36,
                                         fullWidth: false) {
-                                store.openChat(contact: user.email)
+                                // chat.open принимает id пользователя строкой.
+                                store.openChat(contact: String(user.id))
                                 query = ""
                             }
                         }

@@ -14,6 +14,7 @@ import ai.aura.kit.obj
 import ai.aura.kit.str
 import com.google.firebase.FirebaseApp
 import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -52,7 +53,7 @@ object AppStore {
     /** Собеседник: человек из чатов (кроме меня). */
     data class Contact(val userId: Long, val name: String, val email: String, val chatId: Long,
                        val lastBody: String, val lastAt: String)
-    data class FoundUser(val id: Long, val name: String, val email: String)
+    data class FoundUser(val id: Long, val name: String, val online: Boolean)
     /** Действие Ауры, ждущее решения, прямо под её репликой. */
     data class DialogAction(val confirmationId: Long, val summary: String, val tool: String)
     data class DialogEntry(val id: Long, val fromAura: Boolean, val text: String, val error: Boolean = false,
@@ -83,7 +84,7 @@ object AppStore {
     }
 
     /** Разделы v3: пять во вкладках снизу, остальные открываются из шапки Home. */
-    enum class Tab { HOME, AURA, NEGOTIATIONS, TASKS, CONTACTS, SETTINGS, CONFIRMATIONS, NOTICES }
+    enum class Tab { HOME, AURA, NEGOTIATIONS, TASKS, CONTACTS, SETTINGS, CONFIRMATIONS, NOTICES, BOOKING }
 
     // ------------------------------------------------------------- состояние
 
@@ -134,6 +135,14 @@ object AppStore {
     private val _pushStatus = MutableStateFlow("")
     val pushStatus: StateFlow<String> = _pushStatus
 
+    // Страницы записи (booking.*) и рефералы (referral.*).
+    private val _bookingPages = MutableStateFlow<List<ai.aura.kit.BookingPage>?>(null)
+    val bookingPages: StateFlow<List<ai.aura.kit.BookingPage>?> = _bookingPages
+    private val _bookings = MutableStateFlow<List<ai.aura.kit.Booking>>(emptyList())
+    val bookings: StateFlow<List<ai.aura.kit.Booking>> = _bookings
+    private val _referral = MutableStateFlow<ai.aura.kit.ReferralInfo?>(null)
+    val referral: StateFlow<ai.aura.kit.ReferralInfo?> = _referral
+
     private val _permissions = MutableStateFlow<List<PermissionRow>>(emptyList())
     val permissions: StateFlow<List<PermissionRow>> = _permissions
 
@@ -155,6 +164,13 @@ object AppStore {
 
     private val _wantVoice = MutableStateFlow(false)
     val wantVoice: StateFlow<Boolean> = _wantVoice
+
+    /**
+     * Deep link aura://signup?ref=…: null — ссылки не было; иначе код приглашения
+     * ("" — без валидного кода). Экран входа открывает регистрацию и забирает код.
+     */
+    private val _signupRef = MutableStateFlow<String?>(null)
+    val signupRef: StateFlow<String?> = _signupRef
 
     /** Онбординг-опрос: показываем после входа, пока prefs.onboarded != true. */
     private val _needOnboarding = MutableStateFlow(false)
@@ -223,7 +239,13 @@ object AppStore {
                 when (event.name) {
                     AuraEventName.CHAT_MESSAGE -> refreshChats()
                     AuraEventName.TASK_DUE -> refreshTasks()
-                    AuraEventName.NOTIFICATION_NEW -> refreshNotifications()
+                    AuraEventName.NOTIFICATION_NEW -> {
+                        refreshNotifications()
+                        val kind = event.payload.str("kind")
+                        if (kind.startsWith("booking.") && _tab.value == Tab.BOOKING) refreshBooking()
+                        if (kind == "referral.joined" && _referral.value != null) refreshReferral()
+                    }
+                    AuraEventName.SESSION_REVOKED -> onSessionRevoked(event.payload.str("reason"))
                 }
             }
         }
@@ -280,12 +302,13 @@ object AppStore {
         }
     }
 
-    fun register(displayName: String, email: String, password: String, focus: String = "") = scope.launch {
+    /** [ref] — код приглашения (необязательно); неверный код клиент не отправляет. */
+    fun register(displayName: String, email: String, password: String, focus: String = "", ref: String = "") = scope.launch {
         pendingFocus = focus.trim()
         guard {
             client.connect(store.serverUrl)
             waitForConnected()
-            client.register(email, password, displayName)
+            client.register(email, password, displayName, ref)
             _auth.value = AuthState.NeedsEmailCode(email)
             _errorText.value = "Мы отправили код подтверждения на $email"
         }
@@ -329,6 +352,23 @@ object AppStore {
         guard {
             applyAuth(client.login2fa(state.email, state.password, code, trustDevice,
                 store.deviceId, store.deviceName))
+        }
+    }
+
+    /**
+     * Сервер отозвал сессию этого соединения и сейчас закроет сокет (код 4401):
+     * токены мертвы — не переподключаемся с ними, а сразу возвращаемся на вход.
+     */
+    private fun onSessionRevoked(reason: String) {
+        store.clearTokens()
+        client.disconnect()
+        _auth.value = AuthState.LoggedOut
+        resetData()
+        _errorText.value = when (reason) {
+            "password_changed", "password_reset" -> "Пароль изменён — войдите снова"
+            "account_disabled" -> "Аккаунт заблокирован администратором"
+            "logout" -> "Вы вышли из аккаунта на другом устройстве"
+            else -> "Сессия завершена — войдите снова"
         }
     }
 
@@ -376,6 +416,8 @@ object AppStore {
         registerPushDevice()
         checkOnboarding()
         refreshMemory()
+        // Deep link aura://settings пришёл до входа: вкладка уже выбрана, догружаем то, чего нет выше.
+        if (_tab.value == Tab.SETTINGS) refreshReferral()
         if (pendingFocus.isNotEmpty()) {
             val focus = pendingFocus
             pendingFocus = ""
@@ -487,6 +529,7 @@ object AppStore {
         _tasks.value = emptyList(); _confirmations.value = emptyList()
         _notices.value = emptyList(); _unread.value = 0
         _pushDevices.value = emptyList(); _permissions.value = emptyList()
+        _bookingPages.value = null; _bookings.value = emptyList(); _referral.value = null
         _connections.value = emptyList(); _askReply.value = ""
         _contacts.value = emptyList(); _dialog.value = emptyList(); _negotiation.value = null
         _negotiationHistory.value = emptyList(); _userResults.value = emptyList(); _memory.value = emptyList()
@@ -588,6 +631,13 @@ object AppStore {
                 put("at", slot.start)
                 put("people", 2)
             })
+            if (result.bool("requires_confirmation")) {
+                // Режим «ask»: сервер ничего не забронировал, а создал отложенное действие —
+                // встречу в задачи не ставим, ждём подтверждения во «Входящих».
+                refreshConfirmations()
+                _errorText.value = "Бронирование ждёт вашего подтверждения"
+                return@guard
+            }
             val booked = current.copy(booking = result.str("confirmation").ifEmpty { "ok" })
             _negotiation.value = booked
             _negotiationHistory.value = _negotiationHistory.value.map { if (it.at == current.at) booked else it }
@@ -608,19 +658,22 @@ object AppStore {
         runCatching {
             _userResults.value = client.usersSearch(query.trim()).arr("users").mapNotNull { element ->
                 val user = element as? JsonObject ?: return@mapNotNull null
-                FoundUser(user.long("id"), user.str("display_name").ifEmpty { user.str("email") }, user.str("email"))
+                // users.search не отдаёт email: только имя, аватар и «в сети».
+                FoundUser(user.long("id"), user.str("display_name").ifEmpty { "Пользователь Aura" }, user.bool("online"))
             }.filter { it.id != _userId.value }
         }
     }
 
     fun consumePendingAsk() { _pendingAsk.value = null }
     fun consumeWantVoice() { _wantVoice.value = false }
+    fun consumeSignupRef() { _signupRef.value = null }
     fun requestVoice() { _wantVoice.value = true }
     fun selectTab(value: Tab) {
         _tab.value = value
         if (value != Tab.CONTACTS) _openChatId.value = 0
         when (value) {
-            Tab.SETTINGS -> { refreshPermissions(); refreshIntegrations(); refresh2faStatus(); refreshPrivacy() }
+            Tab.SETTINGS -> { refreshPermissions(); refreshIntegrations(); refresh2faStatus(); refreshPrivacy(); refreshReferral() }
+            Tab.BOOKING -> refreshBooking()
             Tab.CONFIRMATIONS -> refreshConfirmations()
             Tab.NOTICES -> refreshNotifications()
             Tab.TASKS -> refreshTasks()
@@ -735,6 +788,58 @@ object AppStore {
             client.confirmationDecide(id, approve)
             refreshConfirmations(); refreshChats(); refreshNotifications()
         }
+    }
+
+    // ------------------------------------------------------------- запись
+
+    fun refreshBooking() = scope.launch {
+        guard {
+            _bookingPages.value = client.bookingPageList()
+            _bookings.value = client.bookingList(100)
+        }
+    }
+
+    /** pageId == null — новая страница. Возвращает true, если сохранено (форму можно закрыть). */
+    suspend fun saveBookingPage(pageId: Long?, fields: ai.aura.kit.BookingPageFields): Boolean {
+        var saved = false
+        guard {
+            val page = if (pageId == null) client.bookingPageCreate(fields) else client.bookingPageUpdate(pageId, fields)
+            val rest = _bookingPages.value.orEmpty().filter { it.id != page.id }
+            _bookingPages.value = if (pageId == null) listOf(page) + rest
+                else _bookingPages.value.orEmpty().map { if (it.id == page.id) page else it }
+            saved = true
+        }
+        return saved
+    }
+
+    fun setBookingPagePaused(page: ai.aura.kit.BookingPage, paused: Boolean) = scope.launch {
+        guard {
+            val updated = client.bookingPageUpdate(page.id, status = if (paused) "paused" else "active")
+            _bookingPages.value = _bookingPages.value.orEmpty().map { if (it.id == updated.id) updated else it }
+            _errorText.value = if (paused) "Запись на паузе — новые гости не смогут записаться" else "Запись снова открыта"
+        }
+    }
+
+    fun deleteBookingPage(page: ai.aura.kit.BookingPage) = scope.launch {
+        guard {
+            client.bookingPageDelete(page.id)
+            _bookingPages.value = _bookingPages.value.orEmpty().filter { it.id != page.id }
+            _errorText.value = "Страница удалена. Уже сделанные записи остаются в силе."
+        }
+    }
+
+    fun cancelBooking(booking: ai.aura.kit.Booking) = scope.launch {
+        guard {
+            val updated = client.bookingOwnerCancel(booking.id)
+            _bookings.value = _bookings.value.map { if (it.id == updated.id) updated else it }
+            // Счётчик «Предстоит: N» считает сервер — перечитываем страницы.
+            _bookingPages.value = client.bookingPageList()
+            refreshTasks()
+        }
+    }
+
+    fun refreshReferral() = scope.launch {
+        guard { _referral.value = client.referralGet() }
     }
 
     fun refreshPermissions() = scope.launch {
@@ -919,12 +1024,21 @@ object AppStore {
             }
             DeepLink.Voice -> _wantVoice.value = true
             is DeepLink.Ask -> if (link.text.isBlank()) _wantVoice.value = true else ask(link.text)
-            DeepLink.Tasks -> _tab.value = Tab.TASKS
-            DeepLink.Notifications -> _tab.value = Tab.NOTICES
-            DeepLink.Settings -> _tab.value = Tab.SETTINGS
+            DeepLink.Tasks -> openTabFromLink(Tab.TASKS)
+            DeepLink.Notifications -> openTabFromLink(Tab.NOTICES)
+            DeepLink.Settings -> openTabFromLink(Tab.SETTINGS)
+            is DeepLink.Signup -> {
+                // Код пригодится только новому аккаунту: после входа ссылка просто ничего не меняет.
+                if (_auth.value !is AuthState.LoggedIn) _signupRef.value = link.ref
+            }
             is DeepLink.OAuth -> finishIntegration(link.provider, link.code, link.state)
             null -> Unit  // неизвестная ссылка игнорируется без краша
         }
+    }
+
+    /** Раздел из deep link: после входа — как тап по вкладке (с загрузкой данных), до входа — только вкладка. */
+    private fun openTabFromLink(tab: Tab) {
+        if (_auth.value is AuthState.LoggedIn) selectTab(tab) else _tab.value = tab
     }
 
     // ------------------------------------------------------------- служебное
@@ -934,8 +1048,18 @@ object AppStore {
         _errorText.value = null
         try {
             block()
+        } catch (error: CancellationException) {
+            throw error  // отмена корутины (ушли с экрана) — не ошибка для пользователя
         } catch (error: AuraError) {
-            _errorText.value = describe(error)
+            if (error.code == "unauthorized" && _auth.value is AuthState.LoggedIn) {
+                // Сессию отозвали без события (перепроверка сервера, другой экземпляр):
+                // токены мёртвы — на вход, а не «Неверный email или пароль».
+                onSessionRevoked("expired")
+            } else if (error.code == "disconnected" && _auth.value !is AuthState.LoggedIn) {
+                // Запрос оборвался после выхода — причину выхода не перезаписываем.
+            } else {
+                _errorText.value = describe(error)
+            }
         } catch (error: Exception) {
             _errorText.value = error.message ?: "неизвестная ошибка"
         } finally {
@@ -945,14 +1069,16 @@ object AppStore {
 
     private fun describe(error: AuraError): String = when (error.code) {
         "unauthorized" -> "Неверный email или пароль"
-        "forbidden" -> error.message ?: "доступ запрещён"
+        // forbidden/conflict/not_found: причину знает сервер («запись уже отменена»,
+        // «пользователь с таким email уже существует»…) — показываем её, без кода.
+        "forbidden" -> error.serverMessage.ifBlank { "Доступ запрещён" }
         "requires_2fa" -> "Нужен код двухфакторной аутентификации"
         "email_not_verified" -> "Email не подтверждён"
-        "conflict" -> "Такой email уже зарегистрирован"
-        "not_found" -> "Не найдено"
+        "conflict" -> error.serverMessage.ifBlank { "Действие уже недоступно — обновите экран" }
+        "not_found" -> error.serverMessage.ifBlank { "Не найдено" }
         "disconnected" -> "Нет соединения с сервером"
         "upstream_error" -> "AI-сервис недоступен, попробуйте позже"
-        else -> error.message ?: "ошибка (${error.code})"
+        else -> error.serverMessage.ifBlank { "Ошибка (${error.code})" }
     }
 
     fun clearError() { _errorText.value = null }

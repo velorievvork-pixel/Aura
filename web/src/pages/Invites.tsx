@@ -9,6 +9,7 @@
 import { Copy, Link2, Share2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Empty, Field, Segmented, Spinner } from '../components/ui';
+import { canShare, copyText } from '../lib/clipboard';
 import { shortWhen, when, WINDOWS, plural } from '../lib/format';
 import {
   chosenSlot,
@@ -35,32 +36,6 @@ const DURATIONS = [
   { value: '60', label: '1 час' },
   { value: '90', label: '1,5 часа' },
 ];
-
-/** Копирование в буфер: Clipboard API, иначе — через скрытое поле (старые WebView). */
-async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    /* нет доступа к буферу — пробуем по-старому */
-  }
-  try {
-    const area = document.createElement('textarea');
-    area.value = text;
-    area.setAttribute('readonly', '');
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    document.body.appendChild(area);
-    area.select();
-    const ok = document.execCommand('copy');
-    area.remove();
-    return ok;
-  } catch {
-    return false;
-  }
-}
-
-const canShare = () => typeof navigator !== 'undefined' && typeof navigator.share === 'function';
 
 export function InviteSection() {
   const { socket, conn } = useSession();

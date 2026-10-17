@@ -4,9 +4,10 @@
 */
 import { ArrowLeft, ShieldCheck } from 'lucide-react';
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { ServerAddress } from '../components/ServerAddress';
 import { Field, Logo, PasswordInput, Spinner } from '../components/ui';
+import { forgetRef, parseRef, recalledRef, rememberRef } from '../lib/booking';
 import { cleanCode, emailError, nameError, otpError, passwordError, twoFaCodeError } from '../lib/validate';
 import { deviceInfo } from '../net/secureStore';
 import { errorText, useSession, type LoginStep } from '../state/session';
@@ -105,6 +106,13 @@ export function Login() {
 export function Signup() {
   const { register } = useSession();
   const navigate = useNavigate();
+  const [search] = useSearchParams();
+  // Реферальный код из ссылки (#/signup?ref=…); запоминается на время вкладки.
+  const [referral] = useState(() => {
+    const fromLink = parseRef(search);
+    if (fromLink) rememberRef(fromLink);
+    return fromLink ?? recalledRef();
+  });
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [errors, setErrors] = useState<{ name?: string | null; email?: string | null; password?: string | null; form?: string }>({});
   const [busy, setBusy] = useState(false);
@@ -117,7 +125,8 @@ export function Signup() {
     if (next.name || next.email || next.password) return;
     setBusy(true);
     try {
-      const { devCode } = await register(form.name, form.email, form.password);
+      const { devCode } = await register(form.name, form.email, form.password, referral);
+      forgetRef();
       navigate('/verify', { state: { devCode } });
     } catch (error) {
       setErrors({ form: errorText(error) });
@@ -137,6 +146,7 @@ export function Signup() {
       }
     >
       <form className="stack" onSubmit={submit} noValidate>
+        {referral && <div className="notice">Вас пригласили в Aura — после регистрации пригласивший увидит, что вы с нами.</div>}
         {errors.form && <div className="notice error">{errors.form}</div>}
         <Field label="Имя" error={errors.name}>
           <input className={`input ${errors.name ? 'invalid' : ''}`} autoComplete="name" value={form.name} onChange={set('name')} placeholder="Алекс Морган" autoFocus />

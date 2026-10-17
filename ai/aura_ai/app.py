@@ -4,7 +4,8 @@
 
 * ``POST /v1/agent/run``        — главный запрос Ауры (AgentManager);
 * ``POST /v1/agent/negotiate``  — Agent-to-Agent переговоры между двумя Аурами;
-* ``POST /v1/agent/slots``      — слоты владельца для приглашения по ссылке;
+* ``POST /v1/agent/slots``      — слоты владельца: приглашение по ссылке и страница записи;
+* ``POST /v1/agent/series``     — еженедельная серия записи в местном времени владельца;
 * ``POST /v1/memory/extract``   — извлечение фактов в долговременную память;
 * ``POST /v1/planner/slots``    — свободные слоты (Planner напрямую);
 * ``GET  /v1/tools``            — список инструментов (ToolManager).
@@ -12,7 +13,9 @@
 Запуск: ``AURA_AI_TOKEN=… uvicorn aura_ai.app:app --host 127.0.0.1 --port 8000``
 
 Без ``AURA_AI_TOKEN`` все эндпоинты, кроме ``/healthz``, отвечают 503, если не
-задан ``AURA_AI_INSECURE_DEV=1`` (только локальная разработка).
+задан ``AURA_AI_INSECURE_DEV=1`` (только локальная разработка и только при
+привязке к loopback: ``AURA_AI_HOST`` = 127.0.0.1 / ::1 / localhost, иначе флаг
+игнорируется). ``/docs`` и ``/openapi.json`` отдаются только в этом режиме.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import binascii
 import logging
 import os
 import secrets
+import sys
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
@@ -46,12 +50,15 @@ from .models import (
     AgentResponse,
     Calendar,
     MAX_DURATION_MINUTES,
+    MAX_MESSAGE_CHARS,
     MAX_SLOTS,
     MAX_WINDOW_HOURS,
     MemoryEntry,
     NegotiateRequest,
     NegotiateResponse,
     Preferences,
+    SeriesRequest,
+    SeriesResponse,
     SlotsRequest as AgentSlotsRequest,
     SlotsResponse as AgentSlotsResponse,
     as_aware,
@@ -61,15 +68,53 @@ from .models import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("aura.ai")
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "[::1]", "localhost"})
+
+
+def _bind_host(settings: Settings) -> str:
+    """Адрес, на котором слушает сервис: ``AURA_AI_HOST`` (main(), Dockerfile).
+
+    Если процесс запущен как ``uvicorn … --host X`` (или с ``UVICORN_HOST``), берём
+    X оттуда: так флаг разработки не откроет сервис, привязанный к 0.0.0.0 из
+    командной строки.
+    """
+    argv = sys.argv[1:]
+    for index, arg in enumerate(argv):
+        if arg == "--host" and index + 1 < len(argv):
+            return argv[index + 1].strip()
+        if arg.startswith("--host="):
+            return arg.split("=", 1)[1].strip()
+    uvicorn_host = os.environ.get("UVICORN_HOST", "").strip()
+    if uvicorn_host:
+        return uvicorn_host
+    return (settings.host or "").strip()
+
+
+def insecure_dev_allowed(settings: Settings) -> bool:
+    """AURA_AI_INSECURE_DEV=1 действует только на loopback (fail closed).
+
+    С флагом, но на внешнем адресе (0.0.0.0, IP сети) сервис остаётся закрыт:
+    без AURA_AI_TOKEN — 503, как будто флага нет.
+    """
+    if not settings.insecure_dev:
+        return False
+    return _bind_host(settings).lower() in _LOOPBACK_HOSTS
+
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
     settings = get_settings()
     if not settings.service_token:
-        if settings.insecure_dev:
+        if insecure_dev_allowed(settings):
             logger.warning(
                 "AURA_AI_TOKEN не задан, AURA_AI_INSECURE_DEV=1: эндпоинты открыты без "
                 "авторизации — только для локальной разработки, никогда в проде."
+            )
+        elif settings.insecure_dev:
+            logger.error(
+                "AURA_AI_INSECURE_DEV=1 проигнорирован: сервис слушает %r, а не loopback "
+                "(127.0.0.1/::1/localhost). Эндпоинты закрыты (503) — задайте AURA_AI_TOKEN.",
+                _bind_host(settings),
             )
         else:
             logger.error(
@@ -84,11 +129,27 @@ async def _lifespan(_: FastAPI):
     )
     yield
 
+
+def docs_options(settings: Settings) -> Dict[str, Optional[str]]:
+    """/docs и /openapi.json раскрывают все эндпоинты и схемы без токена.
+
+    Включены только в локальной разработке (AURA_AI_INSECURE_DEV=1 на loopback),
+    в проде выключены (404).
+    """
+    enabled = insecure_dev_allowed(settings)
+    return {
+        "docs_url": "/docs" if enabled else None,
+        "redoc_url": None,
+        "openapi_url": "/openapi.json" if enabled else None,
+    }
+
+
 app = FastAPI(
     title="Aura AI Service",
     version="0.1.0",
     description="Сеть ИИ-агентов: планирование, память, инструменты, Agent-to-Agent.",
     lifespan=_lifespan,
+    **docs_options(get_settings()),
 )
 
 # CORS должен быть добавлен до старта приложения (иначе Starlette ругается
@@ -142,8 +203,8 @@ def require_token(x_aura_token: str = Header(default="")) -> None:
     expected = settings.service_token
     if not expected:
         # Fail closed: без токена сервис открыт только при явном
-        # AURA_AI_INSECURE_DEV=1 (локальная разработка).
-        if settings.insecure_dev:
+        # AURA_AI_INSECURE_DEV=1 и привязке к loopback (локальная разработка).
+        if insecure_dev_allowed(settings):
             return
         raise HTTPException(status_code=503, detail="AI service token is not configured")
     # compare_digest по байтам: строки с не-ASCII символами compare_digest не
@@ -179,12 +240,37 @@ def list_tools() -> Dict[str, Any]:
 @app.post("/v1/agent/run", response_model=AgentResponse, dependencies=[Depends(require_token)])
 def agent_run(request: AgentRequest) -> AgentResponse:
     agent = get_agent()
-    return agent.run(request)
+    try:
+        return agent.run(request)
+    except ValidationError:
+        raise  # свой обработчик ниже: 422 «invalid input»
+    except OverflowError as exc:
+        # Время из запроса за пределами datetime (context.now у самой границы,
+        # «через N недель» от него) — ошибка входных данных, а не 500.
+        logger.info("agent.run: время вне диапазона")
+        raise HTTPException(status_code=422, detail="time is out of range") from exc
+    except ValueError as exc:
+        # Неразборчивые числа/даты в тексте запроса (int() на тысячах цифр и т.п.).
+        logger.info("agent.run: некорректные входные данные (%s)", type(exc).__name__)
+        raise HTTPException(status_code=422, detail="invalid input") from exc
 
 
 @app.post("/v1/agent/negotiate", response_model=NegotiateResponse, dependencies=[Depends(require_token)])
 def agent_negotiate(request: NegotiateRequest) -> NegotiateResponse:
     return get_agent().negotiate(request)
+
+
+@app.post("/v1/agent/series", response_model=SeriesResponse, dependencies=[Depends(require_token)])
+def agent_series(request: SeriesRequest) -> SeriesResponse:
+    """Еженедельная серия страницы записи в местном времени владельца (booking.book)."""
+    try:
+        return SeriesResponse(
+            occurrences=planner.weekly_series(
+                request.start, request.timezone, request.duration_minutes, request.count, request.interval_days
+            )
+        )
+    except OverflowError as exc:
+        raise HTTPException(status_code=422, detail="time is out of range") from exc
 
 
 @app.post("/v1/agent/slots", response_model=AgentSlotsResponse, dependencies=[Depends(require_token)])
@@ -318,7 +404,7 @@ async def speech_transcribe(request: Request) -> TranscribeResponse:
 # ------------------------------------------------------------------- память
 class MemoryExtractRequest(BaseModel):
     user_key: str = Field(default="", max_length=320)
-    message: str = ""
+    message: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
     context: AgentContext = Field(default_factory=AgentContext)
     commit: bool = True
 

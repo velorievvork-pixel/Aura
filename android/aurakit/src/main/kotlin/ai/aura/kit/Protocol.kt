@@ -42,4 +42,6 @@ object AuraEventName {
     const val CHAT_MESSAGE = "chat.message"
     const val TASK_DUE = "task.due"
     const val NOTIFICATION_NEW = "notification.new"
+    /** Сессию соединения отозвали (выход/смена пароля на другом устройстве, блокировка). */
+    const val SESSION_REVOKED = "session.revoked"
 }

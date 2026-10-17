@@ -46,6 +46,8 @@ export interface GuestInvite {
   guest_name: string;
   chosen: InviteSlot | Record<string, never>;
   expires_at: string;
+  /** Реферальный код владельца (старые серверы не присылают). */
+  ref?: string;
 }
 
 export interface CreateInvite {

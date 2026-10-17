@@ -656,6 +656,153 @@ async def main() -> int:
     check(foreign.get("code") == "not_found", "чужое приглашение не отменить", foreign)
     await guest.close()
 
+    # ------------------------------------- страницы записи (booking.*) и рефералы
+    print("\n3a+. Страница записи: гость записывается сам, перенос и отмена; рефералы")
+    bad_page = await anna.call("booking.pageCreate", {"title": "", "duration_minutes": 60})
+    check(bad_page.get("code") == "bad_request", "booking.pageCreate без названия — bad_request", bad_page)
+    page_created = await anna.call("booking.pageCreate", {
+        "title": f"Консультация {RUN}", "description": "Разбор проекта", "duration_minutes": 60,
+        "days_ahead": 21, "max_per_day": 3, "notice_hours": 2, "max_series": 3,
+    })
+    check(page_created.get("type") == "ok", "booking.pageCreate: страница создана", page_created)
+    page = page_created.get("payload", {}).get("page", {})
+    slug = page.get("slug", "")
+    check(len(slug) == 10 and all(c in "abcdefghijklmnopqrstuvwxyz0123456789" for c in slug),
+          "адрес страницы — 10 символов [a-z0-9]", slug)
+    pages = (await anna.call("booking.pageList")).get("payload", {}).get("pages", [])
+    check(any(p.get("slug") == slug for p in pages), "booking.pageList содержит страницу", pages)
+
+    guest = Client("booking-guest")
+    await guest.connect()
+    seen_page = await guest.call("booking.get", {"slug": slug}, timeout=40)
+    check(seen_page.get("type") == "ok", "booking.get без входа", seen_page)
+    guest_page = seen_page.get("payload", {}).get("page", {})
+    page_slots = guest_page.get("slots", [])
+    check(guest_page.get("owner_name") == "Анна" and bool(page_slots),
+          "гость видит организатора и свободное время", guest_page)
+    check(all(s.get("start") != chosen_start for s in page_slots),
+          "время встречи из приглашения на странице не предлагается", page_slots[:3])
+    check(f"anna.{RUN}@example.com" not in json.dumps(seen_page), "email владельца гостю не отдаётся")
+    check(len(guest_page.get("ref", "")) == 8, "в виде гостя есть реферальный код владельца", guest_page.get("ref"))
+    unknown_page = await guest.call("booking.get", {"slug": "zzzzzzzzzz"})
+    check(unknown_page.get("code") == "not_found", "неизвестная страница — not_found", unknown_page)
+    owner_only = await guest.call("booking.pageList")
+    check(owner_only.get("code") == "unauthorized", "booking.pageList без входа — unauthorized", owner_only)
+
+    first_slot = page_slots[0].get("start", "") if page_slots else ""
+    booked = await guest.call("booking.book", {
+        "slug": slug, "start": first_slot, "guest_name": "Глеб",
+        "guest_email": f"gleb.{RUN}@example.com", "comment": "Про запуск", "count": 2,
+    }, timeout=40)
+    check(booked.get("type") == "ok", "гость записался на серию из двух встреч", booked)
+    manage_token = booked.get("payload", {}).get("token", "")
+    booked_view = booked.get("payload", {}).get("booking", {})
+    occurrences = booked_view.get("occurrences", [])
+    check(len(manage_token) == 43 and len(occurrences) == 2, "выдан токен ссылки управления, две встречи",
+          booked_view)
+    if len(occurrences) == 2:
+        gap = instant(occurrences[1].get("start", "")) - instant(occurrences[0].get("start", ""))
+        check(gap.total_seconds() == 7 * 86400, "вторая встреча серии — через неделю", occurrences)
+    taken = await guest.call("booking.book", {"slug": slug, "start": first_slot, "guest_name": "Дина"},
+                             timeout=40)
+    check(taken.get("code") == "conflict", "занятое время второй раз не записать", taken)
+
+    await asyncio.sleep(0.3)
+    booking_events = [e for e in anna.events_of("notification.new")
+                      if e.get("payload", {}).get("kind") == "booking.created"]
+    check(bool(booking_events), "владелец получил notification.new booking.created",
+          [e.get("payload", {}).get("kind") for e in anna.events_of("notification.new")])
+    owner_tasks = (await anna.call("tasks.list", {"limit": 200})).get("payload", {}).get("tasks", [])
+    booking_tasks = [t for t in owner_tasks if t.get("title") == f"Запись: Консультация {RUN} — Глеб"]
+    check(len(booking_tasks) == 2, "у владельца задачи на обе встречи серии", [t.get("title") for t in owner_tasks])
+    owner_bookings = (await anna.call("booking.list")).get("payload", {}).get("bookings", [])
+    check(any(b.get("guest_email") == f"gleb.{RUN}@example.com" for b in owner_bookings),
+          "booking.list: владелец видит запись и email гостя", owner_bookings)
+
+    managed = await guest.call("booking.manage", {"token": manage_token}, timeout=40)
+    managed_view = managed.get("payload", {}).get("booking", {})
+    check(managed_view.get("can_cancel") is True and managed_view.get("can_reschedule") is True
+          and managed_view.get("can_change") is True and managed_view.get("reschedules_left") == 3,
+          "ссылка управления: можно перенести (3 раза) и отменить", managed_view)
+    move_to = next((s.get("start") for s in managed_view.get("slots", []) if s.get("start") != first_slot), "")
+    moved = await guest.call("booking.reschedule", {"token": manage_token, "start": move_to}, timeout=40)
+    moved_view = moved.get("payload", {}).get("booking", {})
+    check(moved.get("type") == "ok" and any(o.get("start") == move_to for o in moved_view.get("occurrences", [])),
+          "ближайшая встреча перенесена", moved)
+    check(moved_view.get("reschedules_left") == 2, "переносов осталось 2", moved_view.get("reschedules_left"))
+    refreed = (await guest.call("booking.get", {"slug": slug}, timeout=40)).get("payload", {}).get("page", {})
+    check(any(s.get("start") == first_slot for s in refreed.get("slots", [])),
+          "после переноса прежнее время снова свободно", refreed.get("slots", [])[:3])
+    cancelled_one = await guest.call("booking.cancel", {
+        "token": manage_token, "occurrence": occurrences[1].get("start", "") if len(occurrences) == 2 else "",
+    })
+    check(cancelled_one.get("payload", {}).get("booking", {}).get("status") == "active",
+          "отменена одна встреча серии, запись активна", cancelled_one)
+    cancelled_all = await guest.call("booking.cancel", {"token": manage_token, "reason": "Планы изменились"})
+    cancelled_view = cancelled_all.get("payload", {}).get("booking", {})
+    check(cancelled_view.get("status") == "cancelled" and cancelled_view.get("cancelled_by") == "guest",
+          "гость отменил запись целиком", cancelled_view)
+    twice = await guest.call("booking.cancel", {"token": manage_token})
+    check(twice.get("code") == "conflict", "повторная отмена — conflict", twice)
+    resent = await guest.call("booking.resendLink", {"slug": slug, "email": f"nobody.{RUN}@example.com"})
+    check(resent.get("payload", {}).get("sent") is True,
+          "booking.resendLink: одинаковый ответ для неизвестного email", resent)
+    after_tasks = (await anna.call("tasks.list", {"limit": 200})).get("payload", {}).get("tasks", [])
+    check(not any(t.get("title") == f"Запись: Консультация {RUN} — Глеб" for t in after_tasks),
+          "задачи отменённых встреч удалены", [t.get("title") for t in after_tasks])
+
+    # Владелец отменяет запись; пауза и удаление страницы.
+    owner_side = await guest.call("booking.book", {"slug": slug, "start": first_slot, "guest_name": "Ева"},
+                                  timeout=40)
+    eva_id = 0
+    for item in (await anna.call("booking.list")).get("payload", {}).get("bookings", []):
+        if item.get("guest_name") == "Ева":
+            eva_id = item.get("id", 0)
+    check(owner_side.get("type") == "ok" and eva_id > 0, "вторая запись (Ева)", owner_side)
+    foreign_cancel = await anya.call("booking.ownerCancel", {"booking_id": eva_id})
+    check(foreign_cancel.get("code") == "not_found", "чужую запись не отменить", foreign_cancel)
+    by_owner = await anna.call("booking.ownerCancel", {"booking_id": eva_id})
+    check(by_owner.get("payload", {}).get("booking", {}).get("cancelled_by") == "owner",
+          "владелец отменил запись", by_owner)
+    paused = await anna.call("booking.pageUpdate", {"page_id": page.get("id", 0), "status": "paused"})
+    check(paused.get("payload", {}).get("page", {}).get("status") == "paused", "страница на паузе", paused)
+    paused_book = await guest.call("booking.book", {"slug": slug, "start": first_slot, "guest_name": "Ева"},
+                                   timeout=40)
+    check(paused_book.get("code") == "conflict", "на паузе записаться нельзя", paused_book)
+    deleted = await anna.call("booking.pageDelete", {"page_id": page.get("id", 0)})
+    check(deleted.get("payload", {}).get("deleted") is True, "страница удалена", deleted)
+    gone = await guest.call("booking.get", {"slug": slug})
+    check(gone.get("code") == "not_found", "удалённая страница — not_found", gone)
+    await guest.close()
+
+    # Рефералы: регистрация по коду Анны засчитывается после подтверждения email.
+    referral = (await anna.call("referral.get")).get("payload", {})
+    ref_code = referral.get("code", "")
+    check(len(ref_code) == 8 and ref_code == guest_page.get("ref"), "referral.get: код Анны", referral)
+    newcomer = Client("referral-new")
+    await newcomer.connect()
+    friend_email = f"friend.{RUN}@example.com"
+    friend = await newcomer.call("auth.register", {
+        "email": friend_email, "password": "aura1234", "display_name": "Фёдор",
+        "ref": ref_code.lower(), "ref_source": "booking",
+    })
+    check(friend.get("type") == "ok", "регистрация по реферальному коду", friend)
+    pending_ref = (await anna.call("referral.get")).get("payload", {})
+    check(pending_ref.get("joined", 0) >= 1 and pending_ref.get("verified", -1) == 0,
+          "приглашённый виден, но ещё не подтверждён", pending_ref)
+    await newcomer.call("auth.verifyEmail", {"email": friend_email,
+                                             "code": friend.get("payload", {}).get("email_code", "")})
+    await asyncio.sleep(0.3)
+    done_ref = (await anna.call("referral.get")).get("payload", {})
+    check(done_ref.get("verified") == 1 and done_ref.get("referrals", [{}])[0].get("display_name") == "Фёдор",
+          "после подтверждения email приглашённый засчитан", done_ref)
+    check(friend_email not in json.dumps(done_ref), "email приглашённого пригласившему не отдаётся")
+    joined_events = [e for e in anna.events_of("notification.new")
+                     if e.get("payload", {}).get("kind") == "referral.joined"]
+    check(bool(joined_events), "Анна получила notification.new referral.joined",
+          [e.get("payload", {}).get("kind") for e in anna.events_of("notification.new")])
+    await newcomer.close()
+
     # ------------------------------------- разрешения и барьер подтверждения
     print("\n3c. Разрешения и барьер подтверждения (этап 8)")
 

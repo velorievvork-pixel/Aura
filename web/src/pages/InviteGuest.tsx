@@ -11,6 +11,7 @@ import { CalendarPlus, Check, Clock, RefreshCw, WifiOff } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Field, Logo, Spinner } from '../components/ui';
+import { signupPath } from '../lib/booking';
 import { genitive } from '../lib/format';
 import {
   browserTimeZone,
@@ -37,7 +38,7 @@ import { useSession } from '../state/session';
 
 type Outcome = { action: 'accept'; slot: InviteSlot | null } | { action: 'decline' };
 
-function GuestLayout({ children }: { children: ReactNode }) {
+export function GuestLayout({ children }: { children: ReactNode }) {
   return (
     <div className="auth">
       <div className="auth-card invite-card">
@@ -51,7 +52,7 @@ function GuestLayout({ children }: { children: ReactNode }) {
   );
 }
 
-function Message({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
+export function Message({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <GuestLayout>
       <div className="stack">
@@ -63,8 +64,11 @@ function Message({ title, children, action }: { title: string; children?: ReactN
   );
 }
 
-/** «Заведите свою Ауру» — или «Открыть Aura», если человек уже вошёл. */
-function OwnAura() {
+/**
+  «Заведите свою Ауру» — или «Открыть Aura», если человек уже вошёл. refCode —
+  реферальный код владельца: регистрация по ссылке засчитается ему (referral.*).
+*/
+export function OwnAura({ refCode = '', source = 'invite' }: { refCode?: string; source?: 'invite' | 'booking' }) {
   const { status } = useSession();
   if (status === 'signedIn') {
     return (
@@ -83,7 +87,7 @@ function OwnAura() {
     <div className="notice">
       <span>
         Хотите, чтобы встречи согласовывались сами?{' '}
-        <Link className="link" to="/signup">
+        <Link className="link" to={signupPath(refCode, source)}>
           Заведите свою Ауру
         </Link>
         .
@@ -237,7 +241,7 @@ export function InviteGuest() {
   if (outcome && invite) {
     if (outcome.action === 'decline') {
       return (
-        <Message title="Ответ отправлен" action={<OwnAura />}>
+        <Message title="Ответ отправлен" action={<OwnAura refCode={invite.ref} />}>
           {invite.owner_name ? `${invite.owner_name} узнает, что в этот раз не получится.` : 'Организатор узнает, что в этот раз не получится.'}
         </Message>
       );
@@ -262,7 +266,7 @@ export function InviteGuest() {
               <CalendarButton invite={invite} slot={outcome.slot} />
             </>
           )}
-          <OwnAura />
+          <OwnAura refCode={invite.ref} />
         </div>
       </GuestLayout>
     );

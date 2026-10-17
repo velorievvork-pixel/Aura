@@ -25,6 +25,7 @@ struct Handshake {
     std::string origin;
     std::string authorization;  // заголовок Authorization (JWT при входе без auth.login)
     std::string userAgent;
+    std::string forwardedFor;  // X-Forwarded-For (учитывается только от доверенного прокси)
     std::string error;
 };
 

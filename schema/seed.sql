@@ -1,21 +1,17 @@
 -- Демонстрационные данные: два пользователя, чат между ними, память и настройки.
--- Пароль у обоих — `aura1234`. Хэши — в старом формате PBKDF2 (созданы до auth v3);
--- они проверяются crypto::verifyPassword и при первом успешном входе прозрачно
--- пересчитываются в Argon2id. Email считается подтверждённым (email_verified
--- по умолчанию TRUE).
+-- Войти под этими аккаунтами нельзя: пароля нет (хэш '!' не совпадает ни с одним
+-- паролем) — в репозитории не должно быть известных паролей. Аккаунты для входа
+-- на dev-стеке создаёт tools/demo_seed.py (пароль — из AURA_DEMO_PASSWORD) или
+-- «Сбросить пароль» с AURA_MAIL_DRIVER=dev.
 --
 -- psql "$AURA_DATABASE_URL" -f schema/seed.sql
 
 BEGIN;
 
-INSERT INTO users (email, password_hash, display_name, timezone)
+INSERT INTO users (email, password_hash, display_name, timezone, email_verified)
 VALUES
-    ('anna@example.com',
-     'pbkdf2$120000$2bb4723cdd3e4fe8$70b38598e68da2f70c737d16656c9e522896fadce3c1eb64b25db05eb8b544c9',
-     'Анна', 'Europe/Moscow'),
-    ('anya@example.com',
-     'pbkdf2$120000$2bb4723cdd3e4fe8$70b38598e68da2f70c737d16656c9e522896fadce3c1eb64b25db05eb8b544c9',
-     'Аня', 'Europe/Moscow')
+    ('anna@example.com', '!', 'Анна', 'Europe/Moscow', true),
+    ('anya@example.com', '!', 'Аня', 'Europe/Moscow', true)
 ON CONFLICT DO NOTHING;
 
 INSERT INTO chats (kind, title, created_by)

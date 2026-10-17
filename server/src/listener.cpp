@@ -20,10 +20,17 @@
 
 namespace aura {
 
+namespace {
+thread_local bool inWorker = false;  // текущий поток — рабочий поток соединения
+}  // namespace
+
 Listener::Listener(const Config& config, ConnectionHandler handler)
     : config_(config), handler_(std::move(handler)) {}
 
-Listener::~Listener() { stop(); }
+Listener::~Listener() {
+    stop();
+    drain(std::chrono::seconds(10));
+}
 
 bool Listener::start(std::string& error) {
     listenSocket_ = ::socket(AF_INET6, SOCK_STREAM, 0);
@@ -106,7 +113,22 @@ void Listener::stop() {
         listenSocket_ = -1;
     }
     if (acceptThread_.joinable()) acceptThread_.join();
-    // Рабочие потоки завершаются сами: Server закрывает сессии в stop().
+}
+
+bool Listener::drain(std::chrono::milliseconds timeout) {
+    std::vector<std::shared_ptr<Session>> sessions;
+    {
+        std::lock_guard<std::mutex> lock(workersMutex_);
+        for (const auto& entry : live_) {
+            if (auto session = entry.second.lock()) sessions.push_back(std::move(session));
+        }
+    }
+    for (const auto& session : sessions) session->close(1001, "server shutdown");
+    sessions.clear();
+    // Из рабочего потока (обработчик сам остановил сервер) ждать нельзя: он ждал бы себя.
+    if (inWorker) return activeWorkers_.load() <= 1;
+    std::unique_lock<std::mutex> lock(workersMutex_);
+    return workersDone_.wait_for(lock, timeout, [this] { return activeWorkers_.load() == 0; });
 }
 
 void Listener::acceptLoop() {
@@ -150,8 +172,8 @@ void Listener::acceptLoop() {
             continue;
         }
 
-        // Один адрес не может занять все слоты: лимит соединений на IP.
-        const std::string ip = addressText;
+        // Один адрес не может занять все слоты: лимит соединений на IP (IPv6 — на сеть /64).
+        const std::string ip = Session::limitKey(addressText);
         if (!acquireIpSlot(ip)) {
             AURA_LOG(log::Level::Warn, "listener")
                 << "превышен лимит соединений с " << ip << " (" << config_.maxConnectionsPerIp << "), отказываю";
@@ -165,18 +187,28 @@ void Listener::acceptLoop() {
         const int noDelay = 1;
         ::setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &noDelay, sizeof(noDelay));
 
-        const std::string remote = ip + ":" + std::to_string(ntohs(peer.sin6_port));
+        const std::string remote = std::string(addressText) + ":" + std::to_string(ntohs(peer.sin6_port));
         auto session = std::make_shared<Session>(client, crypto::randomHex(8), remote, config_);
         accepted_.fetch_add(1);
         AURA_LOG(log::Level::Info, "listener") << "новое подключение от " << remote;
 
         // Поток на соединение: их количество ограничено числом клиентов,
         // а завершившиеся освобождаются сразу (detach).
-        activeWorkers_.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> lock(workersMutex_);
+            activeWorkers_.fetch_add(1);
+            live_[session.get()] = session;
+        }
         std::thread([this, session, ip] {
+            inWorker = true;
             handle(session);
             releaseIpSlot(ip);
+            // Последнее обращение к this — под workersMutex_: drain() вернётся
+            // только после того, как поток его отпустит.
+            std::lock_guard<std::mutex> lock(workersMutex_);
+            live_.erase(session.get());
             activeWorkers_.fetch_sub(1);
+            workersDone_.notify_all();
         }).detach();
     }
 }

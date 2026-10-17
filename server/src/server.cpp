@@ -156,7 +156,12 @@ bool Server::start(std::string& error) {
     agent_ = std::make_unique<AgentManager>(config_, *database_, *memory_, *tools_, *chats_);
     taskManager_ = std::make_unique<TaskManager>(*database_, connections_);
     admin_ = std::make_unique<AdminManager>(*database_, config_);
-    invites_ = std::make_unique<InviteManager>(*database_, *memory_, notifications_.get(), config_);
+    referrals_ = std::make_unique<ReferralManager>(*database_, notifications_.get(), config_);
+    scheduleLock_ = std::make_unique<ScheduleLock>(*database_);
+    invites_ = std::make_unique<InviteManager>(*database_, *memory_, notifications_.get(), config_, referrals_.get(),
+                                               scheduleLock_.get());
+    bookings_ = std::make_unique<BookingManager>(*database_, *memory_, notifications_.get(), *referrals_,
+                                                 *scheduleLock_, config_);
     admin_->bootstrapAll();
 
     registerHandlers();
@@ -189,7 +194,11 @@ void Server::schedulerLoop() {
                                   [this] { return stopping_.load(); });
         }
         if (stopping_.load()) break;
-        runSchedulerTick(100);
+        // Разбираем накопившиеся напоминания до конца, а не по 100 за интервал:
+        // утренний пик в тысячи напоминаний иначе отставал бы на десятки минут.
+        for (int batch = 0; batch < 100 && !stopping_.load(); ++batch) {
+            if (runSchedulerTick(100) < 100) break;
+        }
     }
 }
 
@@ -211,6 +220,11 @@ void Server::stop() {
     const bool already = stopping_.exchange(true);
     if (listener_) listener_->stop();
     connections_.closeAll(1001, "server shutdown");
+    // Рабочие потоки соединений вызывают обработчики Server — дожидаемся их,
+    // иначе они переживут Server (ASan: use-after-free в Listener::releaseIpSlot).
+    if (listener_ && !listener_->drain(std::chrono::seconds(10))) {
+        AURA_LOG(log::Level::Warn, "server") << "не все соединения завершились за 10 с";
+    }
     // Останавливаем фоновый планировщик и дожидаемся его.
     schedulerCv_.notify_all();
     if (schedulerThread_ && schedulerThread_->joinable()) schedulerThread_->join();
@@ -339,6 +353,9 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
                                "неизвестный тип сообщения: " + request.type);
     }
 
+    const bool guestCall = !session->authenticated() &&
+                           (request.type.rfind("invite.", 0) == 0 || request.type.rfind("booking.", 0) == 0) &&
+                           protocol::isPublicType(request.type);
     if (!protocol::isPublicType(request.type)) {
         // Открытое соединение не живёт дольше своей сессии: отзыв, истечение
         // срока или блокировка аккаунта видны не позже чем через AURA_AUTH_RECHECK.
@@ -355,7 +372,9 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
     }
 
     try {
-        return handler(session, request);
+        Json response = handler(session, request);
+        if (guestCall && response.getString("type") == "ok") session->markGuest();
+        return response;
     } catch (const std::exception& exception) {
         // Текст исключения (SQL, пути, внутренности) — только в лог.
         AURA_LOG(log::Level::Error, "server")
@@ -422,6 +441,12 @@ void Server::registerHandlers() {
                                                                 request.payload.getString("device", "qt-client"),
                                                                 session->remoteAddr());
                         if (!result.ok) return protocol::error(request.id, result.code, result.message);
+                        // Регистрация по реферальной ссылке: неверный код молча игнорируется.
+                        if (!request.payload.getString("ref").empty()) {
+                            referrals_->attach(result.payload.get("user").getInt("id"),
+                                               request.payload.getString("ref"),
+                                               request.payload.getString("ref_source"));
+                        }
                         return protocol::ok(request.id, result.payload);
                     });
 
@@ -431,6 +456,8 @@ void Server::registerHandlers() {
                                                                request.payload.getString("code"),
                                                                session->remoteAddr());
                         if (!result.ok) return protocol::error(request.id, result.code, result.message);
+                        // Приглашённый засчитывается пригласившему после подтверждения email.
+                        referrals_->verified(result.payload.get("user").getInt("id"));
                         return protocol::ok(request.id,
                                             withBootstrappedRole(*admin_, database_->db(),
                                                                  result.payload.get("user").getInt("id"),
@@ -887,6 +914,69 @@ void Server::registerHandlers() {
 
     registerHandler("invite.respond", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
         const auto result = invites_->respond(request.payload, session->remoteAddr());
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    });
+
+    // ------------------------------------------------------------ booking
+    // Страницы записи: владелец (вход нужен) и гость без аккаунта (booking.get /
+    // book / manage / reschedule / cancel — публичные, доступ по slug или токену).
+    const auto bookingReply = [](const protocol::Request& request, const BookingManager::Result& result) {
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    };
+    registerHandler("booking.pageCreate", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->pageCreate(session->userId(), request.payload));
+    });
+    registerHandler("booking.pageList", [this, bookingReply](std::shared_ptr<Session> session,
+                                                             const protocol::Request& request) {
+        return bookingReply(request, bookings_->pageList(session->userId()));
+    });
+    registerHandler("booking.pageUpdate", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->pageUpdate(session->userId(), request.payload));
+    });
+    registerHandler("booking.pageDelete", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->pageDelete(session->userId(), request.payload));
+    });
+    registerHandler("booking.list", [this, bookingReply](std::shared_ptr<Session> session,
+                                                         const protocol::Request& request) {
+        return bookingReply(request, bookings_->list(session->userId(), request.payload));
+    });
+    registerHandler("booking.ownerCancel", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                const protocol::Request& request) {
+        return bookingReply(request, bookings_->ownerCancel(session->userId(), request.payload));
+    });
+    registerHandler("booking.get", [this, bookingReply](std::shared_ptr<Session> session,
+                                                        const protocol::Request& request) {
+        return bookingReply(request, bookings_->get(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.book", [this, bookingReply](std::shared_ptr<Session> session,
+                                                         const protocol::Request& request) {
+        return bookingReply(request, bookings_->book(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.manage", [this, bookingReply](std::shared_ptr<Session> session,
+                                                           const protocol::Request& request) {
+        return bookingReply(request, bookings_->manage(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.reschedule", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->reschedule(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.cancel", [this, bookingReply](std::shared_ptr<Session> session,
+                                                           const protocol::Request& request) {
+        return bookingReply(request, bookings_->cancel(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.resendLink", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->resendLink(request.payload, session->remoteAddr()));
+    });
+
+    // ----------------------------------------------------------- referral
+    registerHandler("referral.get", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = referrals_->get(session->userId(), request.payload);
         return result.ok ? protocol::ok(request.id, result.payload)
                          : protocol::error(request.id, result.code, result.message);
     });

@@ -4,11 +4,14 @@
 // Без него makePostgresDatabase() возвращает nullptr, и DatabaseManager
 // переключается на встроенное хранилище с предупреждением в лог.
 #include <algorithm>
+#include <atomic>
+#include <condition_variable>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 #include "aura/idatabase.h"
@@ -79,32 +82,108 @@ std::vector<std::string> parseArray(const char* raw) {
     return result;
 }
 
+// Соединение с PostgreSQL и текст последней ошибки на нём.
+struct PgConn {
+    PGconn* pg = nullptr;
+    std::string lastError;
+};
+
+// Пул соединений: раньше весь процесс ходил в БД через одно соединение под одним
+// mutex — запросы всех потоков шли строго по очереди, один медленный запрос
+// задерживал всех. Соединение выдаётся на время одного вызова IDatabase.
+class PgPool {
+public:
+    explicit PgPool(std::size_t size) : conns_(size), free_(size) {
+        for (std::size_t i = 0; i < size; ++i) free_[i] = i;
+    }
+    ~PgPool() {
+        for (auto& conn : conns_) {
+            if (conn.pg != nullptr) PQfinish(conn.pg);
+        }
+    }
+    PgConn& checkout() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        available_.wait(lock, [this] { return !free_.empty(); });
+        const std::size_t index = free_.back();
+        free_.pop_back();
+        return conns_[index];
+    }
+    void giveBack(PgConn& conn) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            free_.push_back(static_cast<std::size_t>(&conn - conns_.data()));
+        }
+        available_.notify_one();
+    }
+    PgConn& first() { return conns_.front(); }
+    std::size_t size() const { return conns_.size(); }
+
+private:
+    std::vector<PgConn> conns_;
+    std::vector<std::size_t> free_;
+    std::mutex mutex_;
+    std::condition_variable available_;
+};
+
+// Текущее соединение потока (выдано Lease).
+thread_local PgConn* tlsConn = nullptr;
+
+// Соединение из пула на время вызова; вложенные вызовы в одном потоке не берут второе.
+class Lease {
+public:
+    explicit Lease(PgPool& pool) : pool_(pool), previous_(tlsConn) {
+        conn_ = &pool_.checkout();
+        tlsConn = conn_;
+    }
+    ~Lease() {
+        tlsConn = previous_;
+        pool_.giveBack(*conn_);
+    }
+    Lease(const Lease&) = delete;
+    Lease& operator=(const Lease&) = delete;
+
+private:
+    PgPool& pool_;
+    PgConn* previous_;
+    PgConn* conn_ = nullptr;
+};
+
+std::size_t poolSizeFromEnv() {
+    const char* raw = std::getenv("AURA_DB_POOL_SIZE");
+    const long value = raw != nullptr ? std::strtol(raw, nullptr, 10) : 0;
+    return static_cast<std::size_t>(value >= 1 && value <= 64 ? value : 8);
+}
+
+// Ответ счётчиков rate_limits при сбое БД: больше любого лимита (fail closed).
+constexpr int kRateLimitFailClosed = 1 << 20;
+
 class PostgresDatabase : public IDatabase {
 public:
-    explicit PostgresDatabase(std::string url) : url_(std::move(url)) {}
+    explicit PostgresDatabase(std::string url) : url_(std::move(url)), pool_(poolSizeFromEnv()), lockPool_(1) {}
 
-    ~PostgresDatabase() override {
-        if (connection_ != nullptr) PQfinish(connection_);
-    }
+    ~PostgresDatabase() override = default;
 
     std::string name() const override { return "postgresql"; }
 
+    // Первое соединение — сразу (ошибка подключения видна при старте), остальные
+    // соединения пула открываются по мере надобности (ensureConnected).
     bool connect(std::string& error) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        connection_ = PQconnectdb(url_.c_str());
-        if (PQstatus(connection_) != CONNECTION_OK) {
-            error = std::string("PostgreSQL: ") + PQerrorMessage(connection_);
-            PQfinish(connection_);
-            connection_ = nullptr;
+        Lease lease(pool_);
+        PgConn& conn = *tlsConn;
+        conn.pg = PQconnectdb(url_.c_str());
+        if (PQstatus(conn.pg) != CONNECTION_OK) {
+            error = std::string("PostgreSQL: ") + PQerrorMessage(conn.pg);
+            PQfinish(conn.pg);
+            conn.pg = nullptr;
             return false;
         }
+        AURA_LOG(log::Level::Info, "db") << "PostgreSQL: пул до " << pool_.size() << " соединений";
         return prepareSession();
     }
 
     bool healthy() const override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (connection_ == nullptr) return false;
-        return PQstatus(connection_) == CONNECTION_OK;
+        Lease lease(pool_);
+        return ensureConnected();
     }
 
     // ------------------------------------------------------------ users
@@ -112,14 +191,16 @@ public:
                              const std::string& passwordHash,
                              const std::string& displayName,
                              long long& outId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         const std::vector<std::string> args{lower(email), passwordHash, displayName};
+        // email_verified = false явно: DEFAULT TRUE в схеме — для аккаунтов, созданных
+        // до подтверждения email; новый аккаунт подтверждается через auth.verifyEmail.
         if (!execute(
-                "INSERT INTO users (email, password_hash, display_name) "
-                "VALUES (LOWER($1), $2, $3) RETURNING id",
+                "INSERT INTO users (email, password_hash, display_name, email_verified) "
+                "VALUES (LOWER($1), $2, $3, false) RETURNING id",
                 args, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         outId = std::atoll(PQgetvalue(result, 0, 0));
         PQclear(result);
@@ -127,7 +208,7 @@ public:
     }
 
     std::optional<UserRecord> findUserByEmail(const std::string& email) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
@@ -143,7 +224,7 @@ public:
     }
 
     std::optional<UserRecord> findUserById(long long id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT id, email, password_hash, display_name, avatar_url, timezone, is_active, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
@@ -159,7 +240,7 @@ public:
     }
 
     DatabaseError updateProfile(long long userId, const Json& fields) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE users SET "
                      "display_name = COALESCE($2::jsonb->>'display_name', display_name), "
@@ -167,7 +248,7 @@ public:
                      "avatar_url = COALESCE($2::jsonb->>'avatar_url', avatar_url) "
                      "WHERE id = $1",
                      {std::to_string(userId), fields.dump()}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -176,7 +257,7 @@ public:
     }
 
     std::vector<UserRecord> searchUsers(const std::string& query, int limit) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<UserRecord> users;
         PGresult* result = nullptr;
         // Экранируем LIKE-маски: иначе «%» в запросе матчит всё подряд.
@@ -201,10 +282,10 @@ public:
     }
 
     DatabaseError touchUser(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE users SET last_seen_at = now() WHERE id = $1", {std::to_string(userId)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -212,7 +293,7 @@ public:
 
     // --------------------------------------------------------- sessions
     DatabaseError createSession(const SessionRecord& record) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "INSERT INTO sessions (id, user_id, jwt_id, device, remote_addr, created_at, expires_at) "
@@ -220,25 +301,25 @@ public:
                 {record.id, std::to_string(record.userId), record.jwtId, record.device, record.remoteAddr,
                  record.expiresAt},
                 &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
     }
 
     DatabaseError revokeSession(const std::string& jwtId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE sessions SET revoked_at = now() WHERE jwt_id = $1 AND revoked_at IS NULL",
                      {jwtId}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
     }
 
     std::optional<SessionRecord> findSessionByJwt(const std::string& jwtId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT id::text, user_id, jwt_id, device, remote_addr, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
@@ -255,11 +336,11 @@ public:
     }
 
     DatabaseError updatePasswordHash(long long userId, const std::string& hash) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE users SET password_hash = $2 WHERE id = $1",
                      {std::to_string(userId), hash}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -267,11 +348,11 @@ public:
     }
 
     DatabaseError setUserActive(long long userId, bool active) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE users SET is_active = $2 WHERE id = $1",
                      {std::to_string(userId), active ? "TRUE" : "FALSE"}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -279,11 +360,11 @@ public:
     }
 
     DatabaseError setEmailVerified(long long userId, bool verified) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE users SET email_verified = $2 WHERE id = $1",
                      {std::to_string(userId), verified ? "TRUE" : "FALSE"}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -291,7 +372,7 @@ public:
     }
 
     std::vector<SessionRecord> listSessions(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<SessionRecord> sessions;
         PGresult* result = nullptr;
         if (!execute("SELECT id::text, user_id, jwt_id, device, remote_addr, "
@@ -309,12 +390,12 @@ public:
     }
 
     DatabaseError revokeSessionById(long long userId, const std::string& sessionId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE sessions SET revoked_at = now() "
                      "WHERE id = $1::uuid AND user_id = $2 AND revoked_at IS NULL",
                      {sessionId, std::to_string(userId)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -322,12 +403,12 @@ public:
     }
 
     DatabaseError revokeAllSessions(long long userId, const std::string& exceptJwtId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE sessions SET revoked_at = now() "
                      "WHERE user_id = $1 AND revoked_at IS NULL AND jwt_id <> $2",
                      {std::to_string(userId), exceptJwtId}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -335,14 +416,14 @@ public:
 
     // ------------------------------------------------------- auth tokens
     DatabaseError createAuthToken(const AuthTokenRecord& record) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("INSERT INTO auth_tokens (id, user_id, purpose, token_hash, created_at, expires_at) "
                      "VALUES ($1::uuid, $2, $3, $4, now(), $5::timestamptz)",
                      {record.id, std::to_string(record.userId), record.purpose, record.tokenHash,
                       record.expiresAt},
                      &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -350,7 +431,7 @@ public:
 
     std::optional<AuthTokenRecord> findAuthToken(const std::string& purpose,
                                                  const std::string& tokenHash) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT id::text, user_id, purpose, token_hash, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
@@ -378,11 +459,11 @@ public:
     }
 
     DatabaseError useAuthToken(const std::string& id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE auth_tokens SET used_at = now() WHERE id = $1::uuid AND used_at IS NULL",
                      {id}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -390,11 +471,11 @@ public:
     }
 
     DatabaseError deleteAuthTokens(long long userId, const std::string& purpose) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("DELETE FROM auth_tokens WHERE user_id = $1 AND purpose = $2",
                      {std::to_string(userId), purpose}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -402,7 +483,7 @@ public:
 
     // ---------------------------------------------------- refresh tokens
     DatabaseError createRefreshToken(const RefreshTokenRecord& record) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("INSERT INTO refresh_tokens (id, user_id, family_id, token_hash, device, "
                      "remote_addr, created_at, expires_at) "
@@ -410,14 +491,14 @@ public:
                      {record.id, std::to_string(record.userId), record.familyId, record.tokenHash,
                       record.device, record.remoteAddr, record.expiresAt},
                      &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
     }
 
     std::optional<RefreshTokenRecord> findRefreshToken(const std::string& tokenHash) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT id::text, user_id, family_id::text, token_hash, device, remote_addr, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
@@ -448,12 +529,12 @@ public:
     }
 
     DatabaseError revokeRefreshToken(const std::string& id, const std::string& replacedBy) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE refresh_tokens SET revoked_at = now(), replaced_by = NULLIF($2, '')::uuid "
                      "WHERE id = $1::uuid AND revoked_at IS NULL",
                      {id, replacedBy}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -461,39 +542,39 @@ public:
     }
 
     DatabaseError revokeRefreshFamily(const std::string& familyId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         if (familyId.empty()) return DatabaseError::success();
         PGresult* result = nullptr;
         if (!execute("UPDATE refresh_tokens SET revoked_at = now() "
                      "WHERE family_id = $1::uuid AND revoked_at IS NULL",
                      {familyId}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
     }
 
     DatabaseError revokeAllUserRefreshTokens(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE refresh_tokens SET revoked_at = now() "
                      "WHERE user_id = $1 AND revoked_at IS NULL",
                      {std::to_string(userId)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
     }
 
     DatabaseError revokeUserRefreshTokensExcept(long long userId, const std::string& keepFamilyId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         // Сравнение в тексте без дефисов: пустой keep не приводится к uuid.
         if (!execute("UPDATE refresh_tokens SET revoked_at = now() "
                      "WHERE user_id = $1 AND revoked_at IS NULL "
                      "AND replace(family_id::text, '-', '') <> lower(replace($2, '-', ''))",
                      {std::to_string(userId), keepFamilyId}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -504,21 +585,21 @@ public:
                               const std::string& kind,
                               const Json& detail,
                               const std::string& remoteAddr) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("INSERT INTO audit_logs (user_id, kind, detail, remote_addr) "
                      "VALUES (NULLIF($1, '0')::bigint, $2, $3::jsonb, $4)",
                      {std::to_string(userId), kind,
                       detail.isObject() ? detail.dump() : std::string("{}"), remoteAddr},
                      &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
     }
 
     std::vector<AuditRecord> listAudit(long long userId, int limit) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<AuditRecord> logs;
         PGresult* result = nullptr;
         if (!execute("SELECT id, user_id, kind, detail::text, remote_addr, "
@@ -545,7 +626,7 @@ public:
 
     // ------------------------------------------------------------ 2FA
     DatabaseError upsertTwoFactor(const TwoFactorRecord& record) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "INSERT INTO two_factor_settings (user_id, secret_encrypted, enabled, last_used_counter, enabled_at) "
@@ -555,14 +636,14 @@ public:
                 {std::to_string(record.userId), record.secretEncrypted,
                  record.enabled ? "true" : "false", std::to_string(record.lastUsedCounter), record.enabledAt},
                 &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
     }
 
     std::optional<TwoFactorRecord> findTwoFactor(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT user_id, secret_encrypted, enabled, last_used_counter, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
@@ -589,13 +670,13 @@ public:
     }
 
     DatabaseError setTwoFactorEnabled(long long userId, bool enabled) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE two_factor_settings SET enabled = $2, "
                      "enabled_at = CASE WHEN $2 AND enabled_at IS NULL THEN now() ELSE enabled_at END, "
                      "updated_at = now() WHERE user_id = $1",
                      {std::to_string(userId), enabled ? "true" : "false"}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -603,11 +684,11 @@ public:
     }
 
     DatabaseError updateTwoFactorCounter(long long userId, long long counter) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE two_factor_settings SET last_used_counter = $2 WHERE user_id = $1",
                      {std::to_string(userId), std::to_string(counter)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -615,11 +696,11 @@ public:
     }
 
     DatabaseError deleteTwoFactor(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("DELETE FROM two_factor_settings WHERE user_id = $1",
                      {std::to_string(userId)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -627,10 +708,10 @@ public:
 
     DatabaseError replaceRecoveryCodes(long long userId,
                                        const std::vector<RecoveryCodeRecord>& codes) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("DELETE FROM recovery_codes WHERE user_id = $1", {std::to_string(userId)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         for (const auto& code : codes) {
@@ -639,14 +720,14 @@ public:
                                     "VALUES ($1::uuid, $2, $3)",
                                     {code.id, std::to_string(userId), code.codeHash}, &insertResult);
             if (insertResult) PQclear(insertResult);
-            if (!ok) return DatabaseError::failure(lastError_);
+            if (!ok) return DatabaseError::failure(lastError());
         }
         return DatabaseError::success();
     }
 
     std::optional<RecoveryCodeRecord> findRecoveryCode(long long userId,
                                                        const std::string& codeHash) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT id::text, user_id, code_hash, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
@@ -671,11 +752,11 @@ public:
     }
 
     DatabaseError useRecoveryCode(const std::string& id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE recovery_codes SET used_at = now() WHERE id = $1::uuid AND used_at IS NULL",
                      {id}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -683,7 +764,7 @@ public:
     }
 
     int countUnusedRecoveryCodes(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT count(*) FROM recovery_codes WHERE user_id = $1 AND used_at IS NULL",
                      {std::to_string(userId)}, &result)) {
@@ -695,7 +776,7 @@ public:
     }
 
     DatabaseError addTrustedDevice(const TrustedDeviceRecord& record) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("INSERT INTO trusted_devices (id, user_id, device_hash, device, remote_addr, "
                      "expires_at, last_used_at) VALUES ($1::uuid, $2, $3, $4, $5, $6::timestamptz, now()) "
@@ -704,7 +785,7 @@ public:
                      {record.id, std::to_string(record.userId), record.deviceHash, record.device,
                       record.remoteAddr, record.expiresAt},
                      &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -712,7 +793,7 @@ public:
 
     std::optional<TrustedDeviceRecord> findTrustedDevice(long long userId,
                                                          const std::string& deviceHash) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT id::text, user_id, device_hash, device, remote_addr, "
                      "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'), "
@@ -731,7 +812,7 @@ public:
     }
 
     std::vector<TrustedDeviceRecord> listTrustedDevices(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<TrustedDeviceRecord> devices;
         PGresult* result = nullptr;
         if (!execute("SELECT id::text, user_id, device_hash, device, remote_addr, "
@@ -750,12 +831,12 @@ public:
     }
 
     DatabaseError touchTrustedDevice(long long userId, const std::string& deviceHash) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE trusted_devices SET last_used_at = now() "
                      "WHERE user_id = $1 AND device_hash = $2 AND revoked_at IS NULL",
                      {std::to_string(userId), deviceHash}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -763,12 +844,12 @@ public:
     }
 
     DatabaseError revokeTrustedDevice(long long userId, const std::string& id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE trusted_devices SET revoked_at = now() "
                      "WHERE id = $1::uuid AND user_id = $2 AND revoked_at IS NULL",
                      {id, std::to_string(userId)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -776,12 +857,12 @@ public:
     }
 
     DatabaseError revokeAllTrustedDevices(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE trusted_devices SET revoked_at = now() "
                      "WHERE user_id = $1 AND revoked_at IS NULL",
                      {std::to_string(userId)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -793,12 +874,12 @@ public:
                              long long createdBy,
                              const std::vector<long long>& members,
                              long long& outId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "INSERT INTO chats (kind, title, created_by) VALUES ($1, $2, NULLIF($3, 0)) RETURNING id",
                 {kind, title, std::to_string(createdBy)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         outId = std::atoll(PQgetvalue(result, 0, 0));
         PQclear(result);
@@ -811,13 +892,13 @@ public:
                 {std::to_string(outId), std::to_string(userId), userId == createdBy ? "owner" : "member"},
                 &memberResult);
             if (memberResult) PQclear(memberResult);
-            if (!ok) return DatabaseError::failure(lastError_);
+            if (!ok) return DatabaseError::failure(lastError());
         }
         return DatabaseError::success();
     }
 
     std::vector<ChatRecord> listChats(long long userId, int limit) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<ChatRecord> chats;
         PGresult* result = nullptr;
         if (!execute(
@@ -845,7 +926,7 @@ public:
     }
 
     std::optional<ChatRecord> findChat(long long chatId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT chat_id, kind, title, created_at, last_message_at, last_message_body, "
                      "COALESCE(last_message_sender_id, 0), COALESCE(last_message_sender, '') "
@@ -871,7 +952,7 @@ public:
     }
 
     std::optional<long long> findDirectChat(long long first, long long second) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "SELECT c.id FROM chats c "
@@ -890,7 +971,7 @@ public:
     }
 
     std::vector<MemberRecord> listMembers(long long chatId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<MemberRecord> members;
         PGresult* result = nullptr;
         if (!execute("SELECT m.chat_id, m.user_id, m.role, COALESCE(u.display_name, ''), COALESCE(u.email, ''), "
@@ -915,7 +996,7 @@ public:
     }
 
     bool isMember(long long chatId, long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT 1 FROM chat_members WHERE chat_id = $1 AND user_id = $2",
                      {std::to_string(chatId), std::to_string(userId)}, &result)) {
@@ -927,11 +1008,11 @@ public:
     }
 
     DatabaseError markRead(long long chatId, long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE chat_members SET last_read_at = now() WHERE chat_id = $1 AND user_id = $2",
                      {std::to_string(chatId), std::to_string(userId)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -939,7 +1020,7 @@ public:
 
     // --------------------------------------------------------- messages
     DatabaseError insertMessage(const MessageRecord& record, long long& outId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "INSERT INTO messages (chat_id, sender_id, kind, body, payload) "
@@ -947,7 +1028,7 @@ public:
                 {std::to_string(record.chatId), std::to_string(record.senderId), record.kind, record.body,
                  record.payload.isObject() ? record.payload.dump() : std::string("{}")},
                 &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         outId = std::atoll(PQgetvalue(result, 0, 0));
         PQclear(result);
@@ -955,7 +1036,7 @@ public:
     }
 
     std::vector<MessageRecord> listMessages(long long chatId, long long beforeId, int limit) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<MessageRecord> messages;
         PGresult* result = nullptr;
         const std::string sql =
@@ -987,12 +1068,12 @@ public:
 
     // ------------------------------------------------------- user_memory
     std::vector<MemoryRecord> listMemory(long long userId, int limit) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<MemoryRecord> entries;
         PGresult* result = nullptr;
         if (!execute("SELECT id, user_id, kind, text, weight, tags, "
                      "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"') "
-                     "FROM user_memory WHERE user_id = $1 ORDER BY weight DESC, updated_at DESC LIMIT $2",
+                     "FROM user_memory WHERE user_id = $1 ORDER BY weight DESC, updated_at DESC, id DESC LIMIT $2",
                      {std::to_string(userId), std::to_string(limit)}, &result)) {
             return entries;
         }
@@ -1016,7 +1097,7 @@ public:
                                const std::string& text,
                                double weight,
                                const std::vector<std::string>& tags) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         std::ostringstream weightText;
         weightText << weight;
@@ -1027,7 +1108,7 @@ public:
                 "SET kind = EXCLUDED.kind, weight = LEAST(5.0, user_memory.weight + 0.25), "
                 "tags = EXCLUDED.tags, updated_at = now()",
                 {std::to_string(userId), kind, text, weightText.str(), arrayLiteral(tags)}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -1035,7 +1116,7 @@ public:
 
     // -------------------------------------------------- user_preferences
     Json getPreferences(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "SELECT jsonb_build_object("
@@ -1058,7 +1139,7 @@ public:
     }
 
     DatabaseError setPreferences(long long userId, const Json& preferences) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "UPDATE user_preferences SET "
@@ -1079,7 +1160,7 @@ public:
                 "updated_at = now() "
                 "WHERE user_id = $1",
                 {std::to_string(userId), preferences.dump()}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -1089,7 +1170,7 @@ public:
 
     // ------------------------------------------------- tool_permissions
     std::string getToolPermission(long long userId, const std::string& tool) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT mode FROM tool_permissions WHERE user_id = $1 AND tool = $2",
                      {std::to_string(userId), tool}, &result)) {
@@ -1102,7 +1183,7 @@ public:
     }
 
     std::vector<ToolPermissionRecord> listToolPermissions(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<ToolPermissionRecord> entries;
         PGresult* result = nullptr;
         if (!execute(
@@ -1129,13 +1210,13 @@ public:
         if (mode != "allow" && mode != "ask" && mode != "deny") {
             return DatabaseError::failure("недопустимый режим разрешения");
         }
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "INSERT INTO tool_permissions (user_id, tool, mode) VALUES ($1, $2, $3) "
                 "ON CONFLICT (user_id, tool) DO UPDATE SET mode = EXCLUDED.mode, updated_at = now()",
                 {std::to_string(userId), tool, mode}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(result);
         return DatabaseError::success();
@@ -1143,7 +1224,7 @@ public:
 
     // ---------------------------------------------------- pending_actions
     long long createPendingAction(const PendingActionRecord& record) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         const std::string status = record.status.empty() ? std::string("pending") : record.status;
         if (!execute(
@@ -1162,7 +1243,7 @@ public:
     }
 
     bool claimPendingAction(long long id, long long userId, const std::string& status) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE pending_actions SET status = $3, resolved_at = now() "
                      "WHERE id = $1 AND user_id = $2 AND status = 'pending'",
@@ -1175,7 +1256,7 @@ public:
     }
 
     std::optional<PendingActionRecord> findPendingAction(long long id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(pendingActionSelect() + " WHERE id = $1", {std::to_string(id)}, &result)) {
             return std::nullopt;
@@ -1189,7 +1270,7 @@ public:
     std::vector<PendingActionRecord> listPendingActions(long long userId,
                                                         const std::string& status,
                                                         int limit) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<PendingActionRecord> entries;
         PGresult* result = nullptr;
         bool ok = false;
@@ -1209,13 +1290,13 @@ public:
     DatabaseError resolvePendingAction(long long id,
                                        const std::string& status,
                                        const Json& result) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute(
                 "UPDATE pending_actions SET status = $2, result = $3::jsonb, resolved_at = now() "
                 "WHERE id = $1",
                 {std::to_string(id), status, result.isObject() ? result.dump() : std::string("{}")}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1226,7 +1307,7 @@ public:
     // -------------------------------------------------------------- tasks
     DatabaseError createTask(const TaskRecord& record, long long& outId) override {
         if (record.title.empty()) return DatabaseError::failure("пустой заголовок задачи");
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         const std::string status = record.status.empty() ? std::string("pending") : record.status;
         if (!execute(
@@ -1237,7 +1318,7 @@ public:
                  status, std::to_string(record.priority), record.dueAt, record.remindAt},
                 &result)) {
             PQclear(result);
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         if (PQntuples(result) > 0) outId = std::atoll(value_(result, 0, 0).c_str());
         PQclear(result);
@@ -1245,7 +1326,7 @@ public:
     }
 
     std::optional<TaskRecord> findTask(long long id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(taskSelect() + " WHERE id = $1", {std::to_string(id)}, &result)) return std::nullopt;
         std::optional<TaskRecord> record;
@@ -1255,7 +1336,7 @@ public:
     }
 
     std::vector<TaskRecord> listTasks(long long userId, const std::string& status, int limit) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<TaskRecord> entries;
         PGresult* result = nullptr;
         bool ok = false;
@@ -1273,13 +1354,13 @@ public:
     }
 
     DatabaseError setTaskStatus(long long id, const std::string& status) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute(
                 "UPDATE tasks SET status = $2, "
                 "completed_at = CASE WHEN $2 = 'done' THEN now() ELSE completed_at END WHERE id = $1",
                 {std::to_string(id), status}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1288,10 +1369,10 @@ public:
     }
 
     DatabaseError deleteTask(long long id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute("DELETE FROM tasks WHERE id = $1", {std::to_string(id)}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool deleted = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1300,7 +1381,7 @@ public:
     }
 
     std::vector<TaskRecord> listDueTasks(int limit, long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<TaskRecord> entries;
         PGresult* result = nullptr;
         if (!execute(taskSelect() +
@@ -1316,11 +1397,11 @@ public:
     }
 
     DatabaseError markTaskReminded(long long id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute("UPDATE tasks SET reminded_at = now() WHERE id = $1 AND reminded_at IS NULL",
                      {std::to_string(id)}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1331,7 +1412,7 @@ public:
     // ------------------------------------------- integration_connections
     DatabaseError upsertIntegrationConnection(const IntegrationConnectionRecord& record,
                                               long long& outId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         const std::string status = record.status.empty() ? std::string("active") : record.status;
         if (!execute(
@@ -1346,7 +1427,7 @@ public:
                  record.tokenEncrypted, status, record.lastError},
                 &result)) {
             PQclear(result);
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         if (PQntuples(result) > 0) outId = std::atoll(value_(result, 0, 0).c_str());
         PQclear(result);
@@ -1355,7 +1436,7 @@ public:
 
     std::optional<IntegrationConnectionRecord> findIntegrationConnection(
         long long userId, const std::string& provider) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(integrationSelect() + " WHERE user_id = $1 AND provider = $2",
                      {std::to_string(userId), provider}, &result)) {
@@ -1368,7 +1449,7 @@ public:
     }
 
     std::vector<IntegrationConnectionRecord> listIntegrationConnections(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<IntegrationConnectionRecord> entries;
         PGresult* result = nullptr;
         if (!execute(integrationSelect() + " WHERE user_id = $1 ORDER BY provider",
@@ -1384,13 +1465,13 @@ public:
                                          const std::string& tokenEncrypted,
                                          const std::string& status,
                                          const std::string& lastError) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute(
                 "UPDATE integration_connections SET token_encrypted = $2, status = $3, last_error = $4 "
                 "WHERE id = $1",
                 {std::to_string(id), tokenEncrypted, status, lastError}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(this->lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1399,11 +1480,11 @@ public:
     }
 
     DatabaseError touchIntegrationUsed(long long id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute("UPDATE integration_connections SET last_used_at = now() WHERE id = $1",
                      {std::to_string(id)}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1412,10 +1493,10 @@ public:
     }
 
     DatabaseError deleteIntegrationConnection(long long id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute("DELETE FROM integration_connections WHERE id = $1", {std::to_string(id)}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool deleted = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1425,7 +1506,7 @@ public:
 
     // --------------------------------------------- integration_oauth_states
     DatabaseError createOauthState(const OauthStateRecord& record) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute(
                 "INSERT INTO integration_oauth_states "
@@ -1434,14 +1515,14 @@ public:
                 {record.state, std::to_string(record.userId), record.provider, record.verifier,
                  record.redirectUri, record.expiresAt},
                 &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(res);
         return DatabaseError::success();
     }
 
     std::optional<OauthStateRecord> findOauthState(const std::string& state) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "SELECT state, user_id, provider, verifier, redirect_uri, "
@@ -1468,10 +1549,11 @@ public:
     }
 
     DatabaseError useOauthState(const std::string& state) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
-        if (!execute("UPDATE integration_oauth_states SET used_at = now() WHERE state = $1", {state}, &res)) {
-            return DatabaseError::failure(lastError_);
+        if (!execute("UPDATE integration_oauth_states SET used_at = now() WHERE state = $1 AND used_at IS NULL",
+                     {state}, &res)) {
+            return DatabaseError::failure(lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1481,7 +1563,7 @@ public:
 
     // ------------------------------------------------------------ notifications
     DatabaseError createNotification(const NotificationRecord& record, long long& outId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "INSERT INTO notifications (user_id, kind, title, body, payload) "
@@ -1490,7 +1572,7 @@ public:
                  record.payload.dump()},
                 &result)) {
             PQclear(result);
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         if (PQntuples(result) > 0) outId = std::atoll(value_(result, 0, 0).c_str());
         PQclear(result);
@@ -1500,7 +1582,7 @@ public:
     std::vector<NotificationRecord> listNotifications(long long userId,
                                                       bool unreadOnly,
                                                       int limit) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<NotificationRecord> entries;
         PGresult* result = nullptr;
         const std::string query = notificationSelect() + " WHERE user_id = $1" +
@@ -1516,7 +1598,7 @@ public:
     }
 
     long long unreadNotificationCount(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         long long count = 0;
         if (execute("SELECT count(*) FROM notifications WHERE user_id = $1 AND read_at IS NULL",
@@ -1529,11 +1611,11 @@ public:
     }
 
     DatabaseError markNotificationRead(long long userId, long long id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute("UPDATE notifications SET read_at = now() WHERE id = $1 AND user_id = $2",
                      {std::to_string(id), std::to_string(userId)}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1542,11 +1624,11 @@ public:
     }
 
     DatabaseError markAllNotificationsRead(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute("UPDATE notifications SET read_at = now() WHERE user_id = $1 AND read_at IS NULL",
                      {std::to_string(userId)}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         PQclear(res);
         return DatabaseError::success();
@@ -1557,7 +1639,7 @@ public:
                                      const std::string& platform,
                                      const std::string& token,
                                      long long& outId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(
                 "INSERT INTO push_devices (user_id, platform, token) VALUES ($1, $2, $3) "
@@ -1565,7 +1647,7 @@ public:
                 "platform = EXCLUDED.platform, enabled = TRUE RETURNING id",
                 {std::to_string(userId), platform, token}, &result)) {
             PQclear(result);
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         if (PQntuples(result) > 0) outId = std::atoll(value_(result, 0, 0).c_str());
         PQclear(result);
@@ -1573,7 +1655,7 @@ public:
     }
 
     std::vector<PushDeviceRecord> listPushDevices(long long userId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<PushDeviceRecord> entries;
         PGresult* result = nullptr;
         if (!execute(
@@ -1600,11 +1682,11 @@ public:
     }
 
     DatabaseError touchPushDevice(long long id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute("UPDATE push_devices SET last_used_at = now() WHERE id = $1",
                      {std::to_string(id)}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool updated = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1613,11 +1695,11 @@ public:
     }
 
     DatabaseError deletePushDevice(long long userId, long long id) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* res = nullptr;
         if (!execute("DELETE FROM push_devices WHERE id = $1 AND user_id = $2",
                      {std::to_string(id), std::to_string(userId)}, &res)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool deleted = std::atoi(PQcmdTuples(res)) > 0;
         PQclear(res);
@@ -1627,10 +1709,10 @@ public:
 
     // ------------------------------------------------------------ admin
     DatabaseError setUserRole(long long userId, const std::string& role) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("UPDATE users SET role = $2 WHERE id = $1", {std::to_string(userId), role}, &result)) {
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
@@ -1643,7 +1725,7 @@ public:
                                            int limit,
                                            int offset,
                                            long long& total) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<UserRecord> users;
         total = 0;
         // Экранируем LIKE-маски, как в searchUsers.
@@ -1681,7 +1763,7 @@ public:
     }
 
     Json adminStats() override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         Json stats = Json::object();
         PGresult* result = nullptr;
         if (!execute("SELECT count(*), "
@@ -1706,7 +1788,7 @@ public:
     }
 
     std::vector<AuditRecord> listAuditPage(long long userId, long long beforeId, int limit) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<AuditRecord> logs;
         PGresult* result = nullptr;
         if (!execute("SELECT id, COALESCE(user_id, 0), kind, detail::text, remote_addr, "
@@ -1733,7 +1815,7 @@ public:
 
     // ------------------------------------------------------- meeting_invites
     DatabaseError createInvite(const InviteRecord& record, long long& outId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("INSERT INTO meeting_invites (owner_id, token_hash, topic, note, duration_minutes, "
                      "slots, guest_name, expires_at) "
@@ -1744,7 +1826,7 @@ public:
                       record.expiresAt},
                      &result)) {
             PQclear(result);
-            return DatabaseError::failure(lastError_);
+            return DatabaseError::failure(lastError());
         }
         outId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
         PQclear(result);
@@ -1761,7 +1843,7 @@ public:
     }
 
     std::vector<InviteRecord> listInvites(long long ownerId, int limit) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         std::vector<InviteRecord> invites;
         PGresult* result = nullptr;
         if (!execute(inviteSelect() + " WHERE owner_id = $1 ORDER BY id DESC LIMIT $2",
@@ -1774,7 +1856,7 @@ public:
     }
 
     int countOpenInvites(long long ownerId) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute("SELECT count(*) FROM meeting_invites WHERE owner_id = $1 AND status = 'open' "
                      "AND expires_at > now()",
@@ -1787,7 +1869,7 @@ public:
     }
 
     bool closeInvite(long long id, const std::string& status, const InviteRecord& response) override {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         const bool keepGuest = status == "cancelled";
         if (!execute("UPDATE meeting_invites SET status = $2, responded_at = now(), "
@@ -1808,6 +1890,384 @@ public:
     }
 
 private:
+    // ----------------------------------------------------------- rate_limits
+    bool sharedRateLimits() const override { return true; }
+
+    int rateLimitHit(const std::string& key, int windowSec) override {
+        Lease lease(pool_);
+        // Истёкшие окна чистим изредка и порциями, чтобы таблица не росла от уникальных
+        // ключей: по индексу window_start, без полного прохода таблицы.
+        if (++rateHits_ % 1000 == 0) {
+            execute("DELETE FROM rate_limits WHERE ctid IN (SELECT ctid FROM rate_limits "
+                    "WHERE window_start < now() - interval '1 day' "
+                    "AND window_start + make_interval(secs => window_sec) < now() LIMIT 5000)",
+                    {}, nullptr);
+        }
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO rate_limits (key, count, window_start, window_sec) VALUES ($1, 1, now(), $2::int) "
+                     "ON CONFLICT (key) DO UPDATE SET "
+                     "count = CASE WHEN rate_limits.window_start + make_interval(secs => rate_limits.window_sec) "
+                     "< now() THEN 1 ELSE rate_limits.count + 1 END, "
+                     "window_start = CASE WHEN rate_limits.window_start + make_interval(secs => rate_limits.window_sec) "
+                     "< now() THEN now() ELSE rate_limits.window_start END, "
+                     "window_sec = CASE WHEN rate_limits.window_start + make_interval(secs => rate_limits.window_sec) "
+                     "< now() THEN EXCLUDED.window_sec ELSE rate_limits.window_sec END "
+                     "RETURNING count",
+                     {key, std::to_string(windowSec > 0 ? windowSec : 1)}, &result)) {
+            // Fail closed: при сбое БД (нет прав на rate_limits, таймаут) защита от
+            // перебора паролей и кодов не должна молча отключаться.
+            AURA_LOG(log::Level::Error, "db") << "rate_limits недоступна, считаем лимит исчерпанным";
+            return kRateLimitFailClosed;
+        }
+        const int count = PQntuples(result) > 0 ? std::atoi(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return count;
+    }
+
+    int rateLimitCount(const std::string& key) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT count FROM rate_limits WHERE key = $1 "
+                     "AND window_start + make_interval(secs => window_sec) >= now()",
+                     {key}, &result)) {
+            AURA_LOG(log::Level::Error, "db") << "rate_limits недоступна, считаем лимит исчерпанным";
+            return kRateLimitFailClosed;
+        }
+        const int count = PQntuples(result) > 0 ? std::atoi(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return count;
+    }
+
+    void rateLimitClear(const std::string& key) override {
+        Lease lease(pool_);
+        execute("DELETE FROM rate_limits WHERE key = $1", {key}, nullptr);
+    }
+
+    // Advisory lock на соединении сервера: ключ — пространство Aura (старшие биты) + id владельца.
+    static std::string scheduleLockKey(long long ownerId) {
+        return std::to_string((0x4155LL << 40) | (ownerId & ((1LL << 40) - 1)));
+    }
+
+    // Advisory lock живёт в сессии PostgreSQL: взять и отпустить его нужно на одном
+    // и том же соединении — для этого отдельный «пул» из одного соединения.
+    bool tryLockSchedule(long long ownerId) override {
+        Lease lease(lockPool_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT pg_try_advisory_lock($1::bigint)", {scheduleLockKey(ownerId)}, &result)) return false;
+        const bool locked = PQntuples(result) > 0 && value_(result, 0, 0) == "t";
+        PQclear(result);
+        return locked;
+    }
+
+    void unlockSchedule(long long ownerId) override {
+        Lease lease(lockPool_);
+        execute("SELECT pg_advisory_unlock($1::bigint)", {scheduleLockKey(ownerId)}, nullptr);
+    }
+
+    // --------------------------------------------------------- booking_pages
+    DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO booking_pages (owner_id, slug, title, description, duration_minutes, days_ahead, "
+                     "max_per_day, notice_hours, max_series, weekends, status) "
+                     "VALUES ($1, $2, $3, $4, $5::int, $6::int, $7::int, $8::int, $9::int, $10::bool, $11) "
+                     "RETURNING id",
+                     {std::to_string(record.ownerId), record.slug, record.title, record.description,
+                      std::to_string(record.durationMinutes), std::to_string(record.daysAhead),
+                      std::to_string(record.maxPerDay), std::to_string(record.noticeHours),
+                      std::to_string(record.maxSeries), record.weekends ? "true" : "false", record.status},
+                     &result)) {
+            PQclear(result);
+            return DatabaseError::failure(lastError());
+        }
+        outId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    std::optional<BookingPageRecord> findBookingPage(long long id) override {
+        return findBookingPageWhere("id = $1", std::to_string(id));
+    }
+
+    std::optional<BookingPageRecord> findBookingPageBySlug(const std::string& slug) override {
+        if (slug.empty()) return std::nullopt;
+        return findBookingPageWhere("slug = $1", slug);
+    }
+
+    std::vector<BookingPageRecord> listBookingPages(long long ownerId) override {
+        Lease lease(pool_);
+        std::vector<BookingPageRecord> pages;
+        PGresult* result = nullptr;
+        if (!execute(bookingPageSelect() + " WHERE owner_id = $1 AND status <> 'archived' ORDER BY id DESC",
+                     {std::to_string(ownerId)}, &result)) {
+            return pages;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) pages.push_back(readBookingPage(result, row));
+        PQclear(result);
+        return pages;
+    }
+
+    DatabaseError updateBookingPage(const BookingPageRecord& record) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE booking_pages SET title = $2, description = $3, duration_minutes = $4::int, "
+                     "days_ahead = $5::int, max_per_day = $6::int, notice_hours = $7::int, max_series = $8::int, "
+                     "weekends = $9::bool, status = $10, updated_at = now() WHERE id = $1",
+                     {std::to_string(record.id), record.title, record.description,
+                      std::to_string(record.durationMinutes), std::to_string(record.daysAhead),
+                      std::to_string(record.maxPerDay), std::to_string(record.noticeHours),
+                      std::to_string(record.maxSeries), record.weekends ? "true" : "false", record.status},
+                     &result)) {
+            return DatabaseError::failure(lastError());
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched ? DatabaseError::success() : DatabaseError::failure("страница записи не найдена");
+    }
+
+    static std::string bookingPageSelect() {
+        return "SELECT id, owner_id, slug, title, description, duration_minutes, days_ahead, max_per_day, "
+               "notice_hours, max_series, weekends, status, "
+               "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+               "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+               "FROM booking_pages";
+    }
+
+    std::optional<BookingPageRecord> findBookingPageWhere(const std::string& condition, const std::string& value) {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute(bookingPageSelect() + " WHERE " + condition, {value}, &result)) return std::nullopt;
+        std::optional<BookingPageRecord> record;
+        if (PQntuples(result) > 0) record = readBookingPage(result, 0);
+        PQclear(result);
+        return record;
+    }
+
+    BookingPageRecord readBookingPage(PGresult* result, int row) const {
+        BookingPageRecord record;
+        record.id = std::atoll(value_(result, row, 0).c_str());
+        record.ownerId = std::atoll(value_(result, row, 1).c_str());
+        record.slug = value_(result, row, 2);
+        record.title = value_(result, row, 3);
+        record.description = value_(result, row, 4);
+        record.durationMinutes = std::atoi(value_(result, row, 5).c_str());
+        record.daysAhead = std::atoi(value_(result, row, 6).c_str());
+        record.maxPerDay = std::atoi(value_(result, row, 7).c_str());
+        record.noticeHours = std::atoi(value_(result, row, 8).c_str());
+        record.maxSeries = std::atoi(value_(result, row, 9).c_str());
+        record.weekends = value_(result, row, 10) == "t";
+        record.status = value_(result, row, 11);
+        record.createdAt = value_(result, row, 12);
+        record.updatedAt = value_(result, row, 13);
+        return record;
+    }
+
+    // -------------------------------------------------------------- bookings
+    DatabaseError createBooking(const BookingRecord& record, long long& outId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO bookings (page_id, owner_id, manage_hash, guest_name, guest_email, guest_comment, "
+                     "occurrences, status, cancelled_by, reschedules, ends_at) "
+                     "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::int, NULLIF($11, '')::timestamptz) "
+                     "RETURNING id",
+                     {std::to_string(record.pageId), std::to_string(record.ownerId), record.manageHash,
+                      record.guestName, record.guestEmail, record.guestComment,
+                      record.occurrences.isArray() ? record.occurrences.dump() : std::string("[]"), record.status,
+                      record.cancelledBy, std::to_string(record.reschedules), bookingEndsAt(record.occurrences)},
+                     &result)) {
+            PQclear(result);
+            return DatabaseError::failure(lastError());
+        }
+        outId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    std::optional<BookingRecord> findBooking(long long id) override {
+        return findBookingWhere("id = $1", std::to_string(id));
+    }
+
+    std::optional<BookingRecord> findBookingByToken(const std::string& manageHash) override {
+        if (manageHash.empty()) return std::nullopt;
+        return findBookingWhere("manage_hash = $1", manageHash);
+    }
+
+    std::vector<BookingRecord> listBookings(long long ownerId, long long pageId, bool activeOnly,
+                                            int limit) override {
+        Lease lease(pool_);
+        std::vector<BookingRecord> bookings;
+        PGresult* result = nullptr;
+        if (!execute(bookingSelect() +
+                         " WHERE owner_id = $1 AND ($2::bigint = 0 OR page_id = $2::bigint) "
+                         "AND (NOT $3::bool OR status = 'active') ORDER BY id DESC LIMIT $4",
+                     {std::to_string(ownerId), std::to_string(pageId), activeOnly ? "true" : "false",
+                      std::to_string(limit > 0 ? limit : 100)},
+                     &result)) {
+            return bookings;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) bookings.push_back(readBooking(result, row));
+        PQclear(result);
+        return bookings;
+    }
+
+    std::vector<BookingRecord> listUpcomingBookings(long long ownerId, long long pageId, int limit) override {
+        Lease lease(pool_);
+        std::vector<BookingRecord> bookings;
+        PGresult* result = nullptr;
+        if (!execute(bookingSelect() +
+                         " WHERE owner_id = $1 AND ($2::bigint = 0 OR page_id = $2::bigint) "
+                         "AND status = 'active' AND ends_at > now() ORDER BY id DESC LIMIT $3",
+                     {std::to_string(ownerId), std::to_string(pageId), std::to_string(limit > 0 ? limit : 100)},
+                     &result)) {
+            return bookings;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) bookings.push_back(readBooking(result, row));
+        PQclear(result);
+        return bookings;
+    }
+
+    DatabaseError updateBooking(const BookingRecord& record) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE bookings SET occurrences = $2::jsonb, status = $3, cancelled_by = $4, "
+                     "reschedules = $5::int, manage_hash = COALESCE(NULLIF($6, ''), manage_hash), "
+                     "ends_at = NULLIF($7, '')::timestamptz, updated_at = now() WHERE id = $1",
+                     {std::to_string(record.id),
+                      record.occurrences.isArray() ? record.occurrences.dump() : std::string("[]"), record.status,
+                      record.cancelledBy, std::to_string(record.reschedules), record.manageHash,
+                      bookingEndsAt(record.occurrences)},
+                     &result)) {
+            return DatabaseError::failure(lastError());
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched ? DatabaseError::success() : DatabaseError::failure("запись не найдена");
+    }
+
+    static std::string bookingSelect() {
+        return "SELECT id, page_id, owner_id, manage_hash, guest_name, guest_email, guest_comment, "
+               "occurrences::text, status, cancelled_by, reschedules, "
+               "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+               "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+               "FROM bookings";
+    }
+
+    std::optional<BookingRecord> findBookingWhere(const std::string& condition, const std::string& value) {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute(bookingSelect() + " WHERE " + condition, {value}, &result)) return std::nullopt;
+        std::optional<BookingRecord> record;
+        if (PQntuples(result) > 0) record = readBooking(result, 0);
+        PQclear(result);
+        return record;
+    }
+
+    BookingRecord readBooking(PGresult* result, int row) const {
+        BookingRecord record;
+        record.id = std::atoll(value_(result, row, 0).c_str());
+        record.pageId = std::atoll(value_(result, row, 1).c_str());
+        record.ownerId = std::atoll(value_(result, row, 2).c_str());
+        record.manageHash = value_(result, row, 3);
+        record.guestName = value_(result, row, 4);
+        record.guestEmail = value_(result, row, 5);
+        record.guestComment = value_(result, row, 6);
+        const Json occurrences = Json::parse(value_(result, row, 7));
+        record.occurrences = occurrences.isArray() ? occurrences : Json::array();
+        record.status = value_(result, row, 8);
+        record.cancelledBy = value_(result, row, 9);
+        record.reschedules = std::atoi(value_(result, row, 10).c_str());
+        record.createdAt = value_(result, row, 11);
+        record.updatedAt = value_(result, row, 12);
+        return record;
+    }
+
+    // ------------------------------------------------------------- referrals
+    std::string referralCode(long long userId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT code FROM referral_codes WHERE user_id = $1", {std::to_string(userId)}, &result)) {
+            return "";
+        }
+        const std::string code = PQntuples(result) > 0 ? value_(result, 0, 0) : std::string();
+        PQclear(result);
+        return code;
+    }
+
+    bool setReferralCode(long long userId, const std::string& code) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO referral_codes (user_id, code) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                     {std::to_string(userId), code}, &result)) {
+            return false;
+        }
+        const bool inserted = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return inserted;
+    }
+
+    long long findReferrer(const std::string& code) override {
+        Lease lease(pool_);
+        if (code.empty()) return 0;
+        PGresult* result = nullptr;
+        if (!execute("SELECT user_id FROM referral_codes WHERE code = $1", {code}, &result)) return 0;
+        const long long id = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return id;
+    }
+
+    DatabaseError createReferral(long long referrerId, long long referredId, const std::string& source) override {
+        Lease lease(pool_);
+        if (referrerId == referredId) return DatabaseError::failure("нельзя пригласить себя");
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO referrals (referrer_id, referred_id, source) VALUES ($1, $2, $3) "
+                     "ON CONFLICT (referred_id) DO NOTHING",
+                     {std::to_string(referrerId), std::to_string(referredId), source}, &result)) {
+            return DatabaseError::failure(lastError());
+        }
+        const bool inserted = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return inserted ? DatabaseError::success() : DatabaseError::failure("уже приглашён");
+    }
+
+    long long markReferralVerified(long long referredId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE referrals SET verified_at = now() WHERE referred_id = $1 AND verified_at IS NULL "
+                     "RETURNING referrer_id",
+                     {std::to_string(referredId)}, &result)) {
+            return 0;
+        }
+        const long long id = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return id;
+    }
+
+    std::vector<ReferralRecord> listReferrals(long long referrerId, int limit) override {
+        Lease lease(pool_);
+        std::vector<ReferralRecord> referrals;
+        PGresult* result = nullptr;
+        if (!execute("SELECT r.referred_id, u.display_name, r.source, "
+                     "to_char(r.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+                     "to_char(r.verified_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+                     "FROM referrals r JOIN users u ON u.id = r.referred_id "
+                     "WHERE r.referrer_id = $1 ORDER BY r.id DESC LIMIT $2",
+                     {std::to_string(referrerId), std::to_string(limit > 0 ? limit : 50)}, &result)) {
+            return referrals;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) {
+            ReferralRecord record;
+            record.referrerId = referrerId;
+            record.referredId = std::atoll(value_(result, row, 0).c_str());
+            record.displayName = value_(result, row, 1);
+            record.source = value_(result, row, 2);
+            record.createdAt = value_(result, row, 3);
+            record.verifiedAt = value_(result, row, 4);
+            referrals.push_back(record);
+        }
+        PQclear(result);
+        return referrals;
+    }
+
     static std::string inviteSelect() {
         return "SELECT id, owner_id, token_hash, topic, note, duration_minutes, slots::text, status, "
                "guest_name, guest_email, guest_comment, chosen::text, "
@@ -1818,7 +2278,7 @@ private:
     }
 
     std::optional<InviteRecord> findInviteWhere(const std::string& condition, const std::string& value) {
-        std::lock_guard<std::mutex> lock(mutex_);
+        Lease lease(pool_);
         PGresult* result = nullptr;
         if (!execute(inviteSelect() + " WHERE " + condition, {value}, &result)) return std::nullopt;
         std::optional<InviteRecord> record;
@@ -1996,8 +2456,8 @@ private:
 
     // Выполняет параметризованный запрос. Память результата освобождает вызывающий.
     // Параметры сессии после (пере)подключения.
-    bool prepareSession() {
-        PGresult* result = PQexec(connection_, "SET TIME ZONE 'UTC'");
+    bool prepareSession() const {
+        PGresult* result = PQexec(tlsConn->pg, "SET TIME ZONE 'UTC'");
         const bool ok = PQresultStatus(result) == PGRES_COMMAND_OK;
         PQclear(result);
         return ok;
@@ -2005,17 +2465,18 @@ private:
 
     // Соединение потеряно (рестарт PostgreSQL, обрыв сети) — переподключаемся.
     // Без этого сервер после перезапуска БД отвечал ошибками до своего рестарта.
-    bool ensureConnected() {
-        if (connection_ == nullptr) {
-            connection_ = PQconnectdb(url_.c_str());
-        } else if (PQstatus(connection_) == CONNECTION_OK) {
+    bool ensureConnected() const {
+        PGconn*& connection = tlsConn->pg;
+        if (connection == nullptr) {
+            connection = PQconnectdb(url_.c_str());
+        } else if (PQstatus(connection) == CONNECTION_OK) {
             return true;
         } else {
             AURA_LOG(log::Level::Warn, "db") << "соединение с PostgreSQL потеряно, переподключаюсь";
-            PQreset(connection_);
+            PQreset(connection);
         }
-        if (PQstatus(connection_) != CONNECTION_OK) {
-            AURA_LOG(log::Level::Error, "db") << "PostgreSQL недоступен: " << PQerrorMessage(connection_);
+        if (PQstatus(connection) != CONNECTION_OK) {
+            AURA_LOG(log::Level::Error, "db") << "PostgreSQL недоступен: " << PQerrorMessage(connection);
             return false;
         }
         AURA_LOG(log::Level::Info, "db") << "соединение с PostgreSQL восстановлено";
@@ -2034,6 +2495,7 @@ private:
     }
 
     bool execute(const std::string& sql, const std::vector<std::string>& args, PGresult** out) {
+        std::string& lastError_ = tlsConn->lastError;
         lastError_.clear();
         std::vector<const char*> values;
         values.reserve(args.size());
@@ -2044,7 +2506,7 @@ private:
                 lastError_ = "база данных недоступна";
                 return false;
             }
-            PGresult* result = PQexecParams(connection_, sql.c_str(), static_cast<int>(values.size()), nullptr,
+            PGresult* result = PQexecParams(tlsConn->pg, sql.c_str(), static_cast<int>(values.size()), nullptr,
                                             values.empty() ? nullptr : values.data(), nullptr, nullptr, 0);
             const ExecStatusType status = PQresultStatus(result);
             if (status == PGRES_TUPLES_OK || status == PGRES_COMMAND_OK) {
@@ -2060,15 +2522,18 @@ private:
             lastError_ = publicError(sqlState);
             PQclear(result);
             // Обрыв соединения посреди запроса: один повтор после переподключения.
-            if (PQstatus(connection_) == CONNECTION_OK) return false;
+            if (PQstatus(tlsConn->pg) == CONNECTION_OK) return false;
         }
         return false;
     }
 
+    // Текст ошибки последнего запроса на соединении текущего вызова.
+    const std::string& lastError() const { return tlsConn->lastError; }
+
     const std::string url_;
-    mutable std::mutex mutex_;
-    PGconn* connection_ = nullptr;
-    std::string lastError_;
+    mutable PgPool pool_;
+    mutable PgPool lockPool_;
+    std::atomic<unsigned long long> rateHits_{0};  // вызовы rateLimitHit — для редкой чистки
 };
 
 }  // namespace

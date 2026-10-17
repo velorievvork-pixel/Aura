@@ -1,7 +1,9 @@
 // client/src/appstore.cpp
 #include "appstore.h"
 
+#include <QClipboard>
 #include <QDateTime>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSettings>
@@ -58,6 +60,16 @@ QVariantList jsonToStringList(const QJsonArray& array) {
     for (const auto& value : array) list.append(value.toString());
     return list;
 }
+// Текст для экрана входа по причине из события session.revoked.
+QString revokedMessage(const QString& reason) {
+    if (reason == QLatin1String("password_changed") || reason == QLatin1String("password_reset"))
+        return QStringLiteral("Пароль изменён — войдите снова");
+    if (reason == QLatin1String("account_disabled"))
+        return QStringLiteral("Аккаунт заблокирован администратором");
+    if (reason == QLatin1String("logout"))
+        return QStringLiteral("Вы вышли из аккаунта на другом устройстве");
+    return QStringLiteral("Сессия завершена — войдите снова");
+}
 }  // namespace
 
 AppStore::~AppStore() = default;
@@ -84,9 +96,14 @@ AppStore::AppStore(QObject* parent)
             loadMemory();
             reconnectDelayMs_ = 2000;
         } else if (state == WebSocketClient::State::Disconnected) {
-            // Ответы на запросы в полёте уже не придут — счётчик privacy сбрасываем,
-            // после переподключения prefs.get вернёт актуальные флаги.
+            // Ответы на запросы в полёте уже не придут — счётчик privacy и флаг
+            // сохранения страницы записи сбрасываем; после переподключения prefs.get
+            // вернёт актуальные флаги.
             privacyPending_ = 0;
+            if (bookingSaving_) {
+                bookingSaving_ = false;
+                emit bookingSavingChanged();
+            }
             setStatus(QStringLiteral("Нет соединения с сервером"));
             scheduleReconnect();
         }
@@ -196,18 +213,7 @@ void AppStore::applyAuth(const QJsonObject& payload) {
                                  : payload;
     const bool firstTime = userId_ == 0;
 
-    if (!payload.value(QStringLiteral("token")).toString().isEmpty()) {
-        token_ = payload.value(QStringLiteral("token")).toString();
-        QSettings settings;
-        settings.setValue(QLatin1String(kTokenKey), token_);
-        client_->setToken(token_);
-    }
-    const QString refresh = payload.value(QStringLiteral("refresh_token")).toString();
-    if (!refresh.isEmpty()) {
-        refreshToken_ = refresh;
-        QSettings settings;
-        settings.setValue(QLatin1String(kRefreshKey), refreshToken_);
-    }
+    storeTokens(payload);
     // Успешная авторизация гасит ожидания кодов.
     if (!pendingEmail_.isEmpty() || !devEmailCode_.isEmpty() || !devResetCode_.isEmpty()) {
         pendingEmail_.clear();
@@ -254,6 +260,21 @@ void AppStore::applyAuth(const QJsonObject& payload) {
     setStatus(QStringLiteral("Добро пожаловать, %1").arg(userName_));
 }
 
+void AppStore::storeTokens(const QJsonObject& payload) {
+    if (!payload.value(QStringLiteral("token")).toString().isEmpty()) {
+        token_ = payload.value(QStringLiteral("token")).toString();
+        QSettings settings;
+        settings.setValue(QLatin1String(kTokenKey), token_);
+        client_->setToken(token_);
+    }
+    const QString refresh = payload.value(QStringLiteral("refresh_token")).toString();
+    if (!refresh.isEmpty()) {
+        refreshToken_ = refresh;
+        QSettings settings;
+        settings.setValue(QLatin1String(kRefreshKey), refreshToken_);
+    }
+}
+
 void AppStore::clearSession() {
     QSettings settings;
     settings.remove(QLatin1String(kTokenKey));
@@ -287,6 +308,12 @@ void AppStore::clearSession() {
     userEmail_.clear();
     userBio_.clear();
     privacyPending_ = 0;
+    bookingPages_.clear();
+    guestBookings_.clear();
+    bookingLoaded_ = false;
+    referral_.clear();
+    emit bookingChanged();
+    emit referralChanged();
     chats_.clear();
     messages_.clear();
     memory_.clear();
@@ -382,13 +409,30 @@ void AppStore::cancelTwoFactor() {
     setStatus(QStringLiteral("Вход отменён"));
 }
 
-void AppStore::registerUser(const QString& displayName, const QString& email, const QString& password) {
+QString AppStore::normalizeReferralCode(const QString& raw) const {
+    const QString code = raw.trimmed().toUpper();
+    if (code.size() != 8) return QString();
+    for (const QChar ch : code) {
+        const bool ok = (ch >= QLatin1Char('A') && ch <= QLatin1Char('Z')) || (ch >= QLatin1Char('0') && ch <= QLatin1Char('9'));
+        if (!ok) return QString();
+    }
+    return code;
+}
+
+void AppStore::registerUser(const QString& displayName, const QString& email, const QString& password,
+                            const QString& ref) {
     setBusy(true);
     QJsonObject payload;
     payload.insert(QStringLiteral("display_name"), displayName);
     payload.insert(QStringLiteral("email"), email);
     payload.insert(QStringLiteral("password"), password);
     payload.insert(QStringLiteral("device"), QStringLiteral("qt-client"));
+    // Код приглашения: неверный не отправляем (сервер его всё равно молча проигнорирует).
+    const QString code = normalizeReferralCode(ref);
+    if (!code.isEmpty()) {
+        payload.insert(QStringLiteral("ref"), code);
+        payload.insert(QStringLiteral("ref_source"), QStringLiteral("link"));
+    }
 
     client_->sendRequest(QStringLiteral("auth.register"), payload,
                          [this, email](const QJsonObject& response, const QString& error) {
@@ -532,6 +576,17 @@ void AppStore::changePassword(const QString& oldPassword, const QString& newPass
                                  setError(error);
                                  return;
                              }
+                             // Сервер отозвал все сессии и refresh-токены, включая наши, и выдал
+                             // этому устройству новую пару — без неё следующий вход по токену
+                             // (переподключение, перезапуск) выкинул бы на экран входа.
+                             const QJsonObject tokens = response.value(QStringLiteral("payload")).toObject();
+                             // Старый refresh-токен сервер уже отозвал: если новый не пришёл,
+                             // не храним мёртвый (иначе следующий refresh выкинет на вход).
+                             if (tokens.value(QStringLiteral("refresh_token")).toString().isEmpty()) {
+                                 refreshToken_.clear();
+                                 QSettings().remove(QLatin1String(kRefreshKey));
+                             }
+                             storeTokens(tokens);
                              setStatus(QStringLiteral("Пароль изменён, прочие устройства отключены"));
                          });
 }
@@ -1078,6 +1133,15 @@ void AppStore::loadMemory() {
 }
 
 void AppStore::handleEvent(const QString& name, const QJsonObject& payload) {
+    if (name == QLatin1String("session.revoked")) {
+        // Сессию этого соединения отозвали (выход/смена пароля на другом устройстве,
+        // блокировка) — сервер сейчас закроет сокет кодом 4401. Токены мертвы:
+        // не ждём переподключения, сразу возвращаемся на экран входа.
+        const QString reason = payload.value(QStringLiteral("reason")).toString();
+        clearSession();
+        setStatus(revokedMessage(reason));
+        return;
+    }
     if (name == QLatin1String("chat.message")) {
         const qint64 chatId = static_cast<qint64>(payload.value(QStringLiteral("chat_id")).toDouble());
         if (chatId == currentChatId_) {
@@ -1110,6 +1174,9 @@ void AppStore::handleEvent(const QString& name, const QJsonObject& payload) {
         notifications_.prepend(payload.toVariantMap());
         ++unreadNotifications_;
         emit notificationsChanged();
+        const QString kind = payload.value(QStringLiteral("kind")).toString();
+        if (kind.startsWith(QLatin1String("booking.")) && bookingLoaded_) loadBooking();
+        if (kind == QLatin1String("referral.joined") && !referral_.isEmpty()) loadReferral();
         setStatus(QStringLiteral("%1: %2")
                       .arg(payload.value(QStringLiteral("title")).toString(),
                            payload.value(QStringLiteral("body")).toString()));
@@ -1454,6 +1521,150 @@ void AppStore::saveVoiceSettings() {
 // ---------------------------------------------------------------------------
 //  Этап 8: разрешения, подтверждения, задачи
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------- страницы записи
+namespace {
+
+// Те же пределы, что проверяет сервер (BookingManager::pageCreate); "" — всё верно.
+QString bookingFieldsProblem(const QVariantMap& fields) {
+    const QString title = fields.value(QStringLiteral("title")).toString().trimmed();
+    const auto inRange = [&fields](const char* key, int min, int max) {
+        bool ok = false;
+        const int value = fields.value(QLatin1String(key)).toInt(&ok);
+        return ok && value >= min && value <= max;
+    };
+    if (title.isEmpty()) return QStringLiteral("Назовите страницу — например, «Консультация»");
+    if (title.toUcs4().size() > 120 || title.contains(QLatin1Char('\n')))
+        return QStringLiteral("Название — до 120 символов в одну строку");
+    if (fields.value(QStringLiteral("description")).toString().trimmed().toUcs4().size() > 1000)
+        return QStringLiteral("Описание — до 1000 символов");
+    if (!inRange("duration_minutes", 15, 240)) return QStringLiteral("Длительность — от 15 до 240 минут");
+    if (!inRange("days_ahead", 1, 60)) return QStringLiteral("Запись вперёд — от 1 до 60 дней");
+    if (!inRange("max_per_day", 1, 16)) return QStringLiteral("Встреч в день — от 1 до 16");
+    if (!inRange("notice_hours", 0, 168)) return QStringLiteral("Запас до встречи — от 0 до 168 часов");
+    if (!inRange("max_series", 1, 12)) return QStringLiteral("Серия — от 1 до 12 встреч");
+    return QString();
+}
+
+}  // namespace
+
+void AppStore::loadBooking() {
+    client_->sendRequest(QStringLiteral("booking.pageList"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             bookingPages_ = response.value(QStringLiteral("payload")).toObject()
+                                                 .value(QStringLiteral("pages")).toArray().toVariantList();
+                             bookingLoaded_ = true;
+                             emit bookingChanged();
+                         });
+    QJsonObject payload;
+    payload.insert(QStringLiteral("limit"), 100);
+    client_->sendRequest(QStringLiteral("booking.list"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) return;
+                             guestBookings_ = response.value(QStringLiteral("payload")).toObject()
+                                                  .value(QStringLiteral("bookings")).toArray().toVariantList();
+                             emit bookingChanged();
+                         });
+}
+
+void AppStore::saveBookingPage(qint64 pageId, const QVariantMap& fields) {
+    // Запрос уже в полёте — повторный клик не создаёт вторую страницу.
+    if (bookingSaving_) return;
+    const QString problem = bookingFieldsProblem(fields);
+    if (!problem.isEmpty()) {
+        emit bookingPageFailed(problem);
+        return;
+    }
+    QJsonObject payload;
+    payload.insert(QStringLiteral("title"), fields.value(QStringLiteral("title")).toString().trimmed());
+    payload.insert(QStringLiteral("description"), fields.value(QStringLiteral("description")).toString().trimmed());
+    for (const char* key : {"duration_minutes", "days_ahead", "max_per_day", "notice_hours", "max_series"}) {
+        payload.insert(QLatin1String(key), fields.value(QLatin1String(key)).toInt());
+    }
+    payload.insert(QStringLiteral("weekends"), fields.value(QStringLiteral("weekends")).toBool());
+    if (pageId > 0) payload.insert(QStringLiteral("page_id"), static_cast<double>(pageId));
+    bookingSaving_ = true;
+    emit bookingSavingChanged();
+    client_->sendRequest(pageId > 0 ? QStringLiteral("booking.pageUpdate") : QStringLiteral("booking.pageCreate"),
+                         payload, [this](const QJsonObject&, const QString& error) {
+                             bookingSaving_ = false;
+                             emit bookingSavingChanged();
+                             if (!error.isEmpty()) {
+                                 emit bookingPageFailed(error);
+                                 return;
+                             }
+                             emit bookingPageSaved();
+                             loadBooking();
+                         });
+}
+
+void AppStore::setBookingPagePaused(qint64 pageId, bool paused) {
+    QJsonObject payload;
+    payload.insert(QStringLiteral("page_id"), static_cast<double>(pageId));
+    payload.insert(QStringLiteral("status"), paused ? QStringLiteral("paused") : QStringLiteral("active"));
+    client_->sendRequest(QStringLiteral("booking.pageUpdate"), payload,
+                         [this, paused](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             setStatus(paused ? QStringLiteral("Запись на паузе — новые гости не смогут записаться")
+                                              : QStringLiteral("Запись снова открыта"));
+                             loadBooking();
+                         });
+}
+
+void AppStore::deleteBookingPage(qint64 pageId) {
+    QJsonObject payload;
+    payload.insert(QStringLiteral("page_id"), static_cast<double>(pageId));
+    client_->sendRequest(QStringLiteral("booking.pageDelete"), payload,
+                         [this](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             setStatus(QStringLiteral("Страница удалена. Уже сделанные записи остаются в силе."));
+                             loadBooking();
+                         });
+}
+
+void AppStore::cancelGuestBooking(qint64 bookingId) {
+    QJsonObject payload;
+    payload.insert(QStringLiteral("booking_id"), static_cast<double>(bookingId));
+    client_->sendRequest(QStringLiteral("booking.ownerCancel"), payload,
+                         [this](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             setStatus(QStringLiteral("Запись отменена"));
+                             loadBooking();
+                             loadTasks();
+                         });
+}
+
+void AppStore::loadReferral() {
+    client_->sendRequest(QStringLiteral("referral.get"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             referral_ = response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                             emit referralChanged();
+                         });
+}
+
+void AppStore::copyText(const QString& text) {
+    if (auto* clipboard = QGuiApplication::clipboard()) {
+        clipboard->setText(text);
+        setStatus(QStringLiteral("Скопировано"));
+    }
+}
 
 void AppStore::loadPermissions() {
     client_->sendRequest(QStringLiteral("permissions.list"), {},
@@ -1892,8 +2103,16 @@ void AppStore::bookNegotiation() {
                                  setError(error);
                                  return;
                              }
-                             negotiation_.insert(QStringLiteral("booking"),
-                                                 response.value(QStringLiteral("payload")).toObject().toVariantMap());
+                             const QJsonObject booking = response.value(QStringLiteral("payload")).toObject();
+                             if (booking.value(QStringLiteral("requires_confirmation")).toBool()) {
+                                 // Режим «ask»: сервер ничего не забронировал, а создал отложенное
+                                 // действие. Встречу в задачи не ставим — ждём подтверждения.
+                                 emit negotiationChanged();
+                                 loadConfirmations();
+                                 setStatus(QStringLiteral("Бронирование ждёт вашего подтверждения"));
+                                 return;
+                             }
+                             negotiation_.insert(QStringLiteral("booking"), booking.toVariantMap());
                              if (!negotiationHistory_.isEmpty()) negotiationHistory_[0] = negotiation_;
                              emit negotiationChanged();
 

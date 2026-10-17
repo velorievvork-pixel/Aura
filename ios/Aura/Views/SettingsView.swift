@@ -4,6 +4,7 @@
 // адрес сервера и выход. Кнопки делают только то, что умеет сервер.
 import AuraKit
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
 
@@ -24,6 +25,7 @@ struct SettingsView: View {
         .onAppear {
             serverURL = store.serverURLText
             store.loadPrivacy()
+            if store.referral == nil { store.loadReferral() }
         }
         .sheet(isPresented: $showQuickActions) {
             NavigationStack { QuickActionsView() }
@@ -35,6 +37,10 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 14) {
                 ScreenHeader("Настройки")
                 profile
+                GlassButton(title: "Страницы записи", systemImage: "calendar.badge.plus", height: 44) {
+                    store.selectTab(.booking)
+                }
+                section("Пригласить друзей") { referralSection }
                 permissionsSection
                 section("Приватность ИИ") { privacy }
                 section("Голос") { voice }
@@ -67,6 +73,50 @@ struct SettingsView: View {
             content()
         }
         .padding(.top, 8)
+    }
+
+    /// Реферальный код и ссылка: друг заводит Ауру — засчитывается после подтверждения email.
+    @ViewBuilder
+    private var referralSection: some View {
+        if let info = store.referral {
+            VStack(alignment: .leading, spacing: 10) {
+                Muted("Друг заведёт свою Ауру — и ваши Ауры смогут договариваться о встречах напрямую. Регистрации со страниц записи тоже засчитываются вам.")
+                HStack {
+                    Muted("Ваш код")
+                    Spacer()
+                    Text(info.code).font(AuraFont.titleSmall).foregroundStyle(AuraColor.textPrimary).textSelection(.enabled)
+                }
+                if info.hasLink {
+                    Text(info.link).font(AuraFont.small).foregroundStyle(AuraColor.textPrimary).textSelection(.enabled)
+                } else {
+                    Muted("Сервер не знает свой публичный адрес (AURA_PUBLIC_URL) — делимся только кодом: друг введёт его при регистрации.")
+                }
+                HStack(spacing: 8) {
+                    GlassButton(title: "Копировать", systemImage: "doc.on.doc", height: 40) {
+                        UIPasteboard.general.string = info.link
+                        store.setStatus(info.hasLink ? "Ссылка скопирована" : "Код скопирован")
+                    }
+                    ShareLink(item: info.shareText) {
+                        Label("Поделиться", systemImage: "square.and.arrow.up")
+                            .font(AuraFont.small)
+                            .frame(maxWidth: .infinity, minHeight: 40)
+                    }
+                    .foregroundStyle(AuraColor.textPrimary)
+                }
+                Muted("Зарегистрировались: \(info.joined) · подтвердили email: \(info.verified)")
+                ForEach(info.referrals, id: \.self) { item in
+                    HStack {
+                        Text(item.displayName.isEmpty ? "Без имени" : item.displayName)
+                            .font(AuraFont.small).foregroundStyle(AuraColor.textPrimary)
+                        Spacer()
+                        Muted(item.verified ? "С Aura" : "Ждёт подтверждения")
+                    }
+                }
+            }
+            .glassCard(padding: 16)
+        } else {
+            Muted("Загружаем реферальный код…")
+        }
     }
 
     private var permissionsSection: some View {

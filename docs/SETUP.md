@@ -1,5 +1,8 @@
 # Установка и настройка Aura
 
+Установка на сервер одной командой (в т.ч. только с телефона) — см.
+[DEPLOY.md](DEPLOY.md): `deploy/install.sh`, команда `aura`, TLS через Caddy.
+
 Порядок: PostgreSQL → AI Service → C++-сервер → клиенты. Для разработки
 достаточно `make`-целей; для продакшена — те же шаги плюс реальные секреты
 и TLS-терминирующий прокси.
@@ -21,6 +24,15 @@ psql aura -v ON_ERROR_STOP=1 -f schema/schema.sql
 # обновления схемы — идемпотентные файлы из schema/migrations/:
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_09_20_notifications.sql
 psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_13_roles.sql   # роли админ-панели
+psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_invites.sql  # приглашения по ссылке
+psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_booking_referrals.sql  # запись и рефералы
+psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_14_rate_limits.sql  # общие лимиты
+psql aura -v ON_ERROR_STOP=1 -f schema/migrations/2026_10_15_audit_fixes.sql  # ends_at записей, UNLOGGED rate_limits
+# после обновления сервера: аккаунты PostgreSQL, обошедшие подтверждение email
+# (ошибка до октября 2026) — сначала отчёт, затем -v apply=1 [-v revoke=1]
+# (apply=0 — только отчёт). Сбрасывать только при AURA_MAIL_DRIVER=smtp:
+# с log код подтверждения до пользователей не дойдёт.
+psql aura -f tools/sql/unverified_accounts.sql
 # демо-данные (необязательно):
 psql aura -f schema/seed.sql
 ```
@@ -89,11 +101,19 @@ AURA_2FA_KEY="$(openssl rand -hex 32)" \
 | push | `AURA_PUSH_DRIVER` (`dev`/`webhook`), `AURA_PUSH_WEBHOOK_URL`, `AURA_APNS_TOPIC` (ai.aura.app), `AURA_APNS_URL`, `AURA_FCM_URL` (FCM HTTP v1, этап 11: замените `aura` на id проекта Firebase) |
 | админ-панель | `AURA_ADMIN_EMAILS` — email первых администраторов через запятую; роль `admin` выдаётся только подтверждённому адресу при старте сервера и при входе (см. PROTOCOL.md → «Администрирование»). Нужна миграция `schema/migrations/2026_10_13_roles.sql` |
 | приглашения по ссылке | `AURA_PUBLIC_URL` — адрес веб-клиента (`https://aura.example.com`): `invite.create` вернёт готовую ссылку `…/#/i/<токен>`; без него ссылку собирает клиент (в браузере на своём домене) или показывает только токен (Electron/Capacitor/localhost). Нужна миграция `schema/migrations/2026_10_14_invites.sql` |
+| страницы записи и рефералы | тот же `AURA_PUBLIC_URL`: `booking.pageCreate` вернёт `…/#/b/<slug>`, `booking.book` — ссылку управления `…/#/m/<токен>`, `referral.get` — `…/#/signup?ref=<код>`. Нужны AI-сервис (подбор свободного времени) и миграция `schema/migrations/2026_10_14_booking_referrals.sql` |
 | прочее | `AURA_SCHEDULER_INTERVAL_MS` (0 — только ручной tick), `AURA_TOOLS_MODE`, `AURA_MAPS_API_URL`, `AURA_LOG_LEVEL` |
 
-Лимиты по IP считаются по адресу без порта. Если сервер стоит за обратным
-прокси (все клиенты приходят с одного IP), поднимите или отключите (0)
-`AURA_MAX_CONNECTIONS_PER_IP`, `AURA_MAX_IP_ATTEMPTS`, `AURA_REGISTER_PER_IP_HOUR`.
+Лимиты по IP считаются по адресу без порта, для IPv6 — по сети /64 (смена
+адреса внутри своей сети их не обходит). Если счётчики `rate_limits` в
+PostgreSQL недоступны (нет прав, таймаут), лимит считается исчерпанным — защита
+от перебора не отключается молча. Если сервер стоит за обратным
+прокси, задайте `AURA_TRUSTED_PROXIES` — IP прокси через запятую: от них сервер
+берёт адрес клиента из `X-Forwarded-For` (правый адрес, не принадлежащий
+доверенным прокси; от остальных заголовок игнорируется), и лимиты попыток
+входа, регистрации и гостевых страниц считаются по клиенту. Лимит соединений
+`AURA_MAX_CONNECTIONS_PER_IP` проверяется до рукопожатия — по адресу прокси, его
+за прокси поднимите или отключите (0).
 
 Локальный запуск без секретов и SMTP (код подтверждения — прямо в ответе API):
 
@@ -266,3 +286,20 @@ CI (GitHub Actions, `.github/workflows/ci.yml`) на каждый push гоня�
 локальные проверки из [TESTING.md](TESTING.md).
 
 Частые проблемы — [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+## Несколько экземпляров сервера
+
+На общем PostgreSQL можно запускать несколько `aura-server` за балансировщиком
+(WebSocket — с привязкой клиента к экземпляру на время соединения):
+
+- счётчики попыток (вход, коды из писем, 2FA, лимиты `invite.*`/`booking.*`)
+  общие — таблица `rate_limits`; перебор «по кругу» через экземпляры не
+  обходит лимиты;
+- запись встречи (`invite.respond`, `booking.book/reschedule/cancel`) идёт под
+  advisory lock'ом владельца — два экземпляра не займут одно время;
+- отзыв сессий на другом экземпляре закрывает соединения не мгновенно, а при
+  перепроверке сессии (`AURA_AUTH_RECHECK`, по умолчанию 15 с);
+- кэш свободного времени страниц записи — свой у каждого экземпляра (до
+  минуты); правильность записи от него не зависит: занятость проверяется по БД.
+
+Встроенное хранилище (без `AURA_DATABASE_URL`) — только для одного процесса.

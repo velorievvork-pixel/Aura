@@ -22,6 +22,7 @@ enum AppTab: Hashable {
     case settings
     case confirmations
     case notifications
+    case booking
 }
 
 // MARK: - Модели экранов
@@ -74,10 +75,11 @@ struct Contact: Identifiable, Hashable {
     let lastAt: String
 }
 
+/// Найденный человек: users.search не отдаёт email — только имя и «в сети».
 struct FoundUser: Identifiable, Hashable {
     let id: Int64
     let name: String
-    let email: String
+    let online: Bool
 }
 
 /// Действие Ауры, ждущее решения, прямо под её репликой.
@@ -207,6 +209,9 @@ final class AppStore: ObservableObject {
     @Published var savingProfile = false
 
     @Published var tab: AppTab = .home
+    /// Deep link aura://signup?ref=…: nil — ссылки не было; иначе код приглашения
+    /// ("" — без валидного кода). Экран входа открывает регистрацию и забирает код.
+    @Published var signupRef: String?
 
     @Published var dialog: [DialogEntry] = []
     @Published var memory: [MemoryEntry] = []
@@ -228,6 +233,10 @@ final class AppStore: ObservableObject {
     @Published var tasks: [AuraTask] = []
     @Published var confirmations: [PendingAction] = []
     @Published var permissions: [PermissionRow] = []
+    // Страницы записи (booking.*) и рефералы (referral.*); nil — ещё не загружены.
+    @Published var bookingPages: [BookingPage]?
+    @Published var bookings: [Booking] = []
+    @Published var referral: ReferralInfo?
     @Published var connections: [ConnectionRow] = []
     @Published var providers: [IntegrationProvider] = []
 
@@ -321,11 +330,13 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func register(displayName: String, email: String, password: String, focus: String) {
+    /// `ref` — код приглашения (необязательно); неверный код клиент не отправляет.
+    func register(displayName: String, email: String, password: String, focus: String, ref: String = "") {
         pendingFocus = focus.trimmingCharacters(in: .whitespacesAndNewlines)
         run {
             try self.connectTransport()
-            _ = try await self.client.register(email: email, password: password, displayName: displayName)
+            _ = try await self.client.register(email: email, password: password, displayName: displayName,
+                                               ref: ref)
             self.authState = .needsEmailCode(email)
             self.setStatus("Мы отправили код подтверждения на \(email)")
         }
@@ -381,6 +392,24 @@ final class AppStore: ObservableObject {
                                                          trustDevice: trustDevice, device: "ios",
                                                          deviceId: self.deviceId())
             try await self.applyAuth(payload)
+        }
+    }
+
+    /// Сервер отозвал сессию этого соединения и сейчас закроет сокет (код 4401):
+    /// токены мертвы — не переподключаемся с ними, а сразу возвращаемся на вход.
+    private func sessionRevoked(reason: String) {
+        keychain.delete(.accessToken)
+        keychain.delete(.refreshToken)
+        eventTask?.cancel()
+        eventTask = nil
+        client.disconnect()
+        authState = .loggedOut
+        resetData()
+        switch reason {
+        case "password_changed", "password_reset": errorMessage = "Пароль изменён — войдите снова"
+        case "account_disabled": errorMessage = "Аккаунт заблокирован администратором"
+        case "logout": errorMessage = "Вы вышли из аккаунта на другом устройстве"
+        default: errorMessage = "Сессия завершена — войдите снова"
         }
     }
 
@@ -463,6 +492,7 @@ final class AppStore: ObservableObject {
         chats = []; contacts = []; foundUsers = []; openChatId = 0; messages = []
         tasks = []; confirmations = []; permissions = []; connections = []; providers = []
         notices = []; unreadNotifications = 0; pushDevices = []
+        bookingPages = nil; bookings = []; referral = nil
         twoFaEnabled = false; twoFaSecret = ""; recoveryCodes = []
         userId = 0; userName = ""; userEmail = ""; userBio = ""; profileError = ""; tab = .home
         updateBadge()
@@ -499,6 +529,11 @@ final class AppStore: ObservableObject {
             }
         case AuraEventName.notificationNew:
             loadNotifications()
+            let kind = payload.string("kind")
+            if kind.hasPrefix("booking."), tab == .booking { loadBooking() }
+            if kind == "referral.joined", referral != nil { loadReferral() }
+        case AuraEventName.sessionRevoked:
+            sessionRevoked(reason: payload.string("reason"))
         default:
             break
         }
@@ -520,7 +555,9 @@ final class AppStore: ObservableObject {
         if value != .contacts { openChatId = 0 }
         switch value {
         case .settings:
-            loadPermissions(); loadIntegrations(); load2faStatus(); loadPrivacy()
+            loadPermissions(); loadIntegrations(); load2faStatus(); loadPrivacy(); loadReferral()
+        case .booking:
+            loadBooking()
         case .confirmations:
             loadConfirmations()
         case .notifications:
@@ -744,6 +781,13 @@ final class AppStore: ObservableObject {
                 "at": .string(slot.start),
                 "people": .from(2)
             ])
+            if result.bool("requires_confirmation") {
+                // Режим «ask»: сервер ничего не забронировал, а создал отложенное действие —
+                // встречу в задачи не ставим, ждём подтверждения во «Входящих».
+                self.loadConfirmations()
+                self.setStatus("Бронирование ждёт вашего подтверждения")
+                return
+            }
             var booked = current
             booked.booking = result.string("confirmation").isEmpty ? "ok" : result.string("confirmation")
             self.negotiation = booked
@@ -769,8 +813,8 @@ final class AppStore: ObservableObject {
             guard let payload = try? await client.usersSearch(query: text) else { return }
             foundUsers = payload.array("users").map {
                 FoundUser(id: $0.int("id"),
-                          name: $0.string("display_name", default: $0.string("email")),
-                          email: $0.string("email"))
+                          name: $0.string("display_name", default: "Пользователь Aura"),
+                          online: $0.bool("online"))
             }.filter { $0.id != userId }
         }
     }
@@ -901,6 +945,63 @@ final class AppStore: ObservableObject {
             self.setStatus(approve ? "Подтверждено" : "Отклонено")
             self.loadConfirmations(); self.loadChats(); self.loadNotifications()
         }
+    }
+
+    // MARK: Страницы записи и рефералы
+
+    func loadBooking() {
+        run {
+            self.bookingPages = try await self.client.bookingPageList()
+            self.bookings = try await self.client.bookingList(limit: 100)
+        }
+    }
+
+    /// pageId == nil — новая страница. true — сохранено (форму можно закрыть).
+    func saveBookingPage(id: Int64?, fields: BookingPageFields) async -> Bool {
+        do {
+            let page: BookingPage
+            if let id {
+                page = try await client.bookingPageUpdate(id: id, fields: fields)
+                bookingPages = (bookingPages ?? []).map { $0.id == page.id ? page : $0 }
+            } else {
+                page = try await client.bookingPageCreate(fields)
+                bookingPages = [page] + (bookingPages ?? []).filter { $0.id != page.id }
+            }
+            return true
+        } catch {
+            fail(error)
+            return false
+        }
+    }
+
+    func setBookingPagePaused(_ page: BookingPage, paused: Bool) {
+        run {
+            let updated = try await self.client.bookingPageUpdate(id: page.id, status: paused ? "paused" : "active")
+            self.bookingPages = (self.bookingPages ?? []).map { $0.id == updated.id ? updated : $0 }
+            self.setStatus(paused ? "Запись на паузе — новые гости не смогут записаться" : "Запись снова открыта")
+        }
+    }
+
+    func deleteBookingPage(_ page: BookingPage) {
+        run {
+            _ = try await self.client.bookingPageDelete(id: page.id)
+            self.bookingPages = (self.bookingPages ?? []).filter { $0.id != page.id }
+            self.setStatus("Страница удалена. Уже сделанные записи остаются в силе.")
+        }
+    }
+
+    func cancelBooking(_ booking: Booking) {
+        run {
+            let updated = try await self.client.bookingOwnerCancel(id: booking.id)
+            self.bookings = self.bookings.map { $0.id == updated.id ? updated : $0 }
+            // Счётчик «Предстоит: N» считает сервер — перечитываем страницы.
+            self.bookingPages = try await self.client.bookingPageList()
+            self.loadTasks()
+        }
+    }
+
+    func loadReferral() {
+        run { self.referral = try await self.client.referralGet() }
     }
 
     func loadPermissions() {
@@ -1091,6 +1192,9 @@ final class AppStore: ObservableObject {
             selectTab(.tasks)
         case .settings:
             selectTab(.settings)
+        case .signup(let ref):
+            // Код пригодится только новому аккаунту: после входа ссылка ничего не меняет.
+            if authState != .loggedIn { signupRef = ref }
         case .oauth(let provider, let code, let state):
             integrationCallback(provider: provider, code: code, state: state)
         }
@@ -1117,6 +1221,16 @@ final class AppStore: ObservableObject {
     }
 
     func fail(_ error: Error) {
+        if let error = error as? AuraError {
+            if error.code == "unauthorized" && authState == .loggedIn {
+                // Сессию отозвали без события (перепроверка сервера, другой экземпляр):
+                // токены мертвы — на вход, а не «Неверный email или пароль».
+                sessionRevoked(reason: "expired")
+                return
+            }
+            // Запрос оборвался уже после выхода — причину выхода не перезаписываем.
+            if error.code == "disconnected" && authState != .loggedIn { return }
+        }
         errorMessage = describe(error)
     }
 
@@ -1126,8 +1240,10 @@ final class AppStore: ObservableObject {
         case "unauthorized": return "Неверный email или пароль"
         case "requires_2fa": return "Нужен код двухфакторной аутентификации"
         case "email_not_verified": return "Email не подтверждён"
-        case "conflict": return "Такой email уже зарегистрирован"
-        case "not_found": return "Не найдено"
+        // conflict/not_found: причину знает сервер («запись уже отменена»,
+        // «пользователь с таким email уже существует»…) — показываем её.
+        case "conflict": return error.message.isEmpty ? "Действие уже недоступно — обновите экран" : error.message
+        case "not_found": return error.message.isEmpty ? "Не найдено" : error.message
         case "disconnected": return "Нет соединения с сервером"
         case "upstream_error": return "AI-сервис недоступен, попробуйте позже"
         default: return error.message.isEmpty ? "Ошибка (\(error.code))" : error.message

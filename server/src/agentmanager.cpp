@@ -191,6 +191,13 @@ AgentManager::Result AgentManager::ask(long long userId,
                                        const Json& peers,
                                        bool execute) {
     if (message.empty()) return Result::failure(protocol::code::kBadRequest, "пустой запрос к Ауре");
+    // Те же пределы, что у AI-сервиса: длиннее — отказ здесь, а не 422 от AI.
+    const auto symbols = std::count_if(message.begin(), message.end(),
+                                       [](unsigned char ch) { return (ch & 0xC0) != 0x80; });
+    if (symbols > 8000) return Result::failure(protocol::code::kBadRequest, "запрос к Ауре — до 8000 символов");
+    if (peers.isArray() && peers.items().size() > 20) {
+        return Result::failure(protocol::code::kBadRequest, "собеседников в запросе — не больше 20");
+    }
     // История чата уходит в AI только участнику этого чата.
     if (chatId > 0 && !database_.db().isMember(chatId, userId)) {
         return Result::failure(protocol::code::kForbidden, "вы не участник этого чата");
@@ -249,7 +256,8 @@ AgentManager::Result AgentManager::ask(long long userId,
 
     // 2. Обновляем долговременную память
     std::size_t savedMemory = 0;
-    if (execute) savedMemory = memory_.remember(userId, answer.get("memory_updates"));
+    // Предложения LLM о памяти — не больше 5 записей по 300 символов (как в AI-сервисе).
+    if (execute) savedMemory = memory_.remember(userId, answer.get("memory_updates"), 5, 300);
 
     Result result;
     result.ok = true;

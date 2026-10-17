@@ -1,13 +1,18 @@
 // aura/session.cpp
 #include "aura/session.h"
 
+#include <arpa/inet.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <cstring>
+#include <sstream>
+#include <vector>
 #include <utility>
 
 #include "aura/config.h"
@@ -38,7 +43,25 @@ std::string Session::ipOf(const std::string& remoteAddr) {
     }
     std::string ip = remoteAddr.substr(0, colon);
     if (ip.size() > 2 && ip.front() == '[' && ip.back() == ']') ip = ip.substr(1, ip.size() - 2);
-    return ip;
+    return limitKey(ip);
+}
+
+std::string Session::limitKey(const std::string& ip) {
+    // IPv6: у абонента обычно целая сеть /64 — лимиты считаем по ней, иначе
+    // смена адреса внутри своей сети обходила бы любой лимит «на IP».
+    in6_addr address{};
+    if (ip.find(':') == std::string::npos || ::inet_pton(AF_INET6, ip.c_str(), &address) != 1) return ip;
+    const unsigned char* bytes = address.s6_addr;
+    static const unsigned char kMapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+    if (std::memcmp(bytes, kMapped, sizeof(kMapped)) == 0) {
+        char text[INET_ADDRSTRLEN] = {0};
+        ::inet_ntop(AF_INET, bytes + 12, text, sizeof(text));
+        return text;
+    }
+    char prefix[48] = {0};
+    std::snprintf(prefix, sizeof(prefix), "%x:%x:%x:%x::/64", (bytes[0] << 8) | bytes[1], (bytes[2] << 8) | bytes[3],
+                  (bytes[4] << 8) | bytes[5], (bytes[6] << 8) | bytes[7]);
+    return prefix;
 }
 
 Session::~Session() {
@@ -82,6 +105,44 @@ bool Session::performHandshake(std::string& error) {
 
     userAgent_ = handshake.userAgent;
     authorization_ = handshake.authorization;
+    // За доверенным прокси адрес клиента — правый адрес X-Forwarded-For, не
+    // принадлежащий доверенным прокси (левые части клиент может подделать).
+    if (!handshake.forwardedFor.empty() && !config_.trustedProxies.empty()) {
+        const auto trusted = [this](const std::string& ip) {
+            std::stringstream list(config_.trustedProxies);
+            std::string item;
+            while (std::getline(list, item, ',')) {
+                item.erase(0, item.find_first_not_of(" \t"));
+                item.erase(item.find_last_not_of(" \t") + 1);
+                if (!item.empty() && item == ip) return true;
+            }
+            return false;
+        };
+        // Сравниваем «сырой» адрес соединения: remoteIp_ для IPv6 — уже сеть /64.
+        std::string peer = remoteAddr_.substr(0, remoteAddr_.rfind(':'));
+        if (peer.size() > 2 && peer.front() == '[' && peer.back() == ']') peer = peer.substr(1, peer.size() - 2);
+        if (trusted(peer)) {
+            std::vector<std::string> hops;
+            std::stringstream chain(handshake.forwardedFor);
+            std::string hop;
+            while (std::getline(chain, hop, ',')) {
+                hop.erase(0, hop.find_first_not_of(" \t"));
+                hop.erase(hop.find_last_not_of(" \t") + 1);
+                hops.push_back(hop);
+            }
+            for (auto it = hops.rbegin(); it != hops.rend(); ++it) {
+                const bool plausible = !it->empty() && it->size() <= 45 &&
+                                       std::all_of(it->begin(), it->end(), [](unsigned char ch) {
+                                           return std::isxdigit(ch) != 0 || ch == '.' || ch == ':';
+                                       });
+                if (!plausible) break;
+                if (trusted(*it)) continue;
+                remoteIp_ = limitKey(*it);
+                remoteAddr_ = (it->find(':') != std::string::npos ? "[" + *it + "]" : *it) + ":0";
+                break;
+            }
+        }
+    }
     if (!net::sendAll(socket_, ws::handshakeResponse(handshake.key), 2000)) {
         error = "не удалось отправить 101";
         return false;
@@ -156,7 +217,15 @@ void Session::readLoop(const MessageHandler& handler) {
                 std::lock_guard<std::mutex> lock(authMutex_);
                 since = unauthSince_;
             }
-            if (std::chrono::duration_cast<std::chrono::seconds>(now - since).count() >= config_.authTimeoutSec) {
+            // Гостевые страницы (invite.*, booking.*) — пока гость пользуется
+            // страницей: kGuestIdleSec с последнего успешного гостевого вызова.
+            bool overdue = std::chrono::duration_cast<std::chrono::seconds>(now - since).count() >=
+                           config_.authTimeoutSec;
+            if (overdue && guest()) {
+                const auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                overdue = nowMs - lastGuestMs_.load() >= kGuestIdleSec * 1000;
+            }
+            if (overdue) {
                 AURA_LOG(log::Level::Info, "session") << sessionId_ << " не авторизовался вовремя, закрываю";
                 close(4408, "authentication timeout");
                 break;
@@ -255,6 +324,11 @@ bool Session::sendRaw(const std::string& frame) {
         return false;
     }
     return true;
+}
+
+void Session::markGuest() {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    lastGuestMs_.store(std::max<long long>(1, std::chrono::duration_cast<std::chrono::milliseconds>(now).count()));
 }
 
 void Session::close(std::uint16_t code, const std::string& reason) {

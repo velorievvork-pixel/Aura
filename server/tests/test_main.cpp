@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <atomic>
 #include <functional>
 #include <iostream>
 #include <mutex>
@@ -27,15 +28,19 @@
 
 #include "aura/authmanager.h"
 #include "aura/crypto.h"
+#include "aura/databasemanager.h"
 #include "aura/idatabase.h"
 #include "aura/invitemanager.h"
+#include "aura/mailprovider.h"
 #include "aura/json.h"
 #include "aura/jwt.h"
 #include "aura/mailprovider.h"
 #include "aura/memorymanager.h"
 #include "aura/net.h"
 #include "aura/protocol.h"
+#include "aura/schedulelock.h"
 #include "aura/server.h"
+#include "aura/session.h"
 #include "aura/smtp.h"
 #include "aura/toolmanager.h"
 #include "aura/totp.h"
@@ -2031,6 +2036,35 @@ TEST(server_push_devices) {
     badToken.set("token", Json(""));
     CHECK_EQ(fixture.call(session, "devices.push.register", badToken).getString("code"),
              std::string("bad_request"));
+    // Токен попадает в путь запроса к шлюзу APNs — только hex.
+    badToken.set("token", Json(std::string(64, 'a') + "/../x?"));
+    CHECK_EQ(fixture.call(session, "devices.push.register", badToken).getString("code"),
+             std::string("bad_request"));
+    badToken.set("platform", Json("webhook"));
+    badToken.set("token", Json("a b"));
+    CHECK_EQ(fixture.call(session, "devices.push.register", badToken).getString("code"),
+             std::string("bad_request"));
+    // Не больше 20 устройств; уже известный токен регистрируется повторно.
+    int accepted = 1;  // apns-устройство выше
+    for (int i = 0; i < 25; ++i) {
+        Json device = Json::object();
+        device.set("platform", Json("webhook"));
+        device.set("token", Json("cap-device-" + std::to_string(i)));
+        if (fixture.call(session, "devices.push.register", device).getString("type") == "ok") ++accepted;
+    }
+    CHECK_EQ(accepted, 20);
+    Json repeat = Json::object();
+    repeat.set("platform", Json("webhook"));
+    repeat.set("token", Json("cap-device-0"));
+    CHECK_EQ(fixture.call(session, "devices.push.register", repeat).getString("type"), std::string("ok"));
+    // Убираем добавленные устройства — дальше тест работает с одним apns.
+    const Json all = integration::payloadOf(fixture.call(session, "devices.push.list")).get("devices");
+    for (const auto& device : all.items()) {
+        if (device.getInt("id") == deviceId) continue;
+        Json drop = Json::object();
+        drop.set("id", Json(device.getInt("id")));
+        fixture.call(session, "devices.push.revoke", drop);
+    }
 
     // Отзыв: чужое устройство — not_found, своё — revoked, повтор — not_found.
     auto other = fixture.makeSession("push-other");
@@ -2543,7 +2577,8 @@ TEST(audit_h5_verify_code_attempts) {
 
 TEST(audit_h6_totp_bruteforce_and_ip_key) {
     CHECK_EQ(aura::Session::ipOf("127.0.0.1:54321"), std::string("127.0.0.1"));
-    CHECK_EQ(aura::Session::ipOf("2001:db8::1:443"), std::string("2001:db8::1"));
+    // IPv6 — ключ лимитов по сети /64 (см. session_limit_key_ipv6_prefix).
+    CHECK_EQ(aura::Session::ipOf("2001:db8::1:443"), std::string("2001:db8:0:0::/64"));
     CHECK_EQ(aura::Session::ipOf("10.0.0.1"), std::string("10.0.0.1"));
 
     Fixture fixture;
@@ -3783,8 +3818,12 @@ TEST(invite_accept_flow) {
     for (const auto& task : tasks.items()) {
         if (task.getString("title") != "Встреча: Кофе и план — Мария") continue;
         taskFound = true;
-        CHECK_EQ(task.getString("due_at"), aura::isoUtc(second));
-        CHECK_EQ(task.getString("remind_at"), aura::isoUtc(second - 900));
+        // Сравниваем моменты, а не строки: PostgreSQL и встроенная БД пишут «.000Z».
+        std::time_t due = 0, remind = 0;
+        CHECK(aura::parseIsoUtc(task.getString("due_at"), due));
+        CHECK(aura::parseIsoUtc(task.getString("remind_at"), remind));
+        CHECK_EQ(due, second);
+        CHECK_EQ(remind, second - 900);
         CHECK(task.getString("notes").find("maria@example.com") != std::string::npos);
     }
     CHECK(taskFound);
@@ -3961,6 +4000,19 @@ TEST(invite_effective_status_and_open_limit) {
              std::string("forbidden"));
 }
 
+TEST(session_limit_key_ipv6_prefix) {
+    // IPv6 — сеть /64 (смена адреса внутри своей сети не обходит лимиты).
+    CHECK_EQ(aura::Session::limitKey("2001:db8:1:2:aaaa:bbbb:cccc:dddd"), std::string("2001:db8:1:2::/64"));
+    CHECK_EQ(aura::Session::limitKey("2001:db8:1:2::1"), std::string("2001:db8:1:2::/64"));
+    CHECK_EQ(aura::Session::ipOf("2001:db8:1:2::ffff:55000"), std::string("2001:db8:1:2::/64"));
+    // IPv4 и IPv4-mapped — как адрес IPv4.
+    CHECK_EQ(aura::Session::limitKey("203.0.113.7"), std::string("203.0.113.7"));
+    CHECK_EQ(aura::Session::limitKey("::ffff:203.0.113.7"), std::string("203.0.113.7"));
+    CHECK_EQ(aura::Session::ipOf("203.0.113.7:4242"), std::string("203.0.113.7"));
+    // Не адрес — без изменений.
+    CHECK_EQ(aura::Session::limitKey("unix-socket"), std::string("unix-socket"));
+}
+
 int main(int argc, char** argv) {
     std::signal(SIGPIPE, SIG_IGN);  // сессии в тестах пишут в socketpair
     std::cout.setf(std::ios::unitbuf);
@@ -3977,4 +4029,558 @@ int main(int argc, char** argv) {
     std::cout << "\nтестов: " << executed << ", проверок: " << g_checks << ", ошибок: " << g_failures
               << "\n";
     return g_failures == 0 ? 0 : 1;
+}
+
+// ------------------------------------------------------ страницы записи (booking.*)
+namespace booking_test {
+
+using invite_test::FakeAi;
+using invite_test::future;
+
+// Слот AI с местной датой владельца day.
+Json daySlot(std::time_t start, int minutes, const std::string& day) {
+    Json json = invite_test::slot(start, minutes);
+    json.set("day", Json(day));
+    return json;
+}
+
+Json pagePayload(const std::string& title) {
+    Json payload = Json::object();
+    payload.set("title", Json(title));
+    payload.set("description", Json("Разбор вашего проекта"));
+    payload.set("duration_minutes", Json(60LL));
+    payload.set("days_ahead", Json(14LL));
+    payload.set("max_per_day", Json(2LL));
+    payload.set("notice_hours", Json(1LL));
+    payload.set("max_series", Json(3LL));
+    return payload;
+}
+
+Json slugPayload(const std::string& slug) {
+    Json payload = Json::object();
+    payload.set("slug", Json(slug));
+    return payload;
+}
+
+Json bookPayload(const std::string& slug, std::time_t start, const std::string& name, long long count = 1) {
+    Json payload = slugPayload(slug);
+    payload.set("start", Json(aura::isoUtc(start)));
+    payload.set("guest_name", Json(name));
+    if (count != 1) payload.set("count", Json(count));
+    return payload;
+}
+
+Json tokenPayload(const std::string& token) { return invite_test::tokenPayload(token); }
+
+// Письма гостям уходят из фоновой очереди — ждём, пока ящик dev перестанет меняться.
+std::vector<aura::MailNotice> settledOutbox() {
+    std::size_t last = aura::devOutbox().size();
+    for (int i = 0; i < 60; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const std::size_t now = aura::devOutbox().size();
+        if (now == last && i >= 2) break;
+        last = now;
+    }
+    return aura::devOutbox();
+}
+
+// Ответ поддельного AI на POST /v1/agent/series: повторы ровно через неделю
+// (пояс UTC), местное время — как в UTC.
+std::string seriesBody(const std::string& request) {
+    const Json body = Json::parse(request.substr(request.find("\r\n\r\n") + 4));
+    std::time_t start = 0;
+    aura::parseIsoUtc(body.getString("start"), start);
+    const long long minutes = body.getInt("duration_minutes", 60);
+    Json occurrences = Json::array();
+    for (long long k = 0; k < body.getInt("count", 1); ++k) {
+        const std::time_t at = start + k * 7 * 86400;
+        Json item = Json::object();
+        item.set("start", Json(aura::isoUtc(at)));
+        item.set("end", Json(aura::isoUtc(at + minutes * 60)));
+        item.set("day", Json(aura::isoUtc(at).substr(0, 10)));
+        item.set("local", Json(aura::isoUtc(at).substr(0, 16)));
+        occurrences.push(item);
+    }
+    Json answer = Json::object();
+    answer.set("occurrences", occurrences);
+    return answer.dump();
+}
+
+bool hasSlot(const Json& page, std::time_t start) {
+    const Json slots = page.get("slots");  // get() возвращает копию: держим её до конца цикла
+    for (const auto& slot : slots.items()) {
+        if (slot.getString("start") == aura::isoUtc(start)) return true;
+    }
+    return false;
+}
+
+bool isBusy(Fixture& fixture, long long ownerId, std::time_t start) {
+    for (const auto& [from, to] : fixture.server->memory().busy(ownerId)) {
+        if (from == start && to == start + 3600) return true;
+    }
+    return false;
+}
+
+int countTasks(Fixture& fixture, const std::shared_ptr<aura::Session>& owner, const std::string& title) {
+    int count = 0;
+    const Json tasks = integration::payloadOf(fixture.call(owner, "tasks.list")).get("tasks");
+    for (const auto& task : tasks.items()) {
+        if (task.getString("title") == title) ++count;
+    }
+    return count;
+}
+
+int countNotifications(Fixture& fixture, const std::shared_ptr<aura::Session>& owner, const std::string& kind) {
+    int count = 0;
+    const Json list = integration::payloadOf(fixture.call(owner, "notifications.list")).get("notifications");
+    for (const auto& item : list.items()) {
+        if (item.getString("kind") == kind) ++count;
+    }
+    return count;
+}
+
+}  // namespace booking_test
+
+TEST(booking_page_book_reschedule_cancel) {
+    using namespace booking_test;
+    const std::time_t first = future(26);
+    const std::time_t second = first + 2 * 3600;
+    const std::time_t third = first + 4 * 3600;
+    const std::string day = aura::isoUtc(first).substr(0, 10);
+    // AI предлагает и лишнее (прошлое, чужая длительность, пересечение) — сервер отбрасывает.
+    FakeAi* self = nullptr;
+    FakeAi ai([&] {
+        // Серия — отдельный эндпоинт; запрос уже записан в requests (под тем же мьютексом).
+        if (self && self->requests.back().find("POST /v1/agent/series") != std::string::npos) {
+            return seriesBody(self->requests.back());
+        }
+        Json slots = Json::array();
+        slots.push(daySlot(third, 60, day));
+        slots.push(daySlot(first, 60, day));
+        slots.push(daySlot(std::time(nullptr) - 7200, 60, day));
+        slots.push(daySlot(second, 45, day));
+        slots.push(daySlot(second, 60, day));
+        slots.push(daySlot(first + 1800, 60, day));
+        Json body = Json::object();
+        body.set("slots", slots);
+        return body.dump();
+    });
+    self = &ai;
+    Fixture fixture;
+    invite_test::useAi(fixture, ai.url(), "https://aura.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "booking-owner");
+    fixture.registerUser(owner, "coach@example.com", "Ольга");
+    const long long ownerId = fixture.server->database().db().findUserByEmail("coach@example.com")->id;
+
+    // Проверка полей страницы.
+    Json bad = pagePayload("");
+    CHECK_EQ(fixture.call(owner, "booking.pageCreate", bad).getString("code"), std::string("bad_request"));
+    bad = pagePayload("Консультация");
+    bad.set("duration_minutes", Json(10LL));
+    CHECK_EQ(fixture.call(owner, "booking.pageCreate", bad).getString("code"), std::string("bad_request"));
+    bad = pagePayload("Консультация");
+    bad.set("max_series", Json(13LL));
+    CHECK_EQ(fixture.call(owner, "booking.pageCreate", bad).getString("code"), std::string("bad_request"));
+    bad = pagePayload("Консультация");
+    bad.set("weekends", Json("да"));
+    CHECK_EQ(fixture.call(owner, "booking.pageCreate", bad).getString("code"), std::string("bad_request"));
+
+    const Json created = fixture.call(owner, "booking.pageCreate", pagePayload("Консультация"));
+    CHECK_EQ(created.getString("type"), std::string("ok"));
+    const Json page = integration::payloadOf(created).get("page");
+    const std::string slug = page.getString("slug");
+    CHECK(aura::BookingManager::validSlug(slug));
+    CHECK_EQ(page.getString("url"), "https://aura.example.com/#/b/" + slug);
+    CHECK_EQ(page.getString("status"), std::string("active"));
+    CHECK_EQ(page.getInt("max_series"), 3LL);
+
+    // Гость без входа видит свободное время, но не email владельца.
+    auto guest = sockets.open(fixture, "booking-guest");
+    CHECK_EQ(fixture.call(guest, "booking.get", slugPayload("unknown000")).getString("code"),
+             std::string("not_found"));
+    CHECK_EQ(fixture.call(guest, "booking.get", slugPayload("../etc")).getString("code"), std::string("not_found"));
+    const Json seen = integration::payloadOf(fixture.call(guest, "booking.get", slugPayload(slug))).get("page");
+    CHECK_EQ(seen.getString("owner_name"), std::string("Ольга"));
+    CHECK_EQ(seen.getString("title"), std::string("Консультация"));
+    CHECK(seen.dump().find("coach@example.com") == std::string::npos);
+    CHECK_EQ(seen.get("slots").items().size(), std::size_t(3));
+    CHECK(hasSlot(seen, first) && hasSlot(seen, second) && hasSlot(seen, third));
+    CHECK_EQ(seen.getString("ref").size(), std::size_t(8));
+    {
+        std::lock_guard<std::mutex> lock(ai.mutex);
+        const auto request = std::find_if(ai.requests.begin(), ai.requests.end(), [](const std::string& r) {
+            return r.find("POST /v1/agent/slots") != std::string::npos;
+        });
+        CHECK(request != ai.requests.end());
+        if (request != ai.requests.end()) {
+            CHECK(request->find("\"window_hours\":336") != std::string::npos);
+            CHECK(request->find("\"lead_minutes\":60") != std::string::npos);
+            CHECK(request->find("\"weekends\":false") != std::string::npos);
+        }
+    }
+
+    // Запись: неверные данные, затем серия из двух встреч.
+    // Время не из списка — тот же conflict, что и «занято»: по ответу нельзя
+    // узнать личное расписание владельца.
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, first + 600, "Пётр")).getString("code"),
+             std::string("conflict"));
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, first, " ")).getString("code"),
+             std::string("bad_request"));
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, first, "Пётр", 4)).getString("code"),
+             std::string("bad_request"));
+    Json withEmail = bookPayload(slug, first, "Пётр", 2);
+    withEmail.set("guest_email", Json("petr@example.com"));
+    withEmail.set("comment", Json("Про стартап"));
+    const Json booked = fixture.call(guest, "booking.book", withEmail);
+    CHECK_EQ(booked.getString("type"), std::string("ok"));
+    if (booked.getString("type") != "ok") {
+        std::cout << "  booking.book: " << booked.dump() << "\n";
+        return;
+    }
+    const std::string token = integration::payloadOf(booked).getString("token");
+    CHECK_EQ(token.size(), std::size_t(43));
+    CHECK_EQ(integration::payloadOf(booked).getString("url"), "https://aura.example.com/#/m/" + token);
+    const Json bookedView = integration::payloadOf(booked).get("booking");
+    CHECK_EQ(bookedView.get("occurrences").items().size(), std::size_t(2));
+    CHECK_EQ(bookedView.get("occurrences").at(1).getString("start"), aura::isoUtc(first + 7 * 86400));
+    CHECK_EQ(bookedView.get("occurrences").at(1).getString("local"), aura::isoUtc(first + 7 * 86400).substr(0, 16));
+    CHECK(isBusy(fixture, ownerId, first));
+    CHECK(isBusy(fixture, ownerId, first + 7 * 86400));
+    CHECK_EQ(countTasks(fixture, owner, "Запись: Консультация — Пётр"), 2);
+    CHECK_EQ(countNotifications(fixture, owner, "booking.created"), 1);
+    // В БД только хэш токена; повторная запись на занятое время — conflict.
+    const auto stored = fixture.server->database().db().findBookingByToken(aura::BookingManager::tokenHash(token));
+    CHECK(stored.has_value());
+    CHECK(stored && stored->manageHash != token);
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, first, "Анна")).getString("code"),
+             std::string("conflict"));
+
+    // Второй гость занимает second — лимит 2 записи в день скрывает third.
+    const Json other = fixture.call(guest, "booking.book", bookPayload(slug, second, "Анна"));
+    CHECK_EQ(other.getString("type"), std::string("ok"));
+    const Json afterLimit = integration::payloadOf(fixture.call(guest, "booking.get", slugPayload(slug))).get("page");
+    CHECK_EQ(afterLimit.get("slots").items().size(), std::size_t(0));
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, third, "Иван")).getString("code"),
+             std::string("conflict"));
+
+    // Ссылка управления: перенос ближайшей встречи на third (свой день не мешает лимиту).
+    CHECK_EQ(fixture.call(guest, "booking.manage", tokenPayload(std::string(43, 'A'))).getString("code"),
+             std::string("not_found"));
+    const Json managed = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(token))).get("booking");
+    CHECK_EQ(managed.getString("guest_name"), std::string("Пётр"));
+    CHECK(managed.getBool("can_change"));
+    CHECK(managed.getBool("can_cancel"));
+    CHECK(managed.getBool("can_reschedule"));
+    CHECK_EQ(managed.getInt("reschedules_left"), 3LL);
+    CHECK(hasSlot(managed, third));
+    Json move = tokenPayload(token);
+    move.set("start", Json(aura::isoUtc(third)));
+    const Json moved = fixture.call(guest, "booking.reschedule", move);
+    CHECK_EQ(moved.getString("type"), std::string("ok"));
+    const Json movedView = integration::payloadOf(moved).get("booking");
+    CHECK_EQ(movedView.get("occurrences").at(0).getString("start"), aura::isoUtc(third));
+    CHECK_EQ(movedView.getInt("reschedules_left"), 2LL);
+    CHECK(!isBusy(fixture, ownerId, first));
+    CHECK(isBusy(fixture, ownerId, third));
+    CHECK_EQ(countTasks(fixture, owner, "Запись: Консультация — Пётр"), 2);
+    CHECK_EQ(countNotifications(fixture, owner, "booking.rescheduled"), 1);
+    // На занятое время перенести нельзя.
+    move.set("start", Json(aura::isoUtc(second)));
+    CHECK_EQ(fixture.call(guest, "booking.reschedule", move).getString("code"), std::string("conflict"));
+
+    // Отмена второй встречи серии, затем всех оставшихся.
+    Json cancelOne = tokenPayload(token);
+    cancelOne.set("occurrence", Json(aura::isoUtc(first + 7 * 86400)));
+    const Json oneCancelled = fixture.call(guest, "booking.cancel", cancelOne);
+    CHECK_EQ(oneCancelled.getString("type"), std::string("ok"));
+    CHECK_EQ(integration::payloadOf(oneCancelled).get("booking").getString("status"), std::string("active"));
+    CHECK(!isBusy(fixture, ownerId, first + 7 * 86400));
+    CHECK_EQ(countTasks(fixture, owner, "Запись: Консультация — Пётр"), 1);
+    Json cancelAll = tokenPayload(token);
+    cancelAll.set("reason", Json("заболел"));
+    const Json allCancelled = fixture.call(guest, "booking.cancel", cancelAll);
+    const Json cancelledView = integration::payloadOf(allCancelled).get("booking");
+    CHECK_EQ(cancelledView.getString("status"), std::string("cancelled"));
+    CHECK_EQ(cancelledView.getString("cancelled_by"), std::string("guest"));
+    CHECK(!cancelledView.getBool("can_change"));
+    CHECK(!isBusy(fixture, ownerId, third));
+    CHECK_EQ(countTasks(fixture, owner, "Запись: Консультация — Пётр"), 0);
+    CHECK_EQ(countNotifications(fixture, owner, "booking.cancelled"), 2);
+    CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(token)).getString("code"), std::string("conflict"));
+
+    // Письма гостю: подтверждение со ссылкой управления (имя гостя в письмо не попадает).
+    {
+        int created = 0, cancelledMail = 0, rescheduledMail = 0;
+        for (const auto& notice : settledOutbox()) {
+            if (notice.to != "petr@example.com") continue;
+            if (notice.kind == "booking.created") {
+                ++created;
+                CHECK_EQ(notice.linkUrl, "https://aura.example.com/#/m/" + token);
+                CHECK_EQ(notice.lines.size(), std::size_t(2));
+                // Тема — только текст сервера; название страницы — в теле письма.
+                CHECK(notice.subject.find("Консультация") == std::string::npos);
+                CHECK(notice.note.find("Консультация") != std::string::npos);
+                CHECK(notice.title.find("Пётр") == std::string::npos && notice.lead.find("Пётр") == std::string::npos);
+            }
+            if (notice.kind == "booking.rescheduled") ++rescheduledMail;
+            if (notice.kind == "booking.cancelled") ++cancelledMail;
+        }
+        CHECK_EQ(created, 1);
+        CHECK_EQ(rescheduledMail, 1);
+        CHECK_EQ(cancelledMail, 2);
+    }
+
+    // Владелец: список записей и отмена записи Анны.
+    const Json bookings = integration::payloadOf(fixture.call(owner, "booking.list")).get("bookings");
+    CHECK_EQ(bookings.items().size(), std::size_t(2));
+    long long annaId = 0;
+    for (const auto& item : bookings.items()) {
+        CHECK_EQ(item.getString("page_title"), std::string("Консультация"));
+        if (item.getString("guest_name") == "Анна") annaId = item.getInt("id");
+        if (item.getString("guest_name") == "Пётр") {
+            CHECK_EQ(item.getString("guest_email"), std::string("petr@example.com"));
+        }
+    }
+    auto stranger = sockets.open(fixture, "booking-stranger");
+    fixture.registerUser(stranger, "stranger@example.com", "Чужой");
+    Json byBooking = Json::object();
+    byBooking.set("booking_id", Json(annaId));
+    CHECK_EQ(fixture.call(stranger, "booking.ownerCancel", byBooking).getString("code"), std::string("not_found"));
+    const Json ownerCancelled = fixture.call(owner, "booking.ownerCancel", byBooking);
+    CHECK_EQ(integration::payloadOf(ownerCancelled).get("booking").getString("cancelled_by"), std::string("owner"));
+    CHECK(!isBusy(fixture, ownerId, second));
+
+    // Потерянная ссылка: новая уходит письмом, старая перестаёт работать; чужой email —
+    // тот же ответ, но без письма.
+    Json withMail = bookPayload(slug, third, "Ира");
+    withMail.set("guest_email", Json("ira@example.com"));
+    const std::string iraToken = integration::payloadOf(fixture.call(guest, "booking.book", withMail)).getString("token");
+    CHECK_EQ(iraToken.size(), std::size_t(43));
+    Json resend = slugPayload(slug);
+    resend.set("email", Json("IRA@example.com"));
+    CHECK(integration::payloadOf(fixture.call(guest, "booking.resendLink", resend)).getBool("sent"));
+    std::string newLink;
+    for (const auto& notice : settledOutbox()) {
+        if (notice.to == "ira@example.com" && notice.kind == "booking.link") newLink = notice.linkUrl;
+    }
+    CHECK(!newLink.empty());
+    const std::string newToken = newLink.substr(newLink.rfind('/') + 1);
+    CHECK(newToken != iraToken);
+    CHECK_EQ(fixture.call(guest, "booking.manage", tokenPayload(iraToken)).getString("code"), std::string("not_found"));
+    CHECK_EQ(fixture.call(guest, "booking.manage", tokenPayload(newToken)).getString("type"), std::string("ok"));
+    resend.set("email", Json("nobody@example.com"));
+    const std::size_t before = settledOutbox().size();
+    CHECK(integration::payloadOf(fixture.call(guest, "booking.resendLink", resend)).getBool("sent"));
+    CHECK_EQ(settledOutbox().size(), before);
+    resend.set("email", Json("не-почта"));
+    CHECK_EQ(fixture.call(guest, "booking.resendLink", resend).getString("code"), std::string("bad_request"));
+
+    // Пауза: страница видна, но записаться нельзя; удаление — ссылка перестаёт работать.
+    Json pause = Json::object();
+    pause.set("page_id", Json(page.getInt("id")));
+    pause.set("status", Json("paused"));
+    CHECK_EQ(fixture.call(stranger, "booking.pageUpdate", pause).getString("code"), std::string("not_found"));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", pause).getString("type"), std::string("ok"));
+    const Json paused = integration::payloadOf(fixture.call(guest, "booking.get", slugPayload(slug))).get("page");
+    CHECK_EQ(paused.getString("status"), std::string("paused"));
+    CHECK_EQ(paused.get("slots").items().size(), std::size_t(0));
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, third, "Иван")).getString("code"),
+             std::string("conflict"));
+    // На паузе гость не переносит, но отменить может.
+    {
+        const Json view = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(newToken))).get("booking");
+        CHECK(view.getBool("can_cancel"));
+        CHECK(!view.getBool("can_reschedule"));
+        CHECK(!view.getBool("can_change"));
+    }
+    Json remove = Json::object();
+    remove.set("page_id", Json(page.getInt("id")));
+    CHECK_EQ(fixture.call(owner, "booking.pageDelete", remove).getString("type"), std::string("ok"));
+    CHECK_EQ(fixture.call(guest, "booking.get", slugPayload(slug)).getString("code"), std::string("not_found"));
+    // Страница удалена — сделанная запись остаётся, отменить её гость по-прежнему может.
+    {
+        const Json view = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(newToken))).get("booking");
+        CHECK(view.getBool("can_cancel"));
+        CHECK(!view.getBool("can_reschedule"));
+        CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(newToken)).getString("type"), std::string("ok"));
+    }
+    CHECK_EQ(integration::payloadOf(fixture.call(owner, "booking.pageList")).get("pages").items().size(),
+             std::size_t(0));
+    // Методы владельца без входа недоступны.
+    CHECK_EQ(fixture.call(guest, "booking.pageList").getString("code"), std::string("unauthorized"));
+}
+
+TEST(booking_ai_unavailable) {
+    using namespace booking_test;
+    Fixture fixture;  // AI-сервис недоступен (порт 1)
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "booking-owner");
+    fixture.registerUser(owner, "coach2@example.com", "Ольга");
+    const Json created = fixture.call(owner, "booking.pageCreate", pagePayload("Созвон"));
+    const std::string slug = integration::payloadOf(created).get("page").getString("slug");
+    CHECK_EQ(integration::payloadOf(created).get("page").getString("url"), std::string());
+    auto guest = sockets.open(fixture, "booking-guest");
+    const Json seen = integration::payloadOf(fixture.call(guest, "booking.get", slugPayload(slug))).get("page");
+    CHECK(seen.getBool("slots_unavailable"));
+    CHECK_EQ(seen.get("slots").items().size(), std::size_t(0));
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, future(30), "Пётр")).getString("code"),
+             std::string("upstream_error"));
+    // Заблокированный владелец гостей не принимает (страница не служит каналом рассылки).
+    const long long ownerId = fixture.server->database().db().findUserByEmail("coach2@example.com")->id;
+    CHECK(fixture.server->database().db().setUserActive(ownerId, false).ok);
+    CHECK_EQ(fixture.call(guest, "booking.get", slugPayload(slug)).getString("code"), std::string("not_found"));
+    CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, future(30), "Пётр")).getString("code"),
+             std::string("not_found"));
+    CHECK(fixture.server->database().db().setUserActive(ownerId, true).ok);
+    CHECK_EQ(fixture.call(guest, "booking.get", slugPayload(slug)).getString("type"), std::string("ok"));
+}
+
+// За доверенным прокси адрес клиента берётся из X-Forwarded-For (правый не-прокси),
+// от остальных заголовок игнорируется — иначе лимиты гостей обходились бы подделкой.
+TEST(session_forwarded_for_trusted_proxy) {
+    const auto shake = [](const std::string& peer, const std::string& trusted, const std::string& xff) {
+        aura::Config config;
+        config.trustedProxies = trusted;
+        int fds[2] = {-1, -1};
+        CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+        aura::Session session(fds[1], "xff", peer, config);
+        const std::string request = "GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                                    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n"
+                                    "X-Forwarded-For: " + xff + "\r\n\r\n";
+        CHECK(::send(fds[0], request.data(), request.size(), 0) == static_cast<ssize_t>(request.size()));
+        std::string error;
+        CHECK(session.performHandshake(error));
+        ::close(fds[0]);
+        return session.remoteIp();
+    };
+    CHECK_EQ(shake("10.0.0.5:4000", "10.0.0.5", "1.2.3.4, 203.0.113.7"), std::string("203.0.113.7"));
+    CHECK_EQ(shake("10.0.0.5:4000", "10.0.0.5, 10.0.0.6", "203.0.113.7, 10.0.0.6"), std::string("203.0.113.7"));
+    CHECK_EQ(shake("198.51.100.1:4000", "10.0.0.5", "203.0.113.7"), std::string("198.51.100.1"));  // не прокси
+    CHECK_EQ(shake("10.0.0.5:4000", "", "203.0.113.7"), std::string("10.0.0.5"));  // прокси не задан
+    CHECK_EQ(shake("10.0.0.5:4000", "10.0.0.5", "<script>"), std::string("10.0.0.5"));  // мусор
+}
+
+// Одноразовые секреты: второе использование резервного кода 2FA и OAuth state не проходит
+// (иначе два параллельных запроса с одним кодом оба считались бы верными).
+TEST(one_time_secrets_single_use) {
+    auto db = aura::makeEmbeddedDatabase("");
+    long long userId = 0;
+    CHECK(db->createUser("once@example.com", "argon2id$x", "Раз", userId).ok);
+    aura::RecoveryCodeRecord code;
+    code.id = "11111111-1111-1111-1111-111111111111";
+    code.userId = userId;
+    code.codeHash = std::string(64, 'a');
+    CHECK(db->replaceRecoveryCodes(userId, {code}).ok);
+    CHECK(db->useRecoveryCode(code.id).ok);
+    CHECK(!db->useRecoveryCode(code.id).ok);
+    aura::OauthStateRecord state;
+    state.state = "state-once";
+    state.userId = userId;
+    state.provider = "google";
+    state.expiresAt = "2999-01-01T00:00:00Z";
+    CHECK(db->createOauthState(state).ok);
+    CHECK(db->useOauthState("state-once").ok);
+    CHECK(!db->useOauthState("state-once").ok);
+}
+
+// Встроенная БД: id не переиспользуются — иначе task_id старой записи указал бы
+// на задачу другого пользователя (и отмена записи удалила бы чужую задачу).
+TEST(embedded_ids_not_reused) {
+    auto db = aura::makeEmbeddedDatabase("");
+    long long anna = 0, boris = 0;
+    CHECK(db->createUser("ids-anna@example.com", "argon2id$x", "Анна", anna).ok);
+    CHECK(db->createUser("ids-boris@example.com", "argon2id$x", "Борис", boris).ok);
+    aura::TaskRecord task;
+    task.userId = anna;
+    task.title = "встреча";
+    long long first = 0;
+    CHECK(db->createTask(task, first).ok);
+    CHECK(db->deleteTask(first).ok);
+    task.userId = boris;
+    long long second = 0;
+    CHECK(db->createTask(task, second).ok);
+    CHECK(second > first);
+}
+
+// Блокировка расписания — на владельца: чужой владелец не ждёт, тот же — ждёт release().
+TEST(schedule_lock_per_owner) {
+    aura::DatabaseManager database(aura::makeEmbeddedDatabase(""));
+    aura::ScheduleLock locks(database);
+    auto held = locks.acquire(1);
+    CHECK(held.ok());
+    const auto started = std::chrono::steady_clock::now();
+    std::thread other([&] { auto guard = locks.acquire(2); CHECK(guard.ok()); });
+    other.join();
+    CHECK(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(500));
+    std::atomic<bool> got{false};
+    std::thread same([&] { auto guard = locks.acquire(1); got = guard.ok(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    CHECK(!got.load());
+    held.release();
+    same.join();
+    CHECK(got.load());
+}
+
+// Ссылку, которая приходит только письмом, нельзя менять, если письма не уходят.
+TEST(mail_provider_delivers) {
+    aura::Config config;
+    config.mailDriver = "log";
+    CHECK(!aura::makeMailProvider(config)->delivers());
+    config.mailDriver = "dev";
+    config.devMode = true;
+    CHECK(aura::makeMailProvider(config)->delivers());
+    config.mailDriver = "smtp";
+    CHECK(aura::makeMailProvider(config)->delivers());
+}
+
+TEST(referral_register_and_verify) {
+    Fixture fixture;
+    admin_test::Sockets sockets;
+    auto host = sockets.open(fixture, "ref-host");
+    fixture.registerUser(host, "host@example.com", "Ирина");
+    const Json info = integration::payloadOf(fixture.call(host, "referral.get"));
+    const std::string code = info.getString("code");
+    CHECK_EQ(code.size(), std::size_t(8));
+    CHECK_EQ(info.getInt("joined"), 0LL);
+    // Код стабилен между запросами.
+    CHECK_EQ(integration::payloadOf(fixture.call(host, "referral.get")).getString("code"), code);
+
+    auto newcomer = sockets.open(fixture, "ref-new");
+    Json payload = Json::object();
+    payload.set("email", Json("friend@example.com"));
+    payload.set("password", Json("aura1234"));
+    payload.set("display_name", Json("Саша"));
+    std::string lower = code;
+    for (auto& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    payload.set("ref", Json(lower));
+    payload.set("ref_source", Json("booking"));
+    const Json registered = fixture.call(newcomer, "auth.register", payload);
+    CHECK_EQ(registered.getString("type"), std::string("ok"));
+    Json before = integration::payloadOf(fixture.call(host, "referral.get"));
+    CHECK_EQ(before.getInt("joined"), 1LL);
+    CHECK_EQ(before.getInt("verified"), 0LL);
+    CHECK_EQ(before.get("referrals").at(0).getString("display_name"), std::string("Саша"));
+    CHECK_EQ(before.get("referrals").at(0).getString("source"), std::string("booking"));
+    CHECK(before.dump().find("friend@example.com") == std::string::npos);
+
+    Json verify = Json::object();
+    verify.set("email", Json("friend@example.com"));
+    verify.set("code", Json(integration::payloadOf(registered).getString("email_code")));
+    CHECK_EQ(fixture.call(newcomer, "auth.verifyEmail", verify).getString("type"), std::string("ok"));
+    const Json after = integration::payloadOf(fixture.call(host, "referral.get"));
+    CHECK_EQ(after.getInt("verified"), 1LL);
+    CHECK(after.get("referrals").at(0).getBool("verified"));
+    CHECK_EQ(booking_test::countNotifications(fixture, host, "referral.joined"), 1);
+
+    // Неверный код регистрацию не ломает и никому не засчитывается.
+    auto other = sockets.open(fixture, "ref-other");
+    payload.set("email", Json("other@example.com"));
+    payload.set("ref", Json("ZZZZZZZZ"));
+    CHECK_EQ(fixture.call(other, "auth.register", payload).getString("type"), std::string("ok"));
+    payload.set("email", Json("third@example.com"));
+    payload.set("ref", Json("<script>"));
+    CHECK_EQ(fixture.call(other, "auth.register", payload).getString("type"), std::string("ok"));
+    CHECK_EQ(integration::payloadOf(fixture.call(host, "referral.get")).getInt("joined"), 1LL);
+    CHECK_EQ(fixture.call(other, "referral.get").getString("code"), std::string("unauthorized"));
 }

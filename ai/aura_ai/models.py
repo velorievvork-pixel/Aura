@@ -43,6 +43,16 @@ MEMORY_KINDS = ("fact", "preference", "schedule", "contact")
 MAX_DURATION_MINUTES = 24 * 60
 MAX_WINDOW_HOURS = 31 * 24
 MAX_SLOTS = 50
+#: Пределы списков и текста запроса (защита от CPU-DoS: 20 000 событий — десятки
+#: секунд поиска слотов). C++-сервер шлёт меньше: календарь он режет до 2000
+#: событий, историю чата — 20 последних сообщений, память — 20 записей
+#: (AgentManager::ask, MemoryManager::context), сообщение чата — до 8000 символов.
+MAX_CALENDAR_EVENTS = 2000
+MAX_HISTORY_ITEMS = 50
+MAX_MEMORY_ENTRIES = 50
+MAX_CONTACTS = 500
+MAX_PEERS = 20
+MAX_MESSAGE_CHARS = 8000
 
 
 def normalize_timezone(value: Any) -> str:
@@ -79,6 +89,9 @@ def _drop_invalid_events(value: Any) -> Any:
     """
     if not isinstance(value, list):
         return value
+    # Предел — до разбора каждой записи: иначе огромный список валидируется целиком.
+    if len(value) > MAX_CALENDAR_EVENTS:
+        raise ValueError(f"календарь длиннее {MAX_CALENDAR_EVENTS} событий")
     kept: List[Any] = []
     for item in value:
         try:
@@ -88,8 +101,12 @@ def _drop_invalid_events(value: Any) -> Any:
     return kept
 
 
-#: Список занятых слотов с пропуском неполных записей.
-Calendar = Annotated[List[CalendarEvent], BeforeValidator(_drop_invalid_events)]
+#: Список занятых слотов (не больше MAX_CALENDAR_EVENTS) с пропуском неполных записей.
+Calendar = Annotated[
+    List[CalendarEvent],
+    BeforeValidator(_drop_invalid_events),
+    Field(max_length=MAX_CALENDAR_EVENTS),
+]
 
 
 def _hours(value: Any) -> Any:
@@ -157,12 +174,12 @@ class AgentContext(BaseModel):
     email: str = ""
     now: Optional[AwareDatetime] = None
     timezone: Annotated[str, BeforeValidator(normalize_timezone)] = "Europe/Moscow"
-    message: str = ""
-    history: List[Dict[str, Any]] = Field(default_factory=list)
-    memory: List[MemoryEntry] = Field(default_factory=list)
+    message: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
+    history: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_HISTORY_ITEMS)
+    memory: List[MemoryEntry] = Field(default_factory=list, max_length=MAX_MEMORY_ENTRIES)
     preferences: Preferences = Field(default_factory=Preferences)
     calendar: Calendar = Field(default_factory=list)
-    contacts: List[Dict[str, Any]] = Field(default_factory=list)
+    contacts: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_CONTACTS)
 
 
 class ToolCall(BaseModel):
@@ -198,6 +215,11 @@ class Slot(BaseModel):
     end: AwareDatetime
     score: float = 0.0
     reason: str = ""
+    #: Местная дата владельца «YYYY-MM-DD» (только у слотов /v1/agent/slots):
+    #: по ней сервер считает лимит записей в день страницы записи.
+    day: Optional[str] = None
+    #: Местное время владельца «YYYY-MM-DDTHH:MM» (для писем и подписей на сервере).
+    local: Optional[str] = None
 
 
 class A2AProposal(BaseModel):
@@ -218,7 +240,7 @@ class AgentRequest(BaseModel):
     # явная просьба вызывающего, и даже тогда внешние действия здесь не исполняются.
     execute: bool = False
     dry_run: bool = False
-    peers: List[AgentContext] = Field(default_factory=list)
+    peers: List[AgentContext] = Field(default_factory=list, max_length=MAX_PEERS)
 
 
 class NegotiateRequest(BaseModel):
@@ -227,34 +249,69 @@ class NegotiateRequest(BaseModel):
     initiator: AgentContext
     responder: AgentContext
     intent: str = "schedule_meeting"
-    topic: str = ""
+    topic: str = Field(default="", max_length=MAX_MESSAGE_CHARS)
     duration_minutes: int = Field(default=60, ge=1, le=MAX_DURATION_MINUTES)
     window_hours: int = Field(default=96, ge=1, le=MAX_WINDOW_HOURS)
     # prefs.privacy.allow_place_choice обеих сторон: false — место не предлагаем.
     choose_place: bool = True
 
 
-#: Пределы для слотов приглашения по ссылке (invite.create на сервере).
+#: Пределы для слотов приглашения по ссылке (invite.create) и страницы записи
+#: (booking.get на сервере).
 OFFER_MIN_DURATION = 15
 OFFER_MAX_DURATION = 240
-OFFER_MAX_SLOTS = 12
+OFFER_MAX_SLOTS = 400
+OFFER_MAX_PER_DAY = 16
+#: Минимальный зазор до начала встречи: от 0 до 7 суток (по умолчанию час).
+OFFER_MAX_LEAD_MINUTES = 7 * 24 * 60
+#: Окно страницы записи — до 60 дней вперёд.
+OFFER_MAX_WINDOW_HOURS = 60 * 24
 
 
 class SlotsRequest(BaseModel):
-    """Слоты владельца для приглашения по ссылке (POST /v1/agent/slots).
+    """Слоты владельца: приглашение по ссылке и страница записи (POST /v1/agent/slots).
 
     Ищутся только в рабочих часах владельца в его поясе (context.timezone),
-    без пересечения с context.calendar, не раньше чем через час.
+    без пересечения с context.calendar, не раньше чем через lead_minutes.
+
+    * ``per_day`` — сколько непересекающихся слотов предлагать в местный день;
+    * ``weekends`` — ``None``: выходные только если в будни пусто (приглашение),
+      ``True``: будни и выходные вместе, ``False``: только будни (страница записи).
     """
 
     context: AgentContext
     duration_minutes: int = Field(default=60, ge=OFFER_MIN_DURATION, le=OFFER_MAX_DURATION)
-    window_hours: int = Field(default=168, ge=1, le=MAX_WINDOW_HOURS)
+    window_hours: int = Field(default=168, ge=1, le=OFFER_MAX_WINDOW_HOURS)
     max_slots: int = Field(default=6, ge=1, le=OFFER_MAX_SLOTS)
+    per_day: int = Field(default=2, ge=1, le=OFFER_MAX_PER_DAY)
+    lead_minutes: int = Field(default=60, ge=0, le=OFFER_MAX_LEAD_MINUTES)
+    weekends: Optional[bool] = None
 
 
 class SlotsResponse(BaseModel):
     slots: List[Slot] = Field(default_factory=list)
+
+
+#: Серия страницы записи — до 12 встреч.
+SERIES_MAX_COUNT = 12
+
+
+class SeriesRequest(BaseModel):
+    """Еженедельная серия в поясе владельца (POST /v1/agent/series).
+
+    Повторы сохраняют местное время начала (10:00 по Москве остаётся 10:00
+    после перехода на летнее/зимнее время), а не сдвигаются на ровно 168 часов.
+    """
+
+    timezone: str = "UTC"
+    start: AwareDatetime
+    duration_minutes: int = Field(default=60, ge=OFFER_MIN_DURATION, le=OFFER_MAX_DURATION)
+    count: int = Field(default=1, ge=1, le=SERIES_MAX_COUNT)
+    interval_days: int = Field(default=7, ge=1, le=31)
+
+
+class SeriesResponse(BaseModel):
+    occurrences: List[Slot] = Field(default_factory=list)
 
 
 class NegotiateResponse(BaseModel):

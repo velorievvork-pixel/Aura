@@ -121,7 +121,8 @@ Item {
         { key: "security", label: "Безопасность", icon: "lock" },
         { key: "voice", label: "Голос", icon: "mic" },
         { key: "integrations", label: "Интеграции", icon: "calendar-days" },
-        { key: "memory", label: "Память", icon: "brain" }
+        { key: "memory", label: "Память", icon: "brain" },
+        { key: "referral", label: "Пригласить друзей", icon: "user-plus" }
     ]
 
     Text {
@@ -998,6 +999,114 @@ Item {
                         font.family: AuraTheme.fontFamily
                         font.pixelSize: AuraTheme.fontMicro
                         color: AuraTheme.textMuted
+                    }
+                }
+            }
+
+            // ---------------------------------------------- Пригласить друзей
+            GlassPanel {
+                id: referralPanel
+                visible: page.section === "referral"
+                Layout.fillWidth: true
+                backdrop: page.Window.window ? page.Window.window.contentItem : null
+                readonly property var info: App ? App.referral : ({})
+                // Без AURA_PUBLIC_URL сервер отдаёт пустой url: голый «#/signup?ref=…» никуда
+                // не ведёт, поэтому делимся только кодом — друг введёт его при регистрации.
+                readonly property bool hasLink: !!info.url
+                readonly property string link: hasLink ? info.url : ""
+                readonly property string copyValue: hasLink ? info.url : (info.code ? "Код приглашения в Aura: " + info.code : "")
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: AuraTheme.spaceSm
+
+                    SectionTitle { title: "Пригласить друзей" }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Друг заведёт свою Ауру — и ваши Ауры смогут договариваться о встречах напрямую. Регистрации со страниц записи тоже засчитываются вам."
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontMicro
+                        color: AuraTheme.textMuted
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        visible: !referralPanel.info.code
+                        text: "Загружаем реферальный код…"
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontSmall
+                        color: AuraTheme.textSecondary
+                    }
+                    RowLayout {
+                        visible: !!referralPanel.info.code
+                        spacing: 12
+                        Text {
+                            text: "Ваш код"
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontSmall
+                            color: AuraTheme.textSecondary
+                        }
+                        TextEdit {
+                            readOnly: true
+                            selectByMouse: true
+                            text: referralPanel.info.code || ""
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontTitle
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: 2
+                            color: AuraTheme.textPrimary
+                        }
+                    }
+                    TextEdit {
+                        visible: !!referralPanel.info.code && referralPanel.hasLink
+                        Layout.fillWidth: true
+                        readOnly: true
+                        selectByMouse: true
+                        wrapMode: TextEdit.WrapAnywhere
+                        text: referralPanel.link
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontSmall
+                        color: AuraTheme.textPrimary
+                    }
+                    Text {
+                        visible: !!referralPanel.info.code && !referralPanel.hasLink
+                        Layout.fillWidth: true
+                        text: "Сервер не знает свой публичный адрес (AURA_PUBLIC_URL) — делимся только кодом: друг введёт его при регистрации."
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontMicro
+                        color: AuraTheme.textMuted
+                        wrapMode: Text.WordWrap
+                    }
+                    GlassButton {
+                        visible: !!referralPanel.info.code
+                        text: referralPanel.hasLink ? "Скопировать ссылку" : "Скопировать код"
+                        onClicked: App.copyText(referralPanel.copyValue)
+                    }
+                    Text {
+                        visible: !!referralPanel.info.code
+                        text: "Зарегистрировались: " + (referralPanel.info.joined || 0) + " · подтвердили email: " + (referralPanel.info.verified || 0)
+                        font.family: AuraTheme.fontFamily
+                        font.pixelSize: AuraTheme.fontSmall
+                        color: AuraTheme.textSecondary
+                    }
+                    Repeater {
+                        model: referralPanel.info.referrals || []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Text {
+                                Layout.fillWidth: true
+                                text: modelData.display_name || "Без имени"
+                                font.family: AuraTheme.fontFamily
+                                font.pixelSize: AuraTheme.fontSmall
+                                color: AuraTheme.textPrimary
+                            }
+                            Text {
+                                text: modelData.verified ? "С Aura" : "Ждёт подтверждения"
+                                font.family: AuraTheme.fontFamily
+                                font.pixelSize: AuraTheme.fontMicro
+                                color: modelData.verified ? AuraTheme.textSecondary : AuraTheme.textMuted
+                            }
+                        }
                     }
                 }
             }

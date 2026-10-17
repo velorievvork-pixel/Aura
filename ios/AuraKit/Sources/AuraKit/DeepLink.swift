@@ -5,6 +5,7 @@
 //   aura://ask?text=...                      — сразу спросить Ауру
 //   aura://tasks                             — список задач
 //   aura://settings                          — настройки
+//   aura://signup?ref=CODE                   — регистрация с кодом приглашения
 //   aura://oauth?provider=&code=&state=...   — возврат из Google OAuth
 //
 // В продакшене схема дополняется Universal Links (https) — тот же роутинг.
@@ -16,6 +17,8 @@ public enum DeepLink: Equatable, Sendable {
     case ask(text: String)
     case tasks
     case settings
+    /// Нормализованный реферальный код или "" (неверный код отбрасывается).
+    case signup(ref: String)
     case oauth(provider: String, code: String, state: String)
 
     public static let scheme = "aura"
@@ -44,6 +47,8 @@ public enum DeepLink: Equatable, Sendable {
             self = .tasks
         case "settings":
             self = .settings
+        case "signup":
+            self = .signup(ref: ReferralCode.normalize(query("ref")) ?? "")
         case "oauth":
             guard let provider = query("provider"),
                   let code = query("code"),

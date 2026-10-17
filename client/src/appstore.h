@@ -78,6 +78,13 @@ class AppStore : public QObject {
     Q_PROPERTY(QStringList ttsVoices READ ttsVoices NOTIFY ttsChanged)
     // Этап 8: разрешения на инструменты, подтверждения опасных операций, задачи.
     Q_PROPERTY(QVariantList toolPermissions READ toolPermissions NOTIFY toolPermissionsChanged)
+    // Страницы записи (booking.*) и рефералы (referral.*).
+    Q_PROPERTY(QVariantList bookingPages READ bookingPages NOTIFY bookingChanged)
+    Q_PROPERTY(QVariantList guestBookings READ guestBookings NOTIFY bookingChanged)
+    Q_PROPERTY(bool bookingLoaded READ bookingLoaded NOTIFY bookingChanged)
+    // Сохранение страницы записи в полёте: кнопка формы неактивна (без дублей при двойном клике).
+    Q_PROPERTY(bool bookingSaving READ bookingSaving NOTIFY bookingSavingChanged)
+    Q_PROPERTY(QVariantMap referral READ referral NOTIFY referralChanged)
     Q_PROPERTY(QVariantList confirmations READ confirmations NOTIFY confirmationsChanged)
     Q_PROPERTY(QVariantList tasks READ tasks NOTIFY tasksChanged)
     // Этап 9: интеграции с внешними сервисами (Google Календарь, Gmail).
@@ -167,6 +174,11 @@ public:
     bool ttsImportantOnly() const { return ttsImportantOnly_; }
     bool speaking() const { return speaking_; }
     QStringList ttsVoices() const { return ttsVoices_; }
+    QVariantList bookingPages() const { return bookingPages_; }
+    QVariantList guestBookings() const { return guestBookings_; }
+    bool bookingLoaded() const { return bookingLoaded_; }
+    bool bookingSaving() const { return bookingSaving_; }
+    QVariantMap referral() const { return referral_; }
     // Этап 8
     QVariantList toolPermissions() const { return toolPermissions_; }
     QVariantList confirmations() const { return confirmations_; }
@@ -189,7 +201,11 @@ public:
 
 public slots:
     void login(const QString& email, const QString& password);
-    void registerUser(const QString& displayName, const QString& email, const QString& password);
+    // ref — код приглашения (необязательно): уходит только валидный, 8 символов A–Z/0–9.
+    void registerUser(const QString& displayName, const QString& email, const QString& password,
+                      const QString& ref = QString());
+    // Нормализованный реферальный код (верхний регистр) или "" — если код неверный.
+    QString normalizeReferralCode(const QString& raw) const;
     void logout();
     // auth v3
     void verifyEmail(const QString& email, const QString& code);
@@ -246,6 +262,16 @@ public slots:
     void setTtsRate(qreal rate);                 // -1.0 … 1.0
     void setTtsVolume(qreal volume);             // 0.0 … 1.0
     void setTtsImportantOnly(bool enabled);
+    // Страницы записи (booking.*): fields — {title, description, duration_minutes,
+    // days_ahead, max_per_day, notice_hours, max_series, weekends}; pageId = 0 — новая.
+    void loadBooking();
+    void saveBookingPage(qint64 pageId, const QVariantMap& fields);
+    void setBookingPagePaused(qint64 pageId, bool paused);
+    void deleteBookingPage(qint64 pageId);
+    void cancelGuestBooking(qint64 bookingId);
+    // Рефералы (referral.get) и буфер обмена для ссылок.
+    void loadReferral();
+    void copyText(const QString& text);
     // Этап 8: разрешения на инструменты (allow | ask | deny).
     void loadPermissions();
     void setToolPermission(const QString& tool, const QString& mode);
@@ -310,6 +336,12 @@ signals:
     // Озвучка (TTS)
     void ttsChanged();
     void speakingChanged();
+    // Страницы записи и рефералы
+    void bookingChanged();
+    void bookingPageSaved();                       // форма страницы сохранена — можно закрыть
+    void bookingPageFailed(const QString& message);  // ошибка формы (проверка или сервер)
+    void bookingSavingChanged();
+    void referralChanged();
     // Этап 8: разрешения, подтверждения, задачи
     void toolPermissionsChanged();
     void confirmationsChanged();
@@ -329,6 +361,7 @@ signals:
 private:
     void handleEvent(const QString& name, const QJsonObject& payload);
     void applyAuth(const QJsonObject& payload);
+    void storeTokens(const QJsonObject& payload);  // token/refresh_token из ответа, если есть
     void tryRefresh();  // обмен refresh-токена на новую пару при старте
     void clearSession();
     void setBusy(bool busy);
@@ -414,6 +447,12 @@ private:
     bool ttsImportantOnly_ = false;   // озвучивать только важные ответы
     bool speaking_ = false;
     QStringList ttsVoices_;           // доступные голоса платформы
+    // Страницы записи и рефералы
+    QVariantList bookingPages_;
+    QVariantList guestBookings_;
+    bool bookingLoaded_ = false;
+    bool bookingSaving_ = false;
+    QVariantMap referral_;
     // Этап 8: разрешения, подтверждения, задачи
     QVariantList toolPermissions_;    // каталог инструментов с эффективным mode
     QVariantList confirmations_;      // отложенные действия (status=pending)

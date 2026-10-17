@@ -1,6 +1,8 @@
 // aura/server/notificationsmanager.cpp — in-app + push (этап 13).
 #include "notificationsmanager.h"
 
+#include <algorithm>
+#include <cctype>
 #include <ctime>
 
 #include "aura/log.h"
@@ -86,6 +88,28 @@ NotificationsManager::Result NotificationsManager::registerDevice(long long user
         return Result::failure("bad_request", "platform: apns | fcm | webhook | dev");
     }
     if (token.empty()) return Result::failure("bad_request", "нужен token устройства");
+    // Формат токена: он попадает в путь запроса к шлюзу (APNs: /3/device/<token>) —
+    // только символы, которые выдают сами платформы.
+    const auto only = [&token](auto allowed) { return std::all_of(token.begin(), token.end(), allowed); };
+    bool valid = false;
+    if (platform == "apns") {
+        valid = token.size() >= 64 && token.size() <= 200 && only([](unsigned char ch) { return std::isxdigit(ch) != 0; });
+    } else if (platform == "fcm") {
+        valid = token.size() <= 4096 && only([](unsigned char ch) {
+                    return std::isalnum(ch) != 0 || ch == '_' || ch == '-' || ch == ':' || ch == '.';
+                });
+    } else {
+        valid = token.size() <= 512 && only([](unsigned char ch) { return ch > 0x20 && ch < 0x7f; });
+    }
+    if (!valid) return Result::failure("bad_request", "некорректный token устройства");
+    // Не больше 20 устройств на пользователя: иначе каждое уведомление — десятки вызовов шлюза.
+    const auto devices = database_.db().listPushDevices(userId);
+    const bool known = std::any_of(devices.begin(), devices.end(), [&](const auto& device) {
+        return device.platform == platform && device.token == token;
+    });
+    if (!known && devices.size() >= kMaxDevices) {
+        return Result::failure("forbidden", "не больше 20 устройств для уведомлений — отключите ненужные");
+    }
     long long id = 0;
     const auto registered = database_.db().registerPushDevice(userId, platform, token, id);
     if (!registered.ok) return Result::failure("internal", registered.message);

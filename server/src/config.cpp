@@ -107,6 +107,7 @@ Config Config::fromEnv() {
     config.fcmUrl = envOr("AURA_FCM_URL", config.fcmUrl);
     config.logLevel = envOr("AURA_LOG_LEVEL", config.logLevel);
     config.adminEmails = envOr("AURA_ADMIN_EMAILS", "");
+    config.trustedProxies = envOr("AURA_TRUSTED_PROXIES", "");
     config.publicUrl = envOr("AURA_PUBLIC_URL", "");
     while (!config.publicUrl.empty() && config.publicUrl.back() == '/') config.publicUrl.pop_back();
     return config;

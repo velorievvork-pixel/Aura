@@ -1,5 +1,6 @@
 // LoginView.swift — вход (макет Welcome) и регистрация (макет Create your Aura),
 // плюс шаги auth v3: код из письма, 2FA (TOTP или резервный код), сброс пароля.
+import AuraKit
 import SwiftUI
 
 struct LoginView: View {
@@ -10,6 +11,7 @@ struct LoginView: View {
     @State private var password = ""
     @State private var displayName = ""
     @State private var focus = ""
+    @State private var refCode = ""
     @State private var showPassword = false
     @State private var code = ""
     @State private var newPassword = ""
@@ -48,6 +50,13 @@ struct LoginView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .onAppear { serverURL = store.serverURLText }
+        // aura://signup?ref=CODE — сразу форма регистрации с подставленным кодом.
+        .onChange(of: store.signupRef, initial: true) { _, link in
+            guard let link else { return }
+            register = true
+            if !link.isEmpty { refCode = link }
+            store.signupRef = nil
+        }
     }
 
     private var title: String {
@@ -148,10 +157,19 @@ struct LoginView: View {
             .disabled(true)
         AuraField(text: $focus, placeholder: "например, встречи, продуктивность, код",
                   label: "С чем должна помогать ваша Аура?", filled: true)
+        AuraField(text: $refCode, placeholder: "Например, ABCD2345", label: "Код приглашения (необязательно)",
+                  keyboard: .asciiCapable)
+            .onChange(of: refCode) { _, value in
+                let cleaned = String(value.trimmingCharacters(in: .whitespaces).uppercased().prefix(ReferralCode.length))
+                if cleaned != value { refCode = cleaned }
+            }
+        if !refCode.isEmpty && ReferralCode.normalize(refCode) == nil {
+            Muted("Код — \(ReferralCode.length) латинских букв и цифр; с неверным кодом регистрация пройдёт без приглашения")
+        }
         GradientButton(title: "Создать аккаунт", busy: store.busy) {
             store.register(displayName: displayName.trimmingCharacters(in: .whitespaces),
                            email: email.trimmingCharacters(in: .whitespaces),
-                           password: password, focus: focus)
+                           password: password, focus: focus, ref: refCode)
         }
         .padding(.top, 6)
         Muted("Пароль хранится как Argon2id, сессия — JWT", alignment: .center).frame(maxWidth: .infinity)

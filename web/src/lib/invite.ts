@@ -358,7 +358,8 @@ export function ownerErrorText(error: unknown): string {
   if (!(error instanceof AuraError)) return 'Что-то пошло не так';
   if (error.code === 'timeout') return 'Сервер не ответил вовремя — попробуйте ещё раз';
   if (isNetworkError(error)) return 'Нет связи с сервером Aura';
-  if (error.code === 'upstream') return 'Аура сейчас не может подобрать время — попробуйте позже';
+  // Сервер присылает upstream_error (protocol.h, code::kUpstream), когда AI-сервис недоступен.
+  if (error.code === 'upstream_error') return 'Аура сейчас не может подобрать время — попробуйте позже';
   if (error.code === 'conflict' && !error.message) return 'Нет свободных окон в выбранный период';
   // forbidden — лимит открытых приглашений (текст от сервера).
   if (error.code === 'forbidden' && !error.message) return 'Слишком много открытых приглашений — отмените ненужные';
@@ -393,6 +394,7 @@ export function guestErrorText(error: unknown): string {
   }
   const message = error instanceof AuraError ? sentence(error.message) : '';
   if (kind === 'limited') return message || 'Слишком много попыток — подождите минуту';
-  if (kind === 'notFound') return 'Приглашение не найдено';
+  // Сервер говорит, что именно не найдено (приглашение, страница или запись).
+  if (kind === 'notFound') return message || 'Не найдено — проверьте ссылку';
   return message || 'Что-то пошло не так';
 }

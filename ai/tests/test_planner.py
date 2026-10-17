@@ -130,3 +130,83 @@ def test_reminder_text_strips_command_and_time():
     assert planner.reminder_text("Не забудь через 2 часа выключить духовку") == "Выключить духовку"
     assert planner.reminder_text("напомни, что завтра вечером встреча с Димой") == "Встреча с Димой"
     assert planner.reminder_text("напомни") == "напомни"
+
+
+# --------------------------------------------- огромные числа в тексте (аудит)
+@pytest.mark.parametrize(
+    "text",
+    [
+        "напомни через 99999999 недель позвонить",
+        "через 999999999 недель",
+        "через " + "9" * 5000 + " дней",
+        "созвон через 3651 день",
+    ],
+)
+def test_huge_relative_offset_is_not_parsed_as_time(text):
+    window = planner.parse_time_window(text, NOW)
+    assert window is not None
+    assert window.source != "relative"
+    assert window.start - NOW < timedelta(days=8)
+
+
+def test_relative_offset_within_ten_years_still_parsed():
+    window = planner.parse_time_window("созвон через 3650 дней", NOW)
+    assert window.source == "relative"
+    assert window.start == NOW + timedelta(days=planner.MAX_RELATIVE_DAYS)
+    assert planner.parse_time_window("через 05 дней", NOW).label == "через 5 дней"
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("созвон на 99999999 часов", 24 * 60),
+        ("созвон на " + "9" * 5000 + " минут", 60),
+        ("созвон на 0 минут", 1),
+        ("созвон на 2 часа", 120),
+    ],
+)
+def test_parse_duration_clamped(text, expected):
+    assert planner.parse_duration(text) == expected
+
+
+def test_understand_huge_numbers_does_not_raise():
+    result = planner.understand("встреча через " + "9" * 4400 + " недель на " + "9" * 3000 + " часов", NOW)
+    assert result.window is not None
+    assert result.duration_minutes == 60
+
+
+# ------------------------------------------------ BusyIndex = прежний перебор
+def test_busy_index_matches_linear_overlap_check():
+    import random
+
+    rnd = random.Random(42)
+    events = []
+    for _ in range(300):
+        start = NOW + timedelta(minutes=15 * rnd.randint(-200, 1500))
+        # в том числе события нулевой длины и вложенные/соприкасающиеся
+        events.append(CalendarEvent(start=start, end=start + timedelta(minutes=15 * rnd.choice([0, 1, 2, 4, 40]))))
+    linear = planner._busy_intervals(events)
+    window_start, window_end = NOW, NOW + timedelta(days=10)
+    index = planner.BusyIndex(events, window_start, window_end)
+    assert len(index) <= len(linear)
+    for _ in range(3000):
+        a = window_start + timedelta(minutes=15 * rnd.randint(0, 950))
+        b = a + timedelta(minutes=15 * rnd.randint(1, 16))
+        if b > window_end:
+            continue
+        assert index.overlaps(a, b) == planner._overlaps(a, b, linear), (a, b)
+
+
+def test_free_slots_large_calendar_outside_window_is_fast():
+    import time
+
+    far = NOW + timedelta(days=400)
+    events = [CalendarEvent(start=far + timedelta(hours=i), end=far + timedelta(hours=i, minutes=30)) for i in range(2000)]
+    events.append(CalendarEvent(start=NOW + timedelta(hours=2), end=NOW + timedelta(hours=3)))
+    window = planner.TimeWindow(start=NOW, end=NOW + timedelta(days=31))
+    started = time.perf_counter()
+    slots = planner.free_slots(window, events, Preferences(), duration_minutes=60, max_slots=50)
+    assert time.perf_counter() - started < 2.0
+    assert slots
+    busy = (NOW + timedelta(hours=2), NOW + timedelta(hours=3))
+    assert all(not (s.start < busy[1] and busy[0] < s.end) for s in slots)

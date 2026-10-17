@@ -303,6 +303,31 @@ Item {
                         }
                         FieldLabel { text: "С чем должна помогать ваша Аура?"; Layout.topMargin: 6 }
                         GlassField { id: regFocus; Layout.fillWidth: true; filled: true; placeholderText: "например, встречи, продуктивность, код"; enabled: !page.busy }
+                        FieldLabel { text: "Код приглашения (необязательно)"; Layout.topMargin: 6 }
+                        GlassField {
+                            id: regRef
+                            Layout.fillWidth: true
+                            placeholderText: "Например, ABCD2345"
+                            maximumLength: 8
+                            inputMethodHints: Qt.ImhUppercaseOnly | Qt.ImhNoPredictiveText
+                            // Код — 8 символов A–Z/0–9: неверный не отправляется (регистрация пройдёт без приглашения).
+                            readonly property bool bad: text.length > 0 && (App ? App.normalizeReferralCode(text) === "" : false)
+                            invalid: bad
+                            enabled: !page.busy
+                            onTextEdited: {
+                                const upper = text.toUpperCase()
+                                if (upper !== text) text = upper
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            visible: regRef.bad
+                            wrapMode: Text.WordWrap
+                            text: "Код — 8 латинских букв и цифр; с неверным кодом регистрация пройдёт без приглашения"
+                            font.family: AuraTheme.fontFamily
+                            font.pixelSize: AuraTheme.fontMicro
+                            color: AuraTheme.textMuted
+                        }
                         GlassButton {
                             Layout.fillWidth: true
                             Layout.topMargin: 14
@@ -313,7 +338,7 @@ Item {
                             onClicked: {
                                 page.lastEmail = regEmail.text
                                 App.setPendingFocus(regFocus.text)
-                                App.registerUser(regName.text, regEmail.text, regPassword.text)
+                                App.registerUser(regName.text, regEmail.text, regPassword.text, regRef.text)
                             }
                         }
                         RowLayout {

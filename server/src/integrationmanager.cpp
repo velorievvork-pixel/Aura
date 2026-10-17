@@ -160,8 +160,10 @@ IntegrationManager::Result IntegrationManager::callback(long long userId,
     if (!found->usedAt.empty() || found->expiresAt < isoNow()) {
         return Result::failure("bad_request", "state уже использован или истёк");
     }
-    // Одноразовость: помечаем до обмена, чтобы параллельный повтор не прошёл.
-    database_.db().useOauthState(state);
+    // Одноразовость: помечаем до обмена; параллельный повтор не пометит второй раз.
+    if (!database_.db().useOauthState(state).ok) {
+        return Result::failure("bad_request", "state уже использован или истёк");
+    }
 
     const std::string body = formBody({
         {"grant_type", "authorization_code"},

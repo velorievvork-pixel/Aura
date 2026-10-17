@@ -9,7 +9,7 @@ e2e — на реальном PostgreSQL.
 изменения — файлами `schema/migrations/` (применяются по порядку имени).
 Демо-данные: `schema/seed.sql`.
 
-## 23 таблицы по доменам
+## 28 таблиц по доменам
 
 ### Аутентификация и безопасность
 | таблица | назначение |
@@ -59,6 +59,31 @@ e2e — на реальном PostgreSQL.
 | таблица | назначение |
 | --- | --- |
 | `meeting_invites` | встреча с человеком без Aura (`invite.*`): `owner_id`, `token_hash` UNIQUE (sha256 токена ссылки — сам токен не хранится), тема, заметка, `duration_minutes` CHECK 15–240, `slots` JSONB `[{start,end}]`, `status` CHECK (`open`/`accepted`/`declined`/`cancelled`; `expired` вычисляется по `expires_at`), ответ гостя (`guest_name/email/comment`, `chosen` JSONB), `responded_at`; индекс (owner_id, id DESC). Миграция `2026_10_14_invites.sql` |
+
+### Страницы записи и рефералы
+| таблица | назначение |
+| --- | --- |
+| `booking_pages` | постоянная ссылка владельца (`booking.*`): `slug` UNIQUE (10 символов), название, описание, `duration_minutes` CHECK 15–240, `days_ahead` 1–60, `max_per_day` 1–16, `notice_hours` 0–168, `max_series` 1–12, `weekends`, `status` CHECK (`active`/`paused`/`archived`); индекс (owner_id, id DESC) |
+| `bookings` | запись гостя: `page_id`, `owner_id`, `manage_hash` UNIQUE (sha256 токена ссылки управления), `guest_name/email/comment`, `occurrences` JSONB `[{start,end,day,status,task_id}]`, `status` CHECK (`active`/`cancelled`), `cancelled_by`, `reschedules`, `ends_at` (конец последней активной встречи; занятость и лимит в день читают только предстоящие записи); индексы (owner_id, id DESC), (page_id, status), частичные (owner_id, ends_at) и (page_id, ends_at) по активным |
+| `referral_codes` | реферальный код пользователя: `user_id` PK, `code` UNIQUE CHECK `^[A-Z0-9]{8}$` |
+| `referrals` | кто кого пригласил: `referrer_id`, `referred_id` UNIQUE (один пригласивший), `source` CHECK (`link`/`booking`/`invite`), `verified_at` (после подтверждения email); индекс (referrer_id, id DESC) |
+
+Миграция `2026_10_14_booking_referrals.sql`.
+
+### Несколько экземпляров сервера
+| таблица | назначение |
+| --- | --- |
+| `rate_limits` | общие счётчики попыток (вход, коды, 2FA, лимиты гостевых методов): `key` PK, `count`, окно `window_start` + `window_sec`; атомарный UPSERT, истёкшие строки сервер периодически удаляет порциями по индексу `window_start`. Таблица UNLOGGED (без WAL: попытка входа не ждёт fsync; после аварийного рестарта PostgreSQL счётчики обнуляются). Миграции `2026_10_14_rate_limits.sql`, `2026_10_15_audit_fixes.sql` |
+
+Расписание владельца на время «проверить, что свободно → записать встречу»
+(`invite.respond`, `booking.*`) блокируется advisory lock'ом PostgreSQL по id
+владельца — два экземпляра сервера не займут одно время. Сервер держит пул
+соединений (`AURA_DB_POOL_SIZE`, по умолчанию 8) и отдельное соединение для
+advisory lock'ов (их берут и отпускают в одной сессии PostgreSQL).
+
+Миграция `2026_10_15_audit_fixes.sql`: `users.email_verified DEFAULT FALSE`
+(новый аккаунт без явного значения не считается подтверждённым), `bookings.ends_at`
+с заполнением и индексами, `rate_limits` — UNLOGGED и индекс `window_start`.
 
 ## Соглашения
 

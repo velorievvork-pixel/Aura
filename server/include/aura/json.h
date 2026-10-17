@@ -62,23 +62,31 @@ public:
 
     bool asBool(bool fallback = false) const { return isBool() ? bool_ : fallback; }
     double asDouble(double fallback = 0.0) const { return isNumber() ? number_ : fallback; }
+    // Вне диапазона long long (1e300, NaN) приведение double — UB: такие числа — fallback.
     long long asInt(long long fallback = 0) const {
-        return isNumber() ? static_cast<long long>(number_) : fallback;
+        if (!isNumber() || !(number_ >= -9.2e18 && number_ <= 9.2e18)) return fallback;
+        return static_cast<long long>(number_);
     }
-    const std::string& asString() const {
+    // Ссылочные аксессоры квалифицированы: у временного Json (get() возвращает
+    // копию) они отдают значение, а не ссылку в умирающий объект —
+    // `for (auto& x : json.get("list").items())` безопасен.
+    const std::string& asString() const& {
         static const std::string empty;
         return isString() ? string_ : empty;
     }
+    std::string asString() && { return isString() ? std::move(string_) : std::string(); }
 
     std::string dump(int indent = 0) const;
 
     // --- object -----------------------------------------------------------
     Json& operator[](const std::string& key);
     void set(const std::string& key, Json value);
-    const Json* find(const std::string& key) const;
+    const Json* find(const std::string& key) const&;
+    const Json* find(const std::string& key) const&& = delete;  // указатель в временный объект
     bool contains(const std::string& key) const;
     void erase(const std::string& key);
-    const Object& members() const { return object_; }
+    const Object& members() const& { return object_; }
+    Object members() && { return std::move(object_); }
     std::vector<std::string> keys() const;
 
     std::string getString(const std::string& key, const std::string& fallback = "") const;
@@ -91,9 +99,11 @@ public:
     void push(Json value);
     std::size_t size() const;
     bool empty() const { return size() == 0; }
-    const Json& at(std::size_t index) const;  // вне диапазона — общий null; записи нет
-    const Array& items() const { return array_; }
-    Array& items() {
+    const Json& at(std::size_t index) const&;  // вне диапазона — общий null; записи нет
+    Json at(std::size_t index) &&;
+    const Array& items() const& { return array_; }
+    Array items() && { return type_ == Type::Array ? std::move(array_) : Array(); }
+    Array& items() & {
         if (type_ != Type::Array) {
             type_ = Type::Array;
             array_.clear();

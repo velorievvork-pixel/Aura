@@ -41,7 +41,7 @@ ALLOWED: set[str] = {
 }
 
 # Серверные события: их клиент не отправляет, только принимает.
-EVENTS = {"chat.message", "task.due", "notification.new"}
+EVENTS = {"chat.message", "task.due", "notification.new", "session.revoked"}
 
 # Виды уведомлений (этап 13): значения NotificationRecord.kind, часть
 # протокола, но не типы запросов. Проверяются по create() в server.cpp.
@@ -52,6 +52,7 @@ KINDS = {
     "login.new",
     "twofactor.enabled",
     "twofactor.disabled",
+    "referral.joined",
 }
 
 
@@ -62,8 +63,11 @@ def server_types() -> set[str]:
 
 def server_kinds() -> set[str]:
     """Виды уведомлений, которые сервер реально создаёт (create(userId, "kind", ...))."""
-    text = (ROOT / "server/src/server.cpp").read_text(encoding="utf-8")
-    return set(re.findall(r'create\(\s*[^,]+,\s*"([a-z][a-z0-9.]+)"', text))
+    kinds: set[str] = set()
+    for path in sorted((ROOT / "server/src").glob("*.cpp")):
+        text = path.read_text(encoding="utf-8")
+        kinds |= set(re.findall(r'create\(\s*[^,]+,\s*"([a-z][a-z0-9.]+)"', text))
+    return kinds
 
 
 # Аргументы-иконки: systemImage:/systemName:/symbol: — литерал или тернарный

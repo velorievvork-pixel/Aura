@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <vector>
 
 #include "aura/config.h"
@@ -12,6 +13,8 @@
 #include "aura/memorymanager.h"
 #include "aura/net.h"
 #include "aura/protocol.h"
+#include "aura/referralmanager.h"
+#include "aura/schedulelock.h"
 #include "aura/session.h"
 #include "notificationsmanager.h"
 
@@ -83,8 +86,13 @@ Json slotJson(std::time_t start, std::time_t end) {
 }  // namespace
 
 InviteManager::InviteManager(DatabaseManager& database, MemoryManager& memory, NotificationsManager* notifications,
-                             const Config& config)
-    : database_(database), memory_(memory), notifications_(notifications), config_(config) {}
+                             const Config& config, ReferralManager* referrals, ScheduleLock* scheduleLock)
+    : database_(database),
+      memory_(memory),
+      notifications_(notifications),
+      config_(config),
+      referrals_(referrals),
+      scheduleLock_(scheduleLock) {}
 
 std::string InviteManager::tokenHash(const std::string& token) {
     if (token.size() != kTokenLength) return "";
@@ -151,6 +159,7 @@ Json InviteManager::guestJson(const InviteRecord& record, std::time_t now) {
     json.set("guest_name", Json(record.guestName));
     json.set("chosen", status == "accepted" ? record.chosen : Json::object());
     json.set("expires_at", Json(record.expiresAt));
+    json.set("ref", Json(referrals_ ? referrals_->codeFor(record.ownerId) : std::string()));
     return json;
 }
 
@@ -160,6 +169,7 @@ bool InviteManager::isFree(const Busy& busy, std::time_t start, std::time_t end)
 }
 
 bool InviteManager::limited(const std::string& key, int perMinute) {
+    if (database_.db().sharedRateLimits()) return database_.db().rateLimitHit(key, 60) > perMinute;
     const auto now = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(limitsMutex_);
     if (limits_.size() > 10000) {
@@ -362,7 +372,16 @@ InviteManager::Result InviteManager::respond(const Json& payload, const std::str
         return Result::failure(protocol::code::kBadRequest, "комментарий — не больше 500 символов");
     }
 
-    std::lock_guard<std::mutex> lock(respondMutex_);
+    // Проверка «свободно» и запись встречи — под блокировкой расписания владельца
+    // (общей с booking.*; между экземплярами сервера — через PostgreSQL).
+    std::unique_lock<std::mutex> localLock(respondMutex_, std::defer_lock);
+    std::optional<ScheduleLock::Guard> scheduleLock;
+    if (scheduleLock_) {
+        scheduleLock.emplace(scheduleLock_->acquire(record->ownerId));
+        if (!scheduleLock->ok()) return Result::failure(protocol::code::kConflict, "сервер занят — попробуйте ещё раз");
+    } else {
+        localLock.lock();
+    }
     const std::time_t now = std::time(nullptr);
     const std::string status = effectiveStatus(*record, now);
     if (status == "expired") return Result::failure(protocol::code::kConflict, "срок приглашения истёк");
@@ -397,8 +416,8 @@ InviteManager::Result InviteManager::respond(const Json& payload, const std::str
         return Result::failure(protocol::code::kConflict, "приглашение уже закрыто");
     }
 
+    const std::string title = "Встреча: " + record->topic + " — " + response.guestName;
     if (action == "accept") {
-        const std::string title = "Встреча: " + record->topic + " — " + response.guestName;
         // Интервал «(start/end)» — встреча занимает время в календаре для
         // переговоров и других приглашений (MemoryManager::busy).
         const DatabaseError remembered = database_.db().upsertMemory(
@@ -407,6 +426,13 @@ InviteManager::Result InviteManager::respond(const Json& payload, const std::str
         if (!remembered.ok) {
             AURA_LOG(log::Level::Warn, "invite") << "встреча не записана в расписание: " << remembered.message;
         }
+    }
+    // Время занято и записано — расписание владельца больше не держим: задача,
+    // уведомление и пуш (сетевые вызовы) идут без блокировки.
+    if (scheduleLock) scheduleLock->release();
+    if (localLock.owns_lock()) localLock.unlock();
+
+    if (action == "accept") {
         TaskRecord task;
         task.userId = record->ownerId;
         task.title = title;

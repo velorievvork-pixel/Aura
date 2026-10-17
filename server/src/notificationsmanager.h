@@ -20,6 +20,8 @@ namespace aura {
 
 class NotificationsManager {
 public:
+    static constexpr std::size_t kMaxDevices = 20;  // устройств push на пользователя
+
     struct Result {
         bool ok = false;
         std::string code;

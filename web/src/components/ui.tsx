@@ -4,14 +4,25 @@ import { createPortal } from 'react-dom';
 import type { StatusIcon, StatusView } from '../lib/payment';
 
 /**
-  Знак Selfvoy: S-линия между двумя точками. Линия — акцент #3555F5, верхняя
-  точка — цвет текста (на тёмном фоне — светлая), нижняя — янтарная #FFB224.
-  mono — весь знак одним цветом (на цветной плитке).
+  Знак Selfvoy: S-линия между двумя точками. Линия — фирменный градиент
+  синий → фиолетовый → маджента, верхняя точка — цвет текста (на тёмном фоне —
+  светлая), нижняя — янтарная #FFB224. mono — весь знак одним цветом (на цветной
+  плитке).
 */
 export function Logo({ size = 22, mono }: { size?: number; mono?: boolean }) {
+  const id = `sv-grad-${useId().replace(/:/g, '')}`;
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" fill="none" aria-hidden="true">
-      <path d="M76 28 C 38 24, 28 44, 50 50 C 72 56, 62 76, 24 72" stroke={mono ? 'currentColor' : '#3555F5'} strokeWidth="11" strokeLinecap="round" />
+      {!mono && (
+        <defs>
+          <linearGradient id={id} x1="80" y1="20" x2="20" y2="80" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stopColor="#B04CFF" />
+            <stop offset="0.5" stopColor="#6A4CFF" />
+            <stop offset="1" stopColor="#3D6BFF" />
+          </linearGradient>
+        </defs>
+      )}
+      <path d="M76 28 C 38 24, 28 44, 50 50 C 72 56, 62 76, 24 72" stroke={mono ? 'currentColor' : `url(#${id})`} strokeWidth="11" strokeLinecap="round" />
       <circle cx="76" cy="28" r="10" fill="currentColor" />
       <circle cx="24" cy="72" r="10" fill={mono ? 'currentColor' : '#FFB224'} />
     </svg>

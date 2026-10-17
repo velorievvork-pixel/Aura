@@ -11,6 +11,7 @@ import { migrateLegacyStorage } from './net/storageMigration';
 import { ForgotPassword, Login, Signup, TwoFactor, VerifyEmail } from './pages/Auth';
 import { DataProvider } from './state/data';
 import { SessionProvider, useSession } from './state/session';
+import '@fontsource-variable/manrope';
 import './styles/global.css';
 
 // Ключи «aura.*» → «selfvoy.*» до первого чтения хранилища (вход и настройки сохраняются).

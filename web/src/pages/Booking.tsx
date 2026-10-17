@@ -330,13 +330,16 @@ function PageCard({
             </button>
           </div>
         ) : (
-          <div className="row wrap" style={{ gap: 6, width: '100%' }}>
+          <div className="row page-acts" style={{ gap: 6, width: '100%' }}>
             <button className="btn btn-ghost btn-sm" onClick={onEdit}>
               <Pencil size={15} /> Настроить
             </button>
             {active && (
-              <button className="btn btn-ghost btn-sm" onClick={onPost}>
-                <Megaphone size={15} /> Пост с окнами
+              <button className="btn btn-ghost btn-sm" onClick={onPost} aria-label="Пост с окнами">
+                <Megaphone size={15} />
+                <span>
+                  Пост<span className="hide-phone"> с окнами</span>
+                </span>
               </button>
             )}
             <span className="spacer" />

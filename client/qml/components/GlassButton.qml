@@ -1,18 +1,18 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Effects
-import Aura
+import Selfvoy
 import "../icons/Icons.js" as Icons
 
 /*
-  GlassButton — кнопка v3.
+  GlassButton — кнопка 2026 (как .btn в вебе). Имя осталось от стеклянной темы.
 
-  variant: "accent" — градиент сирень → фиолет → индиго со свечением (CTA)
-           "glass"  — нейтральное стекло с тонкой рамкой (по умолчанию)
-           "quiet"  — почти прозрачная, для второстепенных действий
-           "danger" — красноватое стекло
+  variant: "accent"  — сплошной акцент #3555F5, белый текст (главное действие)
+           "glass"   — вторичная: мягкий акцентный фон, акцентный текст (по умолчанию)
+           "neutral" — серая подложка поля, обычный текст (иконки-кнопки)
+           "quiet"   — без фона, акцентный текст; фон только при наведении
+           "danger"  — мягкий красный фон, красный текст
+           "onColor" — на цветной карточке: белая плёнка 20 % и белый текст
   symbol — имя иконки Lucide (Icon.qml); glyph — текстовый символ (совместимость).
-  Отклик: подъём при наведении, «вдавливание» при нажатии, спиннер при busy.
 */
 Button {
     id: control
@@ -22,98 +22,66 @@ Button {
     property string symbol: ""
     property bool busy: false
     property real glyphSize: 16
-    property real radius: AuraTheme.radiusPill
-    property int textSize: AuraTheme.fontBody
+    property real radius: SelfvoyTheme.radiusPill
+    property int textSize: SelfvoyTheme.fontBody
     property bool alignLeft: false
 
-    // Старые экраны задают glyph символом — показываем его иконкой, если она есть.
     readonly property string resolvedIcon: symbol.length > 0 ? symbol : Icons.iconFor(glyph)
     readonly property bool isAccent: variant === "accent"
-    readonly property color fg: isAccent ? AuraTheme.textOnAccent
-                                         : (variant === "danger" ? AuraTheme.danger : AuraTheme.textPrimary)
+    readonly property color fg: isAccent || variant === "onColor" ? "#FFFFFF"
+                                : variant === "danger" ? SelfvoyTheme.danger
+                                : variant === "neutral" ? SelfvoyTheme.text
+                                : SelfvoyTheme.accent
+    readonly property color face: {
+        switch (variant) {
+        case "accent": return control.hovered ? SelfvoyTheme.accentHover : SelfvoyTheme.accentSolid
+        case "danger": return SelfvoyTheme.dangerSoft
+        case "neutral": return control.hovered ? SelfvoyTheme.fieldHover : SelfvoyTheme.field
+        case "onColor": return Qt.rgba(1, 1, 1, control.hovered ? 0.28 : 0.2)
+        case "quiet": return control.hovered ? SelfvoyTheme.field : "transparent"
+        default: return SelfvoyTheme.accentTint
+        }
+    }
 
-    implicitHeight: 46
+    implicitHeight: 40
     implicitWidth: Math.max(implicitHeight, contentItem.implicitWidth + leftPadding + rightPadding)
-    leftPadding: text.length > 0 ? AuraTheme.spaceLg : 0
-    rightPadding: text.length > 0 ? AuraTheme.spaceLg : 0
+    leftPadding: text.length > 0 ? 18 : 0
+    rightPadding: text.length > 0 ? 18 : 0
     topPadding: 0
     bottomPadding: 0
     focusPolicy: Qt.TabFocus
     hoverEnabled: true
 
-    scale: pressed ? AuraTheme.pressScale : 1.0
+    scale: pressed ? SelfvoyTheme.pressScale : 1.0
     opacity: enabled ? 1.0 : 0.45
-    Behavior on scale { NumberAnimation { duration: AuraTheme.pressMs; easing.type: AuraTheme.ease } }
-    Behavior on opacity { NumberAnimation { duration: AuraTheme.moveMs } }
+    Behavior on scale { NumberAnimation { duration: SelfvoyTheme.pressMs; easing.type: SelfvoyTheme.ease } }
 
     background: Item {
         implicitHeight: control.implicitHeight
-        transform: Translate {
-            y: control.hovered && !control.pressed ? AuraTheme.hoverLift : 0
-            Behavior on y { NumberAnimation { duration: AuraTheme.pressMs; easing.type: AuraTheme.ease } }
-        }
-
         Rectangle {
-            id: face
+            id: faceRect
             anchors.fill: parent
             radius: Math.min(control.radius, height / 2)
-            gradient: control.isAccent ? accentGradient : null
-            color: control.isAccent ? "transparent"
-                   : control.variant === "danger"
-                     ? Qt.rgba(AuraTheme.danger.r, AuraTheme.danger.g, AuraTheme.danger.b,
-                               control.pressed ? 0.24 : (control.hovered ? 0.2 : 0.14))
-                     : Qt.rgba(1, 1, 1, control.variant === "quiet"
-                               ? (control.pressed ? 0.1 : (control.hovered ? 0.06 : 0.0))
-                               : (control.pressed ? 0.14 : (control.hovered ? 0.1 : 0.06)))
-            border.width: control.variant === "quiet" ? 0 : 1
-            border.color: control.isAccent ? Qt.rgba(1, 1, 1, 0.28)
-                                           : Qt.rgba(1, 1, 1, control.hovered ? AuraTheme.glassBorderHover
-                                                                              : AuraTheme.glassBorder + 0.04)
-            Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
-
-            Gradient {
-                id: accentGradient
-                orientation: Gradient.Horizontal
-                GradientStop { position: 0.0; color: control.pressed ? AuraTheme.gradMid : AuraTheme.gradStart }
-                GradientStop { position: 0.5; color: AuraTheme.gradMid }
-                GradientStop { position: 1.0; color: AuraTheme.gradEnd }
-            }
-
-            // Верхний блик. Той же формы, что и кнопка, а затухает градиентом:
-            // прямоугольник половинной высоты получал радиус не больше h/4 кнопки,
-            // и его углы торчали за круг/пилюлю светлым «квадратом».
+            color: control.face
+            border.width: control.variant === "onColor" ? 1 : 0
+            border.color: Qt.rgba(1, 1, 1, 0.35)
+            Behavior on color { ColorAnimation { duration: SelfvoyTheme.pressMs } }
+            // Тонкая «чернильная» плёнка при нажатии (вторичные кнопки)
             Rectangle {
-                visible: control.variant !== "quiet" || control.hovered
                 anchors.fill: parent
-                anchors.margins: 1
-                radius: Math.max(0, parent.radius - 1)
-                gradient: Gradient {
-                    GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, control.isAccent ? 0.22 : 0.08) }
-                    GradientStop { position: 0.5; color: Qt.rgba(1, 1, 1, 0.0) }
-                    GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.0) }
-                }
-            }
-
-            // Свечение акцентной кнопки
-            layer.enabled: control.isAccent && control.enabled
-            layer.effect: MultiEffect {
-                autoPaddingEnabled: true
-                shadowEnabled: true
-                shadowColor: AuraTheme.accentGlow
-                shadowBlur: control.hovered ? 1.0 : 0.8
-                shadowVerticalOffset: 8
-                blurMax: 40
+                radius: parent.radius
+                visible: control.pressed && !control.isAccent
+                color: SelfvoyTheme.glass(0.06)
             }
         }
-
         // Индикатор фокуса с клавиатуры
         Rectangle {
-            anchors.fill: face
+            anchors.fill: faceRect
             anchors.margins: -3
-            radius: face.radius + 3
+            radius: faceRect.radius + 3
             color: "transparent"
             border.width: control.visualFocus ? 2 : 0
-            border.color: AuraTheme.lilacA(0.7)
+            border.color: SelfvoyTheme.accentSolid
         }
     }
 
@@ -123,11 +91,10 @@ Button {
 
         Row {
             id: row
-            spacing: AuraTheme.spaceSm
+            spacing: 7
             anchors.verticalCenter: parent.verticalCenter
             x: control.alignLeft ? 0 : Math.max(0, (parent.width - width) / 2)
 
-            // Иконка / глиф / спиннер
             Item {
                 width: visible ? control.glyphSize + 2 : 0
                 height: control.glyphSize + 2
@@ -145,10 +112,11 @@ Button {
                     anchors.centerIn: parent
                     text: control.glyph
                     visible: control.resolvedIcon.length === 0 && !control.busy
-                    font.family: AuraTheme.fontFamily
+                    font.family: SelfvoyTheme.fontFamily
                     font.pixelSize: control.glyphSize
                     color: control.fg
                 }
+                // Спиннер
                 Rectangle {
                     anchors.centerIn: parent
                     width: control.glyphSize
@@ -176,9 +144,9 @@ Button {
                 anchors.verticalCenter: parent.verticalCenter
                 text: control.text
                 visible: control.text.length > 0
-                font.family: AuraTheme.fontFamily
+                font.family: SelfvoyTheme.fontFamily
                 font.pixelSize: control.textSize
-                font.weight: control.isAccent ? Font.Bold : Font.DemiBold
+                font.weight: Font.DemiBold
                 color: control.fg
                 elide: Text.ElideRight
             }

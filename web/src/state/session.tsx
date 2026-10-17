@@ -20,7 +20,7 @@
 */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { currentEnv, loadOverride, normalizeServerUrl, sameServers, saveOverride, serverCandidates } from '../net/config';
-import { AuraError, AuraSocket, type ConnState } from '../net/socket';
+import { SelfvoyError, SelfvoySocket, type ConnState } from '../net/socket';
 import { makeApi, type Api, type AuthPayload, type User } from '../net/api';
 import { clearTokens, deviceInfo, loadTokens, saveTokens } from '../net/secureStore';
 import { cachedUser, cacheUser, clearUserCaches } from '../net/userCache';
@@ -34,7 +34,7 @@ export type LoginStep = { kind: 'done' } | { kind: 'twoFactor' } | { kind: 'veri
 
 interface Session {
   api: Api;
-  socket: AuraSocket;
+  socket: SelfvoySocket;
   conn: ConnState;
   /** Было ли хоть одно успешное подключение за этот запуск. */
   everConnected: boolean;
@@ -66,10 +66,10 @@ const LOGOUT_TIMEOUT_MS = 5000;
 
 function deviceName(): string {
   const platform = getPlatform();
-  if (platform === 'android') return 'Aura для Android';
-  if (platform === 'ios') return 'Aura для iPhone';
-  if (platform === 'desktop') return 'Aura Desktop';
-  return 'Aura в браузере';
+  if (platform === 'android') return 'Selfvoy для Android';
+  if (platform === 'ios') return 'Selfvoy для iPhone';
+  if (platform === 'desktop') return 'Selfvoy Desktop';
+  return 'Selfvoy в браузере';
 }
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -96,7 +96,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const signedIn = useCallback(
     async (payload: AuthPayload) => {
-      if (!payload.token || !payload.refresh_token) throw new AuraError('bad_response', 'Сервер не выдал токены входа');
+      if (!payload.token || !payload.refresh_token) throw new SelfvoyError('bad_response', 'Сервер не выдал токены входа');
       epoch.current += 1;
       await saveTokens({ access: payload.token, refresh: payload.refresh_token });
       applyUser(payload.user);
@@ -122,7 +122,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   // Один сокет на всё время жизни приложения.
   const socket = useMemo(
     () =>
-      new AuraSocket({
+      new SelfvoySocket({
         candidates: () => serverCandidates(overrideRef.current, currentEnv()),
         onOpen: async (sock) => {
           const started = epoch.current;
@@ -187,11 +187,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         await signedIn(payload);
         return { kind: 'done' };
       } catch (error) {
-        if (error instanceof AuraError && error.code === 'requires_2fa') {
+        if (error instanceof SelfvoyError && error.code === 'requires_2fa') {
           pending.current = { email: address, password };
           return { kind: 'twoFactor' };
         }
-        if (error instanceof AuraError && error.code === 'email_not_verified') {
+        if (error instanceof SelfvoyError && error.code === 'email_not_verified') {
           pending.current = { email: address, password };
           setPendingEmail(address);
           const sent = await api.resendCode(address).catch(() => ({ email_code: undefined }));
@@ -206,7 +206,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const login2fa = useCallback(
     async (code: string, trustDevice: boolean) => {
       const creds = pending.current;
-      if (!creds) throw new AuraError('bad_request', 'Начните вход заново');
+      if (!creds) throw new SelfvoyError('bad_request', 'Начните вход заново');
       const device = await deviceInfo();
       // Без постоянного id «доверять устройству» нельзя: id сменится при перезапуске.
       const trust = trustDevice && device.persistent;
@@ -343,11 +343,11 @@ export function useSession(): Session {
 
 /** Понятный текст ошибки для формы: сетевые — своими словами, остальное — как сказал сервер. */
 export function errorText(error: unknown): string {
-  if (error instanceof AuraError) {
+  if (error instanceof SelfvoyError) {
     switch (error.code) {
       case 'offline':
       case 'disconnected':
-        return 'Нет связи с сервером Aura';
+        return 'Нет связи с сервером Selfvoy';
       case 'timeout':
         return 'Сервер не ответил вовремя — попробуйте ещё раз';
       case 'conflict':

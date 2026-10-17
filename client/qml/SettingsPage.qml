@@ -1,11 +1,11 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 import "Format.js" as F
 
 /*
-  SettingsPage — профиль, предпочтения Ауры, долговременная память, выход.
+  SettingsPage — профиль, предпочтения Selfvoy, долговременная память, выход.
 */
 Item {
     id: page
@@ -39,31 +39,10 @@ Item {
         function onPrivacySaveFailed(key, message) { privacyError.text = "Не сохранилось: " + message }
     }
 
-    // v3: заголовок секции с lilac-индикатором слева (как в макете Settings)
     // Переключатель в стиле стекла: стандартный Basic-Switch бело-серый и
     // с лишней шириной, из-за чего вставал посреди строки.
-    component GlassSwitch: Switch {
-        id: sw
+    component GlassSwitch: Toggle {
         Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
-        padding: 0
-        implicitWidth: 46
-        implicitHeight: 26
-        indicator: Rectangle {
-            anchors.fill: parent
-            radius: height / 2
-            color: sw.checked ? AuraTheme.accentA(0.85) : Qt.rgba(1, 1, 1, 0.12)
-            border.width: 1
-            border.color: sw.checked ? AuraTheme.lilacA(0.5) : Qt.rgba(1, 1, 1, 0.18)
-            Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
-            Rectangle {
-                width: 20; height: 20; radius: 10
-                y: 3
-                x: sw.checked ? parent.width - width - 3 : 3
-                color: "#FFFFFF"
-                Behavior on x { NumberAnimation { duration: AuraTheme.pressMs; easing.type: AuraTheme.ease } }
-            }
-        }
-        contentItem: null
     }
 
     // Слайдер в стиле темы (у Basic — серый трек и белый «пятак» без акцента).
@@ -76,12 +55,12 @@ Item {
             width: sl.availableWidth
             height: 4
             radius: 2
-            color: Qt.rgba(1, 1, 1, 0.12)
+            color: SelfvoyTheme.field
             Rectangle {
                 width: sl.visualPosition * parent.width
                 height: parent.height
                 radius: 2
-                color: AuraTheme.accentSoft
+                color: SelfvoyTheme.accentSolid
             }
         }
         handle: Rectangle {
@@ -89,38 +68,46 @@ Item {
             y: sl.topPadding + sl.availableHeight / 2 - height / 2
             width: 18; height: 18; radius: 9
             color: "#FFFFFF"
-            border.width: sl.pressed ? 3 : 2
-            border.color: AuraTheme.accent
+            border.width: 1
+            border.color: SelfvoyTheme.borderStrong
         }
     }
 
     component SectionTitle: RowLayout {
         property string title: ""
-        property int titleSize: AuraTheme.fontBody
-        spacing: AuraTheme.spaceSm
-        Rectangle {
-            Layout.preferredWidth: 3
-            Layout.preferredHeight: titleSize + 2
-            radius: 2
-            color: AuraTheme.lilac
-        }
+        property int titleSize: SelfvoyTheme.fontBody
+        spacing: SelfvoyTheme.spaceSm
         Text {
             text: title
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: titleSize
-            font.weight: Font.DemiBold
-            color: AuraTheme.textPrimary
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: titleSize + 2
+            font.weight: Font.Bold
+            color: SelfvoyTheme.textPrimary
         }
+        Item { Layout.fillWidth: true }   // растягивается, если заголовку дали всю ширину
     }
 
     // Раздел настроек; навигация слева — как в макете (сиреневый индикатор у активного).
     property string section: "profile"
+
+    // Переход в раздел (и из других экранов: navigate("settings:referral")).
+    function openSection(key) {
+        section = key
+        if (!App) return
+        if (key === "permissions") App.loadPermissions()
+        if (key === "integrations") { App.loadIntegrations(); App.loadTelegram(); App.loadPayments(); App.loadCalendarFeed() }
+        if (key === "security") { App.loadSessions(); App.loadTwoFactorStatus() }
+        if (key === "memory") App.refreshMemory()
+        if (key === "referral") App.loadReferral()
+    }
+    function runAction(action) { if (sections.some(s => s.key === action)) openSection(action) }
+    readonly property var planInfo: App ? F.planView(App.plan) : null
     readonly property var sections: [
-        { key: "profile", label: "Профиль и Аура", icon: "user" },
+        { key: "profile", label: "Профиль и Selfvoy", icon: "user" },
         { key: "permissions", label: "Разрешения", icon: "shield" },
         { key: "security", label: "Безопасность", icon: "lock" },
         { key: "voice", label: "Голос", icon: "mic" },
-        { key: "integrations", label: "Интеграции", icon: "calendar-days" },
+        { key: "integrations", label: "Интеграции и оплата", icon: "calendar-days" },
         { key: "memory", label: "Память", icon: "brain" },
         { key: "referral", label: "Пригласить друзей", icon: "user-plus" }
     ]
@@ -130,10 +117,10 @@ Item {
         x: 48
         y: 40
         text: "Настройки"
-        font.family: AuraTheme.fontFamily
+        font.family: SelfvoyTheme.fontFamily
         font.pixelSize: 38
         font.weight: Font.Bold
-        color: AuraTheme.textPrimary
+        color: SelfvoyTheme.textPrimary
     }
 
     Column {
@@ -150,25 +137,25 @@ Item {
                 readonly property bool active: page.section === modelData.key
                 width: sectionNav.width
                 height: 44
-                radius: AuraTheme.radiusSmall
-                color: active ? AuraTheme.accentA(0.14) : (navArea.containsMouse ? Qt.rgba(1, 1, 1, 0.05) : "transparent")
+                radius: SelfvoyTheme.radiusSmall
+                color: active ? SelfvoyTheme.accentTint : (navArea.containsMouse ? SelfvoyTheme.field : "transparent")
                 Rectangle {
                     visible: parent.active
                     width: 3; height: 22; radius: 1.5
                     anchors.verticalCenter: parent.verticalCenter
-                    color: AuraTheme.lilac
+                    color: SelfvoyTheme.accent
                 }
                 Row {
                     anchors.verticalCenter: parent.verticalCenter
                     x: 16
                     spacing: 11
-                    Icon { name: modelData.icon; size: 17; color: parent.parent.active ? AuraTheme.textPrimary : AuraTheme.textSecondary; anchors.verticalCenter: parent.verticalCenter }
+                    Icon { name: modelData.icon; size: 17; color: parent.parent.active ? SelfvoyTheme.accent : SelfvoyTheme.textSecondary; anchors.verticalCenter: parent.verticalCenter }
                     Text {
                         text: modelData.label
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontBody - 1
-                        font.weight: parent.parent.active ? Font.Bold : Font.Medium
-                        color: parent.parent.active ? AuraTheme.textPrimary : AuraTheme.textSecondary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontBody - 1
+                        font.weight: parent.parent.active ? Font.DemiBold : Font.Medium
+                        color: parent.parent.active ? SelfvoyTheme.accent : SelfvoyTheme.textPrimary
                         anchors.verticalCenter: parent.verticalCenter
                     }
                 }
@@ -177,13 +164,7 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        page.section = modelData.key
-                        if (modelData.key === "permissions") App.loadPermissions()
-                        if (modelData.key === "integrations") App.loadIntegrations()
-                        if (modelData.key === "security") { App.loadSessions(); App.loadTwoFactorStatus() }
-                        if (modelData.key === "memory") App.refreshMemory()
-                    }
+                    onClicked: page.openSection(modelData.key)
                 }
             }
         }
@@ -191,8 +172,8 @@ Item {
 
     Flickable {
         anchors.fill: parent
-        anchors.margins: AuraTheme.spaceXl
-        anchors.leftMargin: page.embedded ? sectionNav.x + sectionNav.width + 24 : AuraTheme.spaceXl
+        anchors.margins: SelfvoyTheme.spaceXl
+        anchors.leftMargin: page.embedded ? sectionNav.x + sectionNav.width + 24 : SelfvoyTheme.spaceXl
         contentHeight: column.height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
@@ -200,12 +181,12 @@ Item {
         ColumnLayout {
             id: column
             width: parent.width
-            spacing: AuraTheme.spaceMd
+            spacing: SelfvoyTheme.spaceMd
 
             // ---------------------------------------------------- шапка
             RowLayout {
                 Layout.fillWidth: true
-                spacing: AuraTheme.spaceMd
+                spacing: SelfvoyTheme.spaceMd
 
                 GlassButton {
                     visible: !page.embedded
@@ -221,10 +202,10 @@ Item {
                     Layout.fillWidth: true
                     // Во встроенном режиме заголовок «Настройки» стоит над навигацией слева.
                     text: page.embedded ? "" : "Настройки"
-                    font.family: AuraTheme.fontFamily
+                    font.family: SelfvoyTheme.fontFamily
                     font.pixelSize: 30
                     font.weight: Font.Bold
-                    color: AuraTheme.textPrimary
+                    color: SelfvoyTheme.textPrimary
                 }
 
                 GlassButton {
@@ -247,9 +228,9 @@ Item {
 
                 RowLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceMd
+                    spacing: SelfvoyTheme.spaceMd
 
-                    AuraAvatar { name: App ? App.userName : ""; size: 52; online: App ? App.connected : false }
+                    SelfvoyAvatar { name: App ? App.userName : ""; size: 52; online: App ? App.connected : false }
 
                     ColumnLayout {
                         Layout.fillWidth: true
@@ -257,16 +238,16 @@ Item {
                         Text {
                             Layout.fillWidth: true
                             text: App ? App.userName : ""
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontTitle
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontTitle
                             font.weight: Font.Bold
-                            color: AuraTheme.textPrimary
+                            color: SelfvoyTheme.textPrimary
                         }
                         Text {
                             text: App ? App.userEmail : ""
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                         }
                         Text {
                             Layout.fillWidth: true
@@ -276,16 +257,64 @@ Item {
                             wrapMode: Text.WordWrap
                             maximumLineCount: 3
                             elide: Text.ElideRight
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
+                        }
+                        RowLayout {
+                            visible: !!page.planInfo
+                            spacing: 6
+                            ProBadge { visible: !!page.planInfo && page.planInfo.pro }
+                            Text {
+                                text: page.planInfo ? "Тариф: " + page.planInfo.label : ""
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                font.weight: Font.DemiBold
+                                color: SelfvoyTheme.textPrimary
+                            }
+                            Text {
+                                text: page.planInfo ? "· " + page.planInfo.hint : ""
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                color: SelfvoyTheme.textSecondary
+                            }
                         }
                         Text {
                             text: "Сервер: " + (App ? App.serverUrl : "") + " · " + (App && App.connected ? "подключено" : "офлайн")
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: App && App.connected ? AuraTheme.textMuted : AuraTheme.warning
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
+                            color: App && App.connected ? SelfvoyTheme.textMuted : SelfvoyTheme.warning
                         }
+                    }
+                }
+            }
+
+            // ------------------------------------------ оформление (тема 2026)
+            GlassPanel {
+                visible: page.section === "profile"
+                Layout.fillWidth: true
+
+                RowLayout {
+                    anchors.fill: parent
+                    spacing: SelfvoyTheme.spaceMd
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+                        SectionTitle { title: "Оформление" }
+                        Text {
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                            text: "Светлая или тёмная тема — как в системе или всегда одна."
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
+                        }
+                    }
+                    Segmented {
+                        options: [{ value: "system", label: "Как в системе" }, { value: "light", label: "Светлая" },
+                                  { value: "dark", label: "Тёмная" }]
+                        value: SelfvoyTheme.mode
+                        onActivated: value => SelfvoyTheme.setMode(value)
                     }
                 }
             }
@@ -298,16 +327,16 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceSm
+                    spacing: SelfvoyTheme.spaceSm
 
                     SectionTitle { title: "Профиль" }
 
                     Text {
                         Layout.fillWidth: true
-                        text: "Имя и «о себе» видят ваши контакты и их Ауры при переговорах."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textMuted
+                        text: "Имя и «о себе» видят ваши контакты и их Selfvoy при переговорах."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textMuted
                         wrapMode: Text.WordWrap
                     }
 
@@ -340,9 +369,9 @@ Item {
                         text: !nameField.valid
                               ? (nameField.chars === 0 ? "Имя не может быть пустым" : "Имя — не длиннее 80 символов")
                               : (!bioField.valid ? "«О себе» — не длиннее 300 символов" : "")
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.danger
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.danger
                         wrapMode: Text.WordWrap
                     }
 
@@ -351,15 +380,15 @@ Item {
                         Layout.fillWidth: true
                         visible: text.length > 0 && !profileHint.visible
                         text: ""
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.danger
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.danger
                         wrapMode: Text.WordWrap
                     }
 
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceSm
+                        spacing: SelfvoyTheme.spaceSm
 
                         GlassButton {
                             variant: "accent"
@@ -400,13 +429,13 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceMd
+                    spacing: SelfvoyTheme.spaceMd
 
-                    SectionTitle { title: "Что знает ваша Аура" }
+                    SectionTitle { title: "Что знает ваш Selfvoy" }
 
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceMd
+                        spacing: SelfvoyTheme.spaceMd
 
                         GlassField {
                             id: cityField
@@ -429,19 +458,19 @@ Item {
                     // Диета — стеклянные чипы
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceSm
+                        spacing: SelfvoyTheme.spaceSm
 
                         Text {
                             text: "Диета"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                         }
 
                         Flow {
                             id: dietFlow
                             Layout.fillWidth: true
-                            spacing: AuraTheme.spaceSm
+                            spacing: SelfvoyTheme.spaceSm
 
                             property var selected: page.prefs && page.prefs.diet ? page.prefs.diet : []
 
@@ -449,15 +478,15 @@ Item {
                                 model: ["vegan", "vegetarian", "gluten_free", "halal", "без кофеина"]
                                 delegate: Rectangle {
                                     id: chip
-                                    width: chipText.width + AuraTheme.spaceLg
+                                    width: chipText.width + SelfvoyTheme.spaceLg
                                     height: 34
-                                    radius: AuraTheme.radiusPill
+                                    radius: SelfvoyTheme.radiusPill
                                     readonly property bool on: dietFlow.selected.indexOf(modelData) >= 0
-                                    color: on ? AuraTheme.accentA(0.25) : Qt.rgba(1, 1, 1, 0.06)
+                                    color: on ? SelfvoyTheme.accentA(0.25) : SelfvoyTheme.glass(0.06)
                                     border.width: 1
-                                    border.color: on ? AuraTheme.accentA(0.55) : Qt.rgba(1, 1, 1, AuraTheme.glassBorder)
-                                    scale: chipArea.pressed ? AuraTheme.pressScale : 1
-                                    Behavior on scale { NumberAnimation { duration: AuraTheme.pressMs } }
+                                    border.color: on ? SelfvoyTheme.accentA(0.55) : SelfvoyTheme.glass(SelfvoyTheme.glassBorder)
+                                    scale: chipArea.pressed ? SelfvoyTheme.pressScale : 1
+                                    Behavior on scale { NumberAnimation { duration: SelfvoyTheme.pressMs } }
 
                                     Text {
                                         id: chipText
@@ -465,9 +494,9 @@ Item {
                                         // Значения — как ждёт AI-сервис, подписи — по-русски.
                                         text: ({ vegan: "веган", vegetarian: "вегетарианец", gluten_free: "без глютена",
                                                  halal: "халяль" })[modelData] || modelData
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontSmall
-                                        color: chip.on ? AuraTheme.textPrimary : AuraTheme.textSecondary
+                                        font.family: SelfvoyTheme.fontFamily
+                                        font.pixelSize: SelfvoyTheme.fontSmall
+                                        color: chip.on ? SelfvoyTheme.textPrimary : SelfvoyTheme.textSecondary
                                     }
 
                                     MouseArea {
@@ -490,13 +519,13 @@ Item {
                     // Удобные часы — чипы времени
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceSm
+                        spacing: SelfvoyTheme.spaceSm
 
                         Text {
                             text: "Удобные часы для встреч"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                         }
 
                         Flow {
@@ -513,20 +542,20 @@ Item {
                                     id: hourChip
                                     width: 40
                                     height: 32
-                                    radius: AuraTheme.radiusField
+                                    radius: SelfvoyTheme.radiusField
                                     readonly property bool on: hoursFlow.selected.indexOf(modelData) >= 0
-                                    color: on ? AuraTheme.accentA(0.25) : Qt.rgba(1, 1, 1, 0.05)
+                                    color: on ? SelfvoyTheme.accentA(0.25) : SelfvoyTheme.glass(0.05)
                                     border.width: 1
-                                    border.color: on ? AuraTheme.accentA(0.5) : Qt.rgba(1, 1, 1, AuraTheme.glassBorder)
-                                    scale: hourArea.pressed ? AuraTheme.pressScale : 1
-                                    Behavior on scale { NumberAnimation { duration: AuraTheme.pressMs } }
+                                    border.color: on ? SelfvoyTheme.accentA(0.5) : SelfvoyTheme.glass(SelfvoyTheme.glassBorder)
+                                    scale: hourArea.pressed ? SelfvoyTheme.pressScale : 1
+                                    Behavior on scale { NumberAnimation { duration: SelfvoyTheme.pressMs } }
 
                                     Text {
                                         anchors.centerIn: parent
                                         text: modelData + ":00"
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontMicro
-                                        color: hourChip.on ? AuraTheme.textPrimary : AuraTheme.textMuted
+                                        font.family: SelfvoyTheme.fontFamily
+                                        font.pixelSize: SelfvoyTheme.fontMicro
+                                        color: hourChip.on ? SelfvoyTheme.textPrimary : SelfvoyTheme.textMuted
                                     }
 
                                     MouseArea {
@@ -569,16 +598,16 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceMd
+                    spacing: SelfvoyTheme.spaceMd
 
                     SectionTitle { title: "Приватность ИИ" }
 
                     Text {
                         Layout.fillWidth: true
-                        text: "Что ваша Аура раскрывает чужой Ауре, когда договаривается о встрече."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textSecondary
+                        text: "Что ваш Selfvoy раскрывает чужому Selfvoy, когда договаривается о встрече."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textSecondary
                         wrapMode: Text.WordWrap
                     }
 
@@ -586,11 +615,11 @@ Item {
                         model: [
                             { key: "share_free_slots_only",
                               title: "Делиться только свободными слотами",
-                              hint: "Другой Ауре уходят только занятость и настройки, нужные для времени и места. "
+                              hint: "Другому Selfvoy уходят только занятость и настройки, нужные для времени и места. "
                                     + "Факты из памяти, день рождения и аллергии не передаются." },
                             { key: "allow_place_choice",
                               title: "Разрешить выбор локаций",
-                              hint: "Аура может предложить место встречи. Если выключено у вас или у собеседника, "
+                              hint: "Selfvoy может предложить место встречи. Если выключено у вас или у собеседника, "
                                     + "место не предлагается — выберете сами." },
                             { key: "hide_event_titles",
                               title: "Скрывать названия других событий",
@@ -601,7 +630,7 @@ Item {
                             id: privacyRow
                             required property var modelData
                             Layout.fillWidth: true
-                            spacing: AuraTheme.spaceMd
+                            spacing: SelfvoyTheme.spaceMd
 
                             ColumnLayout {
                                 Layout.fillWidth: true
@@ -609,17 +638,17 @@ Item {
                                 Text {
                                     Layout.fillWidth: true
                                     text: privacyRow.modelData.title
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontSmall
-                                    color: AuraTheme.textPrimary
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontSmall
+                                    color: SelfvoyTheme.textPrimary
                                     wrapMode: Text.WordWrap
                                 }
                                 Text {
                                     Layout.fillWidth: true
                                     text: privacyRow.modelData.hint
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontMicro
-                                    color: AuraTheme.textMuted
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontMicro
+                                    color: SelfvoyTheme.textMuted
                                     wrapMode: Text.WordWrap
                                 }
                             }
@@ -643,9 +672,9 @@ Item {
                         Layout.fillWidth: true
                         visible: text.length > 0
                         text: ""
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.danger
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.danger
                         wrapMode: Text.WordWrap
                     }
                 }
@@ -659,17 +688,17 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceSm
+                    spacing: SelfvoyTheme.spaceSm
 
                     RowLayout {
                         Layout.fillWidth: true
                         Text {
                             Layout.fillWidth: true
                             text: "Долговременная память"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontBody
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontBody
                             font.weight: Font.DemiBold
-                            color: AuraTheme.textPrimary
+                            color: SelfvoyTheme.textPrimary
                         }
                         GlassButton {
                             variant: "quiet"
@@ -684,23 +713,23 @@ Item {
                         model: App ? App.memory : []
                         delegate: Rectangle {
                             Layout.fillWidth: true
-                            height: memoryText.implicitHeight + AuraTheme.spaceMd
-                            radius: AuraTheme.radiusField
-                            color: Qt.rgba(1, 1, 1, 0.04)
+                            height: memoryText.implicitHeight + SelfvoyTheme.spaceMd
+                            radius: SelfvoyTheme.radiusField
+                            color: SelfvoyTheme.glass(0.04)
                             border.width: 1
-                            border.color: Qt.rgba(1, 1, 1, 0.08)
+                            border.color: SelfvoyTheme.glass(0.08)
 
                             RowLayout {
                                 anchors.fill: parent
-                                anchors.margins: AuraTheme.spaceSm
-                                spacing: AuraTheme.spaceSm
+                                anchors.margins: SelfvoyTheme.spaceSm
+                                spacing: SelfvoyTheme.spaceSm
 
                                 Rectangle {
                                     Layout.preferredWidth: 4
                                     Layout.fillHeight: true
                                     radius: 2
                                     color: (modelData && modelData.kind === "preference")
-                                           ? AuraTheme.accentSoft : AuraTheme.accent
+                                           ? SelfvoyTheme.accentSoft : SelfvoyTheme.accent
                                 }
 
                                 Text {
@@ -708,9 +737,9 @@ Item {
                                     Layout.fillWidth: true
                                     wrapMode: Text.WordWrap
                                     text: modelData ? String(modelData.text || "") : ""
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontSmall
-                                    color: AuraTheme.textSecondary
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontSmall
+                                    color: SelfvoyTheme.textSecondary
                                 }
                             }
                         }
@@ -719,10 +748,10 @@ Item {
                     Text {
                         Layout.fillWidth: true
                         visible: (App ? App.memory.length : 0) === 0
-                        text: "Память пока пуста — Аура запомнит важное из разговоров."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textMuted
+                        text: "Память пока пуста — Selfvoy запомнит важное из разговоров."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textMuted
                     }
                 }
             }
@@ -735,20 +764,20 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceMd
+                    spacing: SelfvoyTheme.spaceMd
 
                     SectionTitle { title: "Голос и озвучка" }
 
                     // --- Язык распознавания речи ---
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceMd
+                        spacing: SelfvoyTheme.spaceMd
                         Text {
                             Layout.fillWidth: true
                             text: "Язык распознавания"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                         }
                         GlassComboBox {
                             id: micLangBox
@@ -765,21 +794,21 @@ Item {
                     // --- Озвучка ответов (TTS) ---
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceMd
+                        spacing: SelfvoyTheme.spaceMd
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 2
                             Text {
-                                text: "Озвучивать ответы Ауры"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontSmall
-                                color: AuraTheme.textPrimary
+                                text: "Озвучивать ответы Selfvoy"
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                color: SelfvoyTheme.textPrimary
                             }
                             Text {
                                 text: "Синтез речи средствами платформы"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontMicro
-                                color: AuraTheme.textMuted
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontMicro
+                                color: SelfvoyTheme.textMuted
                             }
                         }
                         Item { Layout.fillWidth: true }
@@ -792,14 +821,14 @@ Item {
                     // --- Голос ---
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceMd
+                        spacing: SelfvoyTheme.spaceMd
                         visible: App ? App.ttsEnabled : false
                         Text {
                             Layout.fillWidth: true
                             text: "Голос"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                         }
                         GlassComboBox {
                             id: voiceBox
@@ -815,14 +844,14 @@ Item {
                     // --- Скорость ---
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceMd
+                        spacing: SelfvoyTheme.spaceMd
                         visible: App ? App.ttsEnabled : false
                         Text {
                             Layout.preferredWidth: 90
                             text: "Скорость"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                         }
                         GlassSlider {
                             Layout.fillWidth: true
@@ -836,14 +865,14 @@ Item {
                     // --- Громкость ---
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceMd
+                        spacing: SelfvoyTheme.spaceMd
                         visible: App ? App.ttsEnabled : false
                         Text {
                             Layout.preferredWidth: 90
                             text: "Громкость"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                         }
                         GlassSlider {
                             Layout.fillWidth: true
@@ -857,22 +886,22 @@ Item {
                     // --- Только важное ---
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceMd
+                        spacing: SelfvoyTheme.spaceMd
                         visible: App ? App.ttsEnabled : false
                         ColumnLayout {
                             Layout.fillWidth: true
                             spacing: 2
                             Text {
                                 text: "Только важное"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontSmall
-                                color: AuraTheme.textPrimary
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                color: SelfvoyTheme.textPrimary
                             }
                             Text {
-                                text: "Озвучивать только ответы Ауры, не обычные сообщения"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontMicro
-                                color: AuraTheme.textMuted
+                                text: "Озвучивать только ответы Selfvoy, не обычные сообщения"
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontMicro
+                                color: SelfvoyTheme.textMuted
                             }
                         }
                         Item { Layout.fillWidth: true }
@@ -889,7 +918,7 @@ Item {
                         text: App && App.speaking ? "Остановить" : "Проверить голос"
                         glyph: App && App.speaking ? "■" : "▶"
                         onClicked: (App && App.speaking) ? App.stopSpeaking()
-                                                         : App.speakImportant("Привет! Это ваша Аура.")
+                                                         : App.speakImportant("Привет! Это ваш Selfvoy.")
                     }
                 }
             }
@@ -904,25 +933,25 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceSm
+                    spacing: SelfvoyTheme.spaceSm
 
                     // В узкой панели кнопки переносятся под заголовок, а не наезжают на него.
                     GridLayout {
                         Layout.fillWidth: true
                         columns: width < 480 ? 1 : 2
-                        columnSpacing: AuraTheme.spaceSm
-                        rowSpacing: AuraTheme.spaceXs
+                        columnSpacing: SelfvoyTheme.spaceSm
+                        rowSpacing: SelfvoyTheme.spaceXs
                         Text {
                             Layout.fillWidth: true
                             text: "Активные сессии"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontBody
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontBody
                             font.weight: Font.DemiBold
-                            color: AuraTheme.textPrimary
+                            color: SelfvoyTheme.textPrimary
                         }
                         RowLayout {
                             Layout.alignment: parent.columns === 1 ? Qt.AlignLeft : Qt.AlignRight
-                            spacing: AuraTheme.spaceSm
+                            spacing: SelfvoyTheme.spaceSm
                             GlassButton {
                                 variant: "quiet"
                                 text: "Обновить"
@@ -944,17 +973,17 @@ Item {
                         model: App ? App.sessions : []
                         delegate: Rectangle {
                             Layout.fillWidth: true
-                            height: sessionRow.implicitHeight + AuraTheme.spaceMd
-                            radius: AuraTheme.radiusField
-                            color: Qt.rgba(1, 1, 1, 0.04)
+                            height: sessionRow.implicitHeight + SelfvoyTheme.spaceMd
+                            radius: SelfvoyTheme.radiusField
+                            color: SelfvoyTheme.glass(0.04)
                             border.width: 1
-                            border.color: Qt.rgba(1, 1, 1, 0.08)
+                            border.color: SelfvoyTheme.glass(0.08)
 
                             RowLayout {
                                 id: sessionRow
                                 anchors.fill: parent
-                                anchors.margins: AuraTheme.spaceSm
-                                spacing: AuraTheme.spaceSm
+                                anchors.margins: SelfvoyTheme.spaceSm
+                                spacing: SelfvoyTheme.spaceSm
 
                                 ColumnLayout {
                                     Layout.fillWidth: true
@@ -963,10 +992,10 @@ Item {
                                         Layout.fillWidth: true
                                         text: (modelData.device || "устройство") +
                                               (modelData.current ? "  ·  это устройство" : "")
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontSmall
+                                        font.family: SelfvoyTheme.fontFamily
+                                        font.pixelSize: SelfvoyTheme.fontSmall
                                         font.weight: modelData.current ? Font.DemiBold : Font.Normal
-                                        color: modelData.current ? AuraTheme.accentSoft : AuraTheme.textPrimary
+                                        color: modelData.current ? SelfvoyTheme.accentSoft : SelfvoyTheme.textPrimary
                                     }
                                     Text {
                                         Layout.fillWidth: true
@@ -975,9 +1004,9 @@ Item {
                                                modelData.created_at ? "вход " + F.stamp(modelData.created_at) : ""]
                                               .filter(x => x.length > 0).join("  ·  ")
                                         visible: text.length > 0
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontMicro
-                                        color: AuraTheme.textMuted
+                                        font.family: SelfvoyTheme.fontFamily
+                                        font.pixelSize: SelfvoyTheme.fontMicro
+                                        color: SelfvoyTheme.textMuted
                                     }
                                 }
 
@@ -996,9 +1025,9 @@ Item {
                         Layout.fillWidth: true
                         visible: (App ? App.sessions.length : 0) === 0
                         text: "Список пуст — обновите."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textMuted
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textMuted
                     }
                 }
             }
@@ -1010,50 +1039,50 @@ Item {
                 Layout.fillWidth: true
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
                 readonly property var info: App ? App.referral : ({})
-                // Без AURA_PUBLIC_URL сервер отдаёт пустой url: голый «#/signup?ref=…» никуда
+                // Без SELFVOY_PUBLIC_URL сервер отдаёт пустой url: голый «#/signup?ref=…» никуда
                 // не ведёт, поэтому делимся только кодом — друг введёт его при регистрации.
                 readonly property bool hasLink: !!info.url
                 readonly property string link: hasLink ? info.url : ""
-                readonly property string copyValue: hasLink ? info.url : (info.code ? "Код приглашения в Aura: " + info.code : "")
+                readonly property string copyValue: hasLink ? info.url : (info.code ? "Код приглашения в Selfvoy: " + info.code : "")
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceSm
+                    spacing: SelfvoyTheme.spaceSm
 
                     SectionTitle { title: "Пригласить друзей" }
                     Text {
                         Layout.fillWidth: true
-                        text: "Друг заведёт свою Ауру — и ваши Ауры смогут договариваться о встречах напрямую. Регистрации со страниц записи тоже засчитываются вам."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textMuted
+                        text: "Друг заведёт свой Selfvoy — и ваши Selfvoy смогут договариваться о встречах напрямую. Регистрации со страниц записи тоже засчитываются вам."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textMuted
                         wrapMode: Text.WordWrap
                     }
                     Text {
                         visible: !referralPanel.info.code
                         text: "Загружаем реферальный код…"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textSecondary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textSecondary
                     }
                     RowLayout {
                         visible: !!referralPanel.info.code
                         spacing: 12
                         Text {
                             text: "Ваш код"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
                         }
                         TextEdit {
                             readOnly: true
                             selectByMouse: true
                             text: referralPanel.info.code || ""
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontTitle
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontTitle
                             font.weight: Font.DemiBold
                             font.letterSpacing: 2
-                            color: AuraTheme.textPrimary
+                            color: SelfvoyTheme.textPrimary
                         }
                     }
                     TextEdit {
@@ -1063,17 +1092,17 @@ Item {
                         selectByMouse: true
                         wrapMode: TextEdit.WrapAnywhere
                         text: referralPanel.link
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textPrimary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textPrimary
                     }
                     Text {
                         visible: !!referralPanel.info.code && !referralPanel.hasLink
                         Layout.fillWidth: true
-                        text: "Сервер не знает свой публичный адрес (AURA_PUBLIC_URL) — делимся только кодом: друг введёт его при регистрации."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textMuted
+                        text: "Сервер не знает свой публичный адрес (SELFVOY_PUBLIC_URL) — делимся только кодом: друг введёт его при регистрации."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textMuted
                         wrapMode: Text.WordWrap
                     }
                     GlassButton {
@@ -1081,12 +1110,55 @@ Item {
                         text: referralPanel.hasLink ? "Скопировать ссылку" : "Скопировать код"
                         onClicked: App.copyText(referralPanel.copyValue)
                     }
+                    // Награда (F3): месяц Pro обоим за каждого подтвердившего email, до reward_cap раз.
+                    Rectangle {
+                        Layout.fillWidth: true
+                        visible: !!referralPanel.info.code
+                        implicitHeight: rewardRow.implicitHeight + 24
+                        radius: 14
+                        color: SelfvoyTheme.accentTint
+                        RowLayout {
+                            id: rewardRow
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            spacing: 12
+                            Icon { name: "gift"; size: 22; color: SelfvoyTheme.accent }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+                                Text {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    readonly property int days: referralPanel.info.reward_days || 30
+                                    text: "За каждого, кто подтвердит email, вы оба получите "
+                                          + (days === 30 ? "месяц" : days + " " + F.plural(days, "день", "дня", "дней")) + " Pro"
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontBody
+                                    font.weight: Font.DemiBold
+                                    color: SelfvoyTheme.textPrimary
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    wrapMode: Text.WordWrap
+                                    readonly property int got: referralPanel.info.rewarded || 0
+                                    readonly property int cap: referralPanel.info.reward_cap || 12
+                                    text: "Начислено наград: " + got + " из " + cap
+                                          + (got >= cap ? " — лимит наград исчерпан, приглашённые всё равно получают свой месяц" : "")
+                                          + (page.planInfo ? " · сейчас: " + page.planInfo.label : "")
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontSmall
+                                    color: SelfvoyTheme.textSecondary
+                                }
+                            }
+                            ProBadge { visible: !!page.planInfo && page.planInfo.pro }
+                        }
+                    }
                     Text {
                         visible: !!referralPanel.info.code
                         text: "Зарегистрировались: " + (referralPanel.info.joined || 0) + " · подтвердили email: " + (referralPanel.info.verified || 0)
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textSecondary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textSecondary
                     }
                     Repeater {
                         model: referralPanel.info.referrals || []
@@ -1096,15 +1168,15 @@ Item {
                             Text {
                                 Layout.fillWidth: true
                                 text: modelData.display_name || "Без имени"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontSmall
-                                color: AuraTheme.textPrimary
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                color: SelfvoyTheme.textPrimary
                             }
                             Text {
-                                text: modelData.verified ? "С Aura" : "Ждёт подтверждения"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontMicro
-                                color: modelData.verified ? AuraTheme.textSecondary : AuraTheme.textMuted
+                                text: modelData.verified ? "С Selfvoy" : "Ждёт подтверждения"
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontMicro
+                                color: modelData.verified ? SelfvoyTheme.textSecondary : SelfvoyTheme.textMuted
                             }
                         }
                     }
@@ -1119,16 +1191,16 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceSm
+                    spacing: SelfvoyTheme.spaceSm
 
                     SectionTitle { title: "Смена пароля" }
 
                     Text {
                         Layout.fillWidth: true
                         text: "Пароль хранится как Argon2id. После смены прочие устройства будут отключены."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textMuted
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textMuted
                         wrapMode: Text.WordWrap
                     }
 
@@ -1170,7 +1242,7 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceSm
+                    spacing: SelfvoyTheme.spaceSm
 
                     SectionTitle { title: "Двухфакторная аутентификация (TOTP)" }
 
@@ -1179,9 +1251,9 @@ Item {
                         text: App && App.twoFactorEnabled
                               ? "Включена. При входе с нового устройства потребуется код из приложения-аутентификатора."
                               : "Защитите аккаунт вторым фактором: коды из приложения-аутентификатора (Google Authenticator, 1Password и др.)."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textMuted
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textMuted
                         wrapMode: Text.WordWrap
                     }
 
@@ -1198,15 +1270,15 @@ Item {
                     // --- Состояние: настройка (секрет выдан, ждём подтверждения) ---
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceSm
+                        spacing: SelfvoyTheme.spaceSm
                         visible: App && App.twoFactorPending && App.twoFactorSecret !== ""
 
                         Text {
                             Layout.fillWidth: true
                             text: "1. Добавьте секрет в приложение-аутентификатор (вручную или по URI)."
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
+                            color: SelfvoyTheme.textSecondary
                             wrapMode: Text.WordWrap
                         }
 
@@ -1227,18 +1299,18 @@ Item {
                         Text {
                             Layout.fillWidth: true
                             text: "QR-код будет добавлен позже — пока введите секрет вручную."
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textMuted
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
+                            color: SelfvoyTheme.textMuted
                             wrapMode: Text.WordWrap
                         }
 
                         Text {
                             Layout.fillWidth: true
                             text: "2. Введите текущий код из приложения, чтобы включить 2FA."
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
+                            color: SelfvoyTheme.textSecondary
                             wrapMode: Text.WordWrap
                         }
 
@@ -1267,31 +1339,31 @@ Item {
                     // --- Резервные коды (показываются один раз после подтверждения) ---
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceSm
+                        spacing: SelfvoyTheme.spaceSm
                         visible: App && App.recoveryCodes.length > 0
 
                         Text {
                             Layout.fillWidth: true
                             text: "Сохраните резервные коды — они показываются только один раз!"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
                             font.weight: Font.DemiBold
-                            color: AuraTheme.warning
+                            color: SelfvoyTheme.warning
                             wrapMode: Text.WordWrap
                         }
 
                         GridLayout {
                             Layout.fillWidth: true
                             columns: 2
-                            columnSpacing: AuraTheme.spaceMd
+                            columnSpacing: SelfvoyTheme.spaceMd
                             rowSpacing: 2
                             Repeater {
                                 model: App ? App.recoveryCodes : []
                                 delegate: Text {
                                     text: modelData
                                     font.family: "monospace"
-                                    font.pixelSize: AuraTheme.fontSmall
-                                    color: AuraTheme.textPrimary
+                                    font.pixelSize: SelfvoyTheme.fontSmall
+                                    color: SelfvoyTheme.textPrimary
                                     textFormat: Text.PlainText
                                 }
                             }
@@ -1301,28 +1373,28 @@ Item {
                     // --- Состояние: включена — отключение и доверенные устройства ---
                     ColumnLayout {
                         Layout.fillWidth: true
-                        spacing: AuraTheme.spaceSm
+                        spacing: SelfvoyTheme.spaceSm
                         visible: App && App.twoFactorEnabled
 
                         Text {
                             Layout.fillWidth: true
                             text: "Осталось резервных кодов: " + (App ? App.recoveryCodesLeft : 0)
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textMuted
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
+                            color: SelfvoyTheme.textMuted
                         }
 
                         RowLayout {
                             Layout.fillWidth: true
-                            spacing: AuraTheme.spaceSm
+                            spacing: SelfvoyTheme.spaceSm
 
                             Text {
                                 Layout.fillWidth: true
                                 text: "Доверенные устройства"
-                                font.family: AuraTheme.fontFamily
-                                font.pixelSize: AuraTheme.fontSmall
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
                                 font.weight: Font.DemiBold
-                                color: AuraTheme.textPrimary
+                                color: SelfvoyTheme.textPrimary
                             }
 
                             GlassButton {
@@ -1337,34 +1409,34 @@ Item {
                             model: App ? App.trustedDevices : []
                             delegate: Rectangle {
                                 Layout.fillWidth: true
-                                height: deviceRow.implicitHeight + AuraTheme.spaceMd
-                                radius: AuraTheme.radiusField
-                                color: Qt.rgba(1, 1, 1, 0.04)
+                                height: deviceRow.implicitHeight + SelfvoyTheme.spaceMd
+                                radius: SelfvoyTheme.radiusField
+                                color: SelfvoyTheme.glass(0.04)
                                 border.width: 1
-                                border.color: Qt.rgba(1, 1, 1, 0.08)
+                                border.color: SelfvoyTheme.glass(0.08)
 
                                 RowLayout {
                                     id: deviceRow
                                     anchors.fill: parent
-                                    anchors.margins: AuraTheme.spaceSm
-                                    spacing: AuraTheme.spaceSm
+                                    anchors.margins: SelfvoyTheme.spaceSm
+                                    spacing: SelfvoyTheme.spaceSm
 
                                     ColumnLayout {
                                         Layout.fillWidth: true
                                         spacing: 2
                                         Text {
                                             text: modelData.device || "устройство"
-                                            font.family: AuraTheme.fontFamily
-                                            font.pixelSize: AuraTheme.fontSmall
-                                            color: AuraTheme.textPrimary
+                                            font.family: SelfvoyTheme.fontFamily
+                                            font.pixelSize: SelfvoyTheme.fontSmall
+                                            color: SelfvoyTheme.textPrimary
                                         }
                                         Text {
                                             text: [/^:/.test(modelData.remote_addr || "") ? "" : (modelData.remote_addr || ""),
                                                    F.parse(modelData.expires_at) ? "доверено до " + F.dateLabel(F.parse(modelData.expires_at)) : ""]
                                                   .filter(x => x.length > 0).join("  ·  ")
-                                            font.family: AuraTheme.fontFamily
-                                            font.pixelSize: AuraTheme.fontMicro
-                                            color: AuraTheme.textMuted
+                                            font.family: SelfvoyTheme.fontFamily
+                                            font.pixelSize: SelfvoyTheme.fontMicro
+                                            color: SelfvoyTheme.textMuted
                                         }
                                     }
 
@@ -1382,9 +1454,9 @@ Item {
                             Layout.fillWidth: true
                             visible: (App ? App.trustedDevices.length : 0) === 0
                             text: "Нет доверенных устройств."
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textMuted
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
+                            color: SelfvoyTheme.textMuted
                         }
 
                         GlassButton {
@@ -1397,9 +1469,9 @@ Item {
                         Text {
                             Layout.fillWidth: true
                             text: "Отключение 2FA требует подтверждения паролем."
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textMuted
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
+                            color: SelfvoyTheme.textMuted
                             wrapMode: Text.WordWrap
                         }
 
@@ -1433,17 +1505,17 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceMd
+                    spacing: SelfvoyTheme.spaceMd
 
-                    SectionTitle { title: "Разрешения инструментов"; titleSize: AuraTheme.fontTitle }
+                    SectionTitle { title: "Разрешения инструментов"; titleSize: SelfvoyTheme.fontTitle }
                     Text {
                         Layout.fillWidth: true
-                        text: "Аура лишь формирует намерение — исполняет сервер. "
+                        text: "Selfvoy лишь формирует намерение — исполняет сервер. "
                               + "Опасные операции (сообщения, письма, бронирование) по умолчанию "
                               + "требуют вашего подтверждения."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textSecondary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textSecondary
                         wrapMode: Text.WordWrap
                     }
 
@@ -1454,45 +1526,43 @@ Item {
                             id: toolRow
                             required property var modelData
                             Layout.fillWidth: true
-                            spacing: AuraTheme.spaceMd
+                            spacing: SelfvoyTheme.spaceMd
 
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 2
 
                                 RowLayout {
-                                    spacing: AuraTheme.spaceXs
+                                    spacing: SelfvoyTheme.spaceXs
                                     Text {
                                         text: F.toolTitle(toolRow.modelData.tool)
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontSmall
+                                        font.family: SelfvoyTheme.fontFamily
+                                        font.pixelSize: SelfvoyTheme.fontSmall
                                         font.weight: Font.DemiBold
-                                        color: AuraTheme.textPrimary
+                                        color: SelfvoyTheme.textPrimary
                                     }
                                     Rectangle {
                                         visible: toolRow.modelData.dangerous === true
-                                        radius: AuraTheme.radiusPill
+                                        radius: SelfvoyTheme.radiusPill
                                         implicitWidth: dangerLabel.implicitWidth + 14
                                         implicitHeight: 18
-                                        color: Qt.rgba(0.98, 0.75, 0.14, 0.12)
-                                        border.width: 1
-                                        border.color: Qt.rgba(0.98, 0.75, 0.14, 0.40)
+                                        color: SelfvoyTheme.warningSoft
                                         Text {
                                             id: dangerLabel
                                             anchors.centerIn: parent
                                             text: "опасный"
-                                            font.family: AuraTheme.fontFamily
-                                            font.pixelSize: AuraTheme.fontMicro
-                                            color: AuraTheme.warning
+                                            font.family: SelfvoyTheme.fontFamily
+                                            font.pixelSize: SelfvoyTheme.fontMicro
+                                            color: SelfvoyTheme.warning
                                         }
                                     }
                                 }
                                 Text {
                                     Layout.fillWidth: true
                                     text: F.toolDescription(toolRow.modelData.tool, toolRow.modelData.description)
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontMicro
-                                    color: AuraTheme.textMuted
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontMicro
+                                    color: SelfvoyTheme.textMuted
                                     wrapMode: Text.WordWrap
                                 }
                             }
@@ -1504,9 +1574,9 @@ Item {
                                 implicitWidth: segRow.implicitWidth + 6
                                 implicitHeight: 34
                                 radius: height / 2
-                                color: Qt.rgba(1, 1, 1, AuraTheme.glassFill)
+                                color: SelfvoyTheme.glass(SelfvoyTheme.glassFill)
                                 border.width: 1
-                                border.color: Qt.rgba(1, 1, 1, AuraTheme.glassBorder)
+                                border.color: SelfvoyTheme.glass(SelfvoyTheme.glassBorder)
 
                                 Row {
                                     id: segRow
@@ -1525,24 +1595,24 @@ Item {
                                             required property var modelData
                                             readonly property bool active: toolRow.modelData.mode === modelData.mode
                                             readonly property bool isDeny: modelData.mode === "deny"
-                                            width: segLabel.implicitWidth + 2 * AuraTheme.spaceMd
+                                            width: segLabel.implicitWidth + 2 * SelfvoyTheme.spaceMd
                                             height: 28
                                             radius: height / 2
                                             color: active
                                                    ? Qt.rgba(isDeny ? 0.97 : 0.545, isDeny ? 0.44 : 0.36, isDeny ? 0.44 : 0.965,
                                                              isDeny ? 0.30 : 0.35)
-                                                   : (segMouse.containsMouse ? Qt.rgba(1, 1, 1, AuraTheme.glassFillHover)
+                                                   : (segMouse.containsMouse ? SelfvoyTheme.glass(SelfvoyTheme.glassFillHover)
                                                                              : "transparent")
-                                            Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
+                                            Behavior on color { ColorAnimation { duration: SelfvoyTheme.pressMs } }
 
                                             Text {
                                                 id: segLabel
                                                 anchors.centerIn: parent
                                                 text: seg.modelData.label
-                                                font.family: AuraTheme.fontFamily
-                                                font.pixelSize: AuraTheme.fontSmall
+                                                font.family: SelfvoyTheme.fontFamily
+                                                font.pixelSize: SelfvoyTheme.fontSmall
                                                 font.weight: seg.active ? Font.DemiBold : Font.Normal
-                                                color: seg.active ? AuraTheme.textPrimary : AuraTheme.textSecondary
+                                                color: seg.active ? SelfvoyTheme.textPrimary : SelfvoyTheme.textSecondary
                                             }
 
                                             MouseArea {
@@ -1574,17 +1644,17 @@ Item {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    spacing: AuraTheme.spaceMd
+                    spacing: SelfvoyTheme.spaceMd
 
-                        SectionTitle { title: "Интеграции"; titleSize: AuraTheme.fontTitle }
+                        SectionTitle { title: "Интеграции"; titleSize: SelfvoyTheme.fontTitle }
                     Text {
                         Layout.fillWidth: true
                         text: "Подключите Google Календарь и Gmail через официальный OAuth. "
                               + "Токены хранятся на сервере зашифрованными и не передаются "
                               + "клиенту; доступ можно отозвать в любой момент."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.textSecondary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textSecondary
                         wrapMode: Text.WordWrap
                     }
 
@@ -1595,7 +1665,7 @@ Item {
                             id: providerRow
                             required property var modelData
                             Layout.fillWidth: true
-                            spacing: AuraTheme.spaceMd
+                            spacing: SelfvoyTheme.spaceMd
 
                             // Активное подключение этого провайдера (или null).
                             property var connection: {
@@ -1612,28 +1682,22 @@ Item {
                                 spacing: 2
 
                                 RowLayout {
-                                    spacing: AuraTheme.spaceXs
+                                    spacing: SelfvoyTheme.spaceXs
                                     Text {
                                         text: providerRow.modelData.name
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontSmall
+                                        font.family: SelfvoyTheme.fontFamily
+                                        font.pixelSize: SelfvoyTheme.fontSmall
                                         font.weight: Font.DemiBold
-                                        color: AuraTheme.textPrimary
+                                        color: SelfvoyTheme.textPrimary
                                     }
                                     Rectangle {
                                         visible: providerRow.connection !== null
-                                        radius: AuraTheme.radiusPill
+                                        radius: SelfvoyTheme.radiusPill
                                         implicitWidth: stateLabel.implicitWidth + 14
                                         implicitHeight: 18
                                         color: providerRow.connection
                                                && providerRow.connection.status === "active"
-                                               ? Qt.rgba(0.29, 0.87, 0.50, 0.12)
-                                               : Qt.rgba(0.98, 0.75, 0.14, 0.12)
-                                        border.width: 1
-                                        border.color: providerRow.connection
-                                                      && providerRow.connection.status === "active"
-                                                      ? Qt.rgba(0.29, 0.87, 0.50, 0.40)
-                                                      : Qt.rgba(0.98, 0.75, 0.14, 0.40)
+                                               ? SelfvoyTheme.successSoft : SelfvoyTheme.warningSoft
                                         Text {
                                             id: stateLabel
                                             anchors.centerIn: parent
@@ -1641,11 +1705,11 @@ Item {
                                                   ? (providerRow.connection.status === "active"
                                                      ? "подключено" : providerRow.connection.status)
                                                   : ""
-                                            font.family: AuraTheme.fontFamily
-                                            font.pixelSize: AuraTheme.fontMicro
+                                            font.family: SelfvoyTheme.fontFamily
+                                            font.pixelSize: SelfvoyTheme.fontMicro
                                             color: providerRow.connection
                                                    && providerRow.connection.status === "active"
-                                                   ? AuraTheme.success : AuraTheme.warning
+                                                   ? SelfvoyTheme.success : SelfvoyTheme.warning
                                         }
                                     }
                                 }
@@ -1656,15 +1720,15 @@ Item {
                                           ? providerRow.modelData.description + " · "
                                             + providerRow.connection.account
                                           : providerRow.modelData.description
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontMicro
-                                    color: AuraTheme.textMuted
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontMicro
+                                    color: SelfvoyTheme.textMuted
                                     wrapMode: Text.WordWrap
                                 }
                             }
 
                             RowLayout {
-                                spacing: AuraTheme.spaceXs
+                                spacing: SelfvoyTheme.spaceXs
 
                                 GlassButton {
                                     visible: providerRow.connection === null
@@ -1688,6 +1752,363 @@ Item {
                                     onClicked: App.revokeIntegration(providerRow.connection.id)
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // --------------------------------------------- Telegram-бот (F2)
+            GlassPanel {
+                id: telegramPanel
+                visible: page.section === "integrations"
+                Layout.fillWidth: true
+                readonly property var info: App ? App.telegramStatus : ({})
+                readonly property bool botEnabled: info.enabled === true || (App && App.telegramBot.length > 0)
+                readonly property bool linked: info.linked === true
+                readonly property var notif: page.prefs && page.prefs.notifications ? page.prefs.notifications : ({})
+
+                Connections {
+                    target: App
+                    // Ссылка бота живёт 15 минут: открываем её в Telegram (браузере) сразу.
+                    function onTelegramLinkReady(url) { Qt.openUrlExternally(url) }
+                }
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: SelfvoyTheme.spaceSm
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        SectionTitle { title: "Telegram"; Layout.fillWidth: true }
+                        StatusPill {
+                            status: telegramPanel.linked ? { label: "Подключён", tone: "green", icon: "check" }
+                                    : telegramPanel.botEnabled ? { label: "Не подключён", tone: "", icon: "minus" }
+                                    : { label: "Бот не настроен", tone: "amber", icon: "clock" }
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: telegramPanel.botEnabled
+                              ? "Записи, оплаты, «Приду», абонементы и напоминания о задачах — сообщением от бота"
+                                + (App && App.telegramBot ? " @" + App.telegramBot : "") + ". Клиенты тоже могут получать напоминания в Telegram."
+                              : "Telegram-бот не настроен на сервере (SELFVOY_TELEGRAM_BOT_TOKEN). Уведомления приходят в приложение и на почту."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textSecondary
+                    }
+                    Text {
+                        visible: telegramPanel.linked && !!telegramPanel.info.username
+                        text: "Аккаунт: @" + (telegramPanel.info.username || "")
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontBody
+                        font.weight: Font.DemiBold
+                        color: SelfvoyTheme.textPrimary
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: telegramPanel.linked
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 1
+                            Text {
+                                text: "Дублировать уведомления в Telegram"
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontBody
+                                color: SelfvoyTheme.textPrimary
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: "Тихие часы и выключенные виды уведомлений действуют и здесь."
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                color: SelfvoyTheme.textSecondary
+                            }
+                        }
+                        GlassSwitch {
+                            checked: telegramPanel.notif.telegram !== false
+                            onToggled: App.setTelegramNotifications(checked)
+                        }
+                    }
+                    RowLayout {
+                        spacing: SelfvoyTheme.spaceSm
+                        visible: telegramPanel.botEnabled
+                        GlassButton {
+                            visible: !telegramPanel.linked
+                            variant: "accent"
+                            symbol: "send"
+                            text: "Подключить Telegram"
+                            onClicked: App.linkTelegram()
+                        }
+                        GlassButton {
+                            visible: !telegramPanel.linked
+                            variant: "quiet"
+                            symbol: "refresh-cw"
+                            text: "Я нажал «Старт»"
+                            onClicked: App.loadTelegram()
+                        }
+                        GlassButton {
+                            visible: telegramPanel.linked
+                            variant: "danger"
+                            text: "Отключить"
+                            onClicked: App.unlinkTelegram()
+                        }
+                    }
+                }
+            }
+
+            // --------------------------------------------- Оплата: ЮKassa (F4)
+            GlassPanel {
+                id: paymentsPanel
+                visible: page.section === "integrations"
+                Layout.fillWidth: true
+                readonly property var info: App ? App.paymentsStatus : ({})
+                readonly property bool connected: info.connected === true
+                property string error: ""
+                property bool confirmDisconnect: false
+
+                Connections {
+                    target: App
+                    function onPaymentsConnected() {
+                        // Ключ больше не нужен в памяти интерфейса.
+                        secretField.text = ""
+                        paymentsPanel.error = ""
+                    }
+                    function onPaymentsFailed(message) { paymentsPanel.error = message }
+                }
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: SelfvoyTheme.spaceSm
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        SectionTitle { title: "ЮKassa" }
+                        ProBadge {}
+                        Item { Layout.fillWidth: true }
+                        StatusPill {
+                            status: paymentsPanel.connected ? { label: "Подключена", tone: "green", icon: "check" }
+                                                            : { label: "Не подключена", tone: "", icon: "minus" }
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: "Предоплата картой или СБП через ваш магазин ЮKassa: деньги клиентов идут вам напрямую, статус оплаты обновляется сам. "
+                              + "Без ЮKassa можно указать ссылку оплаты и реквизиты на странице записи."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textSecondary
+                    }
+                    Text {
+                        visible: paymentsPanel.connected
+                        text: "Магазин " + (paymentsPanel.info.shop_id || "") + (paymentsPanel.info.connected_at ? " · подключён " + F.stamp(paymentsPanel.info.connected_at) : "")
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontBody
+                        color: SelfvoyTheme.textPrimary
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: !paymentsPanel.connected
+                        spacing: SelfvoyTheme.spaceSm
+                        GlassField {
+                            id: shopField
+                            Layout.preferredWidth: 160
+                            label: "shopId"
+                            placeholderText: "123456"
+                            validator: RegularExpressionValidator { regularExpression: /[0-9]{0,20}/ }
+                        }
+                        // Секретный ключ: только поле пароля, не сохраняется и не попадает в журнал.
+                        GlassField {
+                            id: secretField
+                            Layout.fillWidth: true
+                            label: "Секретный ключ"
+                            placeholderText: "live_… или test_…"
+                            echoMode: TextInput.Password
+                            inputMethodHints: Qt.ImhSensitiveData | Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+                            onAccepted: App.connectYooKassa(shopField.text, secretField.text)
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: paymentsPanel.error.length > 0
+                        wrapMode: Text.WordWrap
+                        text: paymentsPanel.error
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.danger
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !paymentsPanel.connected
+                        wrapMode: Text.WordWrap
+                        text: "Ключ — в личном кабинете ЮKassa → Интеграция → Ключи API. Сервер проверит его и хранит только зашифрованным; в приложении он не сохраняется. Чеки 54-ФЗ формируются в «Мой налог» или настройками магазина."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.textMuted
+                    }
+                    RowLayout {
+                        spacing: SelfvoyTheme.spaceSm
+                        GlassButton {
+                            visible: !paymentsPanel.connected
+                            variant: "accent"
+                            symbol: "credit-card"
+                            text: "Подключить ЮKassa"
+                            busy: App ? App.paymentsBusy : false
+                            enabled: shopField.text.length > 0 && secretField.text.length > 0 && !(App && App.paymentsBusy)
+                            onClicked: App.connectYooKassa(shopField.text, secretField.text)
+                        }
+                        GlassButton {
+                            visible: paymentsPanel.connected && !paymentsPanel.confirmDisconnect
+                            variant: "quiet"
+                            text: "Отключить"
+                            onClicked: paymentsPanel.confirmDisconnect = true
+                        }
+                        Text {
+                            visible: paymentsPanel.confirmDisconnect
+                            Layout.maximumWidth: 360
+                            wrapMode: Text.WordWrap
+                            text: "Новые записи с предоплатой будут без ЮKassa — по ссылке оплаты и реквизитам."
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            color: SelfvoyTheme.textSecondary
+                        }
+                        GlassButton {
+                            visible: paymentsPanel.confirmDisconnect
+                            variant: "danger"
+                            text: "Да, отключить"
+                            onClicked: { paymentsPanel.confirmDisconnect = false; App.disconnectPayments() }
+                        }
+                        GlassButton {
+                            visible: paymentsPanel.confirmDisconnect
+                            variant: "quiet"
+                            text: "Нет"
+                            onClicked: paymentsPanel.confirmDisconnect = false
+                        }
+                    }
+                }
+            }
+
+            // --------------------------------------------- Календарь: ICS-подписка (F6)
+            GlassPanel {
+                id: feedPanel
+                visible: page.section === "integrations"
+                Layout.fillWidth: true
+                readonly property var feed: App ? App.calendarFeed : ({})
+                readonly property bool feedOn: feed.enabled === true
+                readonly property string url: feed.url || ""
+                property bool confirmReset: false
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    spacing: SelfvoyTheme.spaceSm
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        SectionTitle { title: "Подписка на календарь"; Layout.fillWidth: true }
+                        StatusPill {
+                            status: feedPanel.feedOn ? { label: "Включена", tone: "green", icon: "check" }
+                                                      : { label: "Выключена", tone: "", icon: "minus" }
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                        text: "Ваши записи и принятые приглашения — в Google, Apple Календаре или Outlook: «Добавить календарь по URL». Календарь обновляется примерно раз в час."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textSecondary
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        visible: feedPanel.url.length > 0
+                        implicitHeight: 40
+                        radius: 10
+                        color: SelfvoyTheme.field
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 4
+                            Icon { name: "link"; size: 15; color: SelfvoyTheme.textSecondary }
+                            TextEdit {
+                                Layout.fillWidth: true
+                                readOnly: true
+                                selectByMouse: true
+                                clip: true
+                                text: feedPanel.url
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                color: SelfvoyTheme.textPrimary
+                            }
+                            GlassButton {
+                                implicitHeight: 32
+                                symbol: "copy"
+                                text: "Копировать"
+                                onClicked: App.copyText(feedPanel.url)
+                            }
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: feedPanel.feedOn && feedPanel.url.length === 0
+                        wrapMode: Text.WordWrap
+                        text: "Подписка включена. Ссылку сервер показывает только при создании — если она потерялась, создайте новую."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textSecondary
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        visible: feedPanel.confirmReset
+                        wrapMode: Text.WordWrap
+                        text: "Новая ссылка заменит прежнюю: календари, подписанные по старой, перестанут обновляться."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        font.weight: Font.DemiBold
+                        color: SelfvoyTheme.warning
+                    }
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: SelfvoyTheme.spaceSm
+                        GlassButton {
+                            visible: !feedPanel.feedOn
+                            variant: "accent"
+                            symbol: "rss"
+                            text: "Создать ссылку"
+                            onClicked: App.resetCalendarFeed()
+                        }
+                        GlassButton {
+                            visible: feedPanel.feedOn && !!feedPanel.feed.webcal
+                            symbol: "calendar-plus"
+                            text: "Открыть в календаре"
+                            onClicked: Qt.openUrlExternally(feedPanel.feed.webcal)
+                        }
+                        GlassButton {
+                            visible: feedPanel.feedOn && !feedPanel.confirmReset
+                            variant: "quiet"
+                            symbol: "refresh-cw"
+                            text: "Новая ссылка"
+                            onClicked: feedPanel.confirmReset = true
+                        }
+                        GlassButton {
+                            visible: feedPanel.confirmReset
+                            variant: "danger"
+                            text: "Да, заменить"
+                            onClicked: { feedPanel.confirmReset = false; App.resetCalendarFeed() }
+                        }
+                        GlassButton {
+                            visible: feedPanel.confirmReset
+                            variant: "quiet"
+                            text: "Нет"
+                            onClicked: feedPanel.confirmReset = false
+                        }
+                        GlassButton {
+                            visible: feedPanel.feedOn && !feedPanel.confirmReset
+                            variant: "quiet"
+                            text: "Выключить"
+                            onClicked: App.disableCalendarFeed()
                         }
                     }
                 }

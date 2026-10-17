@@ -1,8 +1,8 @@
-# Сборка iOS-клиента Aura на macOS: проект из ios/project.yml (XcodeGen),
-# сборка под симулятор без подписи и смоук-тесты (AuraTests + AuraKit).
+# Сборка iOS-клиента Selfvoy на macOS: проект из ios/project.yml (XcodeGen),
+# сборка под симулятор без подписи и смоук-тесты (SelfvoyTests + SelfvoyKit).
 #
-# Результат: вкладка Actions → «Build iOS» → Artifacts → aura-ios-simulator
-# (Aura.app для симулятора). Для TestFlight нужен Apple Developer Program,
+# Результат: вкладка Actions → «Build iOS» → Artifacts → selfvoy-ios-simulator
+# (Selfvoy.app для симулятора). Для TestFlight нужен Apple Developer Program,
 # сертификат и provisioning profile (см. docs/IOS.md).
 name: Build iOS
 
@@ -33,12 +33,12 @@ jobs:
       - name: XcodeGen
         run: brew install xcodegen
 
-      - name: Проект Aura.xcodeproj
+      - name: Проект Selfvoy.xcodeproj
         working-directory: ios
         run: xcodegen generate
 
-      - name: Тесты AuraKit (Swift Package)
-        working-directory: ios/AuraKit
+      - name: Тесты SelfvoyKit (Swift Package)
+        working-directory: ios/SelfvoyKit
         run: swift test
 
       - name: Сборка и смоук-тесты приложения
@@ -48,18 +48,18 @@ jobs:
           DEST=$(xcrun simctl list devices available -j \
             | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
           xcodebuild test \
-            -project Aura.xcodeproj -scheme Aura \
+            -project Selfvoy.xcodeproj -scheme Selfvoy \
             -destination "id=$DEST" \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             | tee ../xcodebuild.log
 
-      - name: Артефакт — Aura.app (симулятор)
+      - name: Артефакт — Selfvoy.app (симулятор)
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: aura-ios-simulator
-          path: ios/build/Build/Products/Debug-iphonesimulator/Aura.app
+          name: selfvoy-ios-simulator
+          path: ios/build/Build/Products/Debug-iphonesimulator/Selfvoy.app
 
       # Ошибки компилятора/тестов — в лог шага и аннотации прогона, чтобы их
       # было видно без скачивания артефакта.
@@ -76,5 +76,5 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: aura-ios-build-log
+          name: selfvoy-ios-build-log
           path: xcodebuild.log

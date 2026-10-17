@@ -1,7 +1,7 @@
-// aura/protocol.cpp
-#include "aura/protocol.h"
+// selfvoy/protocol.cpp
+#include "selfvoy/protocol.h"
 
-namespace aura::protocol {
+namespace selfvoy::protocol {
 
 Json ok(const std::string& id, const Json& payload) {
     Json message = Json::object();
@@ -52,7 +52,11 @@ bool isPublicType(const std::string& type) {
            type == "invite.get" || type == "invite.respond" ||
            type == "booking.get" || type == "booking.book" || type == "booking.manage" ||
            type == "booking.reschedule" || type == "booking.cancel" || type == "booking.resendLink" ||
+           type == "booking.confirm" || type == "booking.paymentClaim" ||
+           type == "package.get" || type == "package.paymentClaim" ||
+           type == "booking.waitlistJoin" || type == "booking.waitlistGet" || type == "booking.waitlistClaim" ||
+           type == "booking.waitlistLeave" ||
            type == "ping" || type == "server.info";
 }
 
-}  // namespace aura::protocol
+}  // namespace selfvoy::protocol

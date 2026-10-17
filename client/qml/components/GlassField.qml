@@ -1,15 +1,14 @@
 import QtQuick
 import QtQuick.Controls
-import Aura
+import Selfvoy
 import "../icons/Icons.js" as Icons
 
 /*
-  GlassField — поле ввода v3: тёмное стекло с тонкой рамкой, сиреневое кольцо
-  в фокусе, иконка справа (конверт, замок) или кликабельное действие (глаз).
+  GlassField — поле ввода 2026: серая подложка (как .input в вебе), акцентное
+  кольцо в фокусе, иконка справа или кликабельное действие (глаз).
 
-  label — плавающая подпись внутри поля (экраны настроек); на экранах входа
-  подпись стоит над полем отдельным Text, а label пустой.
-  icon/action принимают имя иконки Lucide или старый текстовый глиф.
+  label — подпись внутри поля сверху (формы настроек); на экранах входа подпись
+  стоит над полем отдельным Text, а label пустой.
 */
 TextField {
     id: control
@@ -18,7 +17,7 @@ TextField {
     property bool invalid: false
     property string icon: ""
     property string action: ""
-    property bool filled: false   // светлая заливка без рамки (поле «С чем помогать»)
+    property bool filled: false   // совместимость: все поля теперь с подложкой
     signal actionClicked()
 
     readonly property string rightIcon: {
@@ -26,67 +25,56 @@ TextField {
         return Icons.paths[name] !== undefined ? name : Icons.iconFor(name)
     }
 
-    implicitHeight: label.length > 0 ? 54 : 48
+    implicitHeight: label.length > 0 ? 54 : 44
     implicitWidth: 240
-    leftPadding: AuraTheme.spaceMd
-    rightPadding: rightIcon.length > 0 ? AuraTheme.spaceMd + 26 : AuraTheme.spaceMd
+    leftPadding: 14
+    rightPadding: rightIcon.length > 0 ? 14 + 26 : 14
     topPadding: label.length > 0 ? 20 : 0
     bottomPadding: label.length > 0 ? 6 : 0
-    font.family: AuraTheme.fontFamily
-    font.pixelSize: AuraTheme.fontBody
-    color: AuraTheme.textPrimary
-    selectionColor: AuraTheme.accentA(0.5)
-    selectedTextColor: AuraTheme.textPrimary
-    placeholderTextColor: AuraTheme.textMuted
+    font.family: SelfvoyTheme.fontFamily
+    font.pixelSize: SelfvoyTheme.fontBody
+    color: SelfvoyTheme.text
+    selectionColor: SelfvoyTheme.accentA(0.3)
+    selectedTextColor: SelfvoyTheme.text
+    placeholderTextColor: SelfvoyTheme.text3
     verticalAlignment: TextInput.AlignVCenter
     focusPolicy: Qt.StrongFocus
 
     background: Item {
-        // Кольцо фокуса
         Rectangle {
             anchors.fill: parent
-            anchors.margins: -4
-            radius: AuraTheme.radiusField + 4
+            anchors.margins: -3
+            radius: SelfvoyTheme.radiusField + 3
             color: "transparent"
-            border.width: 4
-            border.color: AuraTheme.accentA(control.activeFocus ? 0.18 : 0)
-            Behavior on border.color { ColorAnimation { duration: AuraTheme.pressMs } }
+            border.width: 2
+            border.color: control.activeFocus ? SelfvoyTheme.accentA(0.45) : "transparent"
         }
         Rectangle {
             anchors.fill: parent
-            radius: AuraTheme.radiusField
-            color: control.filled ? Qt.rgba(1, 1, 1, control.activeFocus ? 0.12 : 0.09)
-                                  : Qt.rgba(0.04, 0.03, 0.07, control.activeFocus ? 0.6 : 0.45)
-            border.width: control.filled && !control.activeFocus && !control.invalid ? 0 : 1
-            border.color: control.invalid ? AuraTheme.danger
-                          : control.activeFocus ? AuraTheme.accentA(0.8)
-                          : Qt.rgba(1, 1, 1, 0.16)
-            Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
-            Behavior on border.color { ColorAnimation { duration: AuraTheme.pressMs } }
+            radius: SelfvoyTheme.radiusField
+            color: control.activeFocus ? SelfvoyTheme.surface : SelfvoyTheme.field
+            border.width: control.invalid || control.activeFocus ? 1 : 0
+            border.color: control.invalid ? SelfvoyTheme.danger : SelfvoyTheme.accent
         }
     }
 
-    // Плавающая подпись внутри поля
     Text {
         x: control.leftPadding
         y: 8
         text: control.label
-        font.family: AuraTheme.fontFamily
-        font.pixelSize: AuraTheme.fontMicro
+        font.family: SelfvoyTheme.fontFamily
+        font.pixelSize: SelfvoyTheme.fontMicro
         font.weight: Font.DemiBold
-        color: control.activeFocus ? AuraTheme.lilac : AuraTheme.textMuted
+        color: control.activeFocus ? SelfvoyTheme.accent : SelfvoyTheme.text2
         visible: control.label.length > 0
-        Behavior on color { ColorAnimation { duration: AuraTheme.pressMs } }
     }
 
-    // Иконка или действие справа
     Icon {
-        id: trailing
-        x: control.width - AuraTheme.spaceMd - size
+        x: control.width - 14 - size
         anchors.verticalCenter: parent.verticalCenter
         name: control.rightIcon
         size: 18
-        color: control.action.length > 0 && hit.containsMouse ? AuraTheme.textPrimary : AuraTheme.textSecondary
+        color: control.action.length > 0 && hit.containsMouse ? SelfvoyTheme.text : SelfvoyTheme.text2
         visible: control.rightIcon.length > 0
 
         MouseArea {

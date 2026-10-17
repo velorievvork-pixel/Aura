@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'app.aura.network',
-  appName: 'Aura',
+  appId: 'app.selfvoy.network',
+  appName: 'Selfvoy',
   webDir: 'dist',
   backgroundColor: '#0b0c10',
   ios: {

@@ -1,21 +1,21 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 
 /*
   ChatPage — переписка с человеком (открывается из «Контактов»).
 
-  Шапка с собеседником, лента сообщений (сообщения Аур — agent_reply/agent_action —
-  со значком Ауры) и одна строка ввода: микрофон, текст, «Спросить Ауру» (agent.ask
-  в этом чате — Аура сама предложит переговоры) или обычная отправка.
+  Шапка с собеседником, лента сообщений (сообщения Selfvoy — agent_reply/agent_action —
+  со значком Selfvoy) и одна строка ввода: микрофон, текст, «Спросить Selfvoy» (agent.ask
+  в этом чате — Selfvoy сам предложит переговоры) или обычная отправка.
 */
 Item {
     id: page
 
     property int chatId: 0
     property bool embedded: false
-    property bool toAura: false
+    property bool toSelfvoy: false
 
     signal back()
     signal openSettings()
@@ -26,7 +26,7 @@ Item {
     function send() {
         const text = input.text.trim()
         if (!text || !App || App.busy) return
-        if (page.toAura) App.askAgent(page.chatId, text)
+        if (page.toSelfvoy) App.askAgent(page.chatId, text)
         else App.sendMessage(page.chatId, text)
         input.text = ""
     }
@@ -53,30 +53,30 @@ Item {
                 symbol: "arrow-left"
                 onClicked: page.back()
             }
-            AuraAvatar { name: App ? App.chatTitle : ""; size: 40; online: App ? App.peerOnline : false }
+            SelfvoyAvatar { name: App ? App.chatTitle : ""; size: 40; online: App ? App.peerOnline : false }
             ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 1
                 Text {
                     Layout.fillWidth: true
                     text: App ? App.chatTitle : ""
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontLead
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontLead
                     font.weight: Font.Bold
-                    color: AuraTheme.textPrimary
+                    color: SelfvoyTheme.textPrimary
                     elide: Text.ElideRight
                 }
                 Text {
                     Layout.fillWidth: true
-                    text: App && App.peerOnline ? "в сети" : "не в сети — Аура ответит за него"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontMicro + 1
-                    color: App && App.peerOnline ? AuraTheme.success : AuraTheme.textMuted
+                    text: App && App.peerOnline ? "в сети" : "не в сети — Selfvoy ответит за него"
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontMicro + 1
+                    color: App && App.peerOnline ? SelfvoyTheme.success : SelfvoyTheme.textMuted
                 }
             }
         }
 
-        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Qt.rgba(1, 1, 1, 0.08) }
+        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: SelfvoyTheme.glass(0.08) }
 
         // ---------------------------------------------------------- лента
         ListView {
@@ -84,7 +84,7 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            spacing: AuraTheme.spaceMd
+            spacing: SelfvoyTheme.spaceMd
             model: App ? App.messages : []
             boundsBehavior: Flickable.StopAtBounds
 
@@ -94,10 +94,10 @@ Item {
                 width: parent.width
                 wrapMode: Text.WordWrap
                 horizontalAlignment: Text.AlignHCenter
-                text: "Сообщений пока нет. Напишите или попросите Ауру договориться о встрече."
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontSmall
-                color: AuraTheme.textMuted
+                text: "Сообщений пока нет. Напишите или попросите Selfvoy договориться о встрече."
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontSmall
+                color: SelfvoyTheme.textMuted
             }
 
             delegate: ChatBubble {
@@ -116,10 +116,10 @@ Item {
                 visible: App && App.busy
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Аура думает…"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontSmall
-                    color: AuraTheme.textSecondary
+                    text: "Selfvoy думает…"
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontSmall
+                    color: SelfvoyTheme.textSecondary
                 }
             }
         }
@@ -130,13 +130,13 @@ Item {
             spacing: 10
             Chip {
                 text: "Обычное"
-                active: !page.toAura
-                onClicked: page.toAura = false
+                active: !page.toSelfvoy
+                onClicked: page.toSelfvoy = false
             }
             Chip {
-                text: "Спросить Ауру"
-                active: page.toAura
-                onClicked: page.toAura = true
+                text: "Спросить Selfvoy"
+                active: page.toSelfvoy
+                onClicked: page.toSelfvoy = true
             }
             Item { Layout.fillWidth: true }
         }
@@ -154,14 +154,14 @@ Item {
             GlassField {
                 id: input
                 Layout.fillWidth: true
-                placeholderText: page.toAura ? "Например: договорись о встрече на выходных" : "Сообщение…"
+                placeholderText: page.toSelfvoy ? "Например: договорись о встрече на выходных" : "Сообщение…"
                 onAccepted: page.send()
             }
             GlassButton {
                 variant: "accent"
                 implicitWidth: 46; implicitHeight: 46
                 glyphSize: 18
-                symbol: page.toAura ? "sparkles" : "send-horizontal"
+                symbol: page.toSelfvoy ? "sparkles" : "send-horizontal"
                 busy: App ? App.busy : false
                 enabled: input.text.trim().length > 0 && App && !App.busy
                 onClicked: page.send()

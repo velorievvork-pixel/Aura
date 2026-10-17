@@ -1,4 +1,4 @@
-# C++-сервер Aura (CMake + libpq + OpenSSL для SMTP)
+# C++-сервер Selfvoy (CMake + libpq + OpenSSL для SMTP)
 FROM debian:bookworm-slim AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -13,7 +13,7 @@ COPY src ./src
 COPY third_party ./third_party
 
 RUN cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DAURA_BUILD_TESTS=OFF \
+      -DSELFVOY_BUILD_TESTS=OFF \
     && cmake --build build
 
 FROM debian:bookworm-slim
@@ -22,11 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libpq5 libssl3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /src/build/aura-server /usr/local/bin/aura-server
+COPY --from=build /src/build/selfvoy-server /usr/local/bin/selfvoy-server
 
 # Непривилегированный пользователь (порт 9000 > 1024, root не нужен).
-RUN useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin aura
+RUN useradd --system --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin selfvoy
 USER 10001:10001
 
 EXPOSE 9000
-ENTRYPOINT ["/usr/local/bin/aura-server"]
+ENTRYPOINT ["/usr/local/bin/selfvoy-server"]

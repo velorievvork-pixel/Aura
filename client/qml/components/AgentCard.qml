@@ -1,15 +1,15 @@
 import QtQuick
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 
 /*
-  AgentCard — карточка участника переговоров: аватар, имя, «Аура имени»,
-  «голосовая волна» (пульсирует, пока говорит эта Аура) и что она раскрывает.
+  AgentCard — карточка участника переговоров: аватар, имя, «Selfvoy имени»,
+  «голосовая волна» (пульсирует, пока говорит этот Selfvoy) и что он раскрывает.
 */
 Rectangle {
     id: root
     property string name: ""
-    property string auraName: ""
+    property string selfvoyName: ""
     property bool talking: false
     property bool them: false
     property var facts: []
@@ -17,12 +17,9 @@ Rectangle {
     implicitWidth: 250
     implicitHeight: column.implicitHeight + 40
     radius: 24
-    gradient: Gradient {
-        GradientStop { position: 0.0; color: root.them ? Qt.rgba(0.75, 0.6, 1, 0.2) : Qt.rgba(0.6, 0.67, 1, 0.18) }
-        GradientStop { position: 1.0; color: root.them ? Qt.rgba(0.45, 0.32, 0.86, 0.1) : Qt.rgba(0.47, 0.35, 0.86, 0.1) }
-    }
+    color: SelfvoyTheme.surface
     border.width: 1
-    border.color: root.them ? Qt.rgba(0.8, 0.67, 1, 0.42) : Qt.rgba(0.7, 0.74, 1, 0.36)
+    border.color: root.them ? SelfvoyTheme.border : SelfvoyTheme.accentA(0.35)
 
     ColumnLayout {
         id: column
@@ -30,7 +27,7 @@ Rectangle {
         width: root.width - 40
         spacing: 4
 
-        AuraAvatar {
+        SelfvoyAvatar {
             Layout.alignment: Qt.AlignHCenter
             name: root.name
             size: 76
@@ -40,17 +37,17 @@ Rectangle {
             Layout.alignment: Qt.AlignHCenter
             Layout.topMargin: 10
             text: root.name
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontTitle
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontTitle
             font.weight: Font.Bold
-            color: AuraTheme.textPrimary
+            color: SelfvoyTheme.textPrimary
         }
         Text {
             Layout.alignment: Qt.AlignHCenter
-            text: root.auraName
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontSmall
-            color: AuraTheme.textSecondary
+            text: root.selfvoyName
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontSmall
+            color: SelfvoyTheme.textSecondary
         }
 
         // Волна
@@ -59,7 +56,7 @@ Rectangle {
             Layout.topMargin: 14
             implicitHeight: 74
             radius: 14
-            color: Qt.rgba(1, 1, 1, 0.86)
+            color: SelfvoyTheme.surface2
             Row {
                 anchors.fill: parent
                 anchors.margins: 10
@@ -73,10 +70,7 @@ Rectangle {
                         height: parent.height * (root.talking ? base * pulse.value : base * 0.35)
                         anchors.bottom: parent.bottom
                         radius: 2
-                        gradient: Gradient {
-                            GradientStop { position: 0.0; color: AuraTheme.accent }
-                            GradientStop { position: 1.0; color: "#6366F1" }
-                        }
+                        color: SelfvoyTheme.accentSolid
                         Behavior on height { NumberAnimation { duration: 260 } }
                         QtObject {
                             id: pulse
@@ -100,14 +94,14 @@ Rectangle {
                 Layout.fillWidth: true
                 Layout.topMargin: 6
                 spacing: 8
-                Icon { name: modelData.icon; size: 13; color: AuraTheme.textSecondary }
+                Icon { name: modelData.icon; size: 13; color: SelfvoyTheme.textSecondary }
                 Text {
                     Layout.fillWidth: true
                     text: modelData.text
                     wrapMode: Text.WordWrap
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontMicro + 1
-                    color: AuraTheme.textSecondary
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontMicro + 1
+                    color: SelfvoyTheme.textSecondary
                 }
             }
         }

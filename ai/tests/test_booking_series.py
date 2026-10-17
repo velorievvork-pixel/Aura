@@ -5,9 +5,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from aura_ai import app as app_module
-from aura_ai import planner
-from aura_ai.config import reset_settings
+from selfvoy_ai import app as app_module
+from selfvoy_ai import planner
+from selfvoy_ai.config import reset_settings
 
 
 def _utc(*args) -> datetime:
@@ -44,9 +44,9 @@ def test_series_unknown_zone_is_utc():
 
 @pytest.fixture()
 def client(monkeypatch):
-    monkeypatch.setenv("AURA_MEMORY_BACKEND", "memory://")
-    monkeypatch.delenv("AURA_AI_TOKEN", raising=False)
-    monkeypatch.setenv("AURA_AI_INSECURE_DEV", "1")
+    monkeypatch.setenv("SELFVOY_MEMORY_BACKEND", "memory://")
+    monkeypatch.delenv("SELFVOY_AI_TOKEN", raising=False)
+    monkeypatch.setenv("SELFVOY_AI_INSECURE_DEV", "1")
     reset_settings()
     with TestClient(app_module.app, raise_server_exceptions=False) as test_client:
         yield test_client

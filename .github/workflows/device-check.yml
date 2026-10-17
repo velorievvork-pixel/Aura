@@ -1,7 +1,7 @@
 # Проверка клиентов на настоящих платформах со скриншотами:
 #   Android — APK из builds/android на эмуляторе (API 34) + dev-стек с демо-данными;
 #   Windows — установщик из builds/windows: тихая установка, запуск, снимки;
-#   iOS     — сборка в Xcode, UI-тест AuraUITests на симуляторе + dev-стек на macOS.
+#   iOS     — сборка в Xcode, UI-тест SelfvoyUITests на симуляторе + dev-стек на macOS.
 # Снимки — в артефактах прогона и в ветках builds/shots-{android,windows,ios}
 # (ветки — только для main, отдельным job'ом публикации).
 # Пароль демо-аккаунтов генерируется на каждый прогон.
@@ -14,7 +14,7 @@ on:
     paths:
       - ".github/workflows/device-check.yml"
       - "tools/android_tour.py"
-      - "ios/AuraUITests/**"
+      - "ios/SelfvoyUITests/**"
 
 # Проверки исполняют код из репозитория — токен только на чтение. Запись
 # (ветки builds/shots-*) — в отдельном job'е publish, который лишь скачивает
@@ -37,11 +37,11 @@ jobs:
       - name: Сервер и AI-сервис
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq ninja-build >/dev/null
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DAURA_WITH_LIBPQ=OFF -DAURA_BUILD_TESTS=OFF
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSELFVOY_WITH_LIBPQ=OFF -DSELFVOY_BUILD_TESTS=OFF
           cmake --build build -j"$(nproc)"
           python -m pip install -q -r ai/requirements.txt websockets
           PYTHON=python bash tools/dev_stack.sh
-          echo "AURA_DEMO_PASSWORD=Demo$(openssl rand -hex 8)7" >> "$GITHUB_ENV"
+          echo "SELFVOY_DEMO_PASSWORD=Demo$(openssl rand -hex 8)7" >> "$GITHUB_ENV"
       - name: Демо-данные
         run: python tools/demo_seed.py
       - name: KVM
@@ -59,7 +59,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: |
-            adb install -r apk/Aura-debug.apk
+            adb install -r apk/Selfvoy-debug.apk
             python tools/android_tour.py shots/android
       - name: Логи стека
         if: always()
@@ -82,11 +82,11 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force shots | Out-Null
           $log = "shots\check.log"
-          Start-Process setup\Aura-Setup.exe -ArgumentList "/S" -Wait
-          $exe = "$env:LOCALAPPDATA\Programs\Aura\aura-client.exe"
+          Start-Process setup\Selfvoy-Setup.exe -ArgumentList "/S" -Wait
+          $exe = "$env:LOCALAPPDATA\Programs\Selfvoy\selfvoy-client.exe"
           Add-Content $log "установлен: $(Test-Path $exe)"
-          Add-Content $log "ярлык на рабочем столе: $(Test-Path "$env:USERPROFILE\Desktop\Aura.lnk")"
-          Add-Content $log "ярлык в Пуске: $(Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Aura\Aura.lnk")"
+          Add-Content $log "ярлык на рабочем столе: $(Test-Path "$env:USERPROFILE\Desktop\Selfvoy.lnk")"
+          Add-Content $log "ярлык в Пуске: $(Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Selfvoy\Selfvoy.lnk")"
           Add-Type -AssemblyName System.Windows.Forms, System.Drawing
           function Shot($name) {
             $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
@@ -137,11 +137,11 @@ jobs:
         run: brew install xcodegen >/dev/null
       - name: Сервер и AI-сервис (macOS)
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DAURA_WITH_LIBPQ=OFF -DAURA_BUILD_TESTS=OFF
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSELFVOY_WITH_LIBPQ=OFF -DSELFVOY_BUILD_TESTS=OFF
           cmake --build build -j"$(sysctl -n hw.ncpu)"
           python -m pip install -q -r ai/requirements.txt websockets
           PYTHON=python bash tools/dev_stack.sh
-          echo "AURA_DEMO_PASSWORD=Demo$(openssl rand -hex 8)7" >> "$GITHUB_ENV"
+          echo "SELFVOY_DEMO_PASSWORD=Demo$(openssl rand -hex 8)7" >> "$GITHUB_ENV"
       - name: Демо-данные
         run: python tools/demo_seed.py
       - name: Сборка и проход по экранам
@@ -152,11 +152,11 @@ jobs:
           DEST=$(xcrun simctl list devices available -j \
             | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS' in k for x in v if x['name'].startswith('iPhone')))")
           mkdir -p "$GITHUB_WORKSPACE/shots/ios"
-          TEST_RUNNER_AURA_TOUR_EMAIL=alex@aura.local \
-          TEST_RUNNER_AURA_TOUR_PASSWORD="$AURA_DEMO_PASSWORD" \
-          TEST_RUNNER_AURA_TOUR_SHOTS="$GITHUB_WORKSPACE/shots/ios" \
-          xcodebuild test -project Aura.xcodeproj -scheme Aura -destination "id=$DEST" \
-            -only-testing:AuraUITests/ScreenTourTests -derivedDataPath build \
+          TEST_RUNNER_SELFVOY_TOUR_EMAIL=alex@selfvoy.local \
+          TEST_RUNNER_SELFVOY_TOUR_PASSWORD="$SELFVOY_DEMO_PASSWORD" \
+          TEST_RUNNER_SELFVOY_TOUR_SHOTS="$GITHUB_WORKSPACE/shots/ios" \
+          xcodebuild test -project Selfvoy.xcodeproj -scheme Selfvoy -destination "id=$DEST" \
+            -only-testing:SelfvoyUITests/ScreenTourTests -derivedDataPath build \
             -resultBundlePath "$GITHUB_WORKSPACE/shots/ios/Tour.xcresult" \
             CODE_SIGNING_ALLOWED=NO > "$GITHUB_WORKSPACE/shots/ios/xcodebuild.log" 2>&1
           status=$?
@@ -204,7 +204,7 @@ jobs:
               rm -rf Tour.xcresult xcodebuild.log
               [ -n "$(ls -A)" ] || echo "снимков нет — см. лог прогона" > README.txt
               git init -q -b "builds/shots-$platform"
-              git config user.name aura-ci && git config user.email ci@aura.local
+              git config user.name selfvoy-ci && git config user.email ci@selfvoy.local
               git add -A && git commit -qm "$platform shots ${{ github.sha }} [skip ci]"
               git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" "HEAD:refs/heads/builds/shots-$platform"
             )

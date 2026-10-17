@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Tokens } from '../net/secureStore';
-import { AuraError } from '../net/socket';
+import { SelfvoyError } from '../net/socket';
 import { reauthenticate, REFRESH_LOCK, withRefreshLock, type ReauthDeps } from './reauth';
 
-const alex = { id: 1, email: 'alex@aura.local', display_name: 'Алекс', avatar_url: '', bio: '' };
+const alex = { id: 1, email: 'alex@selfvoy.local', display_name: 'Алекс', avatar_url: '', bio: '' };
 
 /** Поддельный сервер и хранилище токенов. handlers: тип → ответ (или ошибка). */
 function setup(initial: Tokens | null, handlers: Record<string, (p: Record<string, unknown>) => unknown>, extra: Partial<ReauthDeps> = {}) {
@@ -13,7 +13,7 @@ function setup(initial: Tokens | null, handlers: Record<string, (p: Record<strin
     request: async <T,>(type: string, payload: Record<string, unknown> = {}) => {
       calls.push(type);
       const h = handlers[type];
-      if (!h) throw new AuraError('unauthorized', 'нет');
+      if (!h) throw new SelfvoyError('unauthorized', 'нет');
       return h(payload) as T;
     },
     load: async () => (stored ? { ...stored } : null),
@@ -24,7 +24,7 @@ function setup(initial: Tokens | null, handlers: Record<string, (p: Record<strin
       stored = null;
     },
     lock: (fn) => fn(),
-    device: 'Aura в браузере',
+    device: 'Selfvoy в браузере',
     stale: () => false,
     ...extra,
   };
@@ -32,7 +32,7 @@ function setup(initial: Tokens | null, handlers: Record<string, (p: Record<strin
 }
 
 const refuse = () => {
-  throw new AuraError('unauthorized', 'токен недействителен');
+  throw new SelfvoyError('unauthorized', 'токен недействителен');
 };
 
 describe('reauthenticate', () => {
@@ -105,7 +105,7 @@ describe('reauthenticate', () => {
       {
         'auth.token': refuse,
         'auth.refresh': () => {
-          throw new AuraError('timeout', 'Сервер не ответил вовремя');
+          throw new SelfvoyError('timeout', 'Сервер не ответил вовремя');
         },
       },
     );

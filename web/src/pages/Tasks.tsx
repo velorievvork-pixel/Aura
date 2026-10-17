@@ -1,5 +1,6 @@
 import { Check, Plus, Trash2 } from 'lucide-react';
 import { useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Empty, Spinner } from '../components/ui';
 import { parseDate, shortWhen } from '../lib/format';
 import { sameDay, startOfDay } from '../lib/time';
@@ -16,6 +17,9 @@ export function Tasks() {
   const [at, setAt] = useState('');
   const [busy, setBusy] = useState(false);
   const [showDone, setShowDone] = useState(false);
+  // «+» → «Новая задача» открывает страницу с курсором в поле.
+  const [params] = useSearchParams();
+  const focusNew = params.get('new') === '1';
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -45,13 +49,13 @@ export function Tasks() {
       <header className="page-head">
         <div>
           <h1 className="title-xl">Задачи</h1>
-          <div className="sub">Напоминания, встречи из переговоров и всё, что поручили Ауре.</div>
+          <div className="sub">Напоминания, встречи из переговоров и всё, что поручили Selfvoy.</div>
         </div>
       </header>
 
       <div className="stack-lg">
         <form className="card row wrap" onSubmit={submit} style={{ padding: 10, gap: 8 }}>
-          <input className="input" style={{ flex: '1 1 220px', border: 0, background: 'transparent', boxShadow: 'none' }} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Новая задача" aria-label="Новая задача" maxLength={200} />
+          <input className="input" style={{ flex: '1 1 220px', border: 0, background: 'transparent', boxShadow: 'none' }} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Новая задача" aria-label="Новая задача" maxLength={200} autoFocus={focusNew} />
           <input className="input" type="datetime-local" style={{ width: 'auto', flex: '0 1 220px' }} value={at} onChange={(e) => setAt(e.target.value)} aria-label="Срок" />
           <button className="btn btn-primary" type="submit" disabled={!title.trim() || busy}>
             {busy ? <Spinner small /> : <Plus size={16} />} Добавить

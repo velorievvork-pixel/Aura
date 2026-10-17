@@ -1,16 +1,19 @@
-// aura/server.cpp
-#include "aura/server.h"
-#include "aura/smtp.h"
+// selfvoy/server.cpp
+#include "selfvoy/server.h"
+#include "selfvoy/net.h"
+#include "selfvoy/plan.h"
+#include "selfvoy/smtp.h"
+#include "selfvoy/tls.h"
 
 #include <algorithm>
 #include <chrono>
 #include <utility>
 
-#include "aura/log.h"
+#include "selfvoy/log.h"
 #include "integrationmanager.h"
 #include "notificationsmanager.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -66,7 +69,7 @@ bool validAvatar(const std::string& value, std::string& error) {
     return false;
 }
 
-// Админ-панель: роль admin для адреса из AURA_ADMIN_EMAILS выдаётся при
+// Админ-панель: роль admin для адреса из SELFVOY_ADMIN_EMAILS выдаётся при
 // успешном входе / подтверждении email. Если роль изменилась, в ответе
 // (payload.user) отдаётся уже обновлённая запись.
 Json withBootstrappedRole(AdminManager& admin, IDatabase& db, long long userId, Json payload,
@@ -115,20 +118,22 @@ Server::~Server() { stop(); }
 
 bool Server::start(std::string& error) {
     // Небезопасная конфигурация (dev-почта, слабый JWT-секрет, нет ключа 2FA)
-    // вне AURA_DEV_MODE=1 — отказ стартовать с понятным сообщением.
+    // вне SELFVOY_DEV_MODE=1 — отказ стартовать с понятным сообщением.
     std::vector<std::string> warnings;
     if (!config_.validate(error, warnings)) return false;
-    for (const auto& warning : warnings) AURA_LOG(log::Level::Warn, "server") << warning;
-    // net.h не умеет TLS: https-адреса Google работают только через TLS-прокси
-    // (egress), которому сервер шлёт обычный http. Предупреждаем заранее.
-    if (!config_.googleClientId.empty()) {
+    for (const auto& warning : warnings) SELFVOY_LOG(log::Level::Warn, "server") << warning;
+    plan::setEnforced(config_.plansEnforced);
+    net::setCaFile(config_.caFile);
+    // С OpenSSL https-адреса Google работают напрямую. Без него (сборка без TLS)
+    // — только через TLS-прокси (egress), которому сервер шлёт обычный http.
+    if (!config_.googleClientId.empty() && !tls::available()) {
         for (const std::string* url : {&config_.googleAuthUrl, &config_.googleTokenUrl, &config_.googleRevokeUrl,
                                        &config_.googleCalendarUrl, &config_.googleGmailUrl}) {
             if (url->rfind("https://", 0) == 0 && url != &config_.googleAuthUrl) {
-                AURA_LOG(log::Level::Warn, "server")
+                SELFVOY_LOG(log::Level::Warn, "server")
                     << "интеграции Google: " << *url
-                    << " — https, а сервер ходит во внешние API только по http (без TLS). "
-                       "Задайте AURA_GOOGLE_TOKEN_URL/REVOKE_URL/CALENDAR_URL/GMAIL_URL на http-адрес "
+                    << " — https, а сервер собран без OpenSSL (без TLS). "
+                       "Задайте SELFVOY_GOOGLE_TOKEN_URL/REVOKE_URL/CALENDAR_URL/GMAIL_URL на http-адрес "
                        "TLS-прокси (egress), иначе обмен кода и синхронизация не заработают";
                 break;
             }
@@ -136,7 +141,7 @@ bool Server::start(std::string& error) {
     }
     if (config_.mailDriver == "smtp") {
         if (config_.smtpHost.empty() || smtp::addressOf(config_.smtpFrom).find('@') == std::string::npos) {
-            error = "AURA_MAIL_DRIVER=smtp: задайте AURA_SMTP_HOST и AURA_SMTP_FROM (например «Aura <no-reply@домен>»)";
+            error = "SELFVOY_MAIL_DRIVER=smtp: задайте SELFVOY_SMTP_HOST и SELFVOY_SMTP_FROM (например «Selfvoy <no-reply@домен>»)";
             return false;
         }
         if (config_.smtpTls != "none" && !smtp::tlsAvailable()) {
@@ -162,6 +167,26 @@ bool Server::start(std::string& error) {
                                                scheduleLock_.get());
     bookings_ = std::make_unique<BookingManager>(*database_, *memory_, notifications_.get(), *referrals_,
                                                  *scheduleLock_, config_);
+    // Telegram-бот (F2): без токена и имени — выключен (ссылки пустые, отправка — no-op).
+    telegram_ = std::make_unique<TelegramBot>(*database_, config_);
+    telegram_->setBookings(bookings_.get());
+    bookings_->setTelegram(telegram_.get());
+    // Оплата записи (F4): ЮKassa владельца (SELFVOY_YOOKASSA_API_URL) или оплата по ссылке.
+    payments_ = std::make_unique<PaymentManager>(*database_, config_);
+    bookings_->setPayments(payments_.get());
+    if (config_.yookassaApiUrl.rfind("https://", 0) == 0 && !tls::available()) {
+        SELFVOY_LOG(log::Level::Warn, "server") << "ЮKassa: SELFVOY_YOOKASSA_API_URL — https, а сервер собран без "
+                                                   "OpenSSL — онлайн-оплата работать не будет";
+    }
+    notifications_->setTelegram(telegram_.get());
+    // F7: ИИ-администратор страниц записи в Telegram (бот + путь booking.book + уведомления).
+    telegramAdmin_ = std::make_unique<TelegramAdmin>(*database_, config_, *telegram_, *bookings_, notifications_.get());
+    telegram_->setAdmin(telegramAdmin_.get());
+    if (config_.telegramEnabled() && config_.telegramApiUrl.rfind("https://", 0) == 0 && !tls::available()) {
+        SELFVOY_LOG(log::Level::Warn, "server") << "Telegram-бот: SELFVOY_TELEGRAM_API_URL — https, а сервер собран "
+                                                   "без OpenSSL — бот работать не будет";
+    }
+    calendarFeed_ = std::make_unique<CalendarFeed>(*database_, config_);
     admin_->bootstrapAll();
 
     registerHandlers();
@@ -170,12 +195,12 @@ bool Server::start(std::string& error) {
         config_, [this](std::shared_ptr<Session> session) { handleConnection(std::move(session)); });
     if (!listener_->start(error)) return false;
 
-    AURA_LOG(log::Level::Info, "server") << "Aura server запущен: " << config_.describe();
+    SELFVOY_LOG(log::Level::Info, "server") << "сервер Selfvoy запущен: " << config_.describe();
     std::string aiError;
     if (agent_->available(aiError)) {
-        AURA_LOG(log::Level::Info, "server") << "AI-сервис доступен: " << config_.aiServiceUrl;
+        SELFVOY_LOG(log::Level::Info, "server") << "AI-сервис доступен: " << config_.aiServiceUrl;
     } else {
-        AURA_LOG(log::Level::Warn, "server")
+        SELFVOY_LOG(log::Level::Warn, "server")
             << "AI-сервис не отвечает (" << config_.aiServiceUrl << "): агент вернёт ошибку upstream_error";
     }
 
@@ -183,8 +208,11 @@ bool Server::start(std::string& error) {
     if (config_.schedulerIntervalMs > 0 && !schedulerThread_) {
         schedulerThread_ = std::make_unique<std::thread>(&Server::schedulerLoop, this);
     }
+    telegram_->start();  // опрос getUpdates (если бот включён и SELFVOY_TELEGRAM_POLL != 0)
     return true;
 }
+
+bool Server::proAllowed(long long userId) { return database_ && plan::proAllowed(database_->db(), userId); }
 
 void Server::schedulerLoop() {
     while (!stopping_.load()) {
@@ -198,6 +226,23 @@ void Server::schedulerLoop() {
         // утренний пик в тысячи напоминаний иначе отставал бы на десятки минут.
         for (int batch = 0; batch < 100 && !stopping_.load(); ++batch) {
             if (runSchedulerTick(100) < 100) break;
+        }
+        // F1: напоминания гостям о встречах (атомарный захват — один экземпляр на строку).
+        if (bookings_) {
+            for (int batch = 0; batch < 100 && !stopping_.load(); ++batch) {
+                if (bookings_->reminderTick(100, std::time(nullptr)) < 100) break;
+            }
+            // F4: ожидающие оплаты — опрос ЮKassa (не чаще раза в 30 с на платёж) и отмена
+            // неоплаченных к сроку записей.
+            if (!stopping_.load()) bookings_->paymentTick(500, std::time(nullptr));
+            // F5: оплата пакетов (опрос ЮKassa, истечение неоплаченных) и срок действия.
+            if (!stopping_.load()) bookings_->packageTick(500, std::time(nullptr));
+            // F8: истёкшие предложения листа ожидания (время — следующему) и записи листа
+            // старше 30 дней; «пора записаться снова» (атомарный захват — один экземпляр на запись).
+            if (!stopping_.load()) bookings_->waitlistTick(500, std::time(nullptr));
+            for (int batch = 0; batch < 20 && !stopping_.load(); ++batch) {
+                if (bookings_->rebookTick(100, std::time(nullptr)) < 100) break;
+            }
         }
     }
 }
@@ -223,12 +268,16 @@ void Server::stop() {
     // Рабочие потоки соединений вызывают обработчики Server — дожидаемся их,
     // иначе они переживут Server (ASan: use-after-free в Listener::releaseIpSlot).
     if (listener_ && !listener_->drain(std::chrono::seconds(10))) {
-        AURA_LOG(log::Level::Warn, "server") << "не все соединения завершились за 10 с";
+        SELFVOY_LOG(log::Level::Warn, "server") << "не все соединения завершились за 10 с";
     }
     // Останавливаем фоновый планировщик и дожидаемся его.
     schedulerCv_.notify_all();
     if (schedulerThread_ && schedulerThread_->joinable()) schedulerThread_->join();
     schedulerThread_.reset();
+    // Извещения гостям из очереди ставят сообщения боту — сначала они, потом бот
+    // (опрос прерывается сразу, очередь отправки дописывается не дольше ~5 с).
+    if (bookings_) bookings_->flushMail();
+    if (telegram_) telegram_->stop();
     if (!already) waitCondition_.notify_all();
 }
 
@@ -245,7 +294,7 @@ void Server::wait() {
 Json Server::health() const {
     Json json = Json::object();
     json.set("status", Json("ok"));
-    json.set("service", Json("aura-server"));
+    json.set("service", Json("selfvoy-server"));
     json.set("database", Json(database_ ? database_->backend() : std::string("none")));
     json.set("database_healthy", Json(database_ ? database_->healthy() : false));
     json.set("connections", connections_.stats());
@@ -295,7 +344,7 @@ bool Server::revalidate(const std::shared_ptr<Session>& session) {
         session->markAuthChecked();
         return true;
     }
-    AURA_LOG(log::Level::Info, "server") << "сессия " << session->id() << " больше не действительна: "
+    SELFVOY_LOG(log::Level::Info, "server") << "сессия " << session->id() << " больше не действительна: "
                                          << check.message;
     session->resetAuth();
     connections_.remove(session->id());
@@ -303,16 +352,33 @@ bool Server::revalidate(const std::shared_ptr<Session>& session) {
 }
 
 void Server::handleConnection(std::shared_ptr<Session> session) {
+    // Обычные HTTP-запросы на порт WebSocket: проверка живости и ICS-подписка (F6).
+    session->setHttpHandler([this](const std::string& method, const std::string& target, const std::string& ip) {
+        if (target == "/healthz" || target.rfind("/healthz?", 0) == 0) {
+            if (method != "GET") {
+                return httpResponse(405, "Method Not Allowed", "text/plain; charset=utf-8", "method not allowed\n",
+                                    "Cache-Control: no-store\r\nAllow: GET\r\n");
+            }
+            // Только факт работы: адреса, статистика и бэкенды посторонним не нужны.
+            return httpResponse(200, "OK", "application/json", "{\"status\":\"ok\"}",
+                                "Cache-Control: no-store\r\n");
+        }
+        return calendarFeed_ ? calendarFeed_->serveHttp(method, target, ip) : std::string();
+    });
     std::string error;
     if (!session->performHandshake(error)) {
-        AURA_LOG(log::Level::Warn, "server") << "рукопожатие не удалось: " << error;
+        if (session->servedHttp()) {
+            SELFVOY_LOG(log::Level::Debug, "server") << "HTTP-запрос обслужен: " << error;
+        } else {
+            SELFVOY_LOG(log::Level::Warn, "server") << "рукопожатие не удалось: " << error;
+        }
         return;
     }
 
     // Токен можно передать сразу в заголовке рукопожатия.
     Json authPayload;
     if (authorize(session, tokenFromSession(session), authPayload)) {
-        AURA_LOG(log::Level::Info, "server")
+        SELFVOY_LOG(log::Level::Info, "server")
             << "сессия " << session->id() << " авторизована как " << session->email();
         Json welcome = protocol::event("session.ready", session->describe());
         welcome.set("auth", authPayload);
@@ -332,7 +398,7 @@ void Server::handleConnection(std::shared_ptr<Session> session) {
 
     connections_.remove(session->id());
     if (session->authenticated()) database_->db().touchUser(session->userId());
-    AURA_LOG(log::Level::Info, "server") << "сессия " << session->id() << " завершена";
+    SELFVOY_LOG(log::Level::Info, "server") << "сессия " << session->id() << " завершена";
 }
 
 Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message) {
@@ -354,11 +420,12 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
     }
 
     const bool guestCall = !session->authenticated() &&
-                           (request.type.rfind("invite.", 0) == 0 || request.type.rfind("booking.", 0) == 0) &&
+                           (request.type.rfind("invite.", 0) == 0 || request.type.rfind("booking.", 0) == 0 ||
+                            request.type.rfind("package.", 0) == 0) &&
                            protocol::isPublicType(request.type);
     if (!protocol::isPublicType(request.type)) {
         // Открытое соединение не живёт дольше своей сессии: отзыв, истечение
-        // срока или блокировка аккаунта видны не позже чем через AURA_AUTH_RECHECK.
+        // срока или блокировка аккаунта видны не позже чем через SELFVOY_AUTH_RECHECK.
         const bool expired = session->authenticated() && !revalidate(session);
         if (!session->authenticated()) {
             // Новый токен в payload (например, auth.token после refresh) — пробуем им.
@@ -377,11 +444,11 @@ Json Server::handleMessage(std::shared_ptr<Session> session, const Json& message
         return response;
     } catch (const std::exception& exception) {
         // Текст исключения (SQL, пути, внутренности) — только в лог.
-        AURA_LOG(log::Level::Error, "server")
+        SELFVOY_LOG(log::Level::Error, "server")
             << "исключение в обработчике " << request.type << ": " << exception.what();
         return protocol::error(request.id, protocol::code::kInternal, "внутренняя ошибка сервера");
     } catch (...) {
-        AURA_LOG(log::Level::Error, "server") << "неизвестное исключение в обработчике " << request.type;
+        SELFVOY_LOG(log::Level::Error, "server") << "неизвестное исключение в обработчике " << request.type;
         return protocol::error(request.id, protocol::code::kInternal, "внутренняя ошибка сервера");
     }
 }
@@ -419,11 +486,13 @@ void Server::registerHandlers() {
         if (!session->authenticated()) {
             Json payload = Json::object();
             payload.set("status", Json("ok"));
-            payload.set("service", Json("aura-server"));
+            payload.set("service", Json("selfvoy-server"));
             payload.set("version", Json("0.1"));
+            payload.set("telegram_bot", Json(telegram_ ? telegram_->username() : std::string()));
             return protocol::ok(request.id, payload);
         }
         Json payload = health();
+        payload.set("telegram_bot", Json(telegram_ ? telegram_->username() : std::string()));
         Json types = Json::array();
         for (const auto& type : handlerTypes()) types.push(Json(type));
         payload.set("handlers", types);
@@ -584,7 +653,7 @@ void Server::registerHandlers() {
                         if (notifications_) {
                             Json payload = Json::object();
                             payload.set("device", Json(request.payload.getString("device", "qt-client")));
-                            notifications_->create(result.userId, "login.new", "Новый вход в Aura",
+                            notifications_->create(result.userId, "login.new", "Новый вход в Selfvoy",
                                                    session->remoteAddr(), payload);
                         }
                         return protocol::ok(request.id,
@@ -611,7 +680,7 @@ void Server::registerHandlers() {
                             Json payload = Json::object();
                             payload.set("device", Json(request.payload.getString("device", "qt-client")));
                             payload.set("two_factor", Json(true));
-                            notifications_->create(result.userId, "login.new", "Новый вход в Aura (2FA)",
+                            notifications_->create(result.userId, "login.new", "Новый вход в Selfvoy (2FA)",
                                                    session->remoteAddr(), payload);
                         }
                         return protocol::ok(request.id,
@@ -788,7 +857,7 @@ void Server::registerHandlers() {
 
     registerHandler("chat.send", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
         // Клиент шлёт только обычный текст: kind agent_*/system ставит сервер
-        // (Аура, подтверждённые действия), иначе их можно подделать.
+        // (Selfvoy, подтверждённые действия), иначе их можно подделать.
         const std::string kind = request.payload.getString("kind", "text");
         if (kind != "text") {
             return protocol::error(request.id, protocol::code::kBadRequest,
@@ -803,7 +872,7 @@ void Server::registerHandlers() {
             return protocol::error(request.id, protocol::code::kBadRequest, "payload должен быть объектом");
         }
         if (extra.isObject()) {
-            // Служебные поля Ауры (origin, proposal, confirmed, tool) — только от сервера.
+            // Служебные поля Selfvoy (origin, proposal, confirmed, tool) — только от сервера.
             for (const char* reserved : {"origin", "proposal", "confirmed", "tool"}) {
                 if (extra.contains(reserved)) {
                     return protocol::error(request.id, protocol::code::kBadRequest,
@@ -878,7 +947,7 @@ void Server::registerHandlers() {
             notifyPayload.set("initiator_id", Json(session->userId()));
             notifyPayload.set("topic", Json(request.payload.getString("topic", "встреча")));
             notifications_->create(peer->id, "a2a.proposal",
-                                   "Аура начала переговоры",
+                                   "Selfvoy начал переговоры",
                                    "Тема: " + request.payload.getString("topic", "встреча"),
                                    notifyPayload);
         }
@@ -973,6 +1042,124 @@ void Server::registerHandlers() {
                                                                const protocol::Request& request) {
         return bookingReply(request, bookings_->resendLink(request.payload, session->remoteAddr()));
     });
+    // F4: «Я оплатил(а)» (гость) и отметка оплаты владельцем.
+    registerHandler("booking.paymentClaim", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                 const protocol::Request& request) {
+        return bookingReply(request, bookings_->paymentClaim(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.paymentSet", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->paymentSet(session->userId(), request.payload));
+    });
+    // F4: магазин ЮKassa владельца.
+    const auto paymentsReply = [](const protocol::Request& request, const PaymentManager::Result& result) {
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    };
+    registerHandler("payments.status", [this, paymentsReply](std::shared_ptr<Session> session,
+                                                             const protocol::Request& request) {
+        return paymentsReply(request, payments_->status(session->userId()));
+    });
+    registerHandler("payments.connect", [this, paymentsReply](std::shared_ptr<Session> session,
+                                                              const protocol::Request& request) {
+        return paymentsReply(request, payments_->connect(session->userId(), request.payload));
+    });
+    registerHandler("payments.disconnect", [this, paymentsReply](std::shared_ptr<Session> session,
+                                                                 const protocol::Request& request) {
+        return paymentsReply(request, payments_->disconnect(session->userId()));
+    });
+    // F5: пакеты (абонементы): гость — по ссылке пакета #/p/<токен>, владелец — продажа
+    // вне сайта, корректировка остатка, отмена, отметка оплаты.
+    registerHandler("package.get", [this, bookingReply](std::shared_ptr<Session> session,
+                                                        const protocol::Request& request) {
+        return bookingReply(request, bookings_->packageGet(request.payload, session->remoteAddr()));
+    });
+    registerHandler("package.paymentClaim", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                 const protocol::Request& request) {
+        return bookingReply(request, bookings_->packagePaymentClaim(request.payload, session->remoteAddr()));
+    });
+    registerHandler("package.list", [this, bookingReply](std::shared_ptr<Session> session,
+                                                         const protocol::Request& request) {
+        return bookingReply(request, bookings_->packageList(session->userId(), request.payload));
+    });
+    registerHandler("package.issue", [this, bookingReply](std::shared_ptr<Session> session,
+                                                          const protocol::Request& request) {
+        return bookingReply(request, bookings_->packageIssue(session->userId(), request.payload));
+    });
+    registerHandler("package.adjust", [this, bookingReply](std::shared_ptr<Session> session,
+                                                           const protocol::Request& request) {
+        return bookingReply(request, bookings_->packageAdjust(session->userId(), request.payload));
+    });
+    registerHandler("package.cancel", [this, bookingReply](std::shared_ptr<Session> session,
+                                                           const protocol::Request& request) {
+        return bookingReply(request, bookings_->packageCancel(session->userId(), request.payload));
+    });
+    registerHandler("package.paymentSet", [this, bookingReply](std::shared_ptr<Session> session,
+                                                               const protocol::Request& request) {
+        return bookingReply(request, bookings_->packagePaymentSet(session->userId(), request.payload));
+    });
+    // F1: «Приду» по ссылке из напоминания (#/m/<токен>?confirm=<start>).
+    registerHandler("booking.confirm", [this, bookingReply](std::shared_ptr<Session> session,
+                                                            const protocol::Request& request) {
+        return bookingReply(request, bookings_->confirm(request.payload, session->remoteAddr()));
+    });
+
+    // ------------------------------------- F8: лист ожидания (гость — по slug/токену)
+    registerHandler("booking.waitlistJoin", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                 const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistJoin(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.waitlistGet", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistGet(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.waitlistClaim", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                  const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistClaim(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.waitlistLeave", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                  const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistLeave(request.payload, session->remoteAddr()));
+    });
+    registerHandler("booking.waitlist", [this, bookingReply](std::shared_ptr<Session> session,
+                                                             const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistList(session->userId(), request.payload));
+    });
+    registerHandler("booking.waitlistRemove", [this, bookingReply](std::shared_ptr<Session> session,
+                                                                   const protocol::Request& request) {
+        return bookingReply(request, bookings_->waitlistRemove(session->userId(), request.payload));
+    });
+    // ------------------------------------------------ F10: чеки «Мой налог»
+    registerHandler("tax.pending", [this, bookingReply](std::shared_ptr<Session> session,
+                                                        const protocol::Request& request) {
+        return bookingReply(request, bookings_->taxPending(session->userId(), request.payload));
+    });
+    registerHandler("tax.receiptDone", [this, bookingReply](std::shared_ptr<Session> session,
+                                                            const protocol::Request& request) {
+        return bookingReply(request, bookings_->taxReceiptDone(session->userId(), request.payload));
+    });
+
+    // ---------------------------------------------------- F6: окна и ICS
+    registerHandler("booking.slotsPost", [this, bookingReply](std::shared_ptr<Session> session,
+                                                              const protocol::Request& request) {
+        return bookingReply(request, bookings_->slotsPost(session->userId(), request.payload));
+    });
+    const auto feedReply = [](const protocol::Request& request, const CalendarFeed::Result& result) {
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    };
+    registerHandler("calendar.feed", [this, feedReply](std::shared_ptr<Session> session,
+                                                       const protocol::Request& request) {
+        return feedReply(request, calendarFeed_->feed(session->userId()));
+    });
+    registerHandler("calendar.feedReset", [this, feedReply](std::shared_ptr<Session> session,
+                                                            const protocol::Request& request) {
+        return feedReply(request, calendarFeed_->reset(session->userId()));
+    });
+    registerHandler("calendar.feedDisable", [this, feedReply](std::shared_ptr<Session> session,
+                                                              const protocol::Request& request) {
+        return feedReply(request, calendarFeed_->disable(session->userId()));
+    });
 
     // ----------------------------------------------------------- referral
     registerHandler("referral.get", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
@@ -1046,6 +1233,18 @@ void Server::registerHandlers() {
     });
 
     registerHandler("prefs.set", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        // F10: npd_receipts («я самозанятый, напоминать выдать чек») — bool, включение — Pro.
+        if (request.payload.contains("npd_receipts")) {
+            const Json value = request.payload.get("npd_receipts");
+            if (!value.isBool()) {
+                return protocol::error(request.id, protocol::code::kBadRequest, "npd_receipts — true или false");
+            }
+            if (value.asBool() && !memory_->preferences(session->userId()).getBool("npd_receipts") &&
+                !proAllowed(session->userId())) {
+                return protocol::error(request.id, protocol::code::kProRequired,
+                                       "напоминания о чеках «Мой налог» доступны на тарифе Pro");
+            }
+        }
         std::string error;
         bool invalid = false;
         if (!memory_->setPreferences(session->userId(), request.payload, error, &invalid)) {
@@ -1061,7 +1260,7 @@ void Server::registerHandlers() {
 
     registerHandler("tool.run", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
         // Прямой вызов инструмента проходит тот же барьер tool_permissions, что и
-        // действия Ауры: deny — отказ, ask — отложенное действие с подтверждением.
+        // действия Selfvoy: deny — отказ, ask — отложенное действие с подтверждением.
         const std::string tool = request.payload.getString("tool");
         if (!ToolManager::isKnownTool(tool)) {
             return protocol::error(request.id, protocol::code::kBadRequest, "неизвестный инструмент: " + tool);
@@ -1308,6 +1507,42 @@ void Server::registerHandlers() {
                                                       const protocol::Request& request) {
         return adminReply(request, admin_->audit(session->userId(), request.payload), "");
     });
+
+    // ------------------------------------------- рост (S1a): тариф и Telegram
+    registerHandler("admin.setPlan", [this, adminReply](std::shared_ptr<Session> session,
+                                                        const protocol::Request& request) {
+        return adminReply(request, admin_->setPlan(session->userId(), request.payload, session->remoteAddr()), "");
+    });
+
+    registerHandler("telegram.status", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        return protocol::ok(request.id, telegram_->status(session->userId()));
+    });
+
+    registerHandler("telegram.link", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        Json payload;
+        std::string error;
+        if (!telegram_->link(session->userId(), payload, error)) {
+            return protocol::error(request.id, protocol::code::kBadRequest, error);
+        }
+        return protocol::ok(request.id, payload);
+    });
+
+    registerHandler("telegram.unlink", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        return protocol::ok(request.id, telegram_->unlink(session->userId()));
+    });
+
+    // F7: вопросы гостей ИИ-администратору, переданные специалисту, и ответ из приложения.
+    registerHandler("telegram.questions", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = telegramAdmin_->questions(session->userId(), request.payload);
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    });
+
+    registerHandler("telegram.reply", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = telegramAdmin_->reply(session->userId(), request.payload);
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    });
 }
 
-}  // namespace aura
+}  // namespace selfvoy

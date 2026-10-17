@@ -16,7 +16,7 @@ type Ctor = new () => Recognition;
 
 function webImpl(): Ctor | undefined {
   // Electron exposes the API but has no recognition service behind it.
-  if (typeof window === 'undefined' || window.auraDesktop) return undefined;
+  if (typeof window === 'undefined' || window.selfvoyDesktop) return undefined;
   const w = window as unknown as { SpeechRecognition?: Ctor; webkitSpeechRecognition?: Ctor };
   return w.SpeechRecognition ?? w.webkitSpeechRecognition;
 }

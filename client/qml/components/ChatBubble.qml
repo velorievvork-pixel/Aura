@@ -1,11 +1,11 @@
 import QtQuick
-import Aura
+import Selfvoy
 
 /*
   ChatBubble — «пузырь» сообщения.
 
-  Свой текст — справа, акцентное стекло; чужой — слева, нейтральное стекло;
-  сообщения Ауры помечаются значком и холодным оттенком.
+  Свой текст — справа, мягкий акцент; чужой — слева, сплошная карточка;
+  сообщения Selfvoy помечаются значком и холодным оттенком.
 */
 Item {
     id: root
@@ -21,17 +21,16 @@ Item {
     implicitWidth: parent ? parent.width : maxBubbleWidth
     height: implicitHeight
 
-    readonly property color bubbleTint: root.agent ? AuraTheme.accentSoft
-                                                 : (root.mine ? AuraTheme.accent : AuraTheme.glassTint)
-    readonly property real bubbleFill: root.agent ? 0.16 : (root.mine ? AuraTheme.accentFill : AuraTheme.glassFill)
+    // Свои — мягкий акцент, Selfvoy и собеседник — сплошная карточка.
+    readonly property color bubbleColor: root.mine ? SelfvoyTheme.accentTint : SelfvoyTheme.surface
 
-    // Значок Ауры над сообщением агента
+    // Значок Selfvoy над сообщением агента
     Row {
         id: badge
         anchors.left: root.mine ? undefined : parent.left
         anchors.right: root.mine ? parent.right : undefined
-        anchors.leftMargin: AuraTheme.spaceXs
-        anchors.rightMargin: AuraTheme.spaceXs
+        anchors.leftMargin: SelfvoyTheme.spaceXs
+        anchors.rightMargin: SelfvoyTheme.spaceXs
         spacing: 5
         visible: root.agent
         height: visible ? 16 : 0
@@ -41,14 +40,14 @@ Item {
             height: 6
             radius: 3
             anchors.verticalCenter: parent.verticalCenter
-            color: AuraTheme.accentSoft
+            color: SelfvoyTheme.accentSoft
         }
         Text {
-            text: "Аура"
-            font.family: AuraTheme.fontFamily
-            font.pixelSize: AuraTheme.fontMicro
+            text: "Selfvoy"
+            font.family: SelfvoyTheme.fontFamily
+            font.pixelSize: SelfvoyTheme.fontMicro
             font.weight: Font.DemiBold
-            color: AuraTheme.accentSoft
+            color: SelfvoyTheme.accentSoft
             anchors.verticalCenter: parent.verticalCenter
         }
     }
@@ -67,9 +66,9 @@ Item {
             anchors.left: root.mine ? undefined : parent.left
             // Ширина по копии текста без переноса (как в Bubble.qml): implicitWidth
             // самого переносимого текста зависит от уже выставленной ширины.
-            width: Math.min(root.maxBubbleWidth, Math.max(80, Math.ceil(bubbleProbe.implicitWidth) + 2 + AuraTheme.spaceLg * 2))
-            height: bubbleText.implicitHeight + AuraTheme.spaceLg
-            radius: AuraTheme.radiusBubble
+            width: Math.min(root.maxBubbleWidth, Math.max(80, Math.ceil(bubbleProbe.implicitWidth) + 2 + SelfvoyTheme.spaceLg * 2))
+            height: bubbleText.implicitHeight + SelfvoyTheme.spaceLg
+            radius: SelfvoyTheme.radiusBubble
 
             Text {
                 id: bubbleProbe
@@ -77,36 +76,21 @@ Item {
                 text: root.text
                 font: bubbleText.font
             }
-            color: Qt.rgba(root.bubbleTint.r, root.bubbleTint.g, root.bubbleTint.b, root.bubbleFill)
-            border.width: 1
-            border.color: root.agent
-                          ? AuraTheme.accentA(0.35)
-                          : Qt.rgba(1, 1, 1, root.mine ? 0.22 : AuraTheme.glassBorder)
-
-            // Блик по верхнему краю пузыря (той же формы, что и пузырь, чтобы
-            // углы не вылезали за скругление у однострочных сообщений)
-            Rectangle {
-                anchors.fill: parent
-                anchors.margins: 1
-                radius: Math.max(0, parent.radius - 1)
-                gradient: Gradient {
-                    GradientStop { position: 0.0; color: Qt.rgba(1, 1, 1, 0.16) }
-                    GradientStop { position: 0.45; color: Qt.rgba(1, 1, 1, 0.0) }
-                    GradientStop { position: 1.0; color: Qt.rgba(1, 1, 1, 0.0) }
-                }
-            }
+            color: root.bubbleColor
+            border.width: root.agent ? 1 : 0
+            border.color: SelfvoyTheme.accentA(0.35)
 
             Text {
                 id: bubbleText
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                anchors.margins: AuraTheme.spaceLg
+                anchors.margins: SelfvoyTheme.spaceLg
                 text: root.text
                 wrapMode: Text.WordWrap
-                font.family: AuraTheme.fontFamily
-                font.pixelSize: AuraTheme.fontBody
-                color: AuraTheme.textPrimary
+                font.family: SelfvoyTheme.fontFamily
+                font.pixelSize: SelfvoyTheme.fontBody
+                color: SelfvoyTheme.textPrimary
                 lineHeight: 1.25
             }
         }
@@ -118,12 +102,12 @@ Item {
         anchors.topMargin: 4
         anchors.left: root.mine ? undefined : parent.left
         anchors.right: root.mine ? parent.right : undefined
-        anchors.leftMargin: AuraTheme.spaceXs
-        anchors.rightMargin: AuraTheme.spaceXs
+        anchors.leftMargin: SelfvoyTheme.spaceXs
+        anchors.rightMargin: SelfvoyTheme.spaceXs
         text: [root.senderName, root.timestamp].filter(part => part.length > 0).join(" · ")
-        font.family: AuraTheme.fontFamily
-        font.pixelSize: AuraTheme.fontMicro
-        color: AuraTheme.textMuted
+        font.family: SelfvoyTheme.fontFamily
+        font.pixelSize: SelfvoyTheme.fontMicro
+        color: SelfvoyTheme.textMuted
         visible: text.length > 0
     }
 }

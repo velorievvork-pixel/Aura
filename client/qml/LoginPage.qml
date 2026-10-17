@@ -1,10 +1,10 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 
 /*
-  LoginPage — вход (макет Welcome) и регистрация (макет Create your Aura),
+  LoginPage — вход (макет Welcome) и регистрация (макет Create your Selfvoy),
   плюс шаги auth v3: код из письма, двухфакторный вход, восстановление и сброс.
 
     Вход / Регистрация → (регистрация) Код подтверждения → Вход
@@ -34,18 +34,18 @@ Item {
 
     // Подпись над полем (макет: «Email», «Password»)
     component FieldLabel: Text {
-        font.family: AuraTheme.fontFamily
-        font.pixelSize: AuraTheme.fontSmall
+        font.family: SelfvoyTheme.fontFamily
+        font.pixelSize: SelfvoyTheme.fontSmall
         font.weight: Font.DemiBold
-        color: AuraTheme.textPrimary
+        color: SelfvoyTheme.textPrimary
     }
     component Note: Text {
         Layout.fillWidth: true
         horizontalAlignment: Text.AlignHCenter
         wrapMode: Text.WordWrap
-        font.family: AuraTheme.fontFamily
-        font.pixelSize: AuraTheme.fontSmall
-        color: AuraTheme.textSecondary
+        font.family: SelfvoyTheme.fontFamily
+        font.pixelSize: SelfvoyTheme.fontSmall
+        color: SelfvoyTheme.textSecondary
     }
 
     // Карточка выше окна (ноутбук 1366×768, регистрация) — страница прокручивается.
@@ -96,6 +96,7 @@ Item {
                     model: [{ x: 0.12, y: 0.32 }, { x: 0.86, y: 0.78 }]
                     delegate: Canvas {
                         required property var modelData
+                        visible: false  // 2026: без свечения за карточкой
                         width: 260; height: 260
                         x: parent.width * modelData.x - width / 2
                         y: parent.height * modelData.y - height / 2
@@ -119,13 +120,13 @@ Item {
                 radius: page.wideCard ? 40 : 34
                 padding: page.wideCard ? (page.compact ? 26 : page.height < 820 ? 36 : 56) : 34
                 backdrop: page.Window.window ? page.Window.window.contentItem : null
-                Behavior on width { NumberAnimation { duration: AuraTheme.moveMs; easing.type: AuraTheme.ease } }
+                Behavior on width { NumberAnimation { duration: SelfvoyTheme.moveMs; easing.type: SelfvoyTheme.ease } }
 
                 // Внутреннее фиолетовое сияние за формой (макет Welcome)
                 Canvas {
                     anchors.fill: parent
                     anchors.margins: -card.padding
-                    visible: page.wideCard
+                    visible: false  // 2026: текст на сплошном фоне, без сияния
                     onPaint: {
                         if (width <= 0 || height <= 0) return
                         const ctx = getContext("2d")
@@ -149,7 +150,7 @@ Item {
                     spacing: 6
                     Repeater {
                         model: [0.55, 0.55, 0.3]
-                        delegate: Rectangle { required property real modelData; width: 11; height: 11; radius: 5.5; color: Qt.rgba(1, 1, 1, modelData) }
+                        delegate: Rectangle { required property real modelData; width: 11; height: 11; radius: 5.5; color: SelfvoyTheme.glass(modelData) }
                     }
                 }
 
@@ -161,7 +162,7 @@ Item {
                     readonly property real formWidth: page.wideCard ? Math.min(340, width) : width
 
                     // ----------------------------------------------------- шапка
-                    AuraEmblem {
+                    SelfvoyEmblem {
                         visible: page.flow !== "register"
                         Layout.alignment: Qt.AlignHCenter
                         Layout.bottomMargin: 8
@@ -184,18 +185,18 @@ Item {
                                 ctx.lineTo(10, 27); ctx.lineTo(2, 27); ctx.closePath(); ctx.fill()
                             }
                         }
-                        Text { text: "Aura"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontTitle; font.weight: Font.Bold; color: AuraTheme.textPrimary }
+                        Text { text: "Selfvoy"; font.family: SelfvoyTheme.fontFamily; font.pixelSize: SelfvoyTheme.fontTitle; font.weight: Font.Bold; color: SelfvoyTheme.textPrimary }
                     }
 
                     Text {
                         Layout.fillWidth: true
                         horizontalAlignment: page.flow === "register" ? Text.AlignLeft : Text.AlignHCenter
-                        text: ({ login: "Добро пожаловать в Aura", register: "Создайте свою Ауру", verify: "Подтверждение email",
+                        text: ({ login: "Добро пожаловать в Selfvoy", register: "Создайте свой Selfvoy", verify: "Подтверждение email",
                                  twofactor: "Двухфакторный вход", forgot: "Восстановление пароля", reset: "Новый пароль" })[page.flow]
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: page.flow === "register" ? 26 : AuraTheme.fontHero
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: page.flow === "register" ? 26 : SelfvoyTheme.fontHero
                         font.weight: Font.Bold
-                        color: AuraTheme.textPrimary
+                        color: SelfvoyTheme.textPrimary
                         wrapMode: Text.WordWrap
                     }
                     Note {
@@ -238,7 +239,7 @@ Item {
                             Layout.alignment: Qt.AlignRight
                             Layout.topMargin: 4
                             text: "Забыли пароль?"
-                            normalColor: AuraTheme.textPrimary
+                            normalColor: SelfvoyTheme.textPrimary
                             onClicked: { forgotEmail.text = loginEmail.text; page.flow = "forgot" }
                         }
                         GlassButton {
@@ -266,7 +267,7 @@ Item {
                             Layout.alignment: Qt.AlignRight
                             Layout.topMargin: 4
                             text: "Создать аккаунт"
-                            normalColor: AuraTheme.textPrimary
+                            normalColor: SelfvoyTheme.textPrimary
                             onClicked: page.flow = "register"
                         }
                     }
@@ -301,7 +302,7 @@ Item {
                             readOnly: true
                             icon: "clock"
                         }
-                        FieldLabel { text: "С чем должна помогать ваша Аура?"; Layout.topMargin: 6 }
+                        FieldLabel { text: "С чем должен помогать ваш Selfvoy?"; Layout.topMargin: 6 }
                         GlassField { id: regFocus; Layout.fillWidth: true; filled: true; placeholderText: "например, встречи, продуктивность, код"; enabled: !page.busy }
                         FieldLabel { text: "Код приглашения (необязательно)"; Layout.topMargin: 6 }
                         GlassField {
@@ -324,9 +325,9 @@ Item {
                             visible: regRef.bad
                             wrapMode: Text.WordWrap
                             text: "Код — 8 латинских букв и цифр; с неверным кодом регистрация пройдёт без приглашения"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontMicro
-                            color: AuraTheme.textMuted
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontMicro
+                            color: SelfvoyTheme.textMuted
                         }
                         GlassButton {
                             Layout.fillWidth: true
@@ -345,12 +346,12 @@ Item {
                             Layout.alignment: Qt.AlignHCenter
                             Layout.topMargin: 4
                             spacing: 14
-                            Text { text: "Пароль — Argon2id, сессия — JWT"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontMicro; color: AuraTheme.textMuted }
+                            Text { text: "Пароль — Argon2id, сессия — JWT"; font.family: SelfvoyTheme.fontFamily; font.pixelSize: SelfvoyTheme.fontMicro; color: SelfvoyTheme.textMuted }
                         }
                         LinkText {
                             Layout.alignment: Qt.AlignRight
                             text: "Уже есть аккаунт?"
-                            normalColor: AuraTheme.textPrimary
+                            normalColor: SelfvoyTheme.textPrimary
                             onClicked: page.flow = "login"
                         }
                     }
@@ -366,7 +367,7 @@ Item {
                         Note {
                             visible: App && App.devEmailCode !== ""
                             text: "Режим разработки — код: " + (App ? App.devEmailCode : "")
-                            color: AuraTheme.warning
+                            color: SelfvoyTheme.warning
                             font.weight: Font.DemiBold
                         }
                         GlassField { id: verifyCode; Layout.fillWidth: true; placeholderText: "6 цифр"; inputMethodHints: Qt.ImhDigitsOnly; enabled: !page.busy; onAccepted: verifyButton.clicked() }
@@ -398,9 +399,9 @@ Item {
                         CheckBox {
                             id: trustDevice
                             text: "Доверять этому устройству 90 дней"
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
-                            palette.windowText: AuraTheme.textSecondary
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
+                            palette.windowText: SelfvoyTheme.textSecondary
                         }
                         GlassButton {
                             id: totpButton
@@ -444,7 +445,7 @@ Item {
                         Note {
                             visible: App && App.devResetCode !== ""
                             text: "Режим разработки — код: " + (App ? App.devResetCode : "")
-                            color: AuraTheme.warning
+                            color: SelfvoyTheme.warning
                             font.weight: Font.DemiBold
                         }
                         GlassField { id: resetCode; Layout.fillWidth: true; placeholderText: "Код из письма"; enabled: !page.busy }
@@ -477,9 +478,9 @@ Item {
                         wrapMode: Text.WordWrap
                         visible: !App || !App.connected
                         text: App ? App.connectionLabel : ""
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro
-                        color: AuraTheme.warning
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro
+                        color: SelfvoyTheme.warning
                     }
 
                     // Адрес сервера: меняется прямо здесь, сохраняется между запусками.

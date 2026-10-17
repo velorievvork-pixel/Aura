@@ -1,19 +1,36 @@
-import { Eye, EyeOff } from 'lucide-react';
-import { useState, type InputHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
+import { Bell, CalendarDays, Check, Clock, Eye, EyeOff, Hand, Minus, Plus, Undo2, X } from 'lucide-react';
+import { useEffect, useId, useRef, useState, type InputHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
+import type { StatusIcon, StatusView } from '../lib/payment';
 
-/** Знак Aura: тонкое кольцо без свечения. */
-export function Logo({ size = 22 }: { size?: number }) {
+/**
+  Знак Selfvoy: S-линия между двумя точками. Линия — фирменный градиент
+  синий → фиолетовый → маджента, верхняя точка — цвет текста (на тёмном фоне —
+  светлая), нижняя — янтарная #FFB224. mono — весь знак одним цветом (на цветной
+  плитке).
+*/
+export function Logo({ size = 22, mono }: { size?: number; mono?: boolean }) {
+  const id = `sv-grad-${useId().replace(/:/g, '')}`;
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="2" opacity="0.35" />
-      <path d="M12 3.5a8.5 8.5 0 0 1 8.5 8.5" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" />
-      <circle cx="12" cy="12" r="2.5" fill="currentColor" />
+    <svg width={size} height={size} viewBox="0 0 100 100" fill="none" aria-hidden="true">
+      {!mono && (
+        <defs>
+          <linearGradient id={id} x1="80" y1="20" x2="20" y2="80" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stopColor="#B04CFF" />
+            <stop offset="0.5" stopColor="#6A4CFF" />
+            <stop offset="1" stopColor="#3D6BFF" />
+          </linearGradient>
+        </defs>
+      )}
+      <path d="M76 28 C 38 24, 28 44, 50 50 C 72 56, 62 76, 24 72" stroke={mono ? 'currentColor' : `url(#${id})`} strokeWidth="11" strokeLinecap="round" />
+      <circle cx="76" cy="28" r="10" fill="currentColor" />
+      <circle cx="24" cy="72" r="10" fill={mono ? 'currentColor' : '#FFB224'} />
     </svg>
   );
 }
 
-// Приглушённые оттенки для аватаров без фото — по имени, стабильно.
-const HUES = ['#5b5fc7', '#3f8f7a', '#a0673d', '#8a4f8f', '#4f7aa8', '#7d7a3e', '#a14f5f'];
+// Мягкие оттенки для аватаров без фото — по имени, стабильно (тёмный текст на них читается).
+const HUES = ['#CFE0FF', '#FFE2B3', '#D7F2E2', '#E9DDFF', '#FFD9E5', '#FFD8C7', '#D9F0F7'];
 
 export function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -104,4 +121,127 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
 
 export function Empty({ children }: { children: ReactNode }) {
   return <div className="empty">{children}</div>;
+}
+
+const STATUS_ICONS: Record<StatusIcon, typeof Check> = {
+  check: Check,
+  clock: Clock,
+  x: X,
+  undo: Undo2,
+  minus: Minus,
+  hand: Hand,
+  plus: Plus,
+  bell: Bell,
+  calendar: CalendarDays,
+};
+
+export function StatusGlyph({ icon, size = 13 }: { icon: StatusIcon; size?: number }) {
+  const Icon = STATUS_ICONS[icon] ?? Check;
+  return <Icon size={size} strokeWidth={2.6} aria-hidden="true" />;
+}
+
+/** Статус — всегда значок и слово (цвет только помогает). */
+export function StatusPill({ status, className = '' }: { status: StatusView; className?: string }) {
+  return (
+    <span className={`status-pill ${status.tone} ${className}`}>
+      <StatusGlyph icon={status.icon} />
+      {status.label}
+    </span>
+  );
+}
+
+export function ProBadge() {
+  return (
+    <span className="badge pro" title="Функция тарифа Pro">
+      PRO
+    </span>
+  );
+}
+
+/** Сгруппированный список в духе iOS: заголовок, белая подложка, подпись снизу. */
+export function Group({ head, foot, children, id }: { head?: ReactNode; foot?: ReactNode; children: ReactNode; id?: string }) {
+  return (
+    <section className="group" id={id}>
+      {head && <h2 className="group-head">{head}</h2>}
+      <div className="group-body">{children}</div>
+      {foot && <div className="group-foot">{foot}</div>}
+    </section>
+  );
+}
+
+let openSheets = 0;
+
+/**
+  Окно снизу (на телефоне — с крупными скруглениями и отступами от краёв, на
+  десктопе — по центру). Escape и нажатие на затемнение закрывают; фокус уходит
+  в окно и возвращается обратно; страница под окном не прокручивается.
+*/
+export function Sheet({
+  open,
+  onClose,
+  title,
+  subtitle,
+  leading,
+  children,
+  label,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title?: ReactNode;
+  subtitle?: ReactNode;
+  leading?: ReactNode;
+  children: ReactNode;
+  label?: string;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const close = useRef(onClose);
+  close.current = onClose;
+
+  useEffect(() => {
+    if (!open) return;
+    const before = document.activeElement as HTMLElement | null;
+    openSheets += 1;
+    document.body.style.overflow = 'hidden';
+    panel.current?.focus();
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        close.current();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      openSheets -= 1;
+      if (openSheets === 0) document.body.style.overflow = '';
+      before?.focus?.();
+    };
+  }, [open]);
+
+  if (!open || typeof document === 'undefined') return null;
+  return createPortal(
+    <div className="sheet-root">
+      <div className="sheet-dim" onClick={onClose} aria-hidden="true" />
+      <div className="sheet" role="dialog" aria-modal="true" aria-label={title ? undefined : label} aria-labelledby={title ? titleId : undefined} tabIndex={-1} ref={panel}>
+        <div className="sheet-scroll">
+          <div className="sheet-grab" aria-hidden="true" />
+          {(title || leading) && (
+            <div className="sheet-head">
+              {leading}
+              <div className="sh-title">
+                {title && <b id={titleId}>{title}</b>}
+                {subtitle && <small>{subtitle}</small>}
+              </div>
+              <button type="button" className="close-btn" onClick={onClose} aria-label="Закрыть">
+                <X size={14} strokeWidth={3} />
+              </button>
+            </div>
+          )}
+          {children}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
 }

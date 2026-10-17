@@ -3,16 +3,16 @@
 // переносит и отменяет по ссылке управления → владелец видит записи → регистрация
 // друга по реферальной ссылке засчитывается владельцу.
 //
-//   npx vite --port 5173 &               # клиент; сервер с AURA_MAIL_DRIVER=dev
+//   npx vite --port 5173 &               # клиент; сервер с SELFVOY_MAIL_DRIVER=dev
 //   node scripts/booking-ui-e2e.mjs [папка для снимков]
 //
-// Переменные: AURA_UI_URL (http://localhost:5173), CHROMIUM (путь к браузеру).
+// Переменные: SELFVOY_UI_URL (http://localhost:5173), CHROMIUM (путь к браузеру).
 // Нужен работающий AI-сервис: свободное время подбирает он.
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
 
-const BASE = process.env.AURA_UI_URL ?? 'http://localhost:5173';
+const BASE = process.env.SELFVOY_UI_URL ?? 'http://localhost:5173';
 const OUT = process.argv[2] ?? 'ui-shots';
 mkdirSync(OUT, { recursive: true });
 
@@ -64,7 +64,7 @@ async function signup(page, press, name, email, password, path = '/signup') {
 
 console.log('\nВладелец (ноутбук 1280×860): страница записи');
 const owner = await open({ width: 1280, height: 860 }, 'owner');
-await signup(owner.page, owner.press, 'Ольга Коуч', `coach.${run}@example.com`, `Aura${run}9`);
+await signup(owner.page, owner.press, 'Ольга Коуч', `coach.${run}@example.com`, `Selfvoy${run}9`);
 await owner.page.locator('.sidebar a', { hasText: 'Запись' }).click();
 await owner.page.getByRole('heading', { name: 'Запись' }).waitFor();
 await owner.press('Новая страница');
@@ -137,14 +137,14 @@ check(/#\/signup\?ref=[A-Z0-9]{8}$/.test(refLink), 'реферальная сс�
 
 const friend = await open({ width: 390, height: 844 }, 'friend');
 await friend.page.goto(refLink);
-await friend.page.getByText('Вас пригласили в Aura').waitFor({ timeout: 20000 });
+await friend.page.getByText('Вас пригласили в Selfvoy').waitFor({ timeout: 20000 });
 check(true, 'регистрация по ссылке показывает приглашение');
 await friend.shot('signup');
-await signup(friend.page, friend.press, 'Фёдор', `fedor.${run}@example.com`, `Aura${run}8`, refLink.slice(refLink.indexOf('#') + 1));
+await signup(friend.page, friend.press, 'Фёдор', `fedor.${run}@example.com`, `Selfvoy${run}8`, refLink.slice(refLink.indexOf('#') + 1));
 await owner.page.reload();
 await owner.press('Пригласить друзей');
 await owner.page.getByText('Фёдор').waitFor({ timeout: 20000 });
-check(await owner.page.getByText('С Aura').isVisible(), 'друг засчитан после подтверждения email');
+check(await owner.page.getByText('С Selfvoy').isVisible(), 'друг засчитан после подтверждения email');
 await owner.shot('referrals');
 
 for (const [who, ctx] of [['владелец', owner], ['гость', guest], ['друг', friend]]) {

@@ -1,10 +1,10 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace = "app.aura.network"
+    namespace = "app.selfvoy.network"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "app.aura.network"
+        applicationId "app.selfvoy.network"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

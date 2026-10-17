@@ -1,10 +1,10 @@
-# project.yml — спецификация XcodeGen для iOS-приложения Aura.
+# project.yml — спецификация XcodeGen для iOS-приложения Selfvoy.
 #
 # Генерация проекта:  brew install xcodegen && cd ios && xcodegen generate
-# После этого:        open Aura.xcodeproj   (схема Aura, iOS 17+)
-name: Aura
+# После этого:        open Selfvoy.xcodeproj   (схема Selfvoy, iOS 17+)
+name: Selfvoy
 options:
-  bundleIdPrefix: ai.aura
+  bundleIdPrefix: app.selfvoy
   deploymentTarget:
     iOS: "17.0"
   createIntermediateGroups: true
@@ -17,42 +17,36 @@ settings:
     DEVELOPMENT_LANGUAGE: ru
 
 packages:
-  AuraKit:
-    path: AuraKit
+  SelfvoyKit:
+    path: SelfvoyKit
 
 targets:
-  Aura:
+  Selfvoy:
     type: application
     platform: iOS
     sources:
-      - Aura
+      - Selfvoy
     dependencies:
-      - package: AuraKit
+      - package: SelfvoyKit
     info:
-      path: Aura/Info.plist
+      path: Selfvoy/Info.plist
       properties:
-        CFBundleDisplayName: Aura
+        CFBundleDisplayName: Selfvoy
         CFBundleURLTypes:
-          - CFBundleURLName: ai.aura.app
+          - CFBundleURLName: app.selfvoy
             CFBundleURLSchemes:
-              - aura
+              - selfvoy
         NSMicrophoneUsageDescription: >-
-          Микрофон нужен для голосовых запросов Ауре.
+          Микрофон нужен для голосовых запросов к Selfvoy.
         NSSpeechRecognitionUsageDescription: >-
           Распознавание речи используется, чтобы превращать голос в текст
           прямо на устройстве.
         NSRemindersFullAccessUsageDescription: >-
-          Доступ к напоминаниям нужен, чтобы переносить задачи Aura
+          Доступ к напоминаниям нужен, чтобы переносить задачи Selfvoy
           в системные напоминания iOS (только по вашей кнопке).
         ITSAppUsesNonExemptEncryption: false
-        # Manrope (SIL OFL 1.1) — шрифт макетов v3, лежит в Aura/Resources/Fonts.
-        UIAppFonts:
-          - Manrope-Regular.ttf
-          - Manrope-Medium.ttf
-          - Manrope-SemiBold.ttf
-          - Manrope-Bold.ttf
-          - Manrope-ExtraBold.ttf
-        UIUserInterfaceStyle: Dark
+        # Тема — системная: все экраны (дизайн 2026, системный шрифт) бывают
+        # светлыми и тёмными вслед за настройкой iOS.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -60,44 +54,44 @@ targets:
         UIBackgroundModes:
           - remote-notification
     entitlements:
-      path: Aura/Aura.entitlements
+      path: Selfvoy/Selfvoy.entitlements
       properties:
         # Push Notifications: development для отладки; при архивации
         # Xcode подставит production автоматически (aps-environment).
         aps-environment: development
     scheme:
       testTargets:
-        - AuraTests
-        - AuraUITests
+        - SelfvoyTests
+        - SelfvoyUITests
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: ai.aura.app
-        # Иконка из Aura/Resources/Assets.xcassets (единый 1024×1024).
+        PRODUCT_BUNDLE_IDENTIFIER: app.selfvoy
+        # Иконка из Selfvoy/Resources/Assets.xcassets (единый 1024×1024).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
 
-  AuraTests:
+  SelfvoyTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - AuraTests
+      - SelfvoyTests
     dependencies:
-      - target: Aura
+      - target: Selfvoy
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: ai.aura.app.tests
+        PRODUCT_BUNDLE_IDENTIFIER: app.selfvoy.tests
         GENERATE_INFOPLIST_FILE: YES
 
   # Проход по экранам со скриншотами (без dev-стека пропускается).
-  AuraUITests:
+  SelfvoyUITests:
     type: bundle.ui-testing
     platform: iOS
     sources:
-      - AuraUITests
+      - SelfvoyUITests
     dependencies:
-      - target: Aura
+      - target: Selfvoy
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: ai.aura.app.uitests
+        PRODUCT_BUNDLE_IDENTIFIER: app.selfvoy.uitests
         GENERATE_INFOPLIST_FILE: YES

@@ -1,5 +1,5 @@
-// aura/smtp.cpp — SMTP-клиент: EHLO, STARTTLS/SMTPS, AUTH PLAIN/LOGIN, MIME-письмо.
-#include "aura/smtp.h"
+// selfvoy/smtp.cpp — SMTP-клиент: EHLO, STARTTLS/SMTPS, AUTH PLAIN/LOGIN, MIME-письмо.
+#include "selfvoy/smtp.h"
 
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -11,16 +11,11 @@
 #include <ctime>
 #include <initializer_list>
 
-#include "aura/crypto.h"
-#include "aura/net.h"
+#include "selfvoy/crypto.h"
+#include "selfvoy/net.h"
+#include "selfvoy/tls.h"
 
-#ifdef AURA_HAVE_OPENSSL
-#include <openssl/err.h>
-#include <openssl/ssl.h>
-#include <openssl/x509v3.h>
-#endif
-
-namespace aura::smtp {
+namespace selfvoy::smtp {
 
 namespace {
 
@@ -84,17 +79,11 @@ bool isLoopback(const std::string& host) {
     return host == "localhost" || host == "127.0.0.1" || host == "::1";
 }
 
-// Соединение: обычный сокет или TLS поверх него.
+// Соединение: обычный сокет или TLS поверх него (общая обвязка selfvoy/tls.h).
 class Connection {
 public:
     ~Connection() {
-#ifdef AURA_HAVE_OPENSSL
-        if (ssl_) {
-            SSL_shutdown(ssl_);
-            SSL_free(ssl_);
-        }
-        if (ctx_) SSL_CTX_free(ctx_);
-#endif
+        tls_.shutdown();  // close_notify — до закрытия сокета
         if (fd_ >= 0) net::closeSocket(fd_);
     }
 
@@ -109,55 +98,21 @@ public:
         return true;
     }
 
-    bool secure() const { return secure_; }
+    bool secure() const { return tls_.active(); }
 
     bool startTls(const Settings& settings, std::string& error) {
-#ifdef AURA_HAVE_OPENSSL
-        ctx_ = SSL_CTX_new(TLS_client_method());
-        if (!ctx_) return fail("TLS: не удалось создать контекст", error);
-        SSL_CTX_set_min_proto_version(ctx_, TLS1_2_VERSION);
-        SSL_CTX_set_default_verify_paths(ctx_);
-        if (!settings.caFile.empty() && SSL_CTX_load_verify_locations(ctx_, settings.caFile.c_str(), nullptr) != 1) {
-            return fail("TLS: не удалось прочитать AURA_SMTP_CA_FILE", error);
+        if (!tls::available()) {
+            error = "сервер собран без OpenSSL — TLS для SMTP недоступен (SELFVOY_SMTP_TLS=none только для локального ретранслятора)";
+            return false;
         }
-        SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
-        ssl_ = SSL_new(ctx_);
-        if (!ssl_) return fail("TLS: не удалось создать сессию", error);
-        SSL_set_fd(ssl_, fd_);
-        const bool ip = settings.host.find_first_not_of("0123456789.:") == std::string::npos;
-        if (ip) {
-            X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl_), settings.host.c_str());
-        } else {
-            SSL_set_tlsext_host_name(ssl_, settings.host.c_str());
-            SSL_set1_host(ssl_, settings.host.c_str());
-        }
-        if (SSL_connect(ssl_) != 1) {
-            const long verify = SSL_get_verify_result(ssl_);
-            if (verify != X509_V_OK) {
-                return fail(std::string("TLS: сертификат сервера не прошёл проверку — ") +
-                                X509_verify_cert_error_string(verify),
-                            error);
-            }
-            return fail("TLS: рукопожатие не удалось — " + lastSslError(), error);
-        }
-        secure_ = true;
-        return true;
-#else
-        (void)settings;
-        return fail("сервер собран без OpenSSL — TLS для SMTP недоступен (AURA_SMTP_TLS=none только для локального ретранслятора)",
-                    error);
-#endif
+        return tls_.connect(fd_, settings.host, settings.caFile, "SELFVOY_SMTP_CA_FILE", error);
     }
 
     bool write(const std::string& data) {
         std::size_t sent = 0;
         while (sent < data.size()) {
-            long n = 0;
-#ifdef AURA_HAVE_OPENSSL
-            if (ssl_) n = SSL_write(ssl_, data.data() + sent, static_cast<int>(data.size() - sent));
-            else
-#endif
-                n = ::send(fd_, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
+            const long n = tls_.active() ? tls_.write(data.data() + sent, data.size() - sent)
+                                         : ::send(fd_, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
             if (n <= 0) return false;
             sent += static_cast<std::size_t>(n);
         }
@@ -190,35 +145,14 @@ private:
             }
             if (buffer_.size() > kMaxReply) return false;
             char chunk[4096];
-            long n = 0;
-#ifdef AURA_HAVE_OPENSSL
-            if (ssl_) n = SSL_read(ssl_, chunk, sizeof chunk);
-            else
-#endif
-                n = ::recv(fd_, chunk, sizeof chunk, 0);
+            const long n = tls_.active() ? tls_.read(chunk, sizeof chunk) : ::recv(fd_, chunk, sizeof chunk, 0);
             if (n <= 0) return false;
             buffer_.append(chunk, static_cast<std::size_t>(n));
         }
     }
 
-    static bool fail(const std::string& reason, std::string& error) {
-        error = reason;
-        return false;
-    }
-
-#ifdef AURA_HAVE_OPENSSL
-    static std::string lastSslError() {
-        char buf[256] = {0};
-        const unsigned long code = ERR_get_error();
-        if (code == 0) return "соединение закрыто";
-        ERR_error_string_n(code, buf, sizeof buf);
-        return buf;
-    }
-    SSL_CTX* ctx_ = nullptr;
-    SSL* ssl_ = nullptr;
-#endif
+    tls::Client tls_;
     int fd_ = -1;
-    bool secure_ = false;
     std::string buffer_;
 };
 
@@ -257,13 +191,7 @@ std::string authMechanisms(const std::string& ehlo) {
 
 }  // namespace
 
-bool tlsAvailable() {
-#ifdef AURA_HAVE_OPENSSL
-    return true;
-#else
-    return false;
-#endif
-}
+bool tlsAvailable() { return tls::available(); }
 
 bool safeHeaderValue(const std::string& value) {
     return value.find('\r') == std::string::npos && value.find('\n') == std::string::npos;
@@ -291,7 +219,7 @@ std::string buildMessage(const Settings& settings, const Message& message, const
         while (!name.empty() && name.back() == ' ') name.pop_back();
         from = encodeHeader(name) + " " + from.substr(open);
     }
-    const std::string boundary = "=_aura_" + crypto::toHex(crypto::sha256(messageId)).substr(0, 24);
+    const std::string boundary = "=_selfvoy_" + crypto::toHex(crypto::sha256(messageId)).substr(0, 24);
 
     std::string out;
     out += "From: " + from + "\r\n";
@@ -321,7 +249,7 @@ std::string buildMessage(const Settings& settings, const Message& message, const
 bool send(const Settings& settings, const Message& message, std::string& error) {
     const std::string fromAddress = addressOf(settings.from);
     if (settings.host.empty() || fromAddress.find('@') == std::string::npos) {
-        error = "SMTP не настроен: нужны AURA_SMTP_HOST и AURA_SMTP_FROM";
+        error = "SMTP не настроен: нужны SELFVOY_SMTP_HOST и SELFVOY_SMTP_FROM";
         return false;
     }
     if (!safeHeaderValue(message.to) || !safeHeaderValue(message.subject) || !safeHeaderValue(settings.from) ||
@@ -331,7 +259,7 @@ bool send(const Settings& settings, const Message& message, std::string& error) 
     }
     const std::string mode = lower(settings.tls);
     if (mode != "starttls" && mode != "tls" && mode != "none") {
-        error = "AURA_SMTP_TLS: starttls, tls или none";
+        error = "SELFVOY_SMTP_TLS: starttls, tls или none";
         return false;
     }
 
@@ -346,7 +274,7 @@ bool send(const Settings& settings, const Message& message, std::string& error) 
 
     if (mode == "starttls") {
         if (!hasCapability(text, "STARTTLS")) {
-            error = "SMTP-сервер не поддерживает STARTTLS (укажите AURA_SMTP_TLS=tls для порта 465)";
+            error = "SMTP-сервер не поддерживает STARTTLS (укажите SELFVOY_SMTP_TLS=tls для порта 465)";
             return false;
         }
         if (!command(conn, "STARTTLS", {220}, text, error)) return false;
@@ -357,7 +285,7 @@ bool send(const Settings& settings, const Message& message, std::string& error) 
     if (!settings.user.empty()) {
         // Пароль по открытому каналу — только к ретранслятору на этой же машине.
         if (!conn.secure() && !isLoopback(settings.host)) {
-            error = "SMTP: авторизация без TLS запрещена (AURA_SMTP_TLS=none допустим только для localhost)";
+            error = "SMTP: авторизация без TLS запрещена (SELFVOY_SMTP_TLS=none допустим только для localhost)";
             return false;
         }
         const std::string mechanisms = authMechanisms(text);
@@ -401,4 +329,4 @@ bool send(const Settings& settings, const Message& message, std::string& error) 
     return true;
 }
 
-}  // namespace aura::smtp
+}  // namespace selfvoy::smtp

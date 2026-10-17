@@ -1,7 +1,7 @@
-// aura/listener.cpp
-#include "aura/listener.h"
+// selfvoy/listener.cpp
+#include "selfvoy/listener.h"
 
-#include "aura/net.h"
+#include "selfvoy/net.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -14,11 +14,11 @@
 #include <cstring>
 #include <utility>
 
-#include "aura/config.h"
-#include "aura/crypto.h"
-#include "aura/log.h"
+#include "selfvoy/config.h"
+#include "selfvoy/crypto.h"
+#include "selfvoy/log.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 thread_local bool inWorker = false;  // текущий поток — рабочий поток соединения
@@ -95,7 +95,7 @@ bool Listener::start(std::string& error) {
 
     running_.store(true);
     acceptThread_ = std::thread([this] { acceptLoop(); });
-    AURA_LOG(log::Level::Info, "listener") << "слушаю " << config_.host << ':' << boundPort_;
+    SELFVOY_LOG(log::Level::Info, "listener") << "слушаю " << config_.host << ':' << boundPort_;
     return true;
 }
 
@@ -139,7 +139,7 @@ void Listener::acceptLoop() {
         if (client < 0) {
             if (!running_.load()) break;
             if (errno == EINTR || errno == EAGAIN) continue;
-            AURA_LOG(log::Level::Warn, "listener") << "accept: " << std::strerror(errno);
+            SELFVOY_LOG(log::Level::Warn, "listener") << "accept: " << std::strerror(errno);
             break;
         }
 
@@ -163,7 +163,7 @@ void Listener::acceptLoop() {
         // Поток на каждое соединение: без потолка клиент открывает тысячи
         // соединений и исчерпывает потоки/память сервера.
         if (config_.maxConnections > 0 && activeWorkers_.load() >= config_.maxConnections) {
-            AURA_LOG(log::Level::Warn, "listener")
+            SELFVOY_LOG(log::Level::Warn, "listener")
                 << "превышен лимит соединений (" << config_.maxConnections << "), отказываю";
             const std::string busy =
                 "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -175,7 +175,7 @@ void Listener::acceptLoop() {
         // Один адрес не может занять все слоты: лимит соединений на IP (IPv6 — на сеть /64).
         const std::string ip = Session::limitKey(addressText);
         if (!acquireIpSlot(ip)) {
-            AURA_LOG(log::Level::Warn, "listener")
+            SELFVOY_LOG(log::Level::Warn, "listener")
                 << "превышен лимит соединений с " << ip << " (" << config_.maxConnectionsPerIp << "), отказываю";
             const std::string busy =
                 "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -190,7 +190,7 @@ void Listener::acceptLoop() {
         const std::string remote = std::string(addressText) + ":" + std::to_string(ntohs(peer.sin6_port));
         auto session = std::make_shared<Session>(client, crypto::randomHex(8), remote, config_);
         accepted_.fetch_add(1);
-        AURA_LOG(log::Level::Info, "listener") << "новое подключение от " << remote;
+        SELFVOY_LOG(log::Level::Info, "listener") << "новое подключение от " << remote;
 
         // Поток на соединение: их количество ограничено числом клиентов,
         // а завершившиеся освобождаются сразу (detach).
@@ -235,4 +235,4 @@ void Listener::handle(std::shared_ptr<Session> session) {
     if (handler_) handler_(session);
 }
 
-}  // namespace aura
+}  // namespace selfvoy

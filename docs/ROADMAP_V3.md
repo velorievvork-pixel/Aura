@@ -1,4 +1,4 @@
-# Aura v3 — целевая архитектура и план (этап 3)
+# Selfvoy v3 — целевая архитектура и план (этап 3)
 
 Статус: **предложение на утверждение**. Реализация начинается после
 подтверждения дизайна и архитектуры (этап 5+).
@@ -87,7 +87,7 @@
 
 **Статус этапа 7 (десктоп-часть): реализовано.** Серверный STT-эндпоинт
 `POST /v1/speech/transcribe` (Python AI Service, провайдер `mock` без ключей и
-Whisper-бэкенд при `AURA_STT_URL`/`AURA_STT_API_KEY`), WS-метод
+Whisper-бэкенд при `SELFVOY_STT_URL`/`SELFVOY_STT_API_KEY`), WS-метод
 `speech.transcribe` в C++-сервере (форвард аудио), захват микрофона
 (Qt Multimedia, 16 кГц/моно/16 бит → WAV → base64) и платформенный TTS
 (Qt TextToSpeech) в `AppStore`, QML-панель `VoicePanel` (состояния, волна,
@@ -96,20 +96,20 @@ iOS-часть (Speech Framework on-device, AVSpeechSynthesizer) — в этап
 
 ## iOS-приложение (этап 10) — ГОТОВО — нативный Swift
 
-Реализовано: SwiftUI-приложение (`ios/Aura`) + общий Swift-пакет **AuraKit**
-(WS-транспорт, протокол, AuraClient, Keychain, deep links); вход/2FA, чаты,
-«Спросить Ауру», задачи (+ экспорт в напоминания iOS через EventKit по
-кнопке), подтверждения, разрешения, интеграции Google (Safari → `aura://oauth`),
+Реализовано: SwiftUI-приложение (`ios/Selfvoy`) + общий Swift-пакет **SelfvoyKit**
+(WS-транспорт, протокол, SelfvoyClient, Keychain, deep links); вход/2FA, чаты,
+«Спросить Selfvoy», задачи (+ экспорт в напоминания iOS через EventKit по
+кнопке), подтверждения, разрешения, интеграции Google (Safari → `selfvoy://oauth`),
 гибридный голос (SFSpeechRecognizer + серверный STT-fallback, озвучка
-AVSpeechSynthesizer). App Intents «Спросить Ауру»/«Создать задачу» + фразы
-Siri; deep links `aura://voice|chats/{id}|ask|tasks|settings|oauth`.
+AVSpeechSynthesizer). App Intents «Спросить Selfvoy»/«Создать задачу» + фразы
+Siri; deep links `selfvoy://voice|chats/{id}|ask|tasks|settings|oauth`.
 **Back Tap напрямую недоступен сторонним приложениям** — в Quick Actions:
 пошаговая инструкция (Универсальный доступ → Касание → Касание сзади →
-Команды → «Спросить Ауру»). Тесты: AuraKitTests (`swift test`), AuraTests;
+Команды → «Спросить Selfvoy»). Тесты: SelfvoyKitTests (`swift test`), SelfvoyTests;
 сверка протокола — `tools/check_ios_protocol.py`. Подробности — docs/IOS.md.
 
 Осталось в этапе 13: Push (APNs, Notification Service Extension), Live
-Activities для активных переговоров, виджет «быстрый запрос Ауре», Share
+Activities для активных переговоров, виджет «быстрый запрос к Selfvoy», Share
 Extension.
 
 ## Интеграции (этап 9) — ГОТОВО
@@ -144,7 +144,7 @@ notifications`. Плюс: FK с каскадами, индексы, timestamps, 
 ## Уведомления (этап 13) — ГОТОВО
 
 In-app «входящая» (таблица `notifications`, событие `notification.new`) +
-push через внешний шлюз (`AURA_PUSH_DRIVER=webhook`; APNs-конверт с
+push через внешний шлюз (`SELFVOY_PUSH_DRIVER=webhook`; APNs-конверт с
 `aps.alert/badge/sound`, JWT подписывает шлюз — C++-ядро без TLS/HTTP2).
 Виды v1: `task.due` (напоминание), `confirmation.requested` (нужно
 подтверждение), `a2a.proposal` (предложение другого агента), `login.new`
@@ -199,7 +199,7 @@ DATABASE (22 таблицы по доменам, соглашения, каск�
 - docker-compose: PostgreSQL 16 (schema + seed + миграции при первом
   старте), AI Service (healthcheck /healthz), C++-сервер (healthcheck
   порта, старт после healthy-зависимостей); секреты — через `.env`
-  (`AURA_JWT_SECRET`, `AURA_2FA_KEY`, `POSTGRES_PASSWORD`, `AURA_AI_TOKEN`,
+  (`SELFVOY_JWT_SECRET`, `SELFVOY_2FA_KEY`, `POSTGRES_PASSWORD`, `SELFVOY_AI_TOKEN`,
   OpenAI/Google/push — passthrough). Цели Makefile: docker-build/up/down/logs.
 - CI (GitHub Actions): три job'а на каждый push — сборка C++ + ctest,
   pytest AI-сервиса, сверка протокола iOS + синтаксис e2e. Qt/iOS —
@@ -215,24 +215,24 @@ DATABASE (22 таблицы по доменам, соглашения, каск�
 принципам, что iOS: раздельный клиент, общий только протокол.
 
 - **Клиент** `android/`: Kotlin + Jetpack Compose (minSdk 26, targetSdk 34);
-  модуль `:aurakit` — чистый Kotlin/JVM (WS-транспорт с автопереподключением,
-  типизированный AuraClient, разбор deep links) + JVM-тесты без эмулятора.
-- **UI**: вход/регистрация/код email/2FA, чаты и Аура, задачи, «Ждут»
+  модуль `:selfvoykit` — чистый Kotlin/JVM (WS-транспорт с автопереподключением,
+  типизированный SelfvoyClient, разбор deep links) + JVM-тесты без эмулятора.
+- **UI**: вход/регистрация/код email/2FA, чаты и Selfvoy, задачи, «Ждут»
   (барьер подтверждения + разрешения), «Входящая» уведомлений, настройки
   (2FA, интеграции Google через Custom Tabs, push-устройства, сервер),
   голосовой лист. Тема — токены full_mix один в один с DESIGN_SYSTEM.
 - **Push**: платформа `fcm` (сервер: CHECK-констрейнт миграцией
   `2026_09_20_push_fcm.sql`, конверт FCM HTTP v1 во внешнем шлюзе —
-  `AURA_FCM_URL`), регистрация/ротация токена, канал `aura`, без
+  `SELFVOY_FCM_URL`), регистрация/ротация токена, канал `selfvoy`, без
   `google-services.json` — честный статус «не настроен».
-- **Шорткаты лаунчера** + `ACTION_ASSIST` + deep links (`aura://…`,
-  включая `aura://notifications`); голос — SpeechRecognizer с fallback на
+- **Шорткаты лаунчера** + `ACTION_ASSIST` + deep links (`selfvoy://…`,
+  включая `selfvoy://notifications`); голос — SpeechRecognizer с fallback на
   серверный STT; озвучка — TextToSpeech. Разрешения: INTERNET,
   POST_NOTIFICATIONS, RECORD_AUDIO — и всё. Никаких Accessibility API.
 - **Проверки**: `tools/check_android_protocol.py` (43 типа ↔ 64 хендлера),
   C++ unit `server_push_devices_fcm` (56 тестов / 497 проверок), e2e 140
   проверок (секция 3e: fcm-конверт через push-мок), CI job `android`
-  (`:aurakit:test`). Сборка APK — вне песочницы (нет Android SDK),
+  (`:selfvoykit:test`). Сборка APK — вне песочницы (нет Android SDK),
   см. docs/ANDROID.md.
 - Попутно исправлены три настоящих бага iOS-клиента, найденные при
   сверке протоколов: `chat.send` отправлял `text` вместо `body`;

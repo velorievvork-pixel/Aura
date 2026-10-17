@@ -4,7 +4,7 @@
   форм и тексты ошибок. Проверяется юнит-тестами (invite.test.ts).
 */
 import type { GuestInvite, Invite, InviteSlot, InviteStatus } from '../net/inviteApi';
-import { AuraError, isNetworkError } from '../net/socket';
+import { SelfvoyError, isNetworkError } from '../net/socket';
 import { nameError } from './validate';
 
 // ------------------------------------------------------------------ статусы
@@ -73,9 +73,9 @@ export function isPublicWebOrigin(loc: LocationLike | null | undefined): boolean
 }
 
 /**
-  Ссылка для гостя: готовая от сервера (AURA_PUBLIC_URL), иначе — адрес этого
+  Ссылка для гостя: готовая от сервера (SELFVOY_PUBLIC_URL), иначе — адрес этого
   веб-клиента, если он публичный; иначе — только токен (страница подскажет, что
-  на сервере нужен AURA_PUBLIC_URL).
+  на сервере нужен SELFVOY_PUBLIC_URL).
 */
 export function inviteLink(token: string, serverUrl: string, loc: LocationLike | null | undefined): InviteLink {
   const url = serverUrl.trim();
@@ -252,7 +252,7 @@ export function buildIcs(event: IcsEvent): string {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//Aura//Invite//RU',
+    'PRODID:-//Selfvoy//Invite//RU',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
     'BEGIN:VEVENT',
@@ -276,14 +276,14 @@ export function inviteUid(topic: string, owner: string, start: string): string {
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   const at = Number.isNaN(Date.parse(start)) ? 'x' : icsUtc(new Date(start));
-  return `invite-${at}-${hash.toString(16).padStart(8, '0')}@aura`;
+  return `invite-${at}-${hash.toString(16).padStart(8, '0')}@selfvoy`;
 }
 
 /** Событие календаря для гостя по принятому приглашению. */
 export function guestIcs(invite: Pick<GuestInvite, 'topic' | 'note' | 'owner_name'>, slot: InviteSlot, now = new Date()): string {
   const owner = invite.owner_name.trim();
   const topic = invite.topic.trim() || 'Встреча';
-  const description = [invite.note.trim(), owner ? `Организатор: ${owner}. Приглашение через Aura` : 'Приглашение через Aura'].filter(Boolean).join('\n\n');
+  const description = [invite.note.trim(), owner ? `Организатор: ${owner}. Приглашение через Selfvoy` : 'Приглашение через Selfvoy'].filter(Boolean).join('\n\n');
   return buildIcs({
     uid: inviteUid(topic, owner, slot.start),
     start: slot.start,
@@ -296,7 +296,7 @@ export function guestIcs(invite: Pick<GuestInvite, 'topic' | 'note' | 'owner_nam
 
 export function icsFileName(slot: InviteSlot): string {
   const d = new Date(slot.start);
-  return Number.isNaN(d.getTime()) ? 'aura-invite.ics' : `aura-invite-${icsUtc(d).slice(0, 8)}.ics`;
+  return Number.isNaN(d.getTime()) ? 'selfvoy-invite.ics' : `selfvoy-invite-${icsUtc(d).slice(0, 8)}.ics`;
 }
 
 // ------------------------------------------------------------------ формы
@@ -355,11 +355,11 @@ const sentence = (text: string) => (text ? text.charAt(0).toUpperCase() + text.s
 
 /** Ошибка invite.create / list / cancel для владельца. */
 export function ownerErrorText(error: unknown): string {
-  if (!(error instanceof AuraError)) return 'Что-то пошло не так';
+  if (!(error instanceof SelfvoyError)) return 'Что-то пошло не так';
   if (error.code === 'timeout') return 'Сервер не ответил вовремя — попробуйте ещё раз';
-  if (isNetworkError(error)) return 'Нет связи с сервером Aura';
+  if (isNetworkError(error)) return 'Нет связи с сервером Selfvoy';
   // Сервер присылает upstream_error (protocol.h, code::kUpstream), когда AI-сервис недоступен.
-  if (error.code === 'upstream_error') return 'Аура сейчас не может подобрать время — попробуйте позже';
+  if (error.code === 'upstream_error') return 'Selfvoy сейчас не может подобрать время — попробуйте позже';
   if (error.code === 'conflict' && !error.message) return 'Нет свободных окон в выбранный период';
   // forbidden — лимит открытых приглашений (текст от сервера).
   if (error.code === 'forbidden' && !error.message) return 'Слишком много открытых приглашений — отмените ненужные';
@@ -369,7 +369,7 @@ export function ownerErrorText(error: unknown): string {
 export type GuestErrorKind = 'network' | 'notFound' | 'conflict' | 'limited' | 'invalid' | 'other';
 
 export function guestErrorKind(error: unknown): GuestErrorKind {
-  if (!(error instanceof AuraError)) return 'other';
+  if (!(error instanceof SelfvoyError)) return 'other';
   if (isNetworkError(error)) return 'network';
   switch (error.code) {
     case 'not_found':
@@ -390,9 +390,9 @@ export function guestErrorKind(error: unknown): GuestErrorKind {
 export function guestErrorText(error: unknown): string {
   const kind = guestErrorKind(error);
   if (kind === 'network') {
-    return error instanceof AuraError && error.code === 'timeout' ? 'Сервер не ответил вовремя — попробуйте ещё раз' : 'Нет связи с сервером Aura — ответ не отправлен';
+    return error instanceof SelfvoyError && error.code === 'timeout' ? 'Сервер не ответил вовремя — попробуйте ещё раз' : 'Нет связи с сервером Selfvoy — ответ не отправлен';
   }
-  const message = error instanceof AuraError ? sentence(error.message) : '';
+  const message = error instanceof SelfvoyError ? sentence(error.message) : '';
   if (kind === 'limited') return message || 'Слишком много попыток — подождите минуту';
   // Сервер говорит, что именно не найдено (приглашение, страница или запись).
   if (kind === 'notFound') return message || 'Не найдено — проверьте ссылку';

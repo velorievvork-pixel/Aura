@@ -1,16 +1,16 @@
-// aura/agentmanager.cpp
-#include "aura/agentmanager.h"
+// selfvoy/agentmanager.cpp
+#include "selfvoy/agentmanager.h"
 
 #include <algorithm>
 #include <cctype>
 #include <map>
 
-#include "aura/chatmanager.h"
-#include "aura/log.h"
-#include "aura/net.h"
-#include "aura/protocol.h"
+#include "selfvoy/chatmanager.h"
+#include "selfvoy/log.h"
+#include "selfvoy/net.h"
+#include "selfvoy/protocol.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -158,7 +158,7 @@ bool AgentManager::shareChat(long long first, long long second) {
 
 Json AgentManager::peerContext(long long responderId, const std::string& topic) {
     // Приватность респондента (prefs.privacy): AI-сервис получает только то,
-    // что человек разрешил раскрывать чужой Ауре.
+    // что человек разрешил раскрывать чужому Selfvoy.
     Json responder = memory_.context(responderId, topic);
     const Json responderPrivacy = memory_.privacy(responderId);
     if (responderPrivacy.getBool("hide_event_titles", true)) {
@@ -173,7 +173,7 @@ Json AgentManager::peerContext(long long responderId, const std::string& topic) 
     }
     if (responderPrivacy.getBool("share_free_slots_only", true)) {
         // Только занятость и то, что нужно для времени и места; прочие факты памяти,
-        // день рождения и аллергии чужой Ауре не уходят.
+        // день рождения и аллергии чужому Selfvoy не уходят.
         responder.set("memory", Json::array());
         Json preferences = responder.get("preferences");
         if (preferences.isObject()) {
@@ -190,11 +190,11 @@ AgentManager::Result AgentManager::ask(long long userId,
                                        const std::string& message,
                                        const Json& peers,
                                        bool execute) {
-    if (message.empty()) return Result::failure(protocol::code::kBadRequest, "пустой запрос к Ауре");
+    if (message.empty()) return Result::failure(protocol::code::kBadRequest, "пустой запрос к Selfvoy");
     // Те же пределы, что у AI-сервиса: длиннее — отказ здесь, а не 422 от AI.
     const auto symbols = std::count_if(message.begin(), message.end(),
                                        [](unsigned char ch) { return (ch & 0xC0) != 0x80; });
-    if (symbols > 8000) return Result::failure(protocol::code::kBadRequest, "запрос к Ауре — до 8000 символов");
+    if (symbols > 8000) return Result::failure(protocol::code::kBadRequest, "запрос к Selfvoy — до 8000 символов");
     if (peers.isArray() && peers.items().size() > 20) {
         return Result::failure(protocol::code::kBadRequest, "собеседников в запросе — не больше 20");
     }
@@ -234,19 +234,19 @@ AgentManager::Result AgentManager::ask(long long userId,
     request.set("peers", peerContexts);
 
     std::map<std::string, std::string> headers{{"Content-Type", "application/json"}};
-    if (!config_.aiServiceToken.empty()) headers["X-Aura-Token"] = config_.aiServiceToken;
+    if (!config_.aiServiceToken.empty()) headers["X-Selfvoy-Token"] = config_.aiServiceToken;
 
     std::string error;
     const net::HttpResponse response = net::httpRequest(
         "POST", joinUrl(config_.aiServiceUrl, "/v1/agent/run"), headers, request.dump(), config_.aiTimeoutMs, error);
     if (!response.ok()) {
-        AURA_LOG(log::Level::Error, "agent") << "AI-сервис ответил " << response.status << ": " << error;
+        SELFVOY_LOG(log::Level::Error, "agent") << "AI-сервис ответил " << response.status << ": " << error;
         return Result::failure(protocol::code::kUpstream, "AI-сервис недоступен, попробуйте позже");
     }
 
     const Json answer = Json::parse(response.body, &error);
     if (!answer.isObject()) {
-        AURA_LOG(log::Level::Error, "agent") << "AI-сервис вернул не-JSON: " << error;
+        SELFVOY_LOG(log::Level::Error, "agent") << "AI-сервис вернул не-JSON: " << error;
         return Result::failure(protocol::code::kUpstream, "AI-сервис вернул некорректный ответ");
     }
 
@@ -270,7 +270,7 @@ AgentManager::Result AgentManager::ask(long long userId,
     result.payload.set("memory_saved", Json(static_cast<long long>(savedMemory)));
     result.payload.set("llm", Json(answer.getString("llm")));
 
-    // 3. Agent-to-Agent: договариваемся с Аурой собеседника
+    // 3. Agent-to-Agent: договариваемся с Selfvoy собеседника
     const Json proposal = answer.get("a2a");
     if (proposal.isObject() && !proposal.getString("target").empty()) {
         const auto peer = resolvePeer(userId, proposal.getString("target"));
@@ -282,19 +282,19 @@ AgentManager::Result AgentManager::ask(long long userId,
                                                  96);
             result.payload.set("a2a", negotiation.payload);
             if (negotiation.ok && chatId > 0 && execute) {
-                const std::string text = negotiation.payload.getString("message", "Аура договорилась о встрече");
+                const std::string text = negotiation.payload.getString("message", "Selfvoy договорился о встрече");
                 Json payload = Json::object();
-                payload.set("origin", Json("aura-a2a"));
+                payload.set("origin", Json("selfvoy-a2a"));
                 payload.set("proposal", negotiation.payload);
                 chats_.send(userId, chatId, text, "agent_reply", payload);
             }
         } else {
             result.payload.set("a2a", proposal);
-            result.payload.set("a2a_note", Json("собеседник не найден среди пользователей Aura"));
+            result.payload.set("a2a_note", Json("собеседник не найден среди пользователей Selfvoy"));
         }
     }
 
-    AURA_LOG(log::Level::Info, "agent")
+    SELFVOY_LOG(log::Level::Info, "agent")
         << "user=" << userId << " intent=" << result.payload.getString("intent")
         << " действий=" << (actions.isArray() ? actions.size() : 0);
     return result;
@@ -321,7 +321,7 @@ AgentManager::Result AgentManager::negotiate(long long initiatorId,
     request.set("window_hours", Json(windowHours));
 
     std::map<std::string, std::string> headers{{"Content-Type", "application/json"}};
-    if (!config_.aiServiceToken.empty()) headers["X-Aura-Token"] = config_.aiServiceToken;
+    if (!config_.aiServiceToken.empty()) headers["X-Selfvoy-Token"] = config_.aiServiceToken;
 
     std::string error;
     const net::HttpResponse response =
@@ -330,7 +330,7 @@ AgentManager::Result AgentManager::negotiate(long long initiatorId,
 
     Result result;
     if (!response.ok()) {
-        AURA_LOG(log::Level::Warn, "agent") << "A2A-переговоры не удались: " << error;
+        SELFVOY_LOG(log::Level::Warn, "agent") << "A2A-переговоры не удались: " << error;
         return Result::failure(protocol::code::kUpstream, "AI-сервис недоступен для A2A");
     }
     const Json answer = Json::parse(response.body, &error);
@@ -352,7 +352,7 @@ AgentManager::Result AgentManager::transcribe(const std::string& audioBase64,
     if (!format.empty()) request.set("format", Json(format));
 
     std::map<std::string, std::string> headers{{"Content-Type", "application/json"}};
-    if (!config_.aiServiceToken.empty()) headers["X-Aura-Token"] = config_.aiServiceToken;
+    if (!config_.aiServiceToken.empty()) headers["X-Selfvoy-Token"] = config_.aiServiceToken;
 
     std::string error;
     const net::HttpResponse response =
@@ -361,7 +361,7 @@ AgentManager::Result AgentManager::transcribe(const std::string& audioBase64,
 
     Result result;
     if (!response.ok()) {
-        AURA_LOG(log::Level::Warn, "agent") << "STT не удался: " << error;
+        SELFVOY_LOG(log::Level::Warn, "agent") << "STT не удался: " << error;
         return Result::failure(protocol::code::kUpstream, "AI-сервис недоступен для распознавания речи");
     }
     const Json answer = Json::parse(response.body, &error);
@@ -475,10 +475,10 @@ AgentManager::Result AgentManager::resolveConfirmation(long long userId, long lo
 
     if (outcome.ok && pending->chatId > 0) {
         Json payload = Json::object();
-        payload.set("origin", Json("aura-agent"));
+        payload.set("origin", Json("selfvoy-agent"));
         payload.set("confirmed", Json(true));
         payload.set("tool", Json(pending->tool));
-        chats_.send(userId, pending->chatId, "Аура выполнила: " + pending->summary, "agent_action", payload);
+        chats_.send(userId, pending->chatId, "Selfvoy выполнил: " + pending->summary, "agent_action", payload);
     }
 
     result.payload.set("status", Json(status));
@@ -486,4 +486,4 @@ AgentManager::Result AgentManager::resolveConfirmation(long long userId, long lo
     return result;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

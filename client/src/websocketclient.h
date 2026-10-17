@@ -1,4 +1,4 @@
-// client/src/websocketclient.h — WebSocket-клиент Aura (Qt 6, модуль QtWebSockets).
+// client/src/websocketclient.h — WebSocket-клиент Selfvoy (Qt 6, модуль QtWebSockets).
 //
 // Отвечает за транспорт: подключение, авторизация токеном, корреляция
 // «запрос → ответ» по id и доставка push-событий (chat.message, chat.created…).
@@ -12,7 +12,7 @@
 
 #include <functional>
 
-namespace aura {
+namespace selfvoy {
 
 class WebSocketClient : public QObject {
     Q_OBJECT
@@ -43,7 +43,7 @@ public slots:
     void disconnectFromServer();
 
 signals:
-    void stateChanged(aura::WebSocketClient::State state);
+    void stateChanged(selfvoy::WebSocketClient::State state);
     void eventReceived(const QString& name, const QJsonObject& payload);
     void errorOccurred(const QString& message);
 
@@ -64,4 +64,4 @@ private:
     qint64 counter_ = 0;
 };
 
-}  // namespace aura
+}  // namespace selfvoy

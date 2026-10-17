@@ -4,8 +4,8 @@ import { cleanCode, emailError, nameError, otpError, passwordError, twoFaCodeErr
 describe('validate', () => {
   it('email', () => {
     expect(emailError('')).not.toBeNull();
-    expect(emailError('alex@aura')).not.toBeNull();
-    expect(emailError(' alex@aura.local ')).toBeNull();
+    expect(emailError('alex@selfvoy')).not.toBeNull();
+    expect(emailError(' alex@selfvoy.local ')).toBeNull();
   });
   it('пароль: от 8 символов, буквы и цифры (как на сервере)', () => {
     expect(passwordError('a1b2c3')).toMatch(/8/);

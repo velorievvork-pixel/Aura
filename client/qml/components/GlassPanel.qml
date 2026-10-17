@@ -1,10 +1,10 @@
 import QtQuick
-import QtQuick.Effects
-import Aura
+import Selfvoy
 
 /*
-  GlassPanel — стеклянная карточка (списки, формы, диалоги) поверх GlassSurface:
-  мягкая тень, отступы и, при glow, фиолетовое свечение вокруг.
+  GlassPanel — карточка 2026 (как .card в вебе): сплошная поверхность, радиус 20,
+  внутренние отступы. Старые свойства (backdrop, glow, fill, tint…) принимаются,
+  но стекла и свечения нет: glow лишь подкрашивает рамку акцентом.
 */
 Item {
     id: root
@@ -13,20 +13,17 @@ Item {
     property alias radius: surface.radius
     property alias edge: surface.edge
     property alias base: surface.base
-    property real fill: AuraTheme.glassFill
-    property alias tint: surface.tint
+    property real fill: SelfvoyTheme.glassFill
+    property color tint: SelfvoyTheme.surface
+    property alias color: surface.color
     property bool hovered: false
-    property int padding: AuraTheme.spaceLg
-    // Фиолетовое свечение вокруг панели (карточка «Аура активна» и т.п.)
+    property int padding: SelfvoyTheme.spaceLg - 6
     property bool glow: false
-    property color glowColor: AuraTheme.accent
-    property bool shadow: true
-    // data, а не children: внутрь панели кладут и невизуальные объекты
-    // (Connections, Timer) — список children принимает только Item.
+    property color glowColor: SelfvoyTheme.accent
+    property bool shadow: false
+    // data, а не children: внутрь панели кладут и невизуальные объекты (Connections, Timer).
     default property alias content: holder.data
 
-    // holder — обычный Item, его собственный implicit-размер всегда 0;
-    // панель меряет содержимое (обычно один Layout внутри) по детям.
     implicitWidth: contentImplicit("implicitWidth") + padding * 2
     implicitHeight: contentImplicit("implicitHeight") + padding * 2
 
@@ -39,30 +36,10 @@ Item {
         return size
     }
 
-    // Тень и свечение: размытая копия формы панели под ней.
-    Rectangle {
-        id: halo
-        anchors.fill: surface
-        radius: surface.radius
-        color: root.glow ? root.glowColor : "#000000"
-        visible: root.glow || root.shadow
-        opacity: root.glow ? 0.85 : 0.55
-        layer.enabled: visible
-        layer.effect: MultiEffect {
-            autoPaddingEnabled: true
-            blurEnabled: true
-            blurMax: root.glow ? 64 : 48
-            blur: 1.0
-        }
-        transform: Translate { y: root.glow ? 0 : 14 }
-        Behavior on opacity { NumberAnimation { duration: AuraTheme.slowMs } }
-    }
-
     GlassSurface {
         id: surface
         anchors.fill: parent
-        radius: AuraTheme.radiusCard
-        fill: root.fill
+        radius: SelfvoyTheme.radiusCard
         hovered: root.hovered
 
         Item {
@@ -70,5 +47,13 @@ Item {
             anchors.fill: parent
             anchors.margins: root.padding
         }
+    }
+    Rectangle {
+        visible: root.glow
+        anchors.fill: parent
+        radius: surface.radius
+        color: "transparent"
+        border.width: 1.5
+        border.color: root.glowColor
     }
 }

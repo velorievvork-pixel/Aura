@@ -5,25 +5,25 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from aura_ai import app as app_module
-from aura_ai.agent import AuraAgent
-from aura_ai.config import Settings, reset_settings
-from aura_ai.llm import MockLLM
-from aura_ai.models import Preferences
-from aura_ai.tools import ToolManager
+from selfvoy_ai import app as app_module
+from selfvoy_ai.agent import SelfvoyAgent
+from selfvoy_ai.config import Settings, reset_settings
+from selfvoy_ai.llm import MockLLM
+from selfvoy_ai.models import Preferences
+from selfvoy_ai.tools import ToolManager
 
 NOW = datetime(2026, 9, 17, 14, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture()
 def client(monkeypatch):
-    monkeypatch.setenv("AURA_MEMORY_BACKEND", "memory://")
-    monkeypatch.delenv("AURA_AI_TOKEN", raising=False)
-    monkeypatch.setenv("AURA_AI_INSECURE_DEV", "1")  # без токена сервис закрыт (503)
+    monkeypatch.setenv("SELFVOY_MEMORY_BACKEND", "memory://")
+    monkeypatch.delenv("SELFVOY_AI_TOKEN", raising=False)
+    monkeypatch.setenv("SELFVOY_AI_INSECURE_DEV", "1")  # без токена сервис закрыт (503)
     reset_settings()
     settings = Settings()
     settings.memory_backend = "memory://"
-    app_module.set_agent(AuraAgent(settings=settings, llm=MockLLM(), tools=ToolManager()))
+    app_module.set_agent(SelfvoyAgent(settings=settings, llm=MockLLM(), tools=ToolManager()))
     with TestClient(app_module.app) as test_client:
         yield test_client
     app_module.set_agent(None)
@@ -174,14 +174,14 @@ def test_planner_understand_endpoint(client):
 
 
 def test_service_token_enforced(monkeypatch):
-    monkeypatch.setenv("AURA_AI_TOKEN", "secret")
+    monkeypatch.setenv("SELFVOY_AI_TOKEN", "secret")
     reset_settings()
-    app_module.set_agent(AuraAgent(settings=Settings(), llm=MockLLM(), tools=ToolManager()))
+    app_module.set_agent(SelfvoyAgent(settings=Settings(), llm=MockLLM(), tools=ToolManager()))
     try:
         with TestClient(app_module.app) as test_client:
             assert test_client.get("/v1/tools").status_code == 401
             assert (
-                test_client.get("/v1/tools", headers={"X-Aura-Token": "secret"}).status_code == 200
+                test_client.get("/v1/tools", headers={"X-Selfvoy-Token": "secret"}).status_code == 200
             )
     finally:
         app_module.set_agent(None)

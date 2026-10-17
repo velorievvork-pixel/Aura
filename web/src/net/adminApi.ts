@@ -4,7 +4,7 @@
   администратор — ещё роли и журнал аудита.
 */
 import type { User } from './api';
-import type { AuraSocket } from './socket';
+import type { SelfvoySocket } from './socket';
 
 /** Роль пользователя — тот же тип, что у User.role в auth-ответах. */
 export type Role = NonNullable<User['role']>;
@@ -52,7 +52,7 @@ export interface AdminUserDetail {
 
 export type UserStatus = '' | 'active' | 'disabled' | 'unverified';
 
-export function makeAdminApi(socket: AuraSocket) {
+export function makeAdminApi(socket: SelfvoySocket) {
   const call = <T,>(type: string, payload: Record<string, unknown> = {}) => socket.request<T>(type, payload);
   return {
     stats: () => call<AdminStats>('admin.stats'),

@@ -19,7 +19,7 @@ class QTcpServer;
 class QTextToSpeech;
 QT_END_NAMESPACE
 
-namespace aura {
+namespace selfvoy {
 
 class WebSocketClient;
 
@@ -95,16 +95,37 @@ class AppStore : public QObject {
     Q_PROPERTY(QVariantList notifications READ notifications NOTIFY notificationsChanged)
     Q_PROPERTY(int unreadNotifications READ unreadNotifications NOTIFY notificationsChanged)
     Q_PROPERTY(QVariantList pushDevices READ pushDevices NOTIFY pushDevicesChanged)
-    // v3: Home-дашборд — ответ Ауры без чата; последний результат A2A-переговоров.
+    // v3: Home-дашборд — ответ Selfvoy без чата; последний результат A2A-переговоров.
     Q_PROPERTY(QString homeReply READ homeReply NOTIFY homeReplyChanged)
     Q_PROPERTY(QVariantMap negotiation READ negotiation NOTIFY negotiationChanged)
-    // v3: диалог с Аурой («Моя Аура»): реплики пользователя и ответы с действиями.
-    Q_PROPERTY(QVariantList auraDialog READ auraDialog NOTIFY auraDialogChanged)
+    // v3: диалог с Selfvoy («Мой Selfvoy»): реплики пользователя и ответы с действиями.
+    Q_PROPERTY(QVariantList selfvoyDialog READ selfvoyDialog NOTIFY selfvoyDialogChanged)
     // v3: раунды переговоров за сессию (свежие первыми), бронирование итога.
     Q_PROPERTY(QVariantList negotiationHistory READ negotiationHistory NOTIFY negotiationChanged)
     Q_PROPERTY(bool bookingBusy READ bookingBusy NOTIFY negotiationChanged)
     // v3: поиск людей для контактов (users.search).
     Q_PROPERTY(QVariantList userResults READ userResults NOTIFY userResultsChanged)
+    // 2026 (F1–F6): тариф, Telegram, оплата (ЮKassa), абонементы, свободные окна,
+    // ICS-подписка и пост со свободными окнами.
+    // plan: {name: pro|free, until, enforced} из объекта user (auth.me / login).
+    Q_PROPERTY(QVariantMap plan READ plan NOTIFY profileChanged)
+    // server.info → telegram_bot ("" — бот на сервере не настроен).
+    Q_PROPERTY(QString telegramBot READ telegramBot NOTIFY serverInfoChanged)
+    // Свободные окна первой открытой страницы записи (booking.get по своему slug):
+    // [{start, end, day, page_id}] — для ленты «Сегодня» и кнопки «Предложить».
+    Q_PROPERTY(QVariantList freeSlots READ freeSlots NOTIFY freeSlotsChanged)
+    Q_PROPERTY(QVariantList packages READ packages NOTIFY packagesChanged)
+    Q_PROPERTY(bool packagesLoaded READ packagesLoaded NOTIFY packagesChanged)
+    // payments.status: {connected, provider, shop_id, connected_at}. Секретный ключ
+    // ЮKassa здесь не хранится никогда — он уходит только в запрос payments.connect.
+    Q_PROPERTY(QVariantMap paymentsStatus READ paymentsStatus NOTIFY paymentsChanged)
+    Q_PROPERTY(bool paymentsBusy READ paymentsBusy NOTIFY paymentsChanged)
+    // telegram.status: {enabled, bot_username, linked, username}.
+    Q_PROPERTY(QVariantMap telegramStatus READ telegramStatus NOTIFY telegramChanged)
+    // calendar.feed*: {enabled, url} — url собран из адреса сервера, если сервер его не знает.
+    Q_PROPERTY(QVariantMap calendarFeed READ calendarFeed NOTIFY calendarFeedChanged)
+    // booking.slotsPost: {page_id, text, slots, url, loading, error}.
+    Q_PROPERTY(QVariantMap slotsPost READ slotsPost NOTIFY slotsPostChanged)
 
 public:
     explicit AppStore(QObject* parent = nullptr);
@@ -194,10 +215,21 @@ public:
     // v3
     QString homeReply() const { return homeReply_; }
     QVariantMap negotiation() const { return negotiation_; }
-    QVariantList auraDialog() const { return auraDialog_; }
+    QVariantList selfvoyDialog() const { return selfvoyDialog_; }
     QVariantList negotiationHistory() const { return negotiationHistory_; }
     bool bookingBusy() const { return bookingBusy_; }
     QVariantList userResults() const { return userResults_; }
+    // 2026 (F1–F6)
+    QVariantMap plan() const { return plan_; }
+    QString telegramBot() const { return telegramBot_; }
+    QVariantList freeSlots() const { return freeSlots_; }
+    QVariantList packages() const { return packages_; }
+    bool packagesLoaded() const { return packagesLoaded_; }
+    QVariantMap paymentsStatus() const { return paymentsStatus_; }
+    bool paymentsBusy() const { return paymentsBusy_; }
+    QVariantMap telegramStatus() const { return telegramStatus_; }
+    QVariantMap calendarFeed() const { return calendarFeed_; }
+    QVariantMap slotsPost() const { return slotsPost_; }
 
 public slots:
     void login(const QString& email, const QString& password);
@@ -230,7 +262,7 @@ public slots:
     void selectChat(qint64 chatId);
     void sendMessage(qint64 chatId, const QString& text);
     void askAgent(qint64 chatId, const QString& message);
-    // v3: запрос к Ауре с Home-дашборда — без привязки к чату (chat_id=0).
+    // v3: запрос к Selfvoy с Home-дашборда — без привязки к чату (chat_id=0).
     void askAgentGlobal(const QString& message);
     // v3: A2A-переговоры (agent.negotiate): цель, тема, длительность и окно в минутах/часах.
     void negotiateAgent(const QString& target, const QString& topic,
@@ -238,8 +270,8 @@ public slots:
     // v3: забронировать место из последних переговоров (book_table) и
     // поставить встречу в задачи. Режим «запретить» для book_table уважается.
     void bookNegotiation();
-    void clearAuraDialog();
-    // Ответ «С чем помогать?» из регистрации: сохраняется в память Ауры
+    void clearSelfvoyDialog();
+    // Ответ «С чем помогать?» из регистрации: сохраняется в память Selfvoy
     // (memory.add) при первом входе — до подтверждения email сессии ещё нет.
     void setPendingFocus(const QString& text);
     void searchUsers(const QString& query);
@@ -300,6 +332,37 @@ public slots:
     void markNotificationsRead(qint64 notificationId = 0);  // 0 — все
     void loadPushDevices();
     void revokePushDevice(qint64 deviceId);
+    // ------------------------------------------------ 2026 (F1–F6), сторона владельца
+    void loadServerInfo();                                   // server.info → telegram_bot
+    void refreshProfile();                                   // auth.me: свежий plan после награды
+    void loadFreeSlots();                                    // booking.get первой открытой страницы
+    // booking.paymentSet: status — paid | waived | refunded.
+    void setBookingPayment(qint64 bookingId, const QString& status);
+    // booking.ownerCancel одной встречи серии (occurrence — start встречи).
+    void cancelBookingOccurrence(qint64 bookingId, const QString& occurrence);
+    // Абонементы (package.*): status — фильтр списка ("" — все).
+    void loadPackages(const QString& status = QString());
+    // package.issue: {page_id, offer_id | title+sessions(+price, valid_days), guest_name,
+    // guest_email?, cc_email?, paid?} → packageIssued({package, token, url}) / packageFailed.
+    void issuePackage(const QVariantMap& fields);
+    void adjustPackage(qint64 packageId, int delta);
+    void cancelPackage(qint64 packageId);
+    void setPackagePayment(qint64 packageId, const QString& status);
+    // Оплата: ЮKassa владельца (payments.*). Ключ не сохраняется и не логируется.
+    void loadPayments();
+    void connectYooKassa(const QString& shopId, const QString& secretKey);
+    void disconnectPayments();
+    // Telegram-бот: статус, ссылка привязки (telegramLinkReady → Qt.openUrlExternally), отвязка.
+    void loadTelegram();
+    void linkTelegram();
+    void unlinkTelegram();
+    void setTelegramNotifications(bool enabled);             // prefs.notifications.telegram
+    // ICS-подписка на календарь.
+    void loadCalendarFeed();
+    void resetCalendarFeed();
+    void disableCalendarFeed();
+    // Пост со свободными окнами: days 1–14, format telegram | vk | plain.
+    void requestSlotsPost(qint64 pageId, int days, const QString& format);
 
 signals:
     void connectedChanged();
@@ -355,8 +418,23 @@ signals:
     // v3: Home и переговоры
     void homeReplyChanged();
     void negotiationChanged();
-    void auraDialogChanged();
+    void selfvoyDialogChanged();
     void userResultsChanged();
+    // 2026 (F1–F6)
+    void serverInfoChanged();
+    void freeSlotsChanged();
+    void packagesChanged();
+    void paymentsChanged();
+    void telegramChanged();
+    void calendarFeedChanged();
+    void slotsPostChanged();
+    void proRequired(const QString& message);          // ответ pro_required: показать «как получить Pro»
+    void bookingUpdated(const QVariantMap& booking);   // запись изменилась (оплата, отмена встречи)
+    void packageIssued(const QVariantMap& result);     // {package, token, url} — токен показывается один раз
+    void packageFailed(const QString& message);
+    void paymentsConnected();
+    void paymentsFailed(const QString& message);
+    void telegramLinkReady(const QString& url);        // открыть Qt.openUrlExternally
 
 private:
     void handleEvent(const QString& name, const QJsonObject& payload);
@@ -412,7 +490,7 @@ private:
     QString errorMessage_;
     // auth v3
     QString pendingEmail_;   // email, ожидающий подтверждения/сброса
-    QString devEmailCode_;   // код подтверждения (сервер в режиме AURA_MAIL_DRIVER=dev)
+    QString devEmailCode_;   // код подтверждения (сервер в режиме SELFVOY_MAIL_DRIVER=dev)
     QString devResetCode_;   // код сброса пароля (dev)
     QVariantList sessions_;
     // 2FA (TOTP)
@@ -468,15 +546,32 @@ private:
     int unreadNotifications_ = 0;        // счётчик непрочитанных (бейдж)
     QVariantList pushDevices_;           // зарегистрированные push-устройства
     // v3: Home-дашборд и A2A-переговоры
-    QString homeReply_;                  // последний ответ Ауры с Home (chat_id=0)
+    QString homeReply_;                  // последний ответ Selfvoy с Home (chat_id=0)
     QVariantMap negotiation_;            // последний результат agent.negotiate
-    QVariantList auraDialog_;            // «Моя Аура»: реплики и ответы за сессию
+    QVariantList selfvoyDialog_;            // «Мой Selfvoy»: реплики и ответы за сессию
     QVariantList negotiationHistory_;    // раунды agent.negotiate, свежие первыми
     bool bookingBusy_ = false;
     QVariantList userResults_;           // результаты users.search
     qint64 dialogSeq_ = 0;
     void appendDialog(QVariantMap entry);
+    // 2026 (F1–F6)
+    // pro_required → сигнал proRequired и понятный текст; иначе — текст как есть.
+    QString explainError(const QString& error);
+    void putBooking(const QJsonObject& booking);      // заменить запись в guestBookings_
+    void putPackage(const QJsonObject& package);      // заменить пакет в packages_
+    void applyCalendarFeed(const QJsonObject& payload);
+    QVariantMap plan_;
+    QString telegramBot_;
+    QVariantList freeSlots_;
+    QVariantList packages_;
+    bool packagesLoaded_ = false;
+    QString packagesFilter_;
+    QVariantMap paymentsStatus_;
+    bool paymentsBusy_ = false;
+    QVariantMap telegramStatus_;
+    QVariantMap calendarFeed_;
+    QVariantMap slotsPost_;
     QString toolMode(const QString& tool) const;
 };
 
-}  // namespace aura
+}  // namespace selfvoy

@@ -1,17 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuraError } from '../net/socket';
+import { SelfvoyError } from '../net/socket';
 import type { Occurrence } from '../net/bookingApi';
 import {
   bookingIcs,
   bookingOwnerErrorText,
   bookingStatus,
   bookingUid,
+  changedFields,
   forgetRef,
   guestActions,
   isPlausibleSlug,
   nextOccurrence,
+  occurrenceAt,
   PAGE_DEFAULTS,
+  pageFields,
   pageFormErrors,
+  parseManageQuery,
   parseRef,
   publicLink,
   recalledRef,
@@ -20,6 +24,7 @@ import {
   signupPath,
   sortedOccurrences,
   upcomingCount,
+  withPostLink,
 } from './booking';
 
 const loc = (href: string) => {
@@ -40,7 +45,7 @@ describe('ссылки', () => {
   });
 
   it('публичная ссылка: от сервера, иначе публичный адрес клиента, иначе null', () => {
-    expect(publicLink('/b/abc123def4', 'https://aura.example.com/#/b/abc123def4', loc('http://localhost:5173/'))).toBe('https://aura.example.com/#/b/abc123def4');
+    expect(publicLink('/b/abc123def4', 'https://selfvoy.example.com/#/b/abc123def4', loc('http://localhost:5173/'))).toBe('https://selfvoy.example.com/#/b/abc123def4');
     expect(publicLink('/b/abc123def4', '', loc('https://app.example/web/'))).toBe('https://app.example/web/#/b/abc123def4');
     expect(publicLink('/m/tok', '', loc('http://localhost:5173/'))).toBeNull();
     expect(publicLink('/m/tok', 'javascript:alert(1)', null)).toBeNull();
@@ -171,7 +176,7 @@ describe('bookingIcs', () => {
 
   it('UID: без времени и токена, разный у разных записей и встреч', () => {
     const uid = bookingUid(TOKEN, 0);
-    expect(uid).toMatch(/^booking-[0-9a-f]{16}-0@aura$/);
+    expect(uid).toMatch(/^booking-[0-9a-f]{16}-0@selfvoy$/);
     expect(uid).not.toContain(TOKEN);
     expect(bookingUid(TOKEN, 0)).toBe(uid);
     expect(bookingUid(TOKEN, 1)).not.toBe(uid);
@@ -202,8 +207,102 @@ describe('guestActions', () => {
 
 describe('ошибки владельца', () => {
   it('сеть и таймаут — своими словами, остальное — текст сервера', () => {
-    expect(bookingOwnerErrorText(new AuraError('timeout', ''))).toMatch(/не ответил/);
-    expect(bookingOwnerErrorText(new AuraError('forbidden', 'не больше 10 страниц записи'))).toBe('Не больше 10 страниц записи');
+    expect(bookingOwnerErrorText(new SelfvoyError('timeout', ''))).toMatch(/не ответил/);
+    expect(bookingOwnerErrorText(new SelfvoyError('forbidden', 'не больше 10 страниц записи'))).toBe('Не больше 10 страниц записи');
     expect(bookingOwnerErrorText(new Error('x'))).toBe('Что-то пошло не так');
+  });
+});
+
+describe('цена, предоплата и политика (F4)', () => {
+  const ok = { ...PAGE_DEFAULTS, title: 'Урок' };
+
+  it('по умолчанию — без цены и предоплаты, ошибок нет', () => {
+    expect(pageFormErrors(ok)).toEqual({});
+    expect(ok).toMatchObject({ price: 0, currency: 'RUB', prepay: 'none', pay_within_minutes: 60, cancel_hours: 0, late_cancel: 'allow', guest_reminders: true, hide_branding: false });
+  });
+
+  it('предоплата требует цену и способ оплаты', () => {
+    expect(pageFormErrors({ ...ok, prepay: 'full' }).price).toBe('Для предоплаты укажите цену');
+    expect(pageFormErrors({ ...ok, prepay: 'full', price: 200000 }).payment).toMatch(/как платить/);
+    expect(pageFormErrors({ ...ok, prepay: 'full', price: 200000 }, { yookassa: true })).toEqual({});
+    expect(pageFormErrors({ ...ok, prepay: 'full', price: 200000, payment_note: 'СБП +7 900 000-00-00' })).toEqual({});
+    expect(pageFormErrors({ ...ok, prepay: 'deposit', price: 200000, deposit: 0, payment_url: 'https://pay.example/a' }).price).toMatch(/Депозит/);
+    expect(pageFormErrors({ ...ok, prepay: 'deposit', price: 200000, deposit: 300000, payment_url: 'https://pay.example/a' }).price).toMatch(/Депозит/);
+    expect(pageFormErrors({ ...ok, prepay: 'deposit', price: 200000, deposit: 50000, payment_url: 'https://pay.example/a' })).toEqual({});
+  });
+
+  it('пределы полей — как на сервере', () => {
+    expect(pageFormErrors({ ...ok, price: 100_000_001 }).price).toBeTruthy();
+    expect(pageFormErrors({ ...ok, payment_url: 'http://pay.example' }).payment).toMatch(/https/);
+    expect(pageFormErrors({ ...ok, payment_url: 'https://pay example' }).payment).toMatch(/https/);
+    expect(pageFormErrors({ ...ok, payment_note: 'две\nстроки' }).payment).toMatch(/одна строка/);
+    expect(pageFormErrors({ ...ok, pay_within_minutes: 10 }).payment).toMatch(/Срок оплаты/);
+    expect(pageFormErrors({ ...ok, cancel_hours: 169 }).policy).toBeTruthy();
+    expect(pageFormErrors({ ...ok, policy_text: 'а'.repeat(501) }).policy).toBeTruthy();
+  });
+
+  it('форма страницы старого сервера получает значения по умолчанию', () => {
+    const page = { id: 1, slug: 'abc123def4', url: '', title: 'Урок', description: '', duration_minutes: 60, days_ahead: 14, max_per_day: 4, notice_hours: 2, max_series: 1, weekends: false, status: 'active' as const, upcoming: 0, created_at: '', updated_at: '' };
+    expect(pageFields(page)).toMatchObject({ price: 0, prepay: 'none', guest_reminders: true, hide_branding: false });
+    expect(pageFields(page).packages).toEqual([]);
+    expect(pageFormErrors({ ...pageFields(page), packages: [{ title: '', sessions: 8, price: 100 }] }).packages).toMatch(/Пакет 1/);
+    expect(pageFields({ ...page, price: 250000, prepay: 'full', hide_branding: true })).toMatchObject({ price: 250000, prepay: 'full', hide_branding: true });
+  });
+
+  it('в pageUpdate уходят только изменённые поля', () => {
+    expect(changedFields(ok, { ...ok, price: 200000, guest_reminders: false })).toEqual({ price: 200000, guest_reminders: false });
+    expect(changedFields(ok, ok)).toEqual({});
+    // Пакеты (F5): по содержимому, целым массивом, id сохранённых — на месте.
+    const offer = { id: 1, title: '8 занятий', sessions: 8, price: 1200000, valid_days: 90 };
+    const withOffer = { ...ok, packages: [offer] };
+    expect(changedFields(withOffer, { ...withOffer, packages: [{ ...offer }] })).toEqual({});
+    expect(changedFields(withOffer, { ...withOffer, packages: [{ ...offer, price: 1000000 }, { title: ' Месяц ', sessions: 4, price: 500000 }] })).toEqual({
+      packages: [{ ...offer, price: 1000000 }, { title: 'Месяц', sessions: 4, price: 500000, valid_days: 90 }],
+    });
+    expect(changedFields(withOffer, { ...withOffer, packages: [] })).toEqual({ packages: [] });
+  });
+
+  it('pro_required — понятный текст', () => {
+    expect(bookingOwnerErrorText(new SelfvoyError('pro_required', 'нужен Pro'))).toMatch(/тарифе Pro/);
+  });
+
+  it('отмена системой — «нет оплаты»', () => {
+    expect(bookingStatus({ status: 'cancelled', cancelled_by: 'system', occurrences: [] }, NOW).label).toBe('Отменена: нет оплаты');
+  });
+});
+
+describe('ссылка управления: ?confirm= и ?paid=1', () => {
+  it('разбирает «Приду» из напоминания и возврат после оплаты', () => {
+    expect(parseManageQuery('?confirm=2026-10-21T12:00:00Z')).toEqual({ confirm: '2026-10-21T12:00:00Z', paid: false });
+    expect(parseManageQuery('confirm=2026-10-21T15%3A00%3A00%2B03%3A00&paid=1')).toEqual({ confirm: '2026-10-21T15:00:00+03:00', paid: true });
+    expect(parseManageQuery(new URLSearchParams({ paid: '1' }))).toEqual({ confirm: null, paid: true });
+    expect(parseManageQuery('')).toEqual({ confirm: null, paid: false });
+  });
+
+  it('мусор в confirm не отправляется', () => {
+    expect(parseManageQuery('?confirm=завтра').confirm).toBeNull();
+    expect(parseManageQuery(`?confirm=${'1'.repeat(60)}`).confirm).toBeNull();
+    expect(parseManageQuery('?paid=yes').paid).toBe(false);
+  });
+
+  it('встреча по времени из ссылки — и в другой записи пояса', () => {
+    const list = [occ('2026-10-21T12:00:00Z'), occ('2026-10-28T12:00:00Z')];
+    expect(occurrenceAt(list, '2026-10-28T12:00:00Z')?.start).toBe('2026-10-28T12:00:00Z');
+    expect(occurrenceAt(list, '2026-10-21T15:00:00+03:00')?.start).toBe('2026-10-21T12:00:00Z');
+    expect(occurrenceAt(list, '2026-10-22T12:00:00Z')).toBeNull();
+  });
+});
+
+describe('пост «свободные окна»: ссылка без SELFVOY_PUBLIC_URL', () => {
+  const text = 'Свободные окна: Урок (60 мин)\n\nПн, 21 окт: 10:00, 11:30\n';
+  const link = 'https://app.example/#/b/abc123def4';
+  it('сервер дал ссылку — текст как есть', () => {
+    expect(withPostLink(text, 'telegram', link, link)).toBe(text);
+  });
+  it('без ссылки сервера — добавляем в формате поста', () => {
+    expect(withPostLink(text, 'telegram', '', link)).toBe(`Свободные окна: Урок (60 мин)\n\nПн, 21 окт: 10:00, 11:30\n\nЗаписаться: ${link}`);
+    expect(withPostLink(text, 'vk', '', link)).toMatch(/\n\nЗапись онлайн: https:/);
+    expect(withPostLink('a\nb', 'plain', '', link)).toBe(`a\nb\nЗаписаться: ${link}`);
+    expect(withPostLink(text, 'plain', '', null)).toBe(text);
   });
 });

@@ -1,4 +1,4 @@
-// aura/notificationsmanager.h — in-app уведомления и push-доставка (этап 13).
+// selfvoy/notificationsmanager.h — in-app уведомления и push-доставка (этап 13).
 //
 // Единая «входящая»: напоминания, подтверждения, A2A-предложения, новые входы,
 // изменения 2FA. In-app — таблица notifications + WS-событие notification.new;
@@ -10,13 +10,15 @@
 
 #include <string>
 
-#include "aura/config.h"
-#include "aura/connectionmanager.h"
-#include "aura/databasemanager.h"
-#include "aura/idatabase.h"
-#include "aura/json.h"
+#include "selfvoy/config.h"
+#include "selfvoy/connectionmanager.h"
+#include "selfvoy/databasemanager.h"
+#include "selfvoy/idatabase.h"
+#include "selfvoy/json.h"
 
-namespace aura {
+namespace selfvoy {
+
+class TelegramBot;
 
 class NotificationsManager {
 public:
@@ -54,6 +56,12 @@ public:
     Result listDevices(long long userId);
     Result revokeDevice(long long userId, long long id);
 
+    // Telegram владельца (F2): виды booking.*, package.*, invite.*, referral.*, waitlist.*, tax.*, task.due, telegram.question
+    // дублируются в привязанный чат «<title>\n<body>» — если вид не в muted_kinds, не тихие
+    // часы и prefs.notifications.telegram != false. Отправка — очередь бота (не ждём сеть).
+    void setTelegram(TelegramBot* telegram) { telegram_ = telegram; }
+    static bool telegramKind(const std::string& kind);
+
 private:
     bool inQuietHours(long long userId) const;
     bool kindMuted(long long userId, const std::string& kind) const;
@@ -61,9 +69,12 @@ private:
     Json pushEnvelope(const PushDeviceRecord& device, const NotificationRecord& record,
                       long long badge) const;
 
+    void deliverTelegram(const NotificationRecord& record);
+
     DatabaseManager& database_;
     ConnectionManager& connections_;
     const Config& config_;
+    TelegramBot* telegram_ = nullptr;
 };
 
-}  // namespace aura
+}  // namespace selfvoy

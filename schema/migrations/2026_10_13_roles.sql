@@ -1,5 +1,5 @@
 -- Роли пользователей для админ-панели: user (по умолчанию), moderator, admin.
--- Первые администраторы назначаются через AURA_ADMIN_EMAILS (см. docs/SETUP.md).
+-- Первые администраторы назначаются через SELFVOY_ADMIN_EMAILS (см. docs/SETUP.md).
 ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
 DO $$
 BEGIN

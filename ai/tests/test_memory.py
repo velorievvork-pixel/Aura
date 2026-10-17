@@ -2,8 +2,8 @@
 
 import pytest
 
-from aura_ai import memory
-from aura_ai.models import AgentContext, MemoryEntry
+from selfvoy_ai import memory
+from selfvoy_ai.models import AgentContext, MemoryEntry
 
 
 def test_merge_entries_dedupes_and_raises_weight():
@@ -210,7 +210,7 @@ def test_reciprocal_rank_fusion_merges_lists():
 
 
 def test_rag_mode_config_property():
-    from aura_ai.config import Settings
+    from selfvoy_ai.config import Settings
 
     assert Settings(rag_mode="lexical", embeddings_url="http://x").rag_is_hybrid is False
     assert Settings(rag_mode="hybrid").rag_is_hybrid is True

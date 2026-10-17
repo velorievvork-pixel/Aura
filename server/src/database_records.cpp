@@ -1,13 +1,14 @@
-// aura/database_records.cpp — сериализация записей и служебные хелперы.
+// selfvoy/database_records.cpp — сериализация записей и служебные хелперы.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <ctime>
 
-#include "aura/idatabase.h"
-#include "aura/memorymanager.h"
+#include "selfvoy/idatabase.h"
+#include "selfvoy/memorymanager.h"
+#include "selfvoy/plan.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -48,6 +49,7 @@ Json UserRecord::toJson(bool includeSecret) const {
     json.set("role", Json(role.empty() ? std::string("user") : role));
     json.set("created_at", Json(createdAt));
     if (!lastSeenAt.empty()) json.set("last_seen_at", Json(lastSeenAt));
+    json.set("plan", plan::toJson(*this));
     if (includeSecret) json.set("password_hash", Json(passwordHash));
     return json;
 }
@@ -193,4 +195,4 @@ std::string bookingEndsAt(const Json& occurrences) {
     return latest > 0 ? isoUtc(latest) : std::string();
 }
 
-}  // namespace aura
+}  // namespace selfvoy

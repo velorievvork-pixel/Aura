@@ -45,7 +45,7 @@ export const AUDIT_LABEL: Record<string, string> = {
   admin_user_disabled: 'Заблокирован',
   admin_user_enabled: 'Разблокирован',
   admin_sessions_revoked: 'Сессии завершены администратором',
-  role_bootstrap: 'Назначен администратором (AURA_ADMIN_EMAILS)',
+  role_bootstrap: 'Назначен администратором (SELFVOY_ADMIN_EMAILS)',
 };
 
 /** Человеческое название события; неизвестный kind показывается как есть. */

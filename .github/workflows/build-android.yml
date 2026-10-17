@@ -1,7 +1,7 @@
-# Сборка Android-клиента Aura (APK) — артефакт Actions.
+# Сборка Android-клиента Selfvoy (APK) — артефакт Actions.
 #
 # Результат: вкладка Actions → «Build Android APK» → Artifacts →
-# aura-android-debug (app-debug.apk). Это debug-сборка: ставится на
+# selfvoy-android-debug (app-debug.apk). Это debug-сборка: ставится на
 # устройство напрямую, подписана debug-ключом. Для релиза в Google Play
 # нужен release + ваш keystore (см. docs/ANDROID.md).
 #
@@ -61,7 +61,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: aura-android-debug
+          name: selfvoy-android-debug
           path: android/app/build/outputs/apk/debug/*.apk
 
       - name: Артефакт — лог сборки (для отладки)
@@ -103,7 +103,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: aura-android-debug
+          name: selfvoy-android-debug
           path: apk
 
       - name: Публикация в ветку builds/android
@@ -111,27 +111,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          mkdir pub && cp apk/app-debug.apk pub/Aura-debug.apk
+          mkdir pub && cp apk/app-debug.apk pub/Selfvoy-debug.apk
           cd pub
           for f in *; do
             if [ "$(wc -c < "$f")" -gt 94000000 ]; then split -b 90m -d "$f" "$f.part"; rm "$f"; fi
           done
           git init -q -b builds/android
-          git config user.name aura-ci && git config user.email ci@aura.local
+          git config user.name selfvoy-ci && git config user.email ci@selfvoy.local
           git add -A && git commit -qm "android ${{ github.sha }} [skip ci]"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/android
 
-      # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
+      # Страница Releases → «Сборки Selfvoy»: файлы можно скачать прямо оттуда.
       - name: Публикация в релиз «builds» (Android)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           R="$GITHUB_REPOSITORY"
           gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
-            --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
-            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — нативные клиенты (Compose, Qt). Aura-web.apk и Aura-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Aura." || true
-          mkdir -p pubrel && cp apk/app-debug.apk pubrel/Aura-debug.apk
-          gh release upload builds pubrel/Aura-debug.apk -R "$R" --clobber
+            --prerelease --target "$GITHUB_SHA" --title "Сборки Selfvoy (последние)" \
+            --notes "Автоматические сборки из main. Selfvoy-debug.apk и Selfvoy-Setup.exe — нативные клиенты (Compose, Qt). Selfvoy-web.apk и Selfvoy-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Selfvoy." || true
+          mkdir -p pubrel && cp apk/app-debug.apk pubrel/Selfvoy-debug.apk
+          gh release upload builds pubrel/Selfvoy-debug.apk -R "$R" --clobber
+          # Файл со старым именем (до переименования продукта в Selfvoy).
+          gh release delete-asset builds Aura-debug.apk -R "$R" -y || true
 
   # Песочница разработки не видит blob-хосты артефактов — дублируем лог
   # в ветку arena/build-logs, откуда его можно прочитать обычным git.
@@ -178,8 +180,8 @@ jobs:
             [ -f build.log ] && cp build.log logpub/android-build.log
             (
               cd logpub
-              git config user.name "aura-ci"
-              git config user.email "ci@aura.local"
+              git config user.name "selfvoy-ci"
+              git config user.email "ci@selfvoy.local"
               git add -A 2>&1
               git commit -m "android log ${{ github.sha }} [skip ci]" 2>&1
               git -c http.extraHeader="Authorization: token $GH_TOKEN" push origin HEAD:arena/build-logs 2>&1

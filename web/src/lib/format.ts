@@ -1,5 +1,5 @@
 /*
-  Форматирование для интерфейса: даты по-русски, подписи инструментов Ауры,
+  Форматирование для интерфейса: даты по-русски, подписи инструментов Selfvoy,
   теги мест. Те же формулировки, что в нативных клиентах (Format.kt/.swift/.js).
 */
 import { addDays, dateLabel, dayShort, hhmm, sameDay } from './time';
@@ -43,7 +43,7 @@ const TOOL_TITLES: Record<string, string> = {
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
   send_message: 'Писать сообщения вашим контактам',
-  create_note: 'Сохранять заметки в память Ауры',
+  create_note: 'Сохранять заметки в память Selfvoy',
   create_reminder: 'Ставить напоминания',
   send_email: 'Отправлять письма от вашего имени',
   find_cafe: 'Подбирать место под питание, бюджет и дорогу обоих',
@@ -102,7 +102,7 @@ export function firstName(full: string): string {
   return full.trim().split(/\s+/)[0] ?? '';
 }
 
-/** Родительный падеж имени для «Аура Димы», «Аура Алекса» — простые правила для частых имён. */
+/** Родительный падеж имени для «Selfvoy Димы», «Selfvoy Алекса» — простые правила для частых имён. */
 export function genitive(name: string): string {
   const n = name.trim();
   if (!n || n.includes('@')) return n;

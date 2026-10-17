@@ -1,6 +1,6 @@
-# Aura — Персональный ИИ-агент
+# Selfvoy — Персональный ИИ-агент
 
-[![CI](https://github.com/USER/aura/actions/workflows/ci.yml/badge.svg)](https://github.com/USER/aura/actions/workflows/ci.yml)
+[![CI](https://github.com/USER/selfvoy/actions/workflows/ci.yml/badge.svg)](https://github.com/USER/selfvoy/actions/workflows/ci.yml)
 
 Кроссплатформенное приложение с мультиагентной архитектурой: C++17 WebSocket-сервер + Python AI-сервис (LLM/RAG/память) + клиенты на Qt6/QML, iOS (SwiftUI), Android (Kotlin + Compose). База данных — PostgreSQL (22 таблицы).
 
@@ -16,12 +16,12 @@
 ## 🚀 Быстрый старт
 
 ```bash
-git clone https://github.com/USER/aura-main.git
-cd aura-main
+git clone https://github.com/USER/selfvoy-main.git
+cd selfvoy-main
 cp .env.example .env
 # Заполните в .env все секреты (каждый: openssl rand -hex 32):
-# AURA_JWT_SECRET, AURA_2FA_KEY, AURA_AI_TOKEN, POSTGRES_PASSWORD,
-# AURA_DB_PASSWORD, AURA_AI_DB_PASSWORD — без них compose не стартует
+# SELFVOY_JWT_SECRET, SELFVOY_2FA_KEY, SELFVOY_AI_TOKEN, POSTGRES_PASSWORD,
+# SELFVOY_DB_PASSWORD, SELFVOY_AI_DB_PASSWORD — без них compose не стартует
 make docker-up
 # Откройте http://localhost:9000 или запустите клиент
 ```
@@ -33,7 +33,7 @@ make docker-up
 make schema-check
 
 # 2. Запустить AI-сервис (Python)
-make ai-run  # → http://127.0.0.1:8000 (AURA_AI_INSECURE_DEV=1, только localhost)
+make ai-run  # → http://127.0.0.1:8000 (SELFVOY_AI_INSECURE_DEV=1, только localhost)
 
 # 3. Собрать и запустить C++-сервер
 make server-build
@@ -67,11 +67,11 @@ make e2e             # сквозной сценарий (141 проверка)
 ## 🏗️ Структура монорепо
 
 ```
-aura-main/
+selfvoy-main/
 ├── server/          C++17 сервер (WebSocket, Argon2id, JWT, TOTP, OAuth)
 ├── ai/              Python 3.11+ FastAPI (LLM, RAG, память, планировщик)
 ├── client/          Qt6/QML desktop-клиент (Windows/macOS/Linux)
-├── android/         Kotlin + Compose (модули: aurakit + app)
+├── android/         Kotlin + Compose (модули: selfvoykit + app)
 ├── ios/             SwiftUI-клиент
 ├── schema/          PostgreSQL схема + миграции
 ├── docs/            Документация (17 MD-файлов, 520+ страниц)
@@ -107,8 +107,8 @@ Pull requests приветствуются. Для крупных изменен
 
 ## 📞 Контакты
 
-**GitHub:** [https://github.com/USER/aura-main](https://github.com/USER/aura-main)  
-**Issues:** [https://github.com/USER/aura-main/issues](https://github.com/USER/aura-main/issues)
+**GitHub:** [https://github.com/USER/selfvoy-main](https://github.com/USER/selfvoy-main)  
+**Issues:** [https://github.com/USER/selfvoy-main/issues](https://github.com/USER/selfvoy-main/issues)
 
 ---
 

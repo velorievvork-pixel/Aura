@@ -9,14 +9,14 @@ describe('normalizeServerUrl', () => {
     expect(normalizeServerUrl('  192.168.1.5:9100 ')).toBe('ws://192.168.1.5:9100');
   });
   it('http(s) превращается в ws(s), лишний слэш убирается', () => {
-    expect(normalizeServerUrl('https://aura.example.com/')).toBe('wss://aura.example.com');
+    expect(normalizeServerUrl('https://selfvoy.example.com/')).toBe('wss://selfvoy.example.com');
     expect(normalizeServerUrl('http://10.0.2.2:9000')).toBe('ws://10.0.2.2:9000');
-    expect(normalizeServerUrl('wss://aura.example.com/ws')).toBe('wss://aura.example.com/ws');
+    expect(normalizeServerUrl('wss://selfvoy.example.com/ws')).toBe('wss://selfvoy.example.com/ws');
   });
   it('голый публичный хост — wss:// без порта (не открытым текстом)', () => {
-    expect(normalizeServerUrl('aura.example.com')).toBe('wss://aura.example.com');
-    expect(normalizeServerUrl('aura.example.com/ws')).toBe('wss://aura.example.com/ws');
-    expect(normalizeServerUrl('aura.example.com:8443')).toBe('wss://aura.example.com:8443');
+    expect(normalizeServerUrl('selfvoy.example.com')).toBe('wss://selfvoy.example.com');
+    expect(normalizeServerUrl('selfvoy.example.com/ws')).toBe('wss://selfvoy.example.com/ws');
+    expect(normalizeServerUrl('selfvoy.example.com:8443')).toBe('wss://selfvoy.example.com:8443');
     expect(normalizeServerUrl('8.8.8.8')).toBe('wss://8.8.8.8');
     expect(normalizeServerUrl('172.32.0.1')).toBe('wss://172.32.0.1');
   });
@@ -25,13 +25,13 @@ describe('normalizeServerUrl', () => {
     expect(normalizeServerUrl('127.0.0.1')).toBe('ws://127.0.0.1:9000');
     expect(normalizeServerUrl('10.0.2.2')).toBe('ws://10.0.2.2:9000');
     expect(normalizeServerUrl('172.20.1.1')).toBe('ws://172.20.1.1:9000');
-    expect(normalizeServerUrl('aura.local:9100')).toBe('ws://aura.local:9100');
+    expect(normalizeServerUrl('selfvoy.local:9100')).toBe('ws://selfvoy.local:9100');
     expect(normalizeServerUrl('dev.localhost')).toBe('ws://dev.localhost:9000');
     expect(normalizeServerUrl('192.168.1.5/ws')).toBe('ws://192.168.1.5:9000/ws');
   });
   it('явная схема ws:// остаётся как есть, даже для публичного хоста', () => {
-    expect(normalizeServerUrl('ws://aura.example.com:9000')).toBe('ws://aura.example.com:9000');
-    expect(normalizeServerUrl('http://aura.example.com')).toBe('ws://aura.example.com');
+    expect(normalizeServerUrl('ws://selfvoy.example.com:9000')).toBe('ws://selfvoy.example.com:9000');
+    expect(normalizeServerUrl('http://selfvoy.example.com')).toBe('ws://selfvoy.example.com');
   });
   it('мусор и чужие схемы отклоняются', () => {
     expect(normalizeServerUrl('')).toBeNull();
@@ -47,7 +47,7 @@ describe('isLocalHost', () => {
     }
   });
   it('публичные имена и адреса', () => {
-    for (const host of ['aura.example.com', 'example.local.com', '8.8.8.8', '172.15.0.1', '172.32.0.1', '192.169.0.1', '11.0.0.1', '2001:db8::1', '']) {
+    for (const host of ['selfvoy.example.com', 'example.local.com', '8.8.8.8', '172.15.0.1', '172.32.0.1', '192.169.0.1', '11.0.0.1', '2001:db8::1', '']) {
       expect(isLocalHost(host), host).toBe(false);
     }
   });
@@ -58,8 +58,8 @@ describe('platformDefault', () => {
     expect(platformDefault({ platform: 'android' })).toBe('ws://10.0.2.2:9000');
   });
   it('веб на настоящем https-хосте — wss того же хоста', () => {
-    expect(platformDefault({ platform: 'web', location: { protocol: 'https:', hostname: 'aura.example.com', host: 'aura.example.com' } })).toBe(
-      'wss://aura.example.com',
+    expect(platformDefault({ platform: 'web', location: { protocol: 'https:', hostname: 'selfvoy.example.com', host: 'selfvoy.example.com' } })).toBe(
+      'wss://selfvoy.example.com',
     );
   });
   it('локальная разработка и Electron — 127.0.0.1, не localhost', () => {

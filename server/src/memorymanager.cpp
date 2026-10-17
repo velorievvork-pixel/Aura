@@ -1,5 +1,5 @@
-// aura/memorymanager.cpp
-#include "aura/memorymanager.h"
+// selfvoy/memorymanager.cpp
+#include "selfvoy/memorymanager.h"
 
 #include <algorithm>
 #include <cctype>
@@ -9,10 +9,10 @@
 #include <regex>
 #include <set>
 
-#include "aura/log.h"
-#include "aura/net.h"
+#include "selfvoy/log.h"
+#include "selfvoy/net.h"
 
-namespace aura {
+namespace selfvoy {
 
 // «YYYY-MM-DDTHH:MM[:SS][.fff](Z|±HH:MM)» → секунды UTC; false, если это не ISO-метка.
 bool parseIsoUtc(const std::string& value, std::time_t& out) {
@@ -232,10 +232,10 @@ std::size_t MemoryManager::remember(long long userId, const Json& updates, std::
         if (result.ok) {
             ++saved;
         } else {
-            AURA_LOG(log::Level::Warn, "memory") << "не удалось сохранить факт: " << result.message;
+            SELFVOY_LOG(log::Level::Warn, "memory") << "не удалось сохранить факт: " << result.message;
         }
     }
-    AURA_LOG(log::Level::Debug, "memory") << "user=" << userId << " сохранено фактов: " << saved;
+    SELFVOY_LOG(log::Level::Debug, "memory") << "user=" << userId << " сохранено фактов: " << saved;
     return saved;
 }
 
@@ -271,7 +271,7 @@ Json MemoryManager::extractLocally(const std::string& message) {
                 entries.push(entry);
             }
         } catch (const std::regex_error& error) {
-            AURA_LOG(log::Level::Error, "memory") << "regex: " << error.what();
+            SELFVOY_LOG(log::Level::Error, "memory") << "regex: " << error.what();
         }
     }
     return entries;
@@ -288,7 +288,7 @@ Json MemoryManager::extract(long long userId, const std::string& message, bool c
     request.set("context", context);
 
     std::map<std::string, std::string> headers;
-    if (!config_.aiServiceToken.empty()) headers["X-Aura-Token"] = config_.aiServiceToken;
+    if (!config_.aiServiceToken.empty()) headers["X-Selfvoy-Token"] = config_.aiServiceToken;
 
     std::string url = config_.aiServiceUrl;
     if (!url.empty() && url.back() == '/') url.pop_back();
@@ -307,7 +307,7 @@ Json MemoryManager::extract(long long userId, const std::string& message, bool c
         }
     }
 
-    AURA_LOG(log::Level::Warn, "memory")
+    SELFVOY_LOG(log::Level::Warn, "memory")
         << "AI-сервис недоступен (" << error << "), извлекаю факты локально";
     const Json local = extractLocally(message);
     if (commit) remember(userId, local);
@@ -339,6 +339,8 @@ Json MemoryManager::preferences(long long userId) {
         }
     }
     preferences.set("privacy", privacy);
+    // F10: «я самозанятый, напоминать выдать чек „Мой налог“» — по умолчанию выключено.
+    if (!preferences.get("npd_receipts").isBool()) preferences.set("npd_receipts", Json(false));
     return preferences;
 }
 
@@ -403,6 +405,15 @@ std::vector<std::pair<std::time_t, std::time_t>> MemoryManager::busy(long long u
         (void)event;
         intervals.push_back(interval);
     }
+    // F8: время, которое держится за гостем из листа ожидания, занято до конца держания.
+    const std::time_t now = std::time(nullptr);
+    for (const auto& hold : database_.db().listWaitlistHolds(userId, isoUtc(now))) {
+        std::time_t start = 0;
+        std::time_t end = 0;
+        if (parseIsoUtc(hold.offerStart, start) && parseIsoUtc(hold.offerEnd, end) && end > start && end > now) {
+            intervals.emplace_back(start, end);
+        }
+    }
     return intervals;
 }
 
@@ -447,4 +458,4 @@ std::vector<MemoryRecord> MemoryManager::schedule(long long userId) {
     return result;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

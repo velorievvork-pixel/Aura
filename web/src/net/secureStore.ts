@@ -2,7 +2,7 @@
   Хранение токенов (access JWT + refresh).
 
   - Desktop (Electron): шифрование ОС через safeStorage (Keychain / DPAPI /
-    libsecret) — preload отдаёт window.auraSecure, токены лежат в userData
+    libsecret) — preload отдаёт window.selfvoySecure, токены лежат в userData
     зашифрованными.
   - Телефон (Capacitor) и браузер: localStorage WebView — он изолирован в
     песочнице приложения; на рутованном устройстве или в общем браузере это
@@ -21,11 +21,11 @@ export interface SecureBridge {
 
 declare global {
   interface Window {
-    auraSecure?: SecureBridge;
+    selfvoySecure?: SecureBridge;
   }
 }
 
-const PREFIX = 'aura.secure.';
+const PREFIX = 'selfvoy.secure.';
 
 /**
  * Запасное хранилище в памяти: localStorage недоступен (приватный режим,
@@ -78,7 +78,7 @@ const localBridge: SecureBridge = {
   },
 };
 
-export const secureStore: SecureBridge = typeof window !== 'undefined' && window.auraSecure ? window.auraSecure : localBridge;
+export const secureStore: SecureBridge = typeof window !== 'undefined' && window.selfvoySecure ? window.selfvoySecure : localBridge;
 
 export interface Tokens {
   access: string;
@@ -107,7 +107,7 @@ export interface DeviceInfo {
 }
 
 const DEVICE_KEY = 'device';
-const LEGACY_DEVICE_KEY = 'aura.deviceId';
+const LEGACY_DEVICE_KEY = 'selfvoy.deviceId';
 const DEVICE_RE = /^[A-Za-z0-9-]{16,64}$/;
 
 function randomId(): string {

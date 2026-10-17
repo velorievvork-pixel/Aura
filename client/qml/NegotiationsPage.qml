@@ -1,14 +1,14 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Aura
+import Selfvoy
 import "Format.js" as F
 
 /*
-  NegotiationsPage — переговоры Аур (макет Meeting arrangement).
+  NegotiationsPage — переговоры Selfvoy (макет Meeting arrangement).
 
   Один вызов agent.negotiate = один раунд «предложение → ответ». Шаги в центре
-  строятся из ответа сервера: окно моей Ауры, проверка календаря собеседника,
+  строятся из ответа сервера: окно моего Selfvoy, проверка календаря собеседника,
   место (или встречные варианты), принятие. Итог бронируется только по кнопке
   пользователя (book_table, режим «запретить» уважается). После 5 раундов —
   эскалация: решает человек (правило A2A_PROTOCOL.md).
@@ -33,22 +33,22 @@ Item {
     // Шаги текущего раунда — из данных ответа.
     readonly property var steps: {
         if (!hasResult) return []
-        const me = "Аура " + F.genitive(myName)
-        const them = "Аура " + F.genitive(theirName)
+        const me = "Selfvoy " + F.genitive(myName)
+        const them = "Selfvoy " + F.genitive(theirName)
         const hours = result.window_hours || 96
-        const out = [{ who: "me", text: me + " предложила встречу: " + (result.duration_minutes || 60) + " мин",
+        const out = [{ who: "me", text: me + " предложил встречу: " + (result.duration_minutes || 60) + " мин",
                        detail: "окно — " + F.windowPhrase(hours)
                                + (result.topic ? " · " + result.topic : "") }]
         if (accepted) {
-            out.push({ who: "them", text: them + " проверила календарь " + F.genitive(theirName),
+            out.push({ who: "them", text: them + " проверил календарь " + F.genitive(theirName),
                        detail: "общее окно: " + F.dayPhrase(result.slot.start, true) + " в " + F.time(result.slot.start) })
             const tags = result.place ? F.placeTags(result.place.tags) : ""
-            out.push({ who: "them", text: them + " предложила " + (result.place ? result.place.name : "место"),
+            out.push({ who: "them", text: them + " предложил " + (result.place ? result.place.name : "место"),
                        detail: [result.place && result.place.city, tags, result.place && result.place.rating ? "★ " + result.place.rating : ""]
                                .filter(x => x).join(" · ") })
-            out.push({ who: "me", done: true, text: me + " приняла место и время", detail: result.message || "" })
+            out.push({ who: "me", done: true, text: me + " принял место и время", detail: result.message || "" })
         } else {
-            out.push({ who: "them", text: them + " проверила календарь " + F.genitive(theirName),
+            out.push({ who: "them", text: them + " проверил календарь " + F.genitive(theirName),
                        detail: "в этом окне общего времени нет" })
             const n = (result.counter_slots || []).length
             out.push({ who: "them", fail: true, text: n ? "Встречные варианты: " + n : "Встречных вариантов нет",
@@ -102,10 +102,10 @@ Item {
                 spacing: 16
                 Text {
                     text: "Организация встречи"
-                    font.family: AuraTheme.fontFamily
+                    font.family: SelfvoyTheme.fontFamily
                     font.pixelSize: 26
                     font.weight: Font.Bold
-                    color: AuraTheme.textPrimary
+                    color: SelfvoyTheme.textPrimary
                 }
                 Rectangle {
                     visible: page.hasResult || (App && App.busy)
@@ -114,18 +114,18 @@ Item {
                     radius: 15
                     color: "transparent"
                     border.width: 1
-                    border.color: page.booked ? Qt.alpha(AuraTheme.success, 0.5)
-                                  : page.hasResult && !page.accepted ? Qt.alpha(AuraTheme.warning, 0.5)
-                                  : AuraTheme.lilacA(0.55)
+                    border.color: page.booked ? Qt.alpha(SelfvoyTheme.success, 0.5)
+                                  : page.hasResult && !page.accepted ? Qt.alpha(SelfvoyTheme.warning, 0.5)
+                                  : SelfvoyTheme.lilacA(0.55)
                     Text {
                         id: badge
                         anchors.centerIn: parent
                         text: App && App.busy ? "Идут" : page.booked ? "Забронировано"
                               : page.accepted ? "Ждёт решения" : "Нужен ваш выбор"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall - 1
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall - 1
                         font.weight: Font.Bold
-                        color: page.booked ? AuraTheme.success : page.hasResult && !page.accepted ? AuraTheme.warning : AuraTheme.lilac
+                        color: page.booked ? SelfvoyTheme.success : page.hasResult && !page.accepted ? SelfvoyTheme.warning : SelfvoyTheme.lilac
                     }
                 }
                 Item { Layout.fillWidth: true }
@@ -136,15 +136,15 @@ Item {
                     radius: 20
                     color: "transparent"
                     border.width: 1
-                    border.color: Qt.rgba(1, 1, 1, 0.2)
+                    border.color: SelfvoyTheme.glass(0.2)
                     Text {
                         id: roundText
                         anchors.centerIn: parent
                         text: "Раунд " + page.round + " из " + page.maxRounds
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall + 1
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall + 1
                         font.weight: Font.DemiBold
-                        color: AuraTheme.textPrimary
+                        color: SelfvoyTheme.textPrimary
                     }
                 }
                 GlassButton {
@@ -166,7 +166,7 @@ Item {
                     Layout.preferredWidth: 250
                     Layout.alignment: Qt.AlignTop
                     name: page.myName
-                    auraName: "Аура " + F.genitive(page.myName)
+                    selfvoyName: "Selfvoy " + F.genitive(page.myName)
                     talking: revealTimer.running && page.revealed < page.steps.length
                              && page.steps[page.revealed].who === "me"
                     facts: [
@@ -186,9 +186,9 @@ Item {
                         horizontalAlignment: Text.AlignHCenter
                         visible: page.hasResult && !!page.result.topic
                         text: "Тема: " + (page.result.topic || "")
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textMuted
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textMuted
                     }
 
                     Repeater {
@@ -202,32 +202,32 @@ Item {
                             opacity: visible ? 1 : 0
                             layoutDirection: modelData.who === "them" ? Qt.RightToLeft : Qt.LeftToRight
                             spacing: 12
-                            Behavior on opacity { NumberAnimation { duration: AuraTheme.slowMs } }
+                            Behavior on opacity { NumberAnimation { duration: SelfvoyTheme.slowMs } }
 
                             Rectangle {
                                 implicitWidth: 34; implicitHeight: 34; radius: 17
-                                color: step.modelData.fail ? Qt.alpha(AuraTheme.danger, 0.15) : AuraTheme.accentA(0.15)
+                                color: step.modelData.fail ? Qt.alpha(SelfvoyTheme.danger, 0.15) : SelfvoyTheme.accentA(0.15)
                                 border.width: 1.5
-                                border.color: step.modelData.fail ? AuraTheme.danger : AuraTheme.accentSoft
+                                border.color: step.modelData.fail ? SelfvoyTheme.danger : SelfvoyTheme.accentSoft
                                 Text {
                                     anchors.centerIn: parent
                                     visible: !step.modelData.done
                                     text: step.index + 1
-                                    font.family: AuraTheme.fontFamily
-                                    font.pixelSize: AuraTheme.fontBody
+                                    font.family: SelfvoyTheme.fontFamily
+                                    font.pixelSize: SelfvoyTheme.fontBody
                                     font.weight: Font.Bold
-                                    color: AuraTheme.textPrimary
+                                    color: SelfvoyTheme.textPrimary
                                 }
-                                Icon { anchors.centerIn: parent; visible: !!step.modelData.done; name: "check"; size: 16; color: AuraTheme.textPrimary }
+                                Icon { anchors.centerIn: parent; visible: !!step.modelData.done; name: "check"; size: 16; color: SelfvoyTheme.textPrimary }
                             }
                             Rectangle {
                                 Layout.maximumWidth: 380
                                 implicitWidth: Math.min(380, stepCol.implicitWidth + 36)
                                 implicitHeight: stepCol.implicitHeight + 18
                                 radius: 22
-                                color: Qt.rgba(1, 1, 1, 0.05)
+                                color: SelfvoyTheme.glass(0.05)
                                 border.width: 1
-                                border.color: Qt.rgba(1, 1, 1, 0.18)
+                                border.color: SelfvoyTheme.glass(0.18)
                                 ColumnLayout {
                                     id: stepCol
                                     anchors.centerIn: parent
@@ -238,10 +238,10 @@ Item {
                                         text: step.modelData.text
                                         wrapMode: Text.WordWrap
                                         horizontalAlignment: step.modelData.who === "them" ? Text.AlignRight : Text.AlignLeft
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontSmall + 1
+                                        font.family: SelfvoyTheme.fontFamily
+                                        font.pixelSize: SelfvoyTheme.fontSmall + 1
                                         font.weight: Font.DemiBold
-                                        color: AuraTheme.textPrimary
+                                        color: SelfvoyTheme.textPrimary
                                     }
                                     Text {
                                         Layout.fillWidth: true
@@ -249,9 +249,9 @@ Item {
                                         text: step.modelData.detail
                                         wrapMode: Text.WordWrap
                                         horizontalAlignment: step.modelData.who === "them" ? Text.AlignRight : Text.AlignLeft
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontMicro + 1
-                                        color: AuraTheme.textMuted
+                                        font.family: SelfvoyTheme.fontFamily
+                                        font.pixelSize: SelfvoyTheme.fontMicro + 1
+                                        color: SelfvoyTheme.textMuted
                                     }
                                 }
                             }
@@ -265,7 +265,7 @@ Item {
                     Layout.alignment: Qt.AlignTop
                     them: true
                     name: page.theirName
-                    auraName: "Аура " + F.genitive(page.theirName)
+                    selfvoyName: "Selfvoy " + F.genitive(page.theirName)
                     talking: revealTimer.running && page.revealed < page.steps.length
                              && page.steps[page.revealed].who === "them"
                     facts: [{ icon: "clock", text: "делится только свободными окнами" }]
@@ -278,13 +278,9 @@ Item {
                 visible: page.accepted && !page.composing && page.revealed >= page.steps.length
                 implicitHeight: resultRow.implicitHeight + 56
                 radius: 26
-                gradient: Gradient {
-                    orientation: Gradient.Horizontal
-                    GradientStop { position: 0.0; color: Qt.rgba(0.47, 0.39, 1, 0.18) }
-                    GradientStop { position: 1.0; color: Qt.rgba(0.24, 0.47, 1, 0.12) }
-                }
+                color: SelfvoyTheme.accentTint
                 border.width: 1
-                border.color: page.booked ? Qt.alpha(AuraTheme.success, 0.45) : AuraTheme.accentA(0.45)
+                border.color: page.booked ? Qt.alpha(SelfvoyTheme.success, 0.45) : SelfvoyTheme.accentA(0.45)
 
                 RowLayout {
                     id: resultRow
@@ -298,11 +294,11 @@ Item {
                             Layout.fillWidth: true
                             text: page.accepted ? F.dayTitle(page.result.slot.start) + ", " + F.time(page.result.slot.start)
                                                   + "\n" + (page.result.place ? page.result.place.name : "") : ""
-                            font.family: AuraTheme.fontFamily
+                            font.family: SelfvoyTheme.fontFamily
                             font.pixelSize: 28
                             font.weight: Font.Bold
                             lineHeight: 1.1
-                            color: AuraTheme.textPrimary
+                            color: SelfvoyTheme.textPrimary
                             wrapMode: Text.WordWrap
                         }
                         Flow {
@@ -321,9 +317,9 @@ Item {
                                     Icon { name: modelData.icon; size: 15; anchors.verticalCenter: parent.verticalCenter }
                                     Text {
                                         text: modelData.text
-                                        font.family: AuraTheme.fontFamily
-                                        font.pixelSize: AuraTheme.fontSmall
-                                        color: AuraTheme.textSecondary
+                                        font.family: SelfvoyTheme.fontFamily
+                                        font.pixelSize: SelfvoyTheme.fontSmall
+                                        color: SelfvoyTheme.textSecondary
                                     }
                                 }
                             }
@@ -332,10 +328,10 @@ Item {
                             visible: page.booked
                             text: page.booked ? "Столик забронирован" + (page.result.booking.confirmation ? " · код " + page.result.booking.confirmation : "")
                                                 + " · встреча в задачах" : ""
-                            font.family: AuraTheme.fontFamily
-                            font.pixelSize: AuraTheme.fontSmall
+                            font.family: SelfvoyTheme.fontFamily
+                            font.pixelSize: SelfvoyTheme.fontSmall
                             font.weight: Font.DemiBold
-                            color: AuraTheme.success
+                            color: SelfvoyTheme.success
                         }
                     }
                     GlassButton {
@@ -377,20 +373,20 @@ Item {
                     spacing: 12
                     Text {
                         text: page.round >= page.maxRounds ? "Лимит раундов исчерпан" : "Встречные варианты собеседника"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontLead
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontLead
                         font.weight: Font.Bold
-                        color: AuraTheme.textPrimary
+                        color: SelfvoyTheme.textPrimary
                     }
                     Text {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
                         text: page.round >= page.maxRounds
-                              ? "Ауры провели " + page.maxRounds + " раундов без согласия. Дальше решаете вы: напишите собеседнику напрямую."
-                              : "Аура не договаривается дальше без вас. Выберите, как продолжить: следующий раунд с другим окном или чат."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textSecondary
+                              ? "Оба Selfvoy провели " + page.maxRounds + " раундов без согласия. Дальше решаете вы: напишите собеседнику напрямую."
+                              : "Selfvoy не договаривается дальше без вас. Выберите, как продолжить: следующий раунд с другим окном или чат."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textSecondary
                     }
                     Flow {
                         Layout.fillWidth: true
@@ -441,10 +437,10 @@ Item {
 
                     Text {
                         text: "С кем договориться?"
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontLead
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontLead
                         font.weight: Font.Bold
-                        color: AuraTheme.textPrimary
+                        color: SelfvoyTheme.textPrimary
                     }
                     Flow {
                         Layout.fillWidth: true
@@ -475,7 +471,7 @@ Item {
                     }
                     RowLayout {
                         spacing: 8
-                        Text { text: "Когда:"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontSmall; color: AuraTheme.textSecondary; Layout.preferredWidth: 90 }
+                        Text { text: "Когда:"; font.family: SelfvoyTheme.fontFamily; font.pixelSize: SelfvoyTheme.fontSmall; color: SelfvoyTheme.textSecondary; Layout.preferredWidth: 90 }
                         Repeater {
                             model: [{ k: "tomorrow", l: "сегодня–завтра" }, { k: "weekend", l: "до конца недели" }, { k: "week", l: "две недели" }]
                             delegate: Chip {
@@ -488,7 +484,7 @@ Item {
                     }
                     RowLayout {
                         spacing: 8
-                        Text { text: "Длительность:"; font.family: AuraTheme.fontFamily; font.pixelSize: AuraTheme.fontSmall; color: AuraTheme.textSecondary; Layout.preferredWidth: 90 }
+                        Text { text: "Длительность:"; font.family: SelfvoyTheme.fontFamily; font.pixelSize: SelfvoyTheme.fontSmall; color: SelfvoyTheme.textSecondary; Layout.preferredWidth: 90 }
                         Repeater {
                             model: [30, 60, 90]
                             delegate: Chip {
@@ -520,10 +516,10 @@ Item {
                     Text {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
-                        text: "Ауры сверят свободное время и подберут место с учётом питания обоих. Бронь — только после вашего подтверждения."
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontMicro + 1
-                        color: AuraTheme.textMuted
+                        text: "Оба Selfvoy сверят свободное время и подберут место с учётом питания обоих. Бронь — только после вашего подтверждения."
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontMicro + 1
+                        color: SelfvoyTheme.textMuted
                     }
                 }
             }
@@ -535,10 +531,10 @@ Item {
                 spacing: 8
                 Text {
                     text: "Раунды за сессию"
-                    font.family: AuraTheme.fontFamily
-                    font.pixelSize: AuraTheme.fontBody
+                    font.family: SelfvoyTheme.fontFamily
+                    font.pixelSize: SelfvoyTheme.fontBody
                     font.weight: Font.Bold
-                    color: AuraTheme.textPrimary
+                    color: SelfvoyTheme.textPrimary
                 }
                 Repeater {
                     model: App ? App.negotiationHistory.slice(1) : []
@@ -546,9 +542,9 @@ Item {
                         required property var modelData
                         text: F.time(modelData.at) + " · " + F.nameFor(modelData.target, App.chats, App.userId) + " · раунд " + modelData.round
                               + " — " + (modelData.accepted ? "согласовано: " + (modelData.place ? modelData.place.name : "") : "без согласия")
-                        font.family: AuraTheme.fontFamily
-                        font.pixelSize: AuraTheme.fontSmall
-                        color: AuraTheme.textSecondary
+                        font.family: SelfvoyTheme.fontFamily
+                        font.pixelSize: SelfvoyTheme.fontSmall
+                        color: SelfvoyTheme.textSecondary
                     }
                 }
             }

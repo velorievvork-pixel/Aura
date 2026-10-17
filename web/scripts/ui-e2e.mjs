@@ -1,21 +1,21 @@
-// Сквозной сценарий веб-клиента против настоящего сервера Aura (Playwright, Chromium):
+// Сквозной сценарий веб-клиента против настоящего сервера Selfvoy (Playwright, Chromium):
 // регистрация → код из письма → 2FA (TOTP по секрету) → выход → вход с 2FA →
-// приватность → переговоры → диалог с Аурой → экран ожидания при недоступном сервере.
+// приватность → переговоры → диалог с Selfvoy → экран ожидания при недоступном сервере.
 //
 //   npx vite --port 5173 &               # клиент (или сборка с CSP: npx vite build && npx vite preview)
 //   node scripts/ui-e2e.mjs [папка для снимков]
 //
-// Переменные: AURA_UI_URL (http://localhost:5173), AURA_UI_PEER (email собеседника
-// для переговоров, по умолчанию dima@aura.local из tools/demo_seed.py),
+// Переменные: SELFVOY_UI_URL (http://localhost:5173), SELFVOY_UI_PEER (email собеседника
+// для переговоров, по умолчанию dima@selfvoy.local из tools/demo_seed.py),
 // CHROMIUM (путь к браузеру; по умолчанию — из PLAYWRIGHT_BROWSERS_PATH).
-// Сервер должен работать с AURA_MAIL_DRIVER=dev: код из письма берётся с экрана.
+// Сервер должен работать с SELFVOY_MAIL_DRIVER=dev: код из письма берётся с экрана.
 import { createHmac } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
 
-const BASE = process.env.AURA_UI_URL ?? 'http://localhost:5173';
-const PEER = process.env.AURA_UI_PEER ?? 'dima@aura.local';
+const BASE = process.env.SELFVOY_UI_URL ?? 'http://localhost:5173';
+const PEER = process.env.SELFVOY_UI_PEER ?? 'dima@selfvoy.local';
 const OUT = process.argv[2] ?? 'ui-shots';
 mkdirSync(OUT, { recursive: true });
 
@@ -50,7 +50,7 @@ const check = (ok, label, detail = '') => {
 const browser = await chromium.launch({ executablePath: chromiumPath() });
 const run = Date.now().toString(36);
 const email = `ui.${run}@example.com`;
-const password = `Aura${run}9`;
+const password = `Selfvoy${run}9`;
 
 async function scenario(viewport, tag) {
   const context = await browser.newContext({ viewport, deviceScaleFactor: 2, isMobile: viewport.width < 600, hasTouch: viewport.width < 600 });
@@ -75,7 +75,7 @@ console.log('\nТелефон 360×760: регистрация, 2FA, вход');
 {
   const { context, page, errors, shot, nav } = await scenario({ width: 360, height: 760 }, 'phone');
   await page.goto(`${BASE}/#/login`);
-  await page.getByRole('heading', { name: 'Вход в Aura' }).waitFor({ timeout: 20000 });
+  await page.getByRole('heading', { name: 'Вход в Selfvoy' }).waitFor({ timeout: 20000 });
   await shot('login');
 
   // Валидация на клиенте: слабый пароль не уходит на сервер.
@@ -119,7 +119,7 @@ console.log('\nТелефон 360×760: регистрация, 2FA, вход');
   // Выход и вход с кодом из приложения (следующее окно — код одноразовый).
   await page.press('Приложение');
   await page.press('Выйти из аккаунта');
-  await page.getByRole('heading', { name: 'Вход в Aura' }).waitFor({ timeout: 10000 });
+  await page.getByRole('heading', { name: 'Вход в Selfvoy' }).waitFor({ timeout: 10000 });
   await page.getByLabel('Email').fill(email);
   await page.locator('input[autocomplete="current-password"]').fill('wrong-pass-1');
   await page.press('Войти');
@@ -161,14 +161,14 @@ console.log('\nТелефон 360×760: регистрация, 2FA, вход');
   check(true, 'переговоры: таймлайн шагов');
   await shot('negotiation-result');
 
-  // Диалог с Аурой.
-  await nav('Аура');
-  await page.getByLabel('Запрос к Ауре').fill('Что у меня сегодня?');
+  // Диалог с Selfvoy.
+  await nav('Selfvoy');
+  await page.getByLabel('Запрос к Selfvoy').fill('Что у меня сегодня?');
   await page.press('Отправить');
   // Приветствие исчезает с первым сообщением: ждём своё сообщение и ответ после него.
   await page.locator('.msg.mine').first().waitFor({ timeout: 10000 });
   await page.locator('.msg.mine ~ .msg.theirs').first().waitFor({ timeout: 60000 });
-  check(true, 'диалог: ответ Ауры получен');
+  check(true, 'диалог: ответ Selfvoy получен');
   await shot('chat');
 
   await nav('Задачи');
@@ -186,7 +186,7 @@ console.log('\nДесктоп 1280×800: вход, разделы');
 {
   const { context, page, errors, shot, nav } = await scenario({ width: 1280, height: 800 }, 'desktop');
   await page.goto(`${BASE}/#/login`);
-  await page.getByRole('heading', { name: 'Вход в Aura' }).waitFor({ timeout: 20000 });
+  await page.getByRole('heading', { name: 'Вход в Selfvoy' }).waitFor({ timeout: 20000 });
   await shot('login');
   await page.getByLabel('Email').fill(email);
   await page.locator('input[autocomplete="current-password"]').fill(password);
@@ -201,7 +201,7 @@ console.log('\nДесктоп 1280×800: вход, разделы');
 console.log('\nСервер недоступен: экран ожидания');
 {
   const { context, page, shot } = await scenario({ width: 360, height: 760 }, 'offline');
-  await page.addInitScript(() => localStorage.setItem('aura.server', 'ws://127.0.0.1:1'));
+  await page.addInitScript(() => localStorage.setItem('selfvoy.server', 'ws://127.0.0.1:1'));
   await page.goto(`${BASE}/#/login`);
   await page.getByRole('button', { name: 'Повторить' }).waitFor({ timeout: 20000 });
   check(await page.getByText(/сервер/i).first().isVisible(), 'вместо ошибки — экран «Поиск соединения» с «Повторить»');

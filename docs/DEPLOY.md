@@ -1,8 +1,8 @@
-# Установка Aura на сервер (можно только с телефона)
+# Установка Selfvoy на сервер (можно только с телефона)
 
 Всё, что нужно сделать руками, — арендовать сервер, вставить одну команду и
 (когда будет) вставить API-ключ LLM. Секреты, база, сборка и запуск — скрипт
-`deploy/install.sh`, управление — команда `aura`.
+`deploy/install.sh`, управление — команда `selfvoy`.
 
 ## 1. Сервер
 
@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/velorievvork-pixel/Aura/main/deploy
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/velorievvork-pixel/Aura/claude/booking-referrals/deploy/install.sh \
-  | sudo AURA_BRANCH=claude/booking-referrals bash
+  | sudo SELFVOY_BRANCH=claude/booking-referrals bash
 ```
 
 Приватный репозиторий: `raw.githubusercontent.com` и `git clone` потребуют
@@ -34,7 +34,7 @@ Contents: Read к репозиторию):
 T=ваш_токен
 curl -fsSL -H "Authorization: token $T" \
   https://raw.githubusercontent.com/velorievvork-pixel/Aura/main/deploy/install.sh \
-  | sudo AURA_REPO=https://$T@github.com/velorievvork-pixel/Aura.git bash
+  | sudo SELFVOY_REPO=https://$T@github.com/velorievvork-pixel/Aura.git bash
 ```
 
 Скрипт спросит **API-ключ LLM** — вставьте или нажмите Enter (тогда работает
@@ -43,35 +43,35 @@ curl -fsSL -H "Authorization: token $T" \
 
 ### С доменом и HTTPS (для настоящих пользователей)
 
-A-запись домена (например, `api.myaura.app`) → IP сервера, затем:
+A-запись домена (например, `api.selfvoy.example.com`) → IP сервера, затем:
 
 ```bash
-curl -fsSL …/deploy/install.sh | sudo AURA_DOMAIN=api.myaura.app bash
+curl -fsSL …/deploy/install.sh | sudo SELFVOY_DOMAIN=api.selfvoy.example.com bash
 ```
 
 Caddy сам получит сертификат Let's Encrypt; адрес приложения —
-`wss://api.myaura.app`, порт 9000 наружу не открыт, адрес клиента для лимитов
+`wss://api.selfvoy.example.com`, порт 9000 наружу не открыт, адрес клиента для лимитов
 берётся из `X-Forwarded-For` только от Caddy (`deploy/compose.tls.yml`).
 
 ## 3. Телефон
 
-Aura → экран входа → «Адрес сервера» → вставить адрес из шага 2 →
+Selfvoy → экран входа → «Адрес сервера» → вставить адрес из шага 2 →
 «Сохранить адрес» → «Создать аккаунт».
 
-Почта по умолчанию не отправляется (`AURA_MAIL_DRIVER=log`) — подтвердите
+Почта по умолчанию не отправляется (`SELFVOY_MAIL_DRIVER=log`) — подтвердите
 email на сервере:
 
 ```bash
-aura verify ваш@email
+selfvoy verify ваш@email
 ```
 
-Настоящая почта: в `/opt/aura/.env` — `AURA_MAIL_DRIVER=smtp` и `AURA_SMTP_*`
-(см. `.env.example`), затем `aura restart server`.
+Настоящая почта: в `/opt/selfvoy/.env` — `SELFVOY_MAIL_DRIVER=smtp` и `SELFVOY_SMTP_*`
+(см. `.env.example`), затем `selfvoy restart server`.
 
 ## 4. API-ключ LLM — вставить или сменить
 
 ```bash
-aura llm-key
+selfvoy llm-key
 ```
 
 Спросит ключ (ввод скрыт), адрес API (Enter — OpenAI; для другого
@@ -81,7 +81,7 @@ OpenAI-совместимого провайдера — его адрес, на
 Проверка в любой момент:
 
 ```bash
-aura llm-check
+selfvoy llm-check
 ```
 
 Пять типичных запросов (напоминание, расписание, встреча, память, разговор):
@@ -93,15 +93,34 @@ aura llm-check
 
 | Команда | Что делает |
 |---|---|
-| `aura status` | контейнеры и текущая модель LLM |
-| `aura logs [server\|ai\|postgres\|caddy]` | последние логи |
-| `aura verify EMAIL` | подтвердить email без почты |
-| `aura llm-key` / `aura llm-check` | вставить ключ / проверить модель |
-| `aura backup` | копия базы в `/opt/aura/backups/` (14 последних) |
-| `aura update` | обновить и пересобрать |
-| `aura restart [сервис]` | перезапуск |
+| `selfvoy status` | контейнеры и текущая модель LLM |
+| `selfvoy logs [server\|ai\|postgres\|caddy]` | последние логи |
+| `selfvoy verify EMAIL` | подтвердить email без почты |
+| `selfvoy pro EMAIL DAYS` | выдать тариф Pro на DAYS дней (0–3650; 0 — снять Pro) |
+| `selfvoy llm-key` / `selfvoy llm-check` | вставить ключ / проверить модель |
+| `selfvoy backup` | копия базы в `/opt/selfvoy/backups/` (14 последних) |
+| `selfvoy update` | обновить и пересобрать |
+| `selfvoy restart [сервис]` | перезапуск |
 
-Секреты — только в `/opt/aura/.env` (права 600, в git не попадает).
+Секреты — только в `/opt/selfvoy/.env` (права 600, в git не попадает).
+
+## Сервер, установленный до переименования (Aura)
+
+Продукт раньше назывался Aura: каталог `/opt/aura`, команда `aura`, переменные
+`AURA_*`, база `aura` и роли `aura_app`/`aura_ai`. Чтобы перейти на новые
+имена, повторите установочную команду из шага 2 — скрипт:
+
+- останется в `/opt/aura` (там `.env`, а имя каталога — имя проекта compose,
+  по которому находится том PostgreSQL);
+- переименует ключи `AURA_*` в `.env` в `SELFVOY_*`;
+- переименует базу `aura` → `selfvoy` и роли → `selfvoy_app`/`selfvoy_ai`
+  (данные и пароли сохраняются);
+- поставит команду `selfvoy` вместо `aura`.
+
+То же вручную на обновлённом проекте: `bash deploy/selfvoy.sh migrate`.
+Сервер и AI-сервис один релиз ещё читают старые `AURA_*`, если `SELFVOY_*`
+не заданы (с предупреждением в логе), но `docker-compose.yml` передаёт
+контейнерам только `SELFVOY_*`.
 
 ## Облачная сессия Claude: проверка с настоящей LLM
 
@@ -109,7 +128,7 @@ aura llm-check
 облачного окружения (меню окружения в заголовке сессии → Edit):
 
 - **Network secrets / переменные окружения:** `OPENAI_API_KEY`,
-  `AURA_LLM_PROVIDER=openai`, при необходимости `AURA_LLM_MODEL` и
+  `SELFVOY_LLM_PROVIDER=openai`, при необходимости `SELFVOY_LLM_MODEL` и
   `OPENAI_BASE_URL` (для не-OpenAI).
 - **Network access → Allowed domains:** домен API (`api.openai.com` или
   провайдера); `*.blob.core.windows.net` — чтобы ассистент мог присылать APK

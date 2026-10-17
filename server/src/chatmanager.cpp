@@ -1,15 +1,15 @@
-// aura/chatmanager.cpp
-#include "aura/chatmanager.h"
+// selfvoy/chatmanager.cpp
+#include "selfvoy/chatmanager.h"
 
 #include <algorithm>
 #include <cctype>
 #include <set>
 #include <vector>
 
-#include "aura/log.h"
-#include "aura/protocol.h"
+#include "selfvoy/log.h"
+#include "selfvoy/protocol.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -71,7 +71,7 @@ ChatManager::Result ChatManager::open(long long userId, const std::string& conta
         peer = database_.db().findUserByEmail(contact);
     }
     if (!peer) {
-        // Аура часто передаёт имя так, как оно прозвучало во фразе («с Аней») —
+        // Selfvoy часто передаёт имя так, как оно прозвучало во фразе («с Аней») —
         // ищем по основе имени среди пользователей.
         const std::string key = nameKey(contact);
         if (!key.empty()) {
@@ -111,7 +111,7 @@ ChatManager::Result ChatManager::open(long long userId, const std::string& conta
     eventPayload.set("chat", chat ? chat->toJson() : Json::object());
     eventPayload.set("invited_by", Json(userId));
     connections_.deliverToUser(peer->id, protocol::event("chat.created", eventPayload));
-    AURA_LOG(log::Level::Info, "chat") << "создан чат " << chatId << " между " << userId << " и " << peer->id;
+    SELFVOY_LOG(log::Level::Info, "chat") << "создан чат " << chatId << " между " << userId << " и " << peer->id;
     return result;
 }
 
@@ -238,7 +238,7 @@ ChatManager::Result ChatManager::send(long long senderId,
     for (const long long recipient : recipients) {
         delivered += connections_.deliverToUser(recipient, protocol::event("chat.message", record.toJson()));
     }
-    AURA_LOG(log::Level::Debug, "chat")
+    SELFVOY_LOG(log::Level::Debug, "chat")
         << "сообщение " << messageId << " в чат " << chatId << ", доставлено " << delivered;
     return result;
 }
@@ -247,4 +247,4 @@ std::vector<MessageRecord> ChatManager::recent(long long chatId, int limit) {
     return database_.db().listMessages(chatId, 0, limit);
 }
 
-}  // namespace aura
+}  // namespace selfvoy

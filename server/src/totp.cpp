@@ -1,10 +1,10 @@
-#include "aura/totp.h"
+#include "selfvoy/totp.h"
 
-#include "aura/crypto.h"
+#include "selfvoy/crypto.h"
 
 #include <ctime>
 
-namespace aura::totp {
+namespace selfvoy::totp {
 namespace {
 
 std::uint32_t pow10(int exponent) {
@@ -35,12 +35,12 @@ std::string percentEncode(const std::string& value) {
 }  // namespace
 
 std::string generateSecretBase32() {
-    return aura::crypto::base32Encode(aura::crypto::randomBytes(kSecretBytes));
+    return selfvoy::crypto::base32Encode(selfvoy::crypto::randomBytes(kSecretBytes));
 }
 
 bool decodeSecretBase32(const std::string& text, std::string& outRaw) {
     std::string raw;
-    if (!aura::crypto::base32Decode(text, raw)) return false;
+    if (!selfvoy::crypto::base32Decode(text, raw)) return false;
     if (raw.size() < 10 || raw.size() > 64) return false;  // разумные границы секрета
     outRaw = raw;
     return true;
@@ -58,7 +58,7 @@ std::string codeAt(const std::string& secretRaw, std::int64_t unixTime, int digi
         counterBytes[i] = static_cast<unsigned char>(counter & 0xFF);
         counter >>= 8;
     }
-    const std::string mac = aura::crypto::hmacSha1(
+    const std::string mac = selfvoy::crypto::hmacSha1(
         secretRaw, std::string(reinterpret_cast<const char*>(counterBytes), sizeof(counterBytes)));
     if (mac.size() != 20) return std::string();
 
@@ -91,7 +91,7 @@ bool verifyAt(const std::string& secretRaw, const std::string& code, std::int64_
     for (std::int64_t offset = -1; offset <= 1; ++offset) {
         const std::int64_t candidate = current + offset;
         if (candidate <= lastUsedCounter) continue;  // код уже использован
-        if (aura::crypto::constantTimeEquals(codeAt(secretRaw, candidate * kPeriod), code)) {
+        if (selfvoy::crypto::constantTimeEquals(codeAt(secretRaw, candidate * kPeriod), code)) {
             matchedCounter = candidate;
             return true;
         }
@@ -116,4 +116,4 @@ std::string otpauthUri(const std::string& secretBase32, const std::string& accou
     return uri;
 }
 
-}  // namespace aura::totp
+}  // namespace selfvoy::totp

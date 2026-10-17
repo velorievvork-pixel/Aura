@@ -1,17 +1,18 @@
-// aura/adminmanager.cpp — роли, блокировка пользователей, журнал аудита.
-#include "aura/adminmanager.h"
+// selfvoy/adminmanager.cpp — роли, блокировка пользователей, журнал аудита.
+#include "selfvoy/adminmanager.h"
 
 #include <algorithm>
 #include <cctype>
 #include <map>
 
-#include "aura/config.h"
-#include "aura/databasemanager.h"
-#include "aura/idatabase.h"
-#include "aura/log.h"
-#include "aura/protocol.h"
+#include "selfvoy/config.h"
+#include "selfvoy/databasemanager.h"
+#include "selfvoy/idatabase.h"
+#include "selfvoy/log.h"
+#include "selfvoy/plan.h"
+#include "selfvoy/protocol.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -85,7 +86,7 @@ void AdminManager::bootstrapAll() {
         if (const auto user = database_.db().findUserByEmail(email)) bootstrap(*user, "");
     }
     if (!bootstrapEmails_.empty()) {
-        AURA_LOG(log::Level::Info, "admin") << "AURA_ADMIN_EMAILS: адресов " << bootstrapEmails_.size();
+        SELFVOY_LOG(log::Level::Info, "admin") << "SELFVOY_ADMIN_EMAILS: адресов " << bootstrapEmails_.size();
     }
 }
 
@@ -98,7 +99,7 @@ void AdminManager::bootstrap(const UserRecord& user, const std::string& remoteAd
         Json detail = Json::object();
         detail.set("role", Json("admin"));
         audit(user.id, "role_bootstrap", detail, remoteAddr);
-        AURA_LOG(log::Level::Info, "admin") << user.email << " назначен администратором (AURA_ADMIN_EMAILS)";
+        SELFVOY_LOG(log::Level::Info, "admin") << user.email << " назначен администратором (SELFVOY_ADMIN_EMAILS)";
     }
 }
 
@@ -137,12 +138,13 @@ Json AdminManager::adminUserJson(const UserRecord& user) {
     json.set("two_factor", Json(twoFactor && twoFactor->enabled));
     json.set("created_at", Json(user.createdAt));
     json.set("last_seen_at", Json(user.lastSeenAt));
+    json.set("plan", plan::toJson(user));
     return json;
 }
 
 void AdminManager::audit(long long userId, const std::string& kind, const Json& detail, const std::string& remoteAddr) {
     const DatabaseError stored = database_.db().insertAudit(userId, kind, detail, remoteAddr);
-    if (!stored.ok) AURA_LOG(log::Level::Warn, "admin") << "audit(" << kind << "): " << stored.message;
+    if (!stored.ok) SELFVOY_LOG(log::Level::Warn, "admin") << "audit(" << kind << "): " << stored.message;
 }
 
 AdminManager::Result AdminManager::stats(long long actorId, std::size_t onlineNow) {
@@ -288,6 +290,43 @@ AdminManager::Result AdminManager::setRole(long long actorId, const Json& payloa
     return result;
 }
 
+AdminManager::Result AdminManager::setPlan(long long actorId, const Json& payload, const std::string& remoteAddr) {
+    UserRecord actor;
+    Result result;
+    if (!requireRole(actorId, "admin", actor, result)) return result;
+    const auto target = database_.db().findUserById(payload.getInt("user_id"));
+    if (!target) return Result::failure(protocol::code::kNotFound, "пользователь не найден");
+    const Json days = payload.get("days");
+    const double number = days.asDouble(-1);
+    if (!days.isNumber() || number != static_cast<double>(static_cast<long long>(number)) || number < 0 ||
+        number > plan::kMaxDays) {
+        return Result::failure(protocol::code::kBadRequest, "days — целое число дней от 0 до 3650 (0 — сбросить Pro)");
+    }
+    const int value = static_cast<int>(number);
+    const DatabaseError saved = database_.db().setUserPlanDays(target->id, value);
+    if (!saved.ok) return Result::failure(protocol::code::kInternal, "не удалось сохранить тариф");
+    auto updated = database_.db().findUserById(target->id);
+    const UserRecord& now = updated ? *updated : *target;
+    Json detail = Json::object();
+    detail.set("days", Json(static_cast<long long>(value)));
+    detail.set("plan_until", Json(now.planUntil));
+    detail.set("old_plan_until", Json(target->planUntil));
+    detail.set("actor_id", Json(actor.id));
+    detail.set("actor_email", Json(actor.email));
+    audit(target->id, "admin_plan_changed", detail, remoteAddr);
+    if (actor.id != target->id) {
+        Json mine = Json::object();
+        mine.set("days", Json(static_cast<long long>(value)));
+        mine.set("plan_until", Json(now.planUntil));
+        mine.set("target_id", Json(target->id));
+        mine.set("target_email", Json(target->email));
+        audit(actor.id, "admin_plan_changed", mine, remoteAddr);
+    }
+    result.ok = true;
+    result.payload.set("user", adminUserJson(now));
+    return result;
+}
+
 AdminManager::Result AdminManager::revokeSessions(long long actorId, const Json& payload, const std::string& remoteAddr) {
     UserRecord actor;
     Result result;
@@ -342,4 +381,4 @@ AdminManager::Result AdminManager::audit(long long actorId, const Json& payload)
     return result;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

@@ -1,28 +1,35 @@
 #!/usr/bin/env bash
-# Установка Aura на чистый сервер Ubuntu 22.04 / 24.04 одной командой.
+# Установка Selfvoy на чистый сервер Ubuntu 22.04 / 24.04 одной командой.
 #
 #   curl -fsSL https://raw.githubusercontent.com/velorievvork-pixel/Aura/main/deploy/install.sh | sudo bash
 #
-# Что делает: ставит Docker и git, скачивает проект в /opt/aura, генерирует все
-# секреты в /opt/aura/.env (в git они не попадают), спрашивает API-ключ LLM
-# (Enter — пропустить, вставить позже: aura llm-key), собирает и запускает
+# Что делает: ставит Docker и git, скачивает проект в /opt/selfvoy, генерирует все
+# секреты в /opt/selfvoy/.env (в git они не попадают), спрашивает API-ключ LLM
+# (Enter — пропустить, вставить позже: selfvoy llm-key), собирает и запускает
 # PostgreSQL + AI-сервис + сервер и печатает адрес для приложения.
 #
 # Необязательные переменные (перед командой: VAR=значение curl … | sudo VAR=… bash):
-#   AURA_DOMAIN=api.example.com — домен, A-запись которого указывает на этот
+#   SELFVOY_DOMAIN=api.example.com — домен, A-запись которого указывает на этот
 #       сервер: тогда TLS-сертификат получает Caddy, адрес приложения wss://домен.
-#   OPENAI_API_KEY, OPENAI_BASE_URL, AURA_LLM_MODEL — LLM без вопросов.
-#   AURA_BRANCH (main), AURA_REPO, AURA_DIR (/opt/aura).
+#   OPENAI_API_KEY, OPENAI_BASE_URL, SELFVOY_LLM_MODEL — LLM без вопросов.
+#   SELFVOY_BRANCH (main), SELFVOY_REPO, SELFVOY_DIR (/opt/selfvoy).
 # Повторный запуск безопасен: .env не перезаписывается, проект обновляется.
+# Установку прежней версии (Aura, /opt/aura) повторный запуск переводит на
+# новые имена: ключи .env, база и роли PostgreSQL (deploy/selfvoy.sh migrate).
 set -euo pipefail
 
-AURA_DIR=${AURA_DIR:-/opt/aura}
-AURA_REPO=${AURA_REPO:-https://github.com/velorievvork-pixel/Aura.git}
-AURA_BRANCH=${AURA_BRANCH:-main}
-AURA_DOMAIN=${AURA_DOMAIN:-}
+# Установка до переименования продукта остаётся в /opt/aura: там .env, а имя
+# каталога — это имя проекта compose, по которому найдётся том PostgreSQL.
+if [ -z "${SELFVOY_DIR:-}" ] && [ ! -e /opt/selfvoy ] && [ -d /opt/aura/.git ]; then
+    SELFVOY_DIR=/opt/aura
+fi
+SELFVOY_DIR=${SELFVOY_DIR:-/opt/selfvoy}
+SELFVOY_REPO=${SELFVOY_REPO:-https://github.com/velorievvork-pixel/Aura.git}
+SELFVOY_BRANCH=${SELFVOY_BRANCH:-main}
+SELFVOY_DOMAIN=${SELFVOY_DOMAIN:-}
 # Для проверки скрипта на уже подготовленной машине (тесты): пропустить apt/git.
-AURA_SKIP_PACKAGES=${AURA_SKIP_PACKAGES:-0}
-AURA_SKIP_GIT=${AURA_SKIP_GIT:-0}
+SELFVOY_SKIP_PACKAGES=${SELFVOY_SKIP_PACKAGES:-0}
+SELFVOY_SKIP_GIT=${SELFVOY_SKIP_GIT:-0}
 
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 die() { printf '\nОшибка: %s\n' "$*" >&2; exit 1; }
@@ -44,7 +51,7 @@ ask() {
 [ "$(id -u)" -eq 0 ] || die "запустите от root: … | sudo bash"
 
 # ------------------------------------------------------------------ пакеты
-if [ "$AURA_SKIP_PACKAGES" != 1 ]; then
+if [ "$SELFVOY_SKIP_PACKAGES" != 1 ]; then
     say "Устанавливаю Docker и git"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
@@ -70,20 +77,20 @@ fi
 docker compose version >/dev/null 2>&1 || die "нет docker compose v2"
 
 # ------------------------------------------------------------------ проект
-if [ "$AURA_SKIP_GIT" != 1 ]; then
-    if [ -d "$AURA_DIR/.git" ]; then
-        say "Обновляю проект в $AURA_DIR"
-        git -C "$AURA_DIR" fetch --quiet origin "$AURA_BRANCH"
-        git -C "$AURA_DIR" checkout --quiet "$AURA_BRANCH"
-        git -C "$AURA_DIR" pull --quiet --ff-only origin "$AURA_BRANCH"
+if [ "$SELFVOY_SKIP_GIT" != 1 ]; then
+    if [ -d "$SELFVOY_DIR/.git" ]; then
+        say "Обновляю проект в $SELFVOY_DIR"
+        git -C "$SELFVOY_DIR" fetch --quiet origin "$SELFVOY_BRANCH"
+        git -C "$SELFVOY_DIR" checkout --quiet "$SELFVOY_BRANCH"
+        git -C "$SELFVOY_DIR" pull --quiet --ff-only origin "$SELFVOY_BRANCH"
     else
-        say "Скачиваю проект в $AURA_DIR"
-        git clone --quiet --branch "$AURA_BRANCH" "$AURA_REPO" "$AURA_DIR" \
-            || die "не удалось скачать $AURA_REPO (если репозиторий приватный — AURA_REPO=https://<токен>@github.com/…)"
+        say "Скачиваю проект в $SELFVOY_DIR"
+        git clone --quiet --branch "$SELFVOY_BRANCH" "$SELFVOY_REPO" "$SELFVOY_DIR" \
+            || die "не удалось скачать $SELFVOY_REPO (если репозиторий приватный — SELFVOY_REPO=https://<токен>@github.com/…)"
     fi
 fi
-cd "$AURA_DIR"
-[ -f docker-compose.yml ] || die "в $AURA_DIR нет docker-compose.yml"
+cd "$SELFVOY_DIR"
+[ -f docker-compose.yml ] || die "в $SELFVOY_DIR нет docker-compose.yml"
 
 # ------------------------------------------------------------------ секреты
 env_get() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true; }
@@ -99,23 +106,28 @@ env_set() {
     chmod 600 .env
 }
 
+# Установка прежней версии: .env с AURA_*, база aura и роли aura_* — на новые имена.
+if [ -f .env ]; then
+    bash deploy/selfvoy.sh migrate
+fi
+
 if [ ! -f .env ]; then
-    say "Генерирую секреты в $AURA_DIR/.env"
+    say "Генерирую секреты в $SELFVOY_DIR/.env"
     umask 077
     {
         echo "# Создано deploy/install.sh $(date -u +%Y-%m-%dT%H:%M:%SZ). Не публиковать, в git не класть."
-        for key in AURA_JWT_SECRET AURA_2FA_KEY AURA_AI_TOKEN POSTGRES_PASSWORD AURA_DB_PASSWORD AURA_AI_DB_PASSWORD; do
+        for key in SELFVOY_JWT_SECRET SELFVOY_2FA_KEY SELFVOY_AI_TOKEN POSTGRES_PASSWORD SELFVOY_DB_PASSWORD SELFVOY_AI_DB_PASSWORD; do
             echo "$key=$(openssl rand -hex 32)"
         done
-        echo "# Почта: log — письма не отправляются (подтверждение: aura verify EMAIL);"
-        echo "# smtp — настоящая отправка (AURA_SMTP_HOST/PORT/USER/PASSWORD/FROM)."
-        echo "AURA_MAIL_DRIVER=log"
-        echo "AURA_LLM_PROVIDER=mock"
-        echo "AURA_LLM_MODEL=gpt-4o-mini"
+        echo "# Почта: log — письма не отправляются (подтверждение: selfvoy verify EMAIL);"
+        echo "# smtp — настоящая отправка (SELFVOY_SMTP_HOST/PORT/USER/PASSWORD/FROM)."
+        echo "SELFVOY_MAIL_DRIVER=log"
+        echo "SELFVOY_LLM_PROVIDER=mock"
+        echo "SELFVOY_LLM_MODEL=gpt-4o-mini"
         echo "OPENAI_API_KEY="
         echo "OPENAI_BASE_URL="
-        echo "AURA_ADMIN_EMAILS="
-        echo "AURA_DOMAIN="
+        echo "SELFVOY_ADMIN_EMAILS="
+        echo "SELFVOY_DOMAIN="
     } > .env
     chmod 600 .env
 fi
@@ -124,27 +136,27 @@ fi
 key=${OPENAI_API_KEY:-}
 if [ -z "$key" ] && [ -z "$(env_get OPENAI_API_KEY)" ]; then
     say "LLM"
-    echo "Вставьте API-ключ LLM (OpenAI или совместимый). Enter — пропустить, вставить позже: aura llm-key"
+    echo "Вставьте API-ключ LLM (OpenAI или совместимый). Enter — пропустить, вставить позже: selfvoy llm-key"
     key=$(ask "API-ключ: " 1)
 fi
 if [ -n "$key" ]; then
     env_set OPENAI_API_KEY "$key"
-    env_set AURA_LLM_PROVIDER openai
+    env_set SELFVOY_LLM_PROVIDER openai
     base=${OPENAI_BASE_URL:-}
     if [ -z "$base" ] && [ -z "${OPENAI_API_KEY:-}" ]; then
         base=$(ask "Адрес API (Enter — OpenAI): ")
     fi
     [ -n "$base" ] && env_set OPENAI_BASE_URL "$base"
-    [ -n "${AURA_LLM_MODEL:-}" ] && env_set AURA_LLM_MODEL "$AURA_LLM_MODEL"
+    [ -n "${SELFVOY_LLM_MODEL:-}" ] && env_set SELFVOY_LLM_MODEL "$SELFVOY_LLM_MODEL"
 fi
 
 # ------------------------------------------------------------------ домен и TLS
-[ -n "$AURA_DOMAIN" ] && env_set AURA_DOMAIN "$AURA_DOMAIN"
-domain=$(env_get AURA_DOMAIN)
+[ -n "$SELFVOY_DOMAIN" ] && env_set SELFVOY_DOMAIN "$SELFVOY_DOMAIN"
+domain=$(env_get SELFVOY_DOMAIN)
 compose=(docker compose -f docker-compose.yml)
 if [ -n "$domain" ]; then
     compose+=(-f deploy/compose.tls.yml)
-    env_set AURA_BIND 127.0.0.1   # порт 9000 — только для Caddy на этой машине
+    env_set SELFVOY_BIND 127.0.0.1   # порт 9000 — только для Caddy на этой машине
 fi
 
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -152,9 +164,13 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: a
     else ufw allow 9000/tcp >/dev/null; fi
 fi
 
-# Команда управления: aura status | logs | verify EMAIL | llm-key | llm-check | update | backup
-ln -sf "$AURA_DIR/deploy/aura.sh" /usr/local/bin/aura
-chmod +x "$AURA_DIR/deploy/aura.sh"
+# Команда управления: selfvoy status | logs | verify EMAIL | llm-key | llm-check | update | backup
+ln -sf "$SELFVOY_DIR/deploy/selfvoy.sh" /usr/local/bin/selfvoy
+chmod +x "$SELFVOY_DIR/deploy/selfvoy.sh"
+# Команда прежней версии (aura) указывала на удалённый deploy/aura.sh.
+if [ -L /usr/local/bin/aura ] && [ ! -e /usr/local/bin/aura ]; then
+    rm -f /usr/local/bin/aura
+fi
 
 # ------------------------------------------------------------------ запуск
 say "Собираю и запускаю (первый раз — 5–15 минут)"
@@ -166,7 +182,7 @@ for _ in $(seq 1 90); do
     [ "$state" = "healthy" ] && break
     sleep 5
 done
-[ "${state:-}" = "healthy" ] || die "сервер не поднялся за 7 минут — посмотрите: aura logs server"
+[ "${state:-}" = "healthy" ] || die "сервер не поднялся за 7 минут — посмотрите: selfvoy logs server"
 
 if [ -n "$domain" ]; then
     address="wss://$domain"
@@ -174,19 +190,19 @@ else
     ip=$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')
     address="ws://$ip:9000"
 fi
-llm=$(env_get AURA_LLM_PROVIDER)
+llm=$(env_get SELFVOY_LLM_PROVIDER)
 
 cat <<EOF
 
 ────────────────────────────────────────────────────────────
- Aura работает.
+ Selfvoy работает.
 
  Адрес сервера для приложения:  $address
-   (Aura → экран входа → «Адрес сервера» → вставить → «Сохранить адрес»)
+   (Selfvoy → экран входа → «Адрес сервера» → вставить → «Сохранить адрес»)
 
- LLM: $( [ "$llm" = openai ] && echo "подключена (проверка: aura llm-check)" || echo "заглушка — вставить ключ: aura llm-key" )
+ LLM: $( [ "$llm" = openai ] && echo "подключена (проверка: selfvoy llm-check)" || echo "заглушка — вставить ключ: selfvoy llm-key" )
  Почта: письма не отправляются — после регистрации подтвердите email:
-   aura verify ваш@email
- Прочее: aura status · aura logs · aura backup · aura update
+   selfvoy verify ваш@email
+ Прочее: selfvoy status · selfvoy logs · selfvoy backup · selfvoy update
 ────────────────────────────────────────────────────────────
 EOF

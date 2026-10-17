@@ -1,6 +1,6 @@
 /*
   Кэш данных пользователя на устройстве: последний профиль (чтобы приложение
-  открывалось офлайн) и локальные ленты — диалог с Аурой и история переговоров.
+  открывалось офлайн) и локальные ленты — диалог с Selfvoy и история переговоров.
 
   Всё это удаляется при выходе и при смене адреса сервера: id пользователя
   уникален только в пределах одного сервера, и лента пользователя 5 с сервера A
@@ -8,8 +8,8 @@
 */
 import type { User } from './api';
 
-export const USER_KEY = 'aura.user';
-const PER_USER_PREFIXES = ['aura.dialog.', 'aura.negotiations.'];
+export const USER_KEY = 'selfvoy.user';
+const PER_USER_PREFIXES = ['selfvoy.dialog.', 'selfvoy.negotiations.'];
 
 type KeyStore = Pick<Storage, 'length' | 'key' | 'removeItem'>;
 

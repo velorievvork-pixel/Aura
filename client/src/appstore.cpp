@@ -29,26 +29,27 @@
 #include <QTextToSpeech>
 #include <QVoice>
 
+#include <algorithm>
 #include <cmath>
 
 #include "websocketclient.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
-constexpr const char* kTokenKey = "aura/token";
-constexpr const char* kRefreshKey = "aura/refresh_token";
-constexpr const char* kServerKey = "aura/server";
-constexpr const char* kDeviceIdKey = "aura/device_id";
-constexpr const char* kPendingFocusKey = "aura/pending_focus";
+constexpr const char* kTokenKey = "selfvoy/token";
+constexpr const char* kRefreshKey = "selfvoy/refresh_token";
+constexpr const char* kServerKey = "selfvoy/server";
+constexpr const char* kDeviceIdKey = "selfvoy/device_id";
+constexpr const char* kPendingFocusKey = "selfvoy/pending_focus";
 // Голосовой ввод и озвучка.
-constexpr const char* kAutoSendVoiceKey = "aura/voice/auto_send";
-constexpr const char* kMicLanguageKey = "aura/voice/language";
-constexpr const char* kTtsEnabledKey = "aura/tts/enabled";
-constexpr const char* kTtsVoiceKey = "aura/tts/voice";
-constexpr const char* kTtsRateKey = "aura/tts/rate";
-constexpr const char* kTtsVolumeKey = "aura/tts/volume";
-constexpr const char* kTtsImportantOnlyKey = "aura/tts/important_only";
+constexpr const char* kAutoSendVoiceKey = "selfvoy/voice/auto_send";
+constexpr const char* kMicLanguageKey = "selfvoy/voice/language";
+constexpr const char* kTtsEnabledKey = "selfvoy/tts/enabled";
+constexpr const char* kTtsVoiceKey = "selfvoy/tts/voice";
+constexpr const char* kTtsRateKey = "selfvoy/tts/rate";
+constexpr const char* kTtsVolumeKey = "selfvoy/tts/volume";
+constexpr const char* kTtsImportantOnlyKey = "selfvoy/tts/important_only";
 // Параметры записи: 16 кГц, моно, 16 бит — формат, который понимает Whisper.
 constexpr int kSampleRate = 16000;
 constexpr int kChannels = 1;
@@ -94,6 +95,7 @@ AppStore::AppStore(QObject* parent)
             loadChats();
             loadPreferences();
             loadMemory();
+            loadServerInfo();  // telegram_bot — есть и в ответе без входа
             reconnectDelayMs_ = 2000;
         } else if (state == WebSocketClient::State::Disconnected) {
             // Ответы на запросы в полёте уже не придут — счётчик privacy и флаг
@@ -184,7 +186,7 @@ QString AppStore::connectionLabel() const {
     if (!client_->isConnected()) {
         return QStringLiteral("нет связи с %1 — пробуем снова, проверьте адрес сервера").arg(serverUrlText_);
     }
-    return authenticated() ? QStringLiteral("Аура на связи") : QStringLiteral("сервер: %1").arg(serverUrlText_);
+    return authenticated() ? QStringLiteral("Selfvoy на связи") : QStringLiteral("сервер: %1").arg(serverUrlText_);
 }
 
 void AppStore::setBusy(bool busy) {
@@ -201,7 +203,7 @@ void AppStore::setStatus(const QString& message) {
 
 void AppStore::setError(const QString& message) {
     if (message.isEmpty()) return;
-    errorMessage_ = message;
+    errorMessage_ = explainError(message);
     emit errorMessageChanged();
 }
 
@@ -227,6 +229,8 @@ void AppStore::applyAuth(const QJsonObject& payload) {
     userName_ = user.value(QStringLiteral("display_name")).toString();
     userEmail_ = user.value(QStringLiteral("email")).toString();
     userBio_ = user.value(QStringLiteral("bio")).toString();
+    // Тариф (F3): {name: pro|free, until, enforced}; старый сервер поля не шлёт.
+    plan_ = user.value(QStringLiteral("plan")).toObject().toVariantMap();
 
     if (payload.contains(QStringLiteral("preferences"))) {
         preferences_ = payload.value(QStringLiteral("preferences")).toObject().toVariantMap();
@@ -235,7 +239,7 @@ void AppStore::applyAuth(const QJsonObject& payload) {
 
     emit profileChanged();
     if (firstTime) emit authenticatedChanged();
-    // Ответ из регистрации «С чем помогать?» — в память Ауры, один раз.
+    // Ответ из регистрации «С чем помогать?» — в память Selfvoy, один раз.
     {
         QSettings settings;
         const QString focus = settings.value(QLatin1String(kPendingFocusKey)).toString();
@@ -314,6 +318,22 @@ void AppStore::clearSession() {
     referral_.clear();
     emit bookingChanged();
     emit referralChanged();
+    // 2026 (F1–F6): тариф, абонементы, оплата, Telegram, календарь, пост.
+    plan_.clear();
+    freeSlots_.clear();
+    packages_.clear();
+    packagesLoaded_ = false;
+    paymentsStatus_.clear();
+    paymentsBusy_ = false;
+    telegramStatus_.clear();
+    calendarFeed_.clear();
+    slotsPost_.clear();
+    emit freeSlotsChanged();
+    emit packagesChanged();
+    emit paymentsChanged();
+    emit telegramChanged();
+    emit calendarFeedChanged();
+    emit slotsPostChanged();
     chats_.clear();
     messages_.clear();
     memory_.clear();
@@ -854,7 +874,7 @@ void AppStore::askAgent(qint64 chatId, const QString& message) {
         return;
     }
     setBusy(true);
-    setStatus(QStringLiteral("Аура думает…"));
+    setStatus(QStringLiteral("Selfvoy думает…"));
     QJsonObject payload;
     payload.insert(QStringLiteral("chat_id"), static_cast<double>(chatId));
     payload.insert(QStringLiteral("message"), message.trimmed());
@@ -869,8 +889,8 @@ void AppStore::askAgent(qint64 chatId, const QString& message) {
                              }
                              const QJsonObject body = response.value(QStringLiteral("payload")).toObject();
                              const QString reply = body.value(QStringLiteral("reply")).toString();
-                             setStatus(reply.isEmpty() ? QStringLiteral("Аура выполнила задачу") : reply);
-                             // Ответ Ауры — «важное»: озвучиваем даже в режиме «только важное».
+                             setStatus(reply.isEmpty() ? QStringLiteral("Selfvoy выполнил задачу") : reply);
+                             // Ответ Selfvoy — «важное»: озвучиваем даже в режиме «только важное».
                              speakImportant(reply.isEmpty() ? QStringLiteral("Готово") : reply);
                              loadMessages(chatId);
                              loadMemory();
@@ -897,7 +917,7 @@ void AppStore::askAgentGlobal(const QString& message) {
         return;
     }
     setBusy(true);
-    setStatus(QStringLiteral("Аура думает…"));
+    setStatus(QStringLiteral("Selfvoy думает…"));
     appendDialog({{QStringLiteral("from"), QStringLiteral("user")},
                   {QStringLiteral("text"), message.trimmed()}});
     QJsonObject payload;
@@ -908,7 +928,7 @@ void AppStore::askAgentGlobal(const QString& message) {
                          [this](const QJsonObject& response, const QString& error) {
                              setBusy(false);
                              if (!error.isEmpty()) {
-                                 appendDialog({{QStringLiteral("from"), QStringLiteral("aura")},
+                                 appendDialog({{QStringLiteral("from"), QStringLiteral("selfvoy")},
                                                {QStringLiteral("text"), error},
                                                {QStringLiteral("error"), true}});
                                  setError(error);
@@ -929,14 +949,14 @@ void AppStore::askAgentGlobal(const QString& message) {
                                      {QStringLiteral("tool"), result.value(QStringLiteral("tool")).toString()}});
                              }
                              QVariantMap entry{
-                                 {QStringLiteral("from"), QStringLiteral("aura")},
+                                 {QStringLiteral("from"), QStringLiteral("selfvoy")},
                                  {QStringLiteral("text"), homeReply_.isEmpty() ? QStringLiteral("Готово") : homeReply_},
                                  {QStringLiteral("intent"), body.value(QStringLiteral("intent")).toString()},
                                  {QStringLiteral("actions"), actions}};
                              const QJsonValue a2a = body.value(QStringLiteral("a2a"));
                              if (a2a.isObject()) entry.insert(QStringLiteral("a2a"), a2a.toObject().toVariantMap());
                              appendDialog(entry);
-                             setStatus(homeReply_.isEmpty() ? QStringLiteral("Аура выполнила задачу")
+                             setStatus(homeReply_.isEmpty() ? QStringLiteral("Selfvoy выполнил задачу")
                                                             : homeReply_);
                              speakImportant(homeReply_.isEmpty() ? QStringLiteral("Готово") : homeReply_);
                              loadNotifications();
@@ -951,7 +971,7 @@ void AppStore::negotiateAgent(const QString& target, const QString& topic,
         return;
     }
     setBusy(true);
-    setStatus(QStringLiteral("Ауры договариваются…"));
+    setStatus(QStringLiteral("Оба Selfvoy договариваются…"));
     QJsonObject payload;
     payload.insert(QStringLiteral("target"), target.trimmed());
     if (!topic.trimmed().isEmpty()) payload.insert(QStringLiteral("topic"), topic.trimmed());
@@ -987,7 +1007,7 @@ void AppStore::negotiateAgent(const QString& target, const QString& topic,
                              negotiationHistory_.prepend(negotiation_);
                              emit negotiationChanged();
                              const bool accepted = negotiation_.value(QStringLiteral("accepted")).toBool();
-                             setStatus(accepted ? QStringLiteral("Ауры договорились")
+                             setStatus(accepted ? QStringLiteral("Оба Selfvoy договорились")
                                                 : QStringLiteral("Собеседник занят — попробуйте позже"));
                              speakImportant(accepted ? QStringLiteral("Встреча согласована")
                                                      : QStringLiteral("Договориться не удалось"));
@@ -1064,7 +1084,7 @@ void AppStore::savePreferences(const QVariantMap& preferences) {
                                  response.value(QStringLiteral("payload")).toObject().toVariantMap();
                              if (privacyPending_ > 0) preferences_.insert(QStringLiteral("privacy"), privacyNow);
                              emit preferencesChanged();
-                             setStatus(QStringLiteral("Настройки Ауры сохранены"));
+                             setStatus(QStringLiteral("Настройки Selfvoy сохранены"));
                          });
 }
 
@@ -1175,8 +1195,22 @@ void AppStore::handleEvent(const QString& name, const QJsonObject& payload) {
         ++unreadNotifications_;
         emit notificationsChanged();
         const QString kind = payload.value(QStringLiteral("kind")).toString();
-        if (kind.startsWith(QLatin1String("booking.")) && bookingLoaded_) loadBooking();
-        if (kind == QLatin1String("referral.joined") && !referral_.isEmpty()) loadReferral();
+        // booking.created/rescheduled/cancelled/confirmed/payment — записи и окна дня меняются.
+        if (kind.startsWith(QLatin1String("booking."))) {
+            if (bookingLoaded_) loadBooking();
+            if (kind != QLatin1String("booking.confirmed") && kind != QLatin1String("booking.payment"))
+                loadFreeSlots();
+        }
+        // package.purchased/payment/low — список абонементов (и записи по пакету).
+        if (kind.startsWith(QLatin1String("package."))) {
+            if (packagesLoaded_) loadPackages(packagesFilter_);
+            if (kind == QLatin1String("package.purchased") && bookingLoaded_) loadBooking();
+        }
+        if ((kind == QLatin1String("referral.joined") || kind == QLatin1String("referral.reward"))
+                && !referral_.isEmpty())
+            loadReferral();
+        // Месяц Pro в подарок — тариф в профиле обновится из auth.me.
+        if (kind == QLatin1String("referral.reward") || kind == QLatin1String("referral.joined")) refreshProfile();
         setStatus(QStringLiteral("%1: %2")
                       .arg(payload.value(QStringLiteral("title")).toString(),
                            payload.value(QStringLiteral("body")).toString()));
@@ -1543,6 +1577,59 @@ QString bookingFieldsProblem(const QVariantMap& fields) {
     if (!inRange("max_per_day", 1, 16)) return QStringLiteral("Встреч в день — от 1 до 16");
     if (!inRange("notice_hours", 0, 168)) return QStringLiteral("Запас до встречи — от 0 до 168 часов");
     if (!inRange("max_series", 1, 12)) return QStringLiteral("Серия — от 1 до 12 встреч");
+    // F4: цена, предоплата, политика отмены (проверяются, только если переданы).
+    const auto has = [&fields](const char* key) { return fields.contains(QLatin1String(key)); };
+    const qint64 price = fields.value(QStringLiteral("price")).toLongLong();
+    if (has("price") && (price < 0 || price > 100000000))
+        return QStringLiteral("Цена — от 0 до 1 000 000");
+    if (has("currency")) {
+        static const QStringList currencies = {QStringLiteral("RUB"), QStringLiteral("USD"), QStringLiteral("EUR"),
+                                               QStringLiteral("KZT"), QStringLiteral("BYN")};
+        if (!currencies.contains(fields.value(QStringLiteral("currency")).toString()))
+            return QStringLiteral("Валюта — рубли, доллары, евро, тенге или белорусские рубли");
+    }
+    const QString prepay = fields.value(QStringLiteral("prepay"), QStringLiteral("none")).toString();
+    if (prepay != QLatin1String("none") && prepay != QLatin1String("full") && prepay != QLatin1String("deposit"))
+        return QStringLiteral("Предоплата — нет, полная или депозит");
+    if (prepay != QLatin1String("none") && price <= 0)
+        return QStringLiteral("Для предоплаты укажите цену");
+    if (prepay == QLatin1String("deposit")) {
+        const qint64 deposit = fields.value(QStringLiteral("deposit")).toLongLong();
+        if (deposit < 1 || deposit > price) return QStringLiteral("Депозит — больше нуля и не больше цены");
+    }
+    const QString paymentUrl = fields.value(QStringLiteral("payment_url")).toString().trimmed();
+    if (!paymentUrl.isEmpty() && (!paymentUrl.startsWith(QLatin1String("https://")) || paymentUrl.contains(QLatin1Char(' '))
+                                  || paymentUrl.size() > 500))
+        return QStringLiteral("Ссылка оплаты — только https://, без пробелов, до 500 символов");
+    const QString paymentNote = fields.value(QStringLiteral("payment_note")).toString().trimmed();
+    if (paymentNote.toUcs4().size() > 300 || paymentNote.contains(QLatin1Char('\n')))
+        return QStringLiteral("Реквизиты — одна строка до 300 символов");
+    if (has("pay_within_minutes") && !inRange("pay_within_minutes", 15, 1440))
+        return QStringLiteral("Срок оплаты — от 15 до 1440 минут");
+    if (has("cancel_hours") && !inRange("cancel_hours", 0, 168))
+        return QStringLiteral("Бесплатная отмена — от 0 до 168 часов");
+    if (has("late_cancel")) {
+        const QString late = fields.value(QStringLiteral("late_cancel")).toString();
+        if (late != QLatin1String("allow") && late != QLatin1String("block"))
+            return QStringLiteral("Отмена позже срока — разрешить или запретить");
+    }
+    if (fields.value(QStringLiteral("policy_text")).toString().trimmed().toUcs4().size() > 500)
+        return QStringLiteral("Текст политики отмены — до 500 символов");
+    // F5: предложения пакетов — не больше 5.
+    const QVariantList offers = fields.value(QStringLiteral("packages")).toList();
+    if (offers.size() > 5) return QStringLiteral("Пакетов на странице — не больше 5");
+    for (const QVariant& item : offers) {
+        const QVariantMap offer = item.toMap();
+        const QString offerTitle = offer.value(QStringLiteral("title")).toString().trimmed();
+        if (offerTitle.isEmpty() || offerTitle.toUcs4().size() > 80 || offerTitle.contains(QLatin1Char('\n')))
+            return QStringLiteral("Название пакета — от 1 до 80 символов в одну строку");
+        const int sessions = offer.value(QStringLiteral("sessions")).toInt();
+        if (sessions < 2 || sessions > 100) return QStringLiteral("В пакете — от 2 до 100 занятий");
+        const qint64 offerPrice = offer.value(QStringLiteral("price")).toLongLong();
+        if (offerPrice <= 0 || offerPrice > 100000000) return QStringLiteral("Цена пакета — больше нуля");
+        const int days = offer.value(QStringLiteral("valid_days"), 90).toInt();
+        if (days < 7 || days > 365) return QStringLiteral("Срок пакета — от 7 до 365 дней");
+    }
     return QString();
 }
 
@@ -1559,6 +1646,7 @@ void AppStore::loadBooking() {
                                                  .value(QStringLiteral("pages")).toArray().toVariantList();
                              bookingLoaded_ = true;
                              emit bookingChanged();
+                             loadFreeSlots();  // окна первой открытой страницы — для «Сегодня»
                          });
     QJsonObject payload;
     payload.insert(QStringLiteral("limit"), 100);
@@ -1586,6 +1674,37 @@ void AppStore::saveBookingPage(qint64 pageId, const QVariantMap& fields) {
         payload.insert(QLatin1String(key), fields.value(QLatin1String(key)).toInt());
     }
     payload.insert(QStringLiteral("weekends"), fields.value(QStringLiteral("weekends")).toBool());
+    // F1/F3/F4: напоминания, подпись, цена и политика — только переданные поля.
+    for (const char* key : {"guest_reminders", "hide_branding"}) {
+        if (fields.contains(QLatin1String(key))) payload.insert(QLatin1String(key), fields.value(QLatin1String(key)).toBool());
+    }
+    for (const char* key : {"price", "deposit"}) {
+        if (fields.contains(QLatin1String(key)))
+            payload.insert(QLatin1String(key), static_cast<double>(fields.value(QLatin1String(key)).toLongLong()));
+    }
+    for (const char* key : {"pay_within_minutes", "cancel_hours"}) {
+        if (fields.contains(QLatin1String(key))) payload.insert(QLatin1String(key), fields.value(QLatin1String(key)).toInt());
+    }
+    for (const char* key : {"currency", "prepay", "payment_url", "payment_note", "late_cancel", "policy_text"}) {
+        if (fields.contains(QLatin1String(key)))
+            payload.insert(QLatin1String(key), fields.value(QLatin1String(key)).toString().trimmed());
+    }
+    // F5: предложения пакетов — целым массивом; id сохраняется у прежних.
+    if (fields.contains(QStringLiteral("packages"))) {
+        QJsonArray offers;
+        for (const QVariant& item : fields.value(QStringLiteral("packages")).toList()) {
+            const QVariantMap offer = item.toMap();
+            QJsonObject entry;
+            const qint64 id = offer.value(QStringLiteral("id")).toLongLong();
+            if (id > 0) entry.insert(QStringLiteral("id"), static_cast<double>(id));
+            entry.insert(QStringLiteral("title"), offer.value(QStringLiteral("title")).toString().trimmed());
+            entry.insert(QStringLiteral("sessions"), offer.value(QStringLiteral("sessions")).toInt());
+            entry.insert(QStringLiteral("price"), static_cast<double>(offer.value(QStringLiteral("price")).toLongLong()));
+            entry.insert(QStringLiteral("valid_days"), offer.value(QStringLiteral("valid_days"), 90).toInt());
+            offers.append(entry);
+        }
+        payload.insert(QStringLiteral("packages"), offers);
+    }
     if (pageId > 0) payload.insert(QStringLiteral("page_id"), static_cast<double>(pageId));
     bookingSaving_ = true;
     emit bookingSavingChanged();
@@ -1594,7 +1713,7 @@ void AppStore::saveBookingPage(qint64 pageId, const QVariantMap& fields) {
                              bookingSaving_ = false;
                              emit bookingSavingChanged();
                              if (!error.isEmpty()) {
-                                 emit bookingPageFailed(error);
+                                 emit bookingPageFailed(explainError(error));
                                  return;
                              }
                              emit bookingPageSaved();
@@ -1655,6 +1774,11 @@ void AppStore::loadReferral() {
                                  return;
                              }
                              referral_ = response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                             const QVariantMap plan = referral_.value(QStringLiteral("plan")).toMap();
+                             if (!plan.isEmpty() && plan != plan_) {
+                                 plan_ = plan;
+                                 emit profileChanged();
+                             }
                              emit referralChanged();
                          });
 }
@@ -1865,7 +1989,7 @@ void AppStore::beginIntegration(const QString& provider) {
                              pendingProvider_ = provider;
                              emit integrationUrlChanged();
                              if (QDesktopServices::openUrl(QUrl(integrationUrl_))) {
-                                 setStatus(QStringLiteral("Открыт браузер: разрешите Ауре доступ"));
+                                 setStatus(QStringLiteral("Открыт браузер: разрешите Selfvoy доступ"));
                              } else {
                                  setError(QStringLiteral("Не удалось открыть браузер. Ссылка: ") +
                                           integrationUrl_);
@@ -1889,7 +2013,7 @@ void AppStore::handleRedirectRequest() {
             query.setQuery(QString::fromLatin1(firstLine.mid(question + 1, end - question - 1)));
         }
         const QByteArray body =
-            "<html><body style='font-family:sans-serif'><h3>Аура: доступ получен</h3>"
+            "<html><body style='font-family:sans-serif'><h3>Selfvoy: доступ получен</h3>"
             "<p>Окно можно закрыть и вернуться в приложение.</p></body></html>";
         socket->write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
                       "Content-Length: " + QByteArray::number(body.size()) +
@@ -2046,8 +2170,8 @@ void AppStore::revokePushDevice(qint64 deviceId) {
 void AppStore::appendDialog(QVariantMap entry) {
     entry.insert(QStringLiteral("id"), ++dialogSeq_);
     entry.insert(QStringLiteral("at"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
-    auraDialog_.append(entry);
-    emit auraDialogChanged();
+    selfvoyDialog_.append(entry);
+    emit selfvoyDialogChanged();
 }
 
 void AppStore::setPendingFocus(const QString& text) {
@@ -2056,9 +2180,9 @@ void AppStore::setPendingFocus(const QString& text) {
     else settings.setValue(QLatin1String(kPendingFocusKey), text.trimmed());
 }
 
-void AppStore::clearAuraDialog() {
-    auraDialog_.clear();
-    emit auraDialogChanged();
+void AppStore::clearSelfvoyDialog() {
+    selfvoyDialog_.clear();
+    emit selfvoyDialogChanged();
 }
 
 QString AppStore::toolMode(const QString& tool) const {
@@ -2079,7 +2203,7 @@ void AppStore::bookNegotiation() {
         setError(QStringLiteral("Нет согласованного места для брони"));
         return;
     }
-    // Пользователь запретил Ауре бронировать — не обходим его выбор.
+    // Пользователь запретил Selfvoy бронировать — не обходим его выбор.
     if (toolMode(QStringLiteral("book_table")) == QLatin1String("deny")) {
         setError(QStringLiteral("Бронирование запрещено в настройках разрешений"));
         return;
@@ -2180,4 +2304,505 @@ void AppStore::reopenTask(qint64 taskId) {
                          });
 }
 
-}  // namespace aura
+// ============================================================ 2026: функции роста F1–F6
+// Сторона владельца: оплата записей, абонементы, ЮKassa, Telegram, ICS-подписка,
+// пост со свободными окнами, тариф. Протокол — docs/PROTOCOL.md (F1–F6).
+
+namespace {
+// Текст для pro_required: как получить Pro (реферальная награда — месяц обоим).
+const char* kProRequiredText =
+    "Это доступно на тарифе Pro. Пригласите коллегу в Selfvoy — вы оба получите месяц Pro "
+    "(Настройки → Пригласить друзей).";
+
+double idValue(qint64 id) { return static_cast<double>(id); }
+}  // namespace
+
+QString AppStore::explainError(const QString& error) {
+    // WebSocketClient отдаёт ошибку как "<code>: <message>".
+    if (error.startsWith(QLatin1String("pro_required"))) {
+        const QString text = QString::fromUtf8(kProRequiredText);
+        emit proRequired(text);
+        return text;
+    }
+    return error;
+}
+
+void AppStore::putBooking(const QJsonObject& booking) {
+    if (booking.isEmpty()) return;
+    const QVariantMap map = booking.toVariantMap();
+    const qint64 id = static_cast<qint64>(booking.value(QStringLiteral("id")).toDouble());
+    for (auto& item : guestBookings_) {
+        if (static_cast<qint64>(item.toMap().value(QStringLiteral("id")).toDouble()) == id) {
+            item = map;
+            break;
+        }
+    }
+    emit bookingChanged();
+    emit bookingUpdated(map);
+}
+
+void AppStore::putPackage(const QJsonObject& package) {
+    if (package.isEmpty()) return;
+    const qint64 id = static_cast<qint64>(package.value(QStringLiteral("id")).toDouble());
+    bool found = false;
+    for (auto& item : packages_) {
+        if (static_cast<qint64>(item.toMap().value(QStringLiteral("id")).toDouble()) == id) {
+            item = package.toVariantMap();
+            found = true;
+            break;
+        }
+    }
+    if (!found) packages_.prepend(package.toVariantMap());
+    emit packagesChanged();
+}
+
+void AppStore::loadServerInfo() {
+    client_->sendRequest(QStringLiteral("server.info"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) return;
+                             const QString bot = response.value(QStringLiteral("payload")).toObject()
+                                                     .value(QStringLiteral("telegram_bot")).toString();
+                             if (bot == telegramBot_) return;
+                             telegramBot_ = bot;
+                             emit serverInfoChanged();
+                         });
+}
+
+void AppStore::refreshProfile() {
+    if (userId_ == 0) return;
+    client_->sendRequest(QStringLiteral("auth.me"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) return;
+                             const QJsonObject user = response.value(QStringLiteral("payload")).toObject();
+                             plan_ = user.value(QStringLiteral("plan")).toObject().toVariantMap();
+                             emit profileChanged();
+                         });
+}
+
+void AppStore::loadFreeSlots() {
+    if (userId_ == 0) return;
+    // Окна — те же, что видит гость: booking.get по slug первой открытой страницы.
+    QString slug;
+    qint64 pageId = 0;
+    for (const QVariant& item : bookingPages_) {
+        const QVariantMap page = item.toMap();
+        if (page.value(QStringLiteral("status")).toString() == QLatin1String("active")) {
+            slug = page.value(QStringLiteral("slug")).toString();
+            pageId = page.value(QStringLiteral("id")).toLongLong();
+            break;
+        }
+    }
+    if (slug.isEmpty()) {
+        if (!freeSlots_.isEmpty()) {
+            freeSlots_.clear();
+            emit freeSlotsChanged();
+        }
+        return;
+    }
+    QJsonObject payload;
+    payload.insert(QStringLiteral("slug"), slug);
+    client_->sendRequest(QStringLiteral("booking.get"), payload,
+                         [this, pageId](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) return;  // окна — подсказка, ошибку не показываем
+                             const QJsonArray list = response.value(QStringLiteral("payload")).toObject()
+                                                          .value(QStringLiteral("page")).toObject()
+                                                          .value(QStringLiteral("slots")).toArray();
+                             freeSlots_.clear();
+                             for (const auto& item : list) {
+                                 QVariantMap map = item.toObject().toVariantMap();
+                                 map.insert(QStringLiteral("page_id"), pageId);
+                                 freeSlots_.append(map);
+                             }
+                             emit freeSlotsChanged();
+                         });
+}
+
+void AppStore::setBookingPayment(qint64 bookingId, const QString& status) {
+    if (status != QLatin1String("paid") && status != QLatin1String("waived") && status != QLatin1String("refunded")) return;
+    QJsonObject payload;
+    payload.insert(QStringLiteral("booking_id"), idValue(bookingId));
+    payload.insert(QStringLiteral("status"), status);
+    client_->sendRequest(QStringLiteral("booking.paymentSet"), payload,
+                         [this, status](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             putBooking(response.value(QStringLiteral("payload")).toObject()
+                                            .value(QStringLiteral("booking")).toObject());
+                             setStatus(status == QLatin1String("paid")     ? QStringLiteral("Оплата отмечена — гостю ушло письмо")
+                                       : status == QLatin1String("waived") ? QStringLiteral("Отмечено: без оплаты")
+                                                                           : QStringLiteral("Отмечен возврат оплаты"));
+                         });
+}
+
+void AppStore::cancelBookingOccurrence(qint64 bookingId, const QString& occurrence) {
+    QJsonObject payload;
+    payload.insert(QStringLiteral("booking_id"), idValue(bookingId));
+    if (!occurrence.isEmpty()) payload.insert(QStringLiteral("occurrence"), occurrence);
+    client_->sendRequest(QStringLiteral("booking.ownerCancel"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             putBooking(response.value(QStringLiteral("payload")).toObject()
+                                            .value(QStringLiteral("booking")).toObject());
+                             setStatus(QStringLiteral("Встреча отменена — гость получит письмо"));
+                             loadTasks();
+                             loadFreeSlots();
+                         });
+}
+
+// ---------------------------------------------------------- абонементы (F5)
+void AppStore::loadPackages(const QString& status) {
+    packagesFilter_ = status;
+    QJsonObject payload;
+    payload.insert(QStringLiteral("limit"), 200);
+    if (!status.isEmpty()) payload.insert(QStringLiteral("status"), status);
+    client_->sendRequest(QStringLiteral("package.list"), payload,
+                         [this, status](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             if (status != packagesFilter_) return;  // фильтр уже сменили
+                             packages_ = response.value(QStringLiteral("payload")).toObject()
+                                             .value(QStringLiteral("packages")).toArray().toVariantList();
+                             packagesLoaded_ = true;
+                             emit packagesChanged();
+                         });
+}
+
+void AppStore::issuePackage(const QVariantMap& fields) {
+    const qint64 pageId = fields.value(QStringLiteral("page_id")).toLongLong();
+    const qint64 offerId = fields.value(QStringLiteral("offer_id")).toLongLong();
+    const QString guest = fields.value(QStringLiteral("guest_name")).toString().trimmed();
+    if (pageId <= 0) {
+        emit packageFailed(QStringLiteral("Выберите страницу записи"));
+        return;
+    }
+    if (guest.isEmpty() || guest.toUcs4().size() > 80) {
+        emit packageFailed(QStringLiteral("Имя клиента — от 1 до 80 символов"));
+        return;
+    }
+    QJsonObject payload;
+    payload.insert(QStringLiteral("page_id"), idValue(pageId));
+    payload.insert(QStringLiteral("guest_name"), guest);
+    if (offerId > 0) {
+        payload.insert(QStringLiteral("offer_id"), idValue(offerId));
+    } else {
+        const QString title = fields.value(QStringLiteral("title")).toString().trimmed();
+        const int sessions = fields.value(QStringLiteral("sessions")).toInt();
+        const int days = fields.value(QStringLiteral("valid_days"), 90).toInt();
+        const qint64 price = fields.value(QStringLiteral("price")).toLongLong();
+        if (title.isEmpty() || title.toUcs4().size() > 80 || title.contains(QLatin1Char('\n'))) {
+            emit packageFailed(QStringLiteral("Название — от 1 до 80 символов в одну строку"));
+            return;
+        }
+        if (sessions < 1 || sessions > 100) {
+            emit packageFailed(QStringLiteral("Занятий — от 1 до 100"));
+            return;
+        }
+        if (days < 7 || days > 365) {
+            emit packageFailed(QStringLiteral("Срок — от 7 до 365 дней"));
+            return;
+        }
+        if (price < 0 || price > 100000000) {
+            emit packageFailed(QStringLiteral("Цена — от 0 до 1 000 000"));
+            return;
+        }
+        payload.insert(QStringLiteral("title"), title);
+        payload.insert(QStringLiteral("sessions"), sessions);
+        payload.insert(QStringLiteral("valid_days"), days);
+        payload.insert(QStringLiteral("price"), static_cast<double>(price));
+    }
+    for (const char* key : {"guest_email", "cc_email"}) {
+        const QString value = fields.value(QLatin1String(key)).toString().trimmed();
+        if (!value.isEmpty()) payload.insert(QLatin1String(key), value);
+    }
+    payload.insert(QStringLiteral("paid"), fields.value(QStringLiteral("paid")).toBool());
+    client_->sendRequest(QStringLiteral("package.issue"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 emit packageFailed(explainError(error));
+                                 return;
+                             }
+                             const QJsonObject result = response.value(QStringLiteral("payload")).toObject();
+                             putPackage(result.value(QStringLiteral("package")).toObject());
+                             setStatus(QStringLiteral("Абонемент выдан — клиенту ушло письмо со ссылкой"));
+                             emit packageIssued(result.toVariantMap());
+                         });
+}
+
+void AppStore::adjustPackage(qint64 packageId, int delta) {
+    if (delta == 0 || delta < -100 || delta > 100) return;
+    QJsonObject payload;
+    payload.insert(QStringLiteral("package_id"), idValue(packageId));
+    payload.insert(QStringLiteral("delta"), delta);
+    client_->sendRequest(QStringLiteral("package.adjust"), payload,
+                         [this, delta](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             putPackage(response.value(QStringLiteral("payload")).toObject()
+                                            .value(QStringLiteral("package")).toObject());
+                             setStatus(delta > 0 ? QStringLiteral("Занятия добавлены")
+                                                 : QStringLiteral("Занятия списаны"));
+                         });
+}
+
+void AppStore::cancelPackage(qint64 packageId) {
+    QJsonObject payload;
+    payload.insert(QStringLiteral("package_id"), idValue(packageId));
+    client_->sendRequest(QStringLiteral("package.cancel"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             putPackage(response.value(QStringLiteral("payload")).toObject()
+                                            .value(QStringLiteral("package")).toObject());
+                             setStatus(QStringLiteral("Абонемент отменён — сделанные записи остаются"));
+                         });
+}
+
+void AppStore::setPackagePayment(qint64 packageId, const QString& status) {
+    if (status != QLatin1String("paid") && status != QLatin1String("waived") && status != QLatin1String("refunded")) return;
+    QJsonObject payload;
+    payload.insert(QStringLiteral("package_id"), idValue(packageId));
+    payload.insert(QStringLiteral("status"), status);
+    client_->sendRequest(QStringLiteral("package.paymentSet"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             putPackage(response.value(QStringLiteral("payload")).toObject()
+                                            .value(QStringLiteral("package")).toObject());
+                             setStatus(QStringLiteral("Оплата абонемента отмечена"));
+                         });
+}
+
+// ---------------------------------------------------------- оплата: ЮKassa (F4)
+void AppStore::loadPayments() {
+    client_->sendRequest(QStringLiteral("payments.status"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) return;
+                             paymentsStatus_ = response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                             emit paymentsChanged();
+                         });
+}
+
+void AppStore::connectYooKassa(const QString& shopId, const QString& secretKey) {
+    const QString shop = shopId.trimmed();
+    const QString secret = secretKey.trimmed();
+    if (shop.isEmpty() || shop.size() > 20 || !std::all_of(shop.begin(), shop.end(), [](QChar c) { return c.isDigit(); })) {
+        emit paymentsFailed(QStringLiteral("shopId — только цифры, до 20"));
+        return;
+    }
+    if (!secret.startsWith(QLatin1String("live_")) && !secret.startsWith(QLatin1String("test_"))) {
+        emit paymentsFailed(QStringLiteral("Секретный ключ начинается с live_ или test_"));
+        return;
+    }
+    if (paymentsBusy_) return;
+    paymentsBusy_ = true;
+    emit paymentsChanged();
+    // Ключ живёт только в этом запросе: не сохраняется в QSettings, не пишется в журнал
+    // и не попадает в errorMessage/statusMessage.
+    QJsonObject payload;
+    payload.insert(QStringLiteral("provider"), QStringLiteral("yookassa"));
+    payload.insert(QStringLiteral("shop_id"), shop);
+    payload.insert(QStringLiteral("secret_key"), secret);
+    client_->sendRequest(QStringLiteral("payments.connect"), payload,
+                         [this](const QJsonObject& response, const QString& error) {
+                             paymentsBusy_ = false;
+                             if (!error.isEmpty()) {
+                                 emit paymentsChanged();
+                                 emit paymentsFailed(explainError(error));
+                                 return;
+                             }
+                             paymentsStatus_ = response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                             emit paymentsChanged();
+                             emit paymentsConnected();
+                             setStatus(QStringLiteral("ЮKassa подключена"));
+                         });
+}
+
+void AppStore::disconnectPayments() {
+    client_->sendRequest(QStringLiteral("payments.disconnect"), {},
+                         [this](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             setStatus(QStringLiteral("ЮKassa отключена"));
+                             loadPayments();
+                         });
+}
+
+// ---------------------------------------------------------- Telegram-бот (F2)
+void AppStore::loadTelegram() {
+    client_->sendRequest(QStringLiteral("telegram.status"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) return;
+                             telegramStatus_ = response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                             emit telegramChanged();
+                         });
+}
+
+void AppStore::linkTelegram() {
+    client_->sendRequest(QStringLiteral("telegram.link"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             const QString url = response.value(QStringLiteral("payload")).toObject()
+                                                     .value(QStringLiteral("url")).toString();
+                             if (!url.startsWith(QLatin1String("https://"))) {
+                                 setError(QStringLiteral("Сервер не прислал ссылку на бота"));
+                                 return;
+                             }
+                             setStatus(QStringLiteral("Нажмите «Старт» в Telegram — ссылка действует 15 минут"));
+                             emit telegramLinkReady(url);
+                         });
+}
+
+void AppStore::unlinkTelegram() {
+    client_->sendRequest(QStringLiteral("telegram.unlink"), {},
+                         [this](const QJsonObject&, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             setStatus(QStringLiteral("Telegram отключён"));
+                             loadTelegram();
+                         });
+}
+
+void AppStore::setTelegramNotifications(bool enabled) {
+    // prefs.set меняет ключи верхнего уровня целиком — шлём весь объект notifications.
+    QVariantMap notifications = preferences_.value(QStringLiteral("notifications")).toMap();
+    notifications.insert(QStringLiteral("telegram"), enabled);
+    QJsonObject payload;
+    payload.insert(QStringLiteral("notifications"), QJsonObject::fromVariantMap(notifications));
+    client_->sendRequest(QStringLiteral("prefs.set"), payload,
+                         [this, enabled](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 emit preferencesChanged();  // переключатель вернётся к сохранённому
+                                 return;
+                             }
+                             const QVariant privacyNow = preferences_.value(QStringLiteral("privacy"));
+                             preferences_ = response.value(QStringLiteral("payload")).toObject().toVariantMap();
+                             if (privacyPending_ > 0) preferences_.insert(QStringLiteral("privacy"), privacyNow);
+                             emit preferencesChanged();
+                             setStatus(enabled ? QStringLiteral("Уведомления придут и в Telegram")
+                                               : QStringLiteral("Уведомления в Telegram выключены"));
+                         });
+}
+
+// ---------------------------------------------------------- ICS-подписка (F6)
+void AppStore::applyCalendarFeed(const QJsonObject& payload) {
+    QVariantMap feed;
+    feed.insert(QStringLiteral("enabled"), payload.value(QStringLiteral("enabled")).toBool());
+    QString url = payload.value(QStringLiteral("url")).toString().trimmed();
+    const QString path = payload.value(QStringLiteral("path")).toString().trimmed();
+    if (!url.startsWith(QLatin1String("http")) && path.startsWith(QLatin1Char('/'))) {
+        // Сервер не знает свой внешний адрес: wss://host → https://host, ws://host → http://host.
+        const QUrl server(serverUrlText_);
+        const QString scheme = server.scheme() == QLatin1String("wss")  ? QStringLiteral("https")
+                               : server.scheme() == QLatin1String("ws") ? QStringLiteral("http")
+                                                                        : QString();
+        if (!scheme.isEmpty() && !server.host().isEmpty()) {
+            QUrl built;
+            built.setScheme(scheme);
+            built.setHost(server.host());
+            if (server.port() > 0) built.setPort(server.port());
+            built.setPath(path);
+            url = built.toString();
+        } else {
+            url.clear();
+        }
+    }
+    if (!url.startsWith(QLatin1String("http"))) url.clear();
+    feed.insert(QStringLiteral("url"), url);
+    feed.insert(QStringLiteral("webcal"), url.startsWith(QLatin1String("https://"))
+                                              ? QStringLiteral("webcal://") + url.mid(8) : QString());
+    calendarFeed_ = feed;
+    emit calendarFeedChanged();
+}
+
+void AppStore::loadCalendarFeed() {
+    client_->sendRequest(QStringLiteral("calendar.feed"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) return;
+                             // Ссылку сервер показывает только при создании: сохраним уже
+                             // полученную в этой сессии, если подписка по-прежнему включена.
+                             const QJsonObject payload = response.value(QStringLiteral("payload")).toObject();
+                             const QString known = calendarFeed_.value(QStringLiteral("url")).toString();
+                             if (payload.value(QStringLiteral("enabled")).toBool() && !known.isEmpty()) return;
+                             applyCalendarFeed(payload);
+                         });
+}
+
+void AppStore::resetCalendarFeed() {
+    client_->sendRequest(QStringLiteral("calendar.feedReset"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             applyCalendarFeed(response.value(QStringLiteral("payload")).toObject());
+                             setStatus(QStringLiteral("Новая ссылка календаря готова — прежняя больше не работает"));
+                         });
+}
+
+void AppStore::disableCalendarFeed() {
+    client_->sendRequest(QStringLiteral("calendar.feedDisable"), {},
+                         [this](const QJsonObject& response, const QString& error) {
+                             if (!error.isEmpty()) {
+                                 setError(error);
+                                 return;
+                             }
+                             applyCalendarFeed(response.value(QStringLiteral("payload")).toObject());
+                             setStatus(QStringLiteral("Подписка на календарь выключена"));
+                         });
+}
+
+// ---------------------------------------------------------- пост со свободными окнами (F6)
+void AppStore::requestSlotsPost(qint64 pageId, int days, const QString& format) {
+    const int span = qBound(1, days, 14);
+    const QString kind = (format == QLatin1String("vk") || format == QLatin1String("plain")) ? format
+                                                                                              : QStringLiteral("telegram");
+    slotsPost_ = QVariantMap{{QStringLiteral("page_id"), pageId}, {QStringLiteral("loading"), true},
+                             {QStringLiteral("text"), QString()}, {QStringLiteral("error"), QString()}};
+    emit slotsPostChanged();
+    QJsonObject payload;
+    payload.insert(QStringLiteral("page_id"), idValue(pageId));
+    payload.insert(QStringLiteral("days"), span);
+    payload.insert(QStringLiteral("format"), kind);
+    client_->sendRequest(QStringLiteral("booking.slotsPost"), payload,
+                         [this, pageId](const QJsonObject& response, const QString& error) {
+                             if (slotsPost_.value(QStringLiteral("page_id")).toLongLong() != pageId) return;
+                             QVariantMap post;
+                             post.insert(QStringLiteral("page_id"), pageId);
+                             post.insert(QStringLiteral("loading"), false);
+                             if (!error.isEmpty()) {
+                                 post.insert(QStringLiteral("error"), explainError(error));
+                             } else {
+                                 const QJsonObject body = response.value(QStringLiteral("payload")).toObject();
+                                 QString text = body.value(QStringLiteral("text")).toString();
+                                 const QString url = body.value(QStringLiteral("url")).toString();
+                                 post.insert(QStringLiteral("slots"), body.value(QStringLiteral("slots")).toInt());
+                                 post.insert(QStringLiteral("url"), url);
+                                 post.insert(QStringLiteral("text"), text);
+                             }
+                             slotsPost_ = post;
+                             emit slotsPostChanged();
+                         });
+}
+
+}  // namespace selfvoy

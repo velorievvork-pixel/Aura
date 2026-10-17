@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { canModerate, isStaff, makeAdminApi, type AdminUser, type Role } from './adminApi';
-import type { AuraSocket } from './socket';
+import type { SelfvoySocket } from './socket';
 
 function target(id: number, role: Role): AdminUser {
   return {
@@ -52,7 +52,7 @@ describe('isStaff', () => {
 describe('makeAdminApi', () => {
   it('шлёт admin.* с полями ровно как в протоколе', async () => {
     const request = vi.fn().mockResolvedValue({});
-    const api = makeAdminApi({ request } as unknown as AuraSocket);
+    const api = makeAdminApi({ request } as unknown as SelfvoySocket);
     await api.stats();
     await api.users('ann', 'moderator', 'disabled');
     await api.users('', '', '', 50, 25);

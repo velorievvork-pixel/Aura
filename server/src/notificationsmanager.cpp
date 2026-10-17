@@ -1,15 +1,16 @@
-// aura/server/notificationsmanager.cpp — in-app + push (этап 13).
+// selfvoy/server/notificationsmanager.cpp — in-app + push (этап 13).
 #include "notificationsmanager.h"
 
 #include <algorithm>
 #include <cctype>
 #include <ctime>
 
-#include "aura/log.h"
-#include "aura/net.h"
-#include "aura/protocol.h"
+#include "selfvoy/log.h"
+#include "selfvoy/net.h"
+#include "selfvoy/protocol.h"
+#include "selfvoy/telegrambot.h"
 
-namespace aura {
+namespace selfvoy {
 
 NotificationsManager::NotificationsManager(DatabaseManager& database,
                                            ConnectionManager& connections,
@@ -31,7 +32,7 @@ long long NotificationsManager::create(long long userId,
     long long id = 0;
     const auto saved = database_.db().createNotification(record, id);
     if (!saved.ok) {
-        AURA_LOG(log::Level::Warn, "notify") << "не удалось сохранить уведомление: " << saved.message;
+        SELFVOY_LOG(log::Level::Warn, "notify") << "не удалось сохранить уведомление: " << saved.message;
         return 0;
     }
     record.id = id;
@@ -40,11 +41,28 @@ long long NotificationsManager::create(long long userId,
     // In-app: событие живым сессиям владельца.
     connections_.deliverToUser(userId, protocol::event("notification.new", record.toJson()));
 
-    // Push: с уважением к тихим часам и отключённым типам (in-app уже сохранено).
+    // Push и Telegram: с уважением к тихим часам и отключённым типам (in-app уже сохранено).
     if (!kindMuted(userId, kind) && !inQuietHours(userId)) {
         deliverPush(record, unreadCount(userId));
+        if (telegram_ && telegramKind(kind)) deliverTelegram(record);
     }
     return id;
+}
+
+bool NotificationsManager::telegramKind(const std::string& kind) {
+    for (const char* prefix : {"booking.", "package.", "invite.", "referral.", "waitlist.", "tax."}) {
+        if (kind.rfind(prefix, 0) == 0) return true;
+    }
+    return kind == "task.due" || kind == "telegram.question";  // F7: вопрос гостя специалисту
+}
+
+void NotificationsManager::deliverTelegram(const NotificationRecord& record) {
+    if (!telegram_->enabled()) return;
+    const auto user = database_.db().findUserById(record.userId);
+    if (!user || user->telegramChatId == 0) return;
+    const Json prefs = database_.db().getPreferences(record.userId);
+    if (!prefs.get("notifications").getBool("telegram", true)) return;
+    telegram_->sendMessage(user->telegramChatId, record.body.empty() ? record.title : record.title + "\n" + record.body);
 }
 
 NotificationsManager::Result NotificationsManager::list(long long userId,
@@ -185,7 +203,7 @@ void NotificationsManager::deliverPush(const NotificationRecord& record, long lo
                 database_.db().touchPushDevice(device.id);
                 continue;
             }
-            AURA_LOG(log::Level::Warn, "push")
+            SELFVOY_LOG(log::Level::Warn, "push")
                 << "шлюз не принял push для устройства " << device.id << ": "
                 << (error.empty() ? "HTTP " + std::to_string(response.status) : error);
             continue;
@@ -193,7 +211,7 @@ void NotificationsManager::deliverPush(const NotificationRecord& record, long lo
 
         // Драйвер dev (по умолчанию): честный лог вместо имитации доставки.
         database_.db().touchPushDevice(device.id);
-        AURA_LOG(log::Level::Info, "push")
+        SELFVOY_LOG(log::Level::Info, "push")
             << "dev-push user=" << record.userId << " device=" << device.id
             << " kind=" << record.kind << " title=" << record.title;
     }
@@ -217,7 +235,7 @@ Json NotificationsManager::pushEnvelope(const PushDeviceRecord& device,
         notification.set("body", Json(record.body));
 
         Json androidNotification = Json::object();
-        androidNotification.set("channel_id", Json("aura"));
+        androidNotification.set("channel_id", Json("selfvoy"));
         androidNotification.set("sound", Json("default"));
 
         Json androidConfig = Json::object();
@@ -270,4 +288,4 @@ Json NotificationsManager::pushEnvelope(const PushDeviceRecord& device,
     return envelope;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

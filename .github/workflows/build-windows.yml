@@ -1,7 +1,7 @@
-# Сборка desktop-клиента Aura под Windows (.exe) — артефакт Actions.
+# Сборка desktop-клиента Selfvoy под Windows (.exe) — артефакт Actions.
 #
 # Результат: вкладка Actions → «Build Windows client» → Artifacts →
-# aura-desktop-windows.zip (aura-client.exe + Qt-рантайм + libpq).
+# selfvoy-desktop-windows.zip (selfvoy-client.exe + Qt-рантайм + libpq).
 # Подпись кода и установщик (NSIS/MSI) — отдельно, нужны ваши сертификаты.
 #
 # Безопасность: сборка (исполняет код из репозитория) идёт с токеном только
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   windows:
-    name: Qt 6 / MSVC — aura-client.exe
+    name: Qt 6 / MSVC — selfvoy-client.exe
     runs-on: windows-2022
     permissions:
       contents: read
@@ -67,11 +67,11 @@ jobs:
         shell: pwsh
         run: |
           # Собираем только клиент: сервер — POSIX-код (сокеты/poll), на
-          # Windows он не нужен и не собирается (AURA_WITH_SERVER=OFF).
+          # Windows он не нужен и не собирается (SELFVOY_WITH_SERVER=OFF).
           # Клиент libpq не использует — сервер у пользователя живёт в Docker.
           # Только MSVC (cl.exe): mingw64 на раннере конфликтует с MSVC-сборкой Qt.
           cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-            -DAURA_WITH_CLIENT=ON -DAURA_WITH_SERVER=OFF 2>&1 | Tee-Object -FilePath build.log
+            -DSELFVOY_WITH_CLIENT=ON -DSELFVOY_WITH_SERVER=OFF 2>&1 | Tee-Object -FilePath build.log
           cmake --build build --config Release 2>&1 | Tee-Object -Append build.log
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
@@ -79,10 +79,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item build\client\Release\aura-client.exe dist\
+          Copy-Item build\client\Release\selfvoy-client.exe dist\
           # --qmldir: без него windeployqt не кладёт QML-модули (QtQuick.Controls,
           # Layouts, Effects), и программа падает при запуске.
-          windeployqt --release --no-translations --qmldir client\qml dist\aura-client.exe 2>&1 | Tee-Object -Append build.log
+          windeployqt --release --no-translations --qmldir client\qml dist\selfvoy-client.exe 2>&1 | Tee-Object -Append build.log
           # Рантайм MSVC рядом с программой: на чистой Windows его может не быть.
           foreach ($dll in @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll", "concrt140.dll")) {
             if (Test-Path "C:\Windows\System32\$dll") { Copy-Item "C:\Windows\System32\$dll" dist\ -Force }
@@ -97,24 +97,24 @@ jobs:
             echo "$nsis" >> $env:GITHUB_PATH
             $env:PATH = "$nsis;$env:PATH"
           }
-          makensis client\packaging\windows\aura.nsi
+          makensis client\packaging\windows\selfvoy.nsi
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          Compress-Archive -Path dist\* -DestinationPath Aura-portable-windows.zip -Force
+          Compress-Archive -Path dist\* -DestinationPath Selfvoy-portable-windows.zip -Force
 
       - name: Артефакт — установщик
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: aura-setup-windows
+          name: selfvoy-setup-windows
           path: |
-            Aura-Setup.exe
-            Aura-portable-windows.zip
+            Selfvoy-Setup.exe
+            Selfvoy-portable-windows.zip
 
       - name: Артефакт — exe
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: aura-desktop-windows
+          name: selfvoy-desktop-windows
           path: dist/
 
       - name: Артефакт — лог сборки (для отладки)
@@ -154,7 +154,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: aura-setup-windows
+          name: selfvoy-setup-windows
           path: setup
 
       - name: Публикация в ветку builds/windows
@@ -162,26 +162,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          mkdir pub && cp setup/Aura-Setup.exe setup/Aura-portable-windows.zip pub/
+          mkdir pub && cp setup/Selfvoy-Setup.exe setup/Selfvoy-portable-windows.zip pub/
           cd pub
           for f in *; do
             if [ "$(wc -c < "$f")" -gt 94000000 ]; then split -b 90m -d "$f" "$f.part"; rm "$f"; fi
           done
           git init -q -b builds/windows
-          git config user.name aura-ci && git config user.email ci@aura.local
+          git config user.name selfvoy-ci && git config user.email ci@selfvoy.local
           git add -A && git commit -qm "windows ${{ github.sha }} [skip ci]"
           git push -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" HEAD:refs/heads/builds/windows
 
-      # Страница Releases → «Сборки Aura»: файлы можно скачать прямо оттуда.
+      # Страница Releases → «Сборки Selfvoy»: файлы можно скачать прямо оттуда.
       - name: Публикация в релиз «builds» (Windows)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           R="$GITHUB_REPOSITORY"
           gh release view builds -R "$R" >/dev/null 2>&1 || gh release create builds -R "$R" \
-            --prerelease --target "$GITHUB_SHA" --title "Сборки Aura (последние)" \
-            --notes "Автоматические сборки из main. Aura-debug.apk и Aura-Setup.exe — нативные клиенты (Compose, Qt). Aura-web.apk и Aura-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Aura." || true
-          gh release upload builds setup/Aura-Setup.exe setup/Aura-portable-windows.zip -R "$R" --clobber
+            --prerelease --target "$GITHUB_SHA" --title "Сборки Selfvoy (последние)" \
+            --notes "Автоматические сборки из main. Selfvoy-debug.apk и Selfvoy-Setup.exe — нативные клиенты (Compose, Qt). Selfvoy-web.apk и Selfvoy-web-Setup.exe — веб-клиент (Capacitor, Electron). Всем нужен сервер Selfvoy." || true
+          gh release upload builds setup/Selfvoy-Setup.exe setup/Selfvoy-portable-windows.zip -R "$R" --clobber
+          # Файлы со старыми именами (до переименования продукта в Selfvoy).
+          for old in Aura-Setup.exe Aura-portable-windows.zip; do gh release delete-asset builds "$old" -R "$R" -y || true; done
 
   # Логи — в ветку arena/build-logs (песочница читает её обычным git).
   log:
@@ -228,8 +230,8 @@ jobs:
             [ -f build.log ] && cp build.log logpub/windows-build.log
             (
               cd logpub
-              git config user.name "aura-ci"
-              git config user.email "ci@aura.local"
+              git config user.name "selfvoy-ci"
+              git config user.email "ci@selfvoy.local"
               git add -A 2>&1
               git commit -m "windows log ${{ github.sha }} [skip ci]" 2>&1
               git -c http.extraHeader="Authorization: token $GH_TOKEN" push origin HEAD:arena/build-logs 2>&1

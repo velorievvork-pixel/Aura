@@ -24,7 +24,7 @@ function AuthLayout({ title, lead, children, foot }: { title: string; lead?: Rea
           <h1 className="title-lg">{title}</h1>
           {lead && <p className="lead" style={{ margin: '6px 0 0' }}>{lead}</p>}
         </div>
-        {conn !== 'open' && <div className="notice warn">Нет связи с сервером Aura — вход заработает, как только он ответит.</div>}
+        {conn !== 'open' && <div className="notice warn">Нет связи с сервером Selfvoy — вход заработает, как только он ответит.</div>}
         {children}
         {foot && <div className="auth-foot">{foot}</div>}
         <ServerAddress compact />
@@ -76,8 +76,8 @@ export function Login() {
 
   return (
     <AuthLayout
-      title="Вход в Aura"
-      lead="Ваша Аура договаривается о встречах с Аурами других людей."
+      title="Вход в Selfvoy"
+      lead="Ваш Selfvoy договаривается о встречах с Selfvoy других людей."
       foot={
         <>
           Нет аккаунта? <Link className="link" to="/signup">Зарегистрироваться</Link>
@@ -146,7 +146,7 @@ export function Signup() {
       }
     >
       <form className="stack" onSubmit={submit} noValidate>
-        {referral && <div className="notice">Вас пригласили в Aura — после регистрации пригласивший увидит, что вы с нами.</div>}
+        {referral && <div className="notice">Вас пригласили в Selfvoy — после регистрации пригласивший увидит, что вы с нами.</div>}
         {errors.form && <div className="notice error">{errors.form}</div>}
         <Field label="Имя" error={errors.name}>
           <input className={`input ${errors.name ? 'invalid' : ''}`} autoComplete="name" value={form.name} onChange={set('name')} placeholder="Алекс Морган" autoFocus />
@@ -167,7 +167,9 @@ function DevCode({ code }: { code?: string }) {
   if (!code) return null;
   return (
     <div className="notice">
-      Сервер в режиме разработки и не отправляет письма. Код: <b className="mono">{code}</b>
+      <span>
+        Сервер в режиме разработки и не отправляет письма. Код: <b className="mono">{code}</b>
+      </span>
     </div>
   );
 }
@@ -286,7 +288,7 @@ export function TwoFactor() {
   return (
     <AuthLayout
       title="Двухфакторная защита"
-      lead={recovery ? 'Введите один из резервных кодов, сохранённых при включении 2FA.' : 'Откройте Google Authenticator или Яндекс Ключ и введите код для Aura.'}
+      lead={recovery ? 'Введите один из резервных кодов, сохранённых при включении 2FA.' : 'Откройте Google Authenticator или Яндекс Ключ и введите код для Selfvoy.'}
       foot={
         <Link className="link" to="/login">
           <ArrowLeft size={14} style={{ verticalAlign: -2 }} /> Другой аккаунт

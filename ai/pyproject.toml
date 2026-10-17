@@ -1,7 +1,7 @@
 [project]
-name = "aura-ai"
+name = "selfvoy-ai"
 version = "0.1.0"
-description = "Python AI Service для сети ИИ-агентов Aura"
+description = "Python AI Service для сети ИИ-агентов Selfvoy"
 requires-python = ">=3.10"
 dependencies = [
   "fastapi>=0.143.0",
@@ -21,7 +21,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["aura_ai*"]
+include = ["selfvoy_ai*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

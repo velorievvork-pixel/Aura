@@ -4,9 +4,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 
-from aura_ai.agent import AuraAgent, _normalize_name
-from aura_ai.llm import BaseLLM, MockLLM
-from aura_ai.models import (
+from selfvoy_ai.agent import SelfvoyAgent, _normalize_name
+from selfvoy_ai.llm import BaseLLM, MockLLM
+from selfvoy_ai.models import (
     AgentContext,
     AgentRequest,
     CalendarEvent,
@@ -14,17 +14,17 @@ from aura_ai.models import (
     Preferences,
     utcnow,
 )
-from aura_ai.tools import ToolManager
+from selfvoy_ai.tools import ToolManager
 
 NOW = datetime(2026, 9, 17, 14, 0, tzinfo=timezone.utc)  # четверг
 
 
-def make_agent(llm: BaseLLM | None = None) -> AuraAgent:
-    from aura_ai.config import Settings
+def make_agent(llm: BaseLLM | None = None) -> SelfvoyAgent:
+    from selfvoy_ai.config import Settings
 
     settings = Settings()
     settings.memory_backend = "memory://"
-    return AuraAgent(settings=settings, llm=llm or MockLLM(), tools=ToolManager())
+    return SelfvoyAgent(settings=settings, llm=llm or MockLLM(), tools=ToolManager())
 
 
 def user_context(**overrides: Any) -> AgentContext:
@@ -167,7 +167,7 @@ def test_unknown_tool_from_llm_is_filtered():
 
 
 def test_llm_failure_falls_back_to_local_rules():
-    from aura_ai.llm import LLMError
+    from selfvoy_ai.llm import LLMError
 
     class BrokenLLM(BaseLLM):
         name = "broken"

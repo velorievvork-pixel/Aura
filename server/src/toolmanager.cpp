@@ -1,5 +1,5 @@
-// aura/toolmanager.cpp
-#include "aura/toolmanager.h"
+// selfvoy/toolmanager.cpp
+#include "selfvoy/toolmanager.h"
 
 #include <algorithm>
 #include <cctype>
@@ -8,14 +8,22 @@
 #include <string>
 #include <vector>
 
-#include "aura/crypto.h"
-#include "aura/log.h"
-#include "aura/net.h"
+#include "selfvoy/crypto.h"
+#include "selfvoy/log.h"
+#include "selfvoy/net.h"
 #include "integrationmanager.h"
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
+
+// Первые maxBytes байт строки, не разрывая многобайтовый символ UTF-8.
+std::string utf8Prefix(const std::string& text, std::size_t maxBytes) {
+    if (text.size() <= maxBytes) return text;
+    std::size_t end = maxBytes;
+    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
+    return text.substr(0, end);
+}
 
 struct Cafe {
     const char* name;
@@ -175,7 +183,7 @@ ToolManager::Result ToolManager::run(long long userId, const std::string& tool, 
         return result;
     }
     if (result.ok) ++executed_;
-    AURA_LOG(result.ok ? log::Level::Debug : log::Level::Warn, "tools")
+    SELFVOY_LOG(result.ok ? log::Level::Debug : log::Level::Warn, "tools")
         << tool << (result.ok ? " выполнен" : " ошибка: " + result.error);
     return result;
 }
@@ -195,7 +203,7 @@ ToolManager::Result ToolManager::sendMessage(long long userId, const Json& args)
             result.error = "не указан получатель (to или chat_id)";
             return result;
         }
-        const auto opened = chats_.open(userId, to, "Аура: " + text.substr(0, 40));
+        const auto opened = chats_.open(userId, to, "Selfvoy: " + utf8Prefix(text, 40));
         if (!opened.ok) {
             result.error = opened.message;
             return result;
@@ -204,7 +212,7 @@ ToolManager::Result ToolManager::sendMessage(long long userId, const Json& args)
     }
 
     Json payload = Json::object();
-    payload.set("origin", Json("aura-agent"));
+    payload.set("origin", Json("selfvoy-agent"));
     const auto sent = chats_.send(userId, chatId, text, "agent_action", payload);
     if (!sent.ok) {
         result.error = sent.message;
@@ -318,7 +326,7 @@ ToolManager::Result ToolManager::sendEmail(long long userId, const Json& args) {
             result.data.set("sent_at", Json(isoNow()));
             return result;
         }
-        AURA_LOG(log::Level::Debug, "tools")
+        SELFVOY_LOG(log::Level::Debug, "tools")
             << "Gmail не подключён (" << tokenError << ") — отправляю через почтовый API";
     }
 
@@ -413,7 +421,7 @@ ToolManager::Result ToolManager::bookTable(long long userId, const Json& args) {
 
     Json sandbox = payload;
     sandbox.set("confirmation",
-                Json("AURA-" + crypto::toHex(crypto::sha1(place + at + std::to_string(people))).substr(0, 10)));
+                Json("SELFVOY-" + crypto::toHex(crypto::sha1(place + at + std::to_string(people))).substr(0, 10)));
     result = httpTool(config_.mapsApiUrl, payload, sandbox);
     return result;
 }
@@ -454,7 +462,7 @@ ToolManager::Result ToolManager::checkCalendar(long long userId, const Json& arg
                 result.data.set("source", Json("google_calendar"));
                 return result;
             }
-            AURA_LOG(log::Level::Warn, "tools")
+            SELFVOY_LOG(log::Level::Warn, "tools")
                 << "Google Calendar недоступен (" << (error.empty() ? response.body : error)
                 << ") — показываю память";
         }
@@ -530,7 +538,7 @@ ToolManager::Result ToolManager::httpTool(const std::string& endpoint,
     const net::HttpResponse response =
         net::httpRequest("POST", endpoint, headers, payload.dump(), config_.aiTimeoutMs, error);
     if (!response.ok()) {
-        AURA_LOG(log::Level::Warn, "tools") << "внешний API ответил " << response.status << ": " << error;
+        SELFVOY_LOG(log::Level::Warn, "tools") << "внешний API ответил " << response.status << ": " << error;
         result.ok = true;  // деградируем до sandbox, но не роняем сценарий
         result.data = sandboxFallback;
         result.data.set("degraded", Json(true));
@@ -544,4 +552,4 @@ ToolManager::Result ToolManager::httpTool(const std::string& endpoint,
     return result;
 }
 
-}  // namespace aura
+}  // namespace selfvoy

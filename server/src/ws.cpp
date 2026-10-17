@@ -1,14 +1,14 @@
-// aura/ws.cpp
-#include "aura/ws.h"
+// selfvoy/ws.cpp
+#include "selfvoy/ws.h"
 
 #include <algorithm>
 #include <cctype>
 #include <sstream>
 #include <vector>
 
-#include "aura/crypto.h"
+#include "selfvoy/crypto.h"
 
-namespace aura::ws {
+namespace selfvoy::ws {
 
 namespace {
 
@@ -56,11 +56,8 @@ Handshake parseHandshake(const std::string& request) {
     std::istringstream request_line(lines[0]);
     std::string method, target, version;
     request_line >> method >> target >> version;
-    if (method != "GET") {
-        result.error = "ожидался GET, получено " + method;
-        return result;
-    }
-    result.path = target;
+    result.method = method;
+    result.path = target.empty() ? std::string("/") : target;
 
     std::map<std::string, std::string> headers;
     for (std::size_t i = 1; i < lines.size(); ++i) {
@@ -68,9 +65,19 @@ Handshake parseHandshake(const std::string& request) {
         if (colon == std::string::npos) continue;
         headers[toLower(trim(lines[i].substr(0, colon)))] = trim(lines[i].substr(colon + 1));
     }
-
+    // Заголовки, нужные и обычным HTTP-маршрутам (/healthz, /ics/…): адрес клиента за прокси.
+    if (const auto it = headers.find("origin"); it != headers.end()) result.origin = it->second;
+    if (const auto it = headers.find("authorization"); it != headers.end()) result.authorization = it->second;
+    if (const auto it = headers.find("user-agent"); it != headers.end()) result.userAgent = it->second;
+    if (const auto it = headers.find("x-forwarded-for"); it != headers.end()) result.forwardedFor = it->second;
     const auto upgrade = headers.find("upgrade");
-    if (upgrade == headers.end() || toLower(upgrade->second).find("websocket") == std::string::npos) {
+    result.upgrade = upgrade != headers.end() && toLower(upgrade->second).find("websocket") != std::string::npos;
+
+    if (method != "GET") {
+        result.error = "ожидался GET, получено " + method;
+        return result;
+    }
+    if (!result.upgrade) {
         result.error = "нет заголовка Upgrade: websocket";
         return result;
     }
@@ -86,10 +93,6 @@ Handshake parseHandshake(const std::string& request) {
         result.error = "ожидался Sec-WebSocket-Version: 13";
         return result;
     }
-    if (const auto it = headers.find("origin"); it != headers.end()) result.origin = it->second;
-    if (const auto it = headers.find("authorization"); it != headers.end()) result.authorization = it->second;
-    if (const auto it = headers.find("user-agent"); it != headers.end()) result.userAgent = it->second;
-    if (const auto it = headers.find("x-forwarded-for"); it != headers.end()) result.forwardedFor = it->second;
     result.valid = true;
     return result;
 }
@@ -207,4 +210,4 @@ DecodeResult decodeFrame(const std::string& buffer,
     return DecodeResult::Complete;
 }
 
-}  // namespace aura::ws
+}  // namespace selfvoy::ws

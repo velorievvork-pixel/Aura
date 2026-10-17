@@ -1,7 +1,7 @@
 import java.io.FileInputStream
 import java.util.Properties
 
-// :app — Android-клиент Aura (Jetpack Compose). Секреты не храним: токены —
+// :app — Android-клиент Selfvoy (Jetpack Compose). Секреты не храним: токены —
 // в EncryptedSharedPreferences (Android Keystore), FCM-конфиг — в
 // google-services.json, которого нет в репозитории (шаблон рядом).
 plugins {
@@ -26,22 +26,22 @@ val localProperties = Properties().apply {
 }
 
 android {
-    namespace = "ai.aura.app"
+    namespace = "app.selfvoy"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "ai.aura.app"
+        applicationId = "app.selfvoy"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
         // Адрес C++-сервера по умолчанию (без пути, как у desktop/iOS-клиентов);
-        // переопределяется в local.properties (aura.server.url=ws://10.0.2.2:9000
+        // переопределяется в local.properties (selfvoy.server.url=ws://10.0.2.2:9000
         // для эмулятора) и в настройках приложения. Слушатель: docs/SETUP.md.
         buildConfigField(
             "String",
             "DEFAULT_SERVER_URL",
-            "\"${localProperties.getProperty("aura.server.url", "ws://10.0.2.2:9000")}\"",
+            "\"${localProperties.getProperty("selfvoy.server.url", "ws://10.0.2.2:9000")}\"",
         )
     }
 
@@ -75,7 +75,7 @@ android {
 }
 
 dependencies {
-    implementation(project(":aurakit"))
+    implementation(project(":selfvoykit"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(platform(libs.androidx.compose.bom))

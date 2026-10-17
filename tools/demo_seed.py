@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Демо-данные для проверки клиентов на dev-стеке (tools/dev_stack.sh).
 
-Создаёт три аккаунта — Алекс Морган (alex@aura.local), Дима Волков и Мария Чен —
-с настройками, задачами Алекса, чатом с Димой, запросом к Ауре и одним
-раундом переговоров. Нужен сервер с AURA_MAIL_DRIVER=dev (код подтверждения
+Создаёт три аккаунта — Алекс Морган (alex@selfvoy.local), Дима Волков и Мария Чен —
+с настройками, задачами Алекса, чатом с Димой, запросом к Selfvoy и одним
+раундом переговоров. Нужен сервер с SELFVOY_MAIL_DRIVER=dev (код подтверждения
 приходит в ответе auth.register).
 
 Пароль берётся из окружения, в коде его нет:
-    AURA_DEMO_PASSWORD=...  python3 tools/demo_seed.py [ws://127.0.0.1:9000]
+    SELFVOY_DEMO_PASSWORD=...  python3 tools/demo_seed.py [ws://127.0.0.1:9000]
 """
 from __future__ import annotations
 
@@ -20,8 +20,8 @@ from datetime import datetime, timedelta, timezone
 
 import websockets
 
-URL = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("AURA_SERVER", "ws://127.0.0.1:9000")
-PASSWORD = os.environ.get("AURA_DEMO_PASSWORD", "")
+URL = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("SELFVOY_SERVER", "ws://127.0.0.1:9000")
+PASSWORD = os.environ.get("SELFVOY_DEMO_PASSWORD", "")
 
 
 class Client:
@@ -70,18 +70,18 @@ def iso(moment: datetime) -> str:
 
 async def main() -> None:
     if len(PASSWORD) < 8:
-        sys.exit("Задайте AURA_DEMO_PASSWORD: 8+ символов, буквы и цифры")
+        sys.exit("Задайте SELFVOY_DEMO_PASSWORD: 8+ символов, буквы и цифры")
     now = datetime.now().astimezone()
 
-    alex = await account("Алекс Морган", "alex@aura.local", {
+    alex = await account("Алекс Морган", "alex@selfvoy.local", {
         "city": "Москва", "diet": [], "transport": "metro", "budget_limit": 1000,
         "work_hours": list(range(10, 19)), "preferred_hours": list(range(13, 21)), "onboarded": True,
     })
-    dima = await account("Дима Волков", "dima@aura.local", {
+    dima = await account("Дима Волков", "dima@selfvoy.local", {
         "city": "Москва", "diet": ["gluten_free"], "transport": "car", "onboarded": True,
         "work_hours": list(range(9, 18)),
     })
-    await account("Мария Чен", "maria@aura.local", {"city": "Москва", "diet": ["vegetarian"], "onboarded": True})
+    await account("Мария Чен", "maria@selfvoy.local", {"city": "Москва", "diet": ["vegetarian"], "onboarded": True})
 
     def at(days: int, hour: int, minute: int = 0) -> str:
         moment = (now + timedelta(days=days)).replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -103,16 +103,16 @@ async def main() -> None:
     done_payload = done.get("payload", {})
     await alex.call("tasks.complete", {"id": done_payload.get("id") or done_payload.get("task", {}).get("id")})
 
-    chat = await alex.call("chat.open", {"contact": "dima@aura.local"})
+    chat = await alex.call("chat.open", {"contact": "dima@selfvoy.local"})
     chat_id = chat["payload"]["chat"]["id"]
     await alex.call("chat.send", {"chat_id": chat_id, "body": "Дима, привет! Давай на выходных обсудим стартап?"})
-    await dima.call("chat.send", {"chat_id": chat_id, "body": "Давай! Пусть наши Ауры договорятся."})
-    await alex.call("chat.open", {"contact": "maria@aura.local"})
+    await dima.call("chat.send", {"chat_id": chat_id, "body": "Давай! Пусть наши Selfvoy договорятся."})
+    await alex.call("chat.open", {"contact": "maria@selfvoy.local"})
 
     await alex.call("agent.ask", {"message": "Хочу встретиться с Димой в эти выходные и обсудить стартап"})
-    await alex.call("agent.negotiate", {"target": "dima@aura.local", "topic": "обсудить стартап",
+    await alex.call("agent.negotiate", {"target": "dima@selfvoy.local", "topic": "обсудить стартап",
                                         "duration_minutes": 90, "window_hours": 96})
-    print("демо-данные готовы: alex@aura.local, dima@aura.local, maria@aura.local")
+    print("демо-данные готовы: alex@selfvoy.local, dima@selfvoy.local, maria@selfvoy.local")
 
 
 if __name__ == "__main__":

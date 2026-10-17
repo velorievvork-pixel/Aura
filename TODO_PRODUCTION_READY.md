@@ -18,7 +18,7 @@ check: ai-test server-test protocol-check
 ai-test:
 	cd ai && PYTHONPATH=. pytest -q
 server-build:
-	cmake -S server -B build/server -G Ninja -DAURA_BUILD_TESTS=ON
+	cmake -S server -B build/server -G Ninja -DSELFVOY_BUILD_TESTS=ON
 	cmake --build build/server
 server-test: server-build
 	cd build/server && ctest --output-on-failure
@@ -26,7 +26,7 @@ protocol-check:
 	python3 tools/check_ios_protocol.py
 	python3 tools/check_android_protocol.py
 e2e:
-	AURA_E2E_GOOGLE_MOCK=1 AURA_E2E_PUSH_MOCK=1 python3 tools/e2e.py
+	SELFVOY_E2E_GOOGLE_MOCK=1 SELFVOY_E2E_PUSH_MOCK=1 python3 tools/e2e.py
 schema-check:
 	psql "$(PG_URI)" -f schema/schema.sql
 	psql "$(PG_URI)" -f schema/seed.sql
@@ -51,7 +51,7 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: aura
+      POSTGRES_DB: selfvoy
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -64,9 +64,9 @@ services:
     depends_on:
       postgres: {condition: service_healthy}
     environment:
-      AURA_MEMORY_BACKEND: postgres
-      AURA_AI_TOKEN: ${AURA_AI_TOKEN}
-      AURA_LLM_PROVIDER: ${AURA_LLM_PROVIDER:-mock}
+      SELFVOY_MEMORY_BACKEND: postgres
+      SELFVOY_AI_TOKEN: ${SELFVOY_AI_TOKEN}
+      SELFVOY_LLM_PROVIDER: ${SELFVOY_LLM_PROVIDER:-mock}
     healthcheck:
       test: curl -f http://localhost:8000/healthz
   
@@ -78,10 +78,10 @@ services:
     ports:
       - "9000:9000"
     environment:
-      AURA_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres/aura
-      AURA_AI_URL: http://ai:8000
-      AURA_JWT_SECRET: ${AURA_JWT_SECRET}
-      AURA_2FA_KEY: ${AURA_2FA_KEY}
+      SELFVOY_DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres/selfvoy
+      SELFVOY_AI_URL: http://ai:8000
+      SELFVOY_JWT_SECRET: ${SELFVOY_JWT_SECRET}
+      SELFVOY_2FA_KEY: ${SELFVOY_2FA_KEY}
 
 volumes:
   pgdata:
@@ -95,39 +95,39 @@ volumes:
 
 ```bash
 # ========== КРИТИЧНЫЕ СЕКРЕТЫ (ЗАМЕНИТЬ В ПРОДЕ!) ==========
-AURA_JWT_SECRET=dev-jwt-secret-CHANGE-IN-PRODUCTION
-AURA_2FA_KEY=dev-2fa-key-CHANGE-IN-PRODUCTION
+SELFVOY_JWT_SECRET=dev-jwt-secret-CHANGE-IN-PRODUCTION
+SELFVOY_2FA_KEY=dev-2fa-key-CHANGE-IN-PRODUCTION
 POSTGRES_PASSWORD=postgres
 
 # ========== AI Service ==========
-AURA_AI_TOKEN=shared-secret-cpp-ai-CHANGE-IN-PRODUCTION
-AURA_LLM_PROVIDER=mock
+SELFVOY_AI_TOKEN=shared-secret-cpp-ai-CHANGE-IN-PRODUCTION
+SELFVOY_LLM_PROVIDER=mock
 # OPENAI_API_KEY=sk-...
-# AURA_LLM_MODEL=gpt-4
+# SELFVOY_LLM_MODEL=gpt-4
 
 # ========== Database ==========
-AURA_DATABASE_URL=postgresql://postgres:postgres@localhost/aura
+SELFVOY_DATABASE_URL=postgresql://postgres:postgres@localhost/selfvoy
 
 # ========== Сеть ==========
-AURA_HOST=0.0.0.0
-AURA_PORT=9000
-AURA_MAX_CONNECTIONS=1024
+SELFVOY_HOST=0.0.0.0
+SELFVOY_PORT=9000
+SELFVOY_MAX_CONNECTIONS=1024
 
 # ========== Push-уведомления ==========
-AURA_PUSH_DRIVER=dev
-# AURA_PUSH_DRIVER=webhook
-# AURA_PUSH_WEBHOOK_URL=https://push-gateway.internal/push
+SELFVOY_PUSH_DRIVER=dev
+# SELFVOY_PUSH_DRIVER=webhook
+# SELFVOY_PUSH_WEBHOOK_URL=https://push-gateway.internal/push
 
 # ========== Google OAuth (опционально) ==========
-# AURA_GOOGLE_CLIENT_ID=
-# AURA_GOOGLE_CLIENT_SECRET=
+# SELFVOY_GOOGLE_CLIENT_ID=
+# SELFVOY_GOOGLE_CLIENT_SECRET=
 
 # ========== Rate Limiting ==========
-AURA_MAX_LOGIN_ATTEMPTS=8
-AURA_LOGIN_WINDOW=300
+SELFVOY_MAX_LOGIN_ATTEMPTS=8
+SELFVOY_LOGIN_WINDOW=300
 
 # ========== Логи ==========
-AURA_LOG_LEVEL=info
+SELFVOY_LOG_LEVEL=info
 ```
 
 ---
@@ -138,9 +138,9 @@ AURA_LOG_LEVEL=info
 
 **Структура:**
 ```markdown
-# Aura — Персональный ИИ-агент
+# Selfvoy — Персональный ИИ-агент
 
-[![CI](https://github.com/USER/aura/actions/workflows/ci.yml/badge.svg)](...)
+[![CI](https://github.com/USER/selfvoy/actions/workflows/ci.yml/badge.svg)](...)
 
 Кроссплатформенное приложение с мультиагентной архитектурой: 
 C++ WebSocket-сервер + Python AI-сервис + клиенты (Qt/QML, iOS, Android).
@@ -154,8 +154,8 @@ C++ WebSocket-сервер + Python AI-сервис + клиенты (Qt/QML, iO
 
 ## 🚀 Быстрый старт
 ```bash
-git clone https://github.com/USER/aura-main.git
-cd aura-main
+git clone https://github.com/USER/selfvoy-main.git
+cd selfvoy-main
 cp .env.example .env
 # Отредактируйте .env (минимум: секреты JWT/2FA)
 make docker-up
@@ -196,21 +196,21 @@ make e2e    # сквозной сценарий (141 проверка)
 
 ---
 
-### 6. AI-сервис: AURA_AI_TOKEN обязателен
-**Где:** `ai/aura_ai/app.py:15-20, 92`  
+### 6. AI-сервис: SELFVOY_AI_TOKEN обязателен
+**Где:** `ai/selfvoy_ai/app.py:15-20, 92`  
 **Проблема:** Без токена эндпоинты открыты + CORS `*` (CVE B3)
 
 **Исправить:**
 ```python
 # Строка 15-20
-service_token = os.getenv("AURA_AI_TOKEN")
+service_token = os.getenv("SELFVOY_AI_TOKEN")
 if not service_token:
     if os.getenv("ENV") == "production":
-        raise ValueError("AURA_AI_TOKEN обязателен в production!")
-    logger.warning("⚠️  AURA_AI_TOKEN не задан — эндпоинты ОТКРЫТЫ (только dev!)")
+        raise ValueError("SELFVOY_AI_TOKEN обязателен в production!")
+    logger.warning("⚠️  SELFVOY_AI_TOKEN не задан — эндпоинты ОТКРЫТЫ (только dev!)")
 
 # Строка 92 (CORS)
-allowed_origins = os.getenv("AURA_CORS_ORIGINS", "http://localhost:9000").split(",")
+allowed_origins = os.getenv("SELFVOY_CORS_ORIGINS", "http://localhost:9000").split(",")
 app.add_middleware(CORSMiddleware, allow_origins=allowed_origins)  # было: ["*"]
 ```
 
@@ -282,8 +282,8 @@ if (!rateLimiter.checkLimit(userId, "agent.ask", 10, 60)) {
 set -e
 BACKUP_DIR=${BACKUP_DIR:-./backups}
 mkdir -p "$BACKUP_DIR"
-FILENAME="aura-backup-$(date +%Y%m%d-%H%M%S).sql.gz"
-pg_dump "$AURA_DATABASE_URL" | gzip > "$BACKUP_DIR/$FILENAME"
+FILENAME="selfvoy-backup-$(date +%Y%m%d-%H%M%S).sql.gz"
+pg_dump "$SELFVOY_DATABASE_URL" | gzip > "$BACKUP_DIR/$FILENAME"
 echo "✅ Backup saved: $BACKUP_DIR/$FILENAME"
 # TODO: загрузить в S3/MinIO
 ```
@@ -325,7 +325,7 @@ echo "✅ Backup saved: $BACKUP_DIR/$FILENAME"
 **Где:** `docs/PUSH_GATEWAY.md` (создать)
 
 ```markdown
-# Push Gateway для Aura
+# Push Gateway для Selfvoy
 
 C++-сервер не умеет TLS/HTTP2/ES256 — шлюз подписывает JWT и форвардит в APNs/FCM.
 
@@ -337,7 +337,7 @@ POST /push
   "notification_id": 123,
   "apns": {
     "url": "https://api.push.apple.com/3/device/...",
-    "headers": {"apns-topic": "ai.aura.app"},
+    "headers": {"apns-topic": "app.selfvoy"},
     "payload": {"aps": {...}}
   }
 }
@@ -352,7 +352,7 @@ POST /push
 
 1. **Открыть этот файл:** `TODO_PRODUCTION_READY.md`
 2. **Сказать Claude:**
-   > "Вчера мы делали аудит проекта Aura. Осталось реализовать пункты из `TODO_PRODUCTION_READY.md`. Начни с блокеров 1-6 (Makefile, docker-compose, .env.example, README, LICENSE, AI токен)."
+   > "Вчера мы делали аудит проекта Selfvoy. Осталось реализовать пункты из `TODO_PRODUCTION_READY.md`. Начни с блокеров 1-6 (Makefile, docker-compose, .env.example, README, LICENSE, AI токен)."
 
 3. **Ссылка на отчёт:** Полный аудит в моём последнем ответе перед этим файлом
 
@@ -391,18 +391,18 @@ POST /push
 - Глубже glassmorphism: сильнее свечение по краям (violet/magenta), глянцевые преломляющие рамки, ambient-подсветка под панелями
 - Login: круглый светящийся лого (кольцо из лучей), gradient-кнопка Sign in со свечением, иконки в полях (конверт, замок)
 - Register: орбитальные эллипсы на фоне, blur-градиенты, иконка «глаз» для пароля, dropdown таймзоны
-- Home: крупный «Good evening, Alex», круглая фиолетовая кнопка микрофона, карточка «Your Aura is active» со свечением
+- Home: крупный «Good evening, Alex», круглая фиолетовая кнопка микрофона, карточка «Your Selfvoy is active» со свечением
 - Tasks: цветные точки-статусы справа, прогресс-бар «Time until next event», FAB «+»
 - Contacts: аватары ИИ-агентов (рендер-персонажи), плавающие сферы на фоне, детальная карточка справа
 - Negotiations: две карточки агентов с анимированными звуковыми волнами, таймлайн раундов с номерами
-- Chat (My Aura): аватар Ауры с фиолетовым градиентом-свечением, чипы быстрых ответов, «Aura is thinking…»
+- Chat (My Selfvoy): аватар Selfvoy с фиолетовым градиентом-свечением, чипы быстрых ответов, «Selfvoy is thinking…»
 - Settings: лило индикатор активного пункта меню, карточки разрешений (Calendar/Email/Booking/Payments) с тумблерами
 
 ### План работ (после блокеров v1.0)
 - [ ] Скопировать макеты из D:\Загрузки в docs/design-mockups/ для референса
 - [ ] Обновить токены в docs/DESIGN.md (усилить glow, gradient-кнопки)
 - [ ] Синхронно править 3 источника токенов (правило CLAUDE.md — все сразу):
-      client/qml/theme/AuraTheme.qml + preview/styles.css + client/styles/aura_theme.qss
+      client/qml/theme/SelfvoyTheme.qml + preview/styles.css + client/styles/selfvoy_theme.qss
 - [ ] Gradient-fill для акцентных кнопок (violet -> lavender + glow)
 - [ ] Login: круглый лого-эмблема (SVG/Canvas), иконки в полях
 - [ ] Register: орбитальные линии + blur-пятна на фоне
@@ -410,7 +410,7 @@ POST /push
 - [ ] Tasks: цветные точки-статусы + прогресс-бар + FAB
 - [ ] Contacts: плавающие сферы + детальная карточка агента
 - [ ] Negotiations: звуковые волны агентов + таймлайн с номерами
-- [ ] Chat: аватар Ауры с градиентом + индикатор «thinking» + чипы ответов
+- [ ] Chat: аватар Selfvoy с градиентом + индикатор «thinking» + чипы ответов
 - [ ] Settings: индикатор активного пункта + иконки разрешений (добавить Payments)
 - [ ] Обновить preview/index.html + preview/app.js под новые экраны
 - [ ] qmlcachegen по всем QML + проверка контраста (>= 4.5:1)

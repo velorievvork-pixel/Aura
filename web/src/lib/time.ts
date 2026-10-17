@@ -29,7 +29,7 @@ export function sameDay(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
-/** "сегодня", "завтра" or "в субботу" — for sentences like "предложила субботу в 13:00". */
+/** "сегодня", "завтра" or "в субботу" — for sentences like "предложил субботу в 13:00". */
 export function dayPhrase(d: Date, now: Date, accusative = true): string {
   if (sameDay(d, now)) return 'сегодня';
   if (sameDay(d, addDays(now, 1))) return 'завтра';

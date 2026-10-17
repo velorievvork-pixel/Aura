@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-        <string>Aura</string>
+        <string>Selfvoy</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -63,17 +63,17 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Aura слушает голосовые команды, пока вы держите включённым микрофон.</string>
+	<string>Selfvoy слушает голосовые команды, пока вы держите включённым микрофон.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Aura превращает вашу речь в текст команды.</string>
+	<string>Selfvoy превращает вашу речь в текст команды.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- ws:// к серверу Aura в локальной сети (IP или *.local) при разработке; остальное — только TLS. -->
+		<!-- ws:// к серверу Selfvoy в локальной сети (IP или *.local) при разработке; остальное — только TLS. -->
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Aura подключается к вашему серверу Aura в локальной сети.</string>
+	<string>Selfvoy подключается к вашему серверу Selfvoy в локальной сети.</string>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
 	<key>UIViewControllerBasedStatusBarAppearance</key>

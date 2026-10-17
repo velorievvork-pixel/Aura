@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { auraOf, negotiationSteps } from './negotiationSteps';
+import { selfvoyOf, negotiationSteps } from './negotiationSteps';
 
 const now = new Date('2026-10-13T09:00:00');
 const base = { targetName: 'Дима Петров', topic: 'обсудить стартап', durationMinutes: 60, windowHours: 168 };
@@ -20,7 +20,7 @@ describe('negotiationSteps', () => {
     );
     expect(steps.map((s) => s.state)).toEqual(['info', 'info', 'info', 'ok']);
     expect(steps[0].text).toContain('60 мин');
-    expect(steps[1].actor).toBe(auraOf('Дима Петров'));
+    expect(steps[1].actor).toBe(selfvoyOf('Дима Петров'));
     expect(steps[2].text).toContain('Aurora Roasters');
     expect(steps[3].detail).toBe('Встреча завтра в 10:00');
   });
@@ -37,13 +37,13 @@ describe('negotiationSteps', () => {
       now,
     );
     expect(withCounter[1].state).toBe('fail');
-    expect(withCounter[2].text).toBe('Предложила другое время');
+    expect(withCounter[2].text).toBe('Предложил другое время');
 
     const none = negotiationSteps({ ...base, result: { accepted: false } }, now);
     expect(none.at(-1)).toMatchObject({ actor: 'Итог', state: 'fail' });
   });
 
   it('email вместо имени не склоняется', () => {
-    expect(auraOf('dima@aura.local')).toBe('Аура dima@aura.local');
+    expect(selfvoyOf('dima@selfvoy.local')).toBe('Selfvoy dima@selfvoy.local');
   });
 });

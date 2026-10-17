@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from aura_ai.models import AgentContext, CalendarEvent, Preferences
-from aura_ai.tools import ToolBackends, ToolError, ToolManager, find_cafe
+from selfvoy_ai.models import AgentContext, CalendarEvent, Preferences
+from selfvoy_ai.tools import ToolBackends, ToolError, ToolManager, find_cafe
 
 NOW = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
 
@@ -56,7 +56,7 @@ def test_run_book_table_returns_confirmation():
         {"place": "Кофе на полпути", "at": (NOW + timedelta(hours=3)).isoformat(), "people": 2},
         make_context(),
     )
-    assert result["confirmation"].startswith("AURA-")
+    assert result["confirmation"].startswith("SELFVOY-")
     assert result["people"] == 2
 
 
@@ -125,7 +125,7 @@ def test_http_backend_falls_back_when_no_url():
 
 
 def test_tool_manager_log_is_bounded():
-    from aura_ai.tools import TOOL_LOG_LIMIT
+    from selfvoy_ai.tools import TOOL_LOG_LIMIT
 
     manager = ToolManager()
     context = make_context()

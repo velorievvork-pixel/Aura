@@ -1,8 +1,8 @@
-// aura/database_embedded.cpp — файловое хранилище для режима без PostgreSQL.
+// selfvoy/database_embedded.cpp — файловое хранилище для режима без PostgreSQL.
 //
 // Повторяет семантику схемы (те же таблицы, те же ограничения) и используется:
 //   * в юнит-тестах сервера;
-//   * в демо-режиме (AURA_DATABASE_URL не задан).
+//   * в демо-режиме (SELFVOY_DATABASE_URL не задан).
 // Данные держатся в памяти и сбрасываются в JSON-файл после каждой записи.
 #include <algorithm>
 #include <cctype>
@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <sstream>
 
@@ -19,12 +20,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "aura/idatabase.h"
-#include "aura/json.h"
-#include "aura/log.h"
-#include "aura/memorymanager.h"  // isoUtc
+#include "selfvoy/idatabase.h"
+#include "selfvoy/json.h"
+#include "selfvoy/log.h"
+#include "selfvoy/memorymanager.h"  // isoUtc
 
-namespace aura {
+namespace selfvoy {
 
 namespace {
 
@@ -104,6 +105,7 @@ public:
         // Ключ счётчиков id создаётся сразу: добавление ключа позже перераспределило бы
         // поля state_ и сделало висячими ссылки на таблицы у вызывающего кода.
         if (!state_.get("sequences").isObject()) state_.set("sequences", Json::object());
+        backfillBookingPrices();
         // Файл содержит хэши паролей и токенов — только владельцу процесса.
         ::chmod(path_.c_str(), 0600);
         return true;
@@ -1487,6 +1489,255 @@ public:
         return DatabaseError::failure("пользователь не найден");
     }
 
+    // --------------------------------------- рост (S1a): состояние, тариф, Telegram
+    std::string getState(const std::string& key) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& item : table("server_state").items()) {
+            if (item.getString("key") == key) return item.getString("value");
+        }
+        return "";
+    }
+
+    DatabaseError setState(const std::string& key, const std::string& value) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& item : mutableTable("server_state")) {
+            if (item.getString("key") != key) continue;
+            item.set("value", Json(value));
+            item.set("updated_at", Json(isoNow()));
+            flush();
+            return DatabaseError::success();
+        }
+        Json row = Json::object();
+        row.set("key", Json(key));
+        row.set("value", Json(value));
+        row.set("updated_at", Json(isoNow()));
+        table("server_state").push(row);
+        flush();
+        return DatabaseError::success();
+    }
+
+    DatabaseError setUserPlanDays(long long userId, int days) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("id") != userId) continue;
+            item.set("plan_until",
+                     Json(days > 0 ? isoUtc(std::time(nullptr) + static_cast<std::time_t>(days) * 86400) : std::string()));
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("пользователь не найден");
+    }
+
+    DatabaseError extendUserPlanDays(long long userId, int days) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (days <= 0) return DatabaseError::failure("срок продления — больше 0 дней");
+        if (!extendPlanLocked(userId, days)) return DatabaseError::failure("пользователь не найден");
+        flush();
+        return DatabaseError::success();
+    }
+
+    // plan_until = greatest(now, plan_until) + days; вызывается под mutex_.
+    bool extendPlanLocked(long long userId, int days) {
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("id") != userId) continue;
+            std::time_t base = std::time(nullptr);
+            std::time_t until = 0;
+            const std::string current = item.getString("plan_until");
+            if (!current.empty() && parseIsoUtc(current, until) && until > base) base = until;
+            item.set("plan_until", Json(isoUtc(base + static_cast<std::time_t>(days) * 86400)));
+            return true;
+        }
+        return false;
+    }
+
+    DatabaseError setUserTelegram(long long userId, long long chatId, const std::string& username) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        bool found = false;
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("id") == userId) {
+                found = true;
+                item.set("telegram_chat_id", Json(chatId));
+                item.set("telegram_username", Json(chatId != 0 ? username : std::string()));
+            } else if (chatId != 0 && item.getInt("telegram_chat_id") == chatId) {
+                item.set("telegram_chat_id", Json(0LL));
+                item.set("telegram_username", Json(""));
+            }
+        }
+        if (!found) return DatabaseError::failure("пользователь не найден");
+        flush();
+        return DatabaseError::success();
+    }
+
+    bool linkBookingTelegram(long long bookingId, long long chatId, int maxChats) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        int count = 0;
+        for (const auto& item : table("booking_telegram").items()) {
+            if (item.getInt("booking_id") != bookingId) continue;
+            if (item.getInt("chat_id") == chatId) return true;
+            ++count;
+        }
+        if (count >= maxChats) return false;
+        Json row = Json::object();
+        row.set("booking_id", Json(bookingId));
+        row.set("chat_id", Json(chatId));
+        row.set("linked_at", Json(isoNow()));
+        table("booking_telegram").push(row);
+        flush();
+        return true;
+    }
+
+    std::vector<long long> bookingTelegramChats(long long bookingId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<long long> chats;
+        for (const auto& item : table("booking_telegram").items()) {
+            if (item.getInt("booking_id") == bookingId) chats.push_back(item.getInt("chat_id"));
+        }
+        return chats;
+    }
+
+    DatabaseError unlinkTelegramChat(long long chatId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (chatId == 0) return DatabaseError::success();
+        table("booking_telegram");  // ключи создаются до взятия ссылок на таблицы
+        table("telegram_guest_chats");
+        table("waitlist_entries");
+        for (auto& item : mutableTable("waitlist_entries")) {
+            if (item.getInt("telegram_chat_id") == chatId) item.set("telegram_chat_id", Json(0LL));
+        }
+        for (auto& item : mutableTable("users")) {
+            if (item.getInt("telegram_chat_id") != chatId) continue;
+            item.set("telegram_chat_id", Json(0LL));
+            item.set("telegram_username", Json(""));
+        }
+        auto& links = mutableTable("booking_telegram");
+        links.erase(std::remove_if(links.begin(), links.end(),
+                                   [chatId](const Json& item) { return item.getInt("chat_id") == chatId; }),
+                    links.end());
+        auto& guests = mutableTable("telegram_guest_chats");
+        guests.erase(std::remove_if(guests.begin(), guests.end(),
+                                    [chatId](const Json& item) { return item.getInt("chat_id") == chatId; }),
+                     guests.end());
+        flush();
+        return DatabaseError::success();
+    }
+
+    // ------------------------------------------- F7: ИИ-администратор в Telegram
+    static TelegramGuestChatRecord toGuestChat(const Json& entry) {
+        TelegramGuestChatRecord record;
+        record.chatId = entry.getInt("chat_id");
+        record.pageId = entry.getInt("page_id");
+        record.ownerId = entry.getInt("owner_id");
+        record.guestName = entry.getString("guest_name");
+        record.username = entry.getString("username");
+        if (entry.get("history").isArray()) record.history = entry.get("history");
+        record.createdAt = entry.getString("created_at");
+        record.updatedAt = entry.getString("updated_at");
+        return record;
+    }
+
+    DatabaseError saveTelegramGuestChat(const TelegramGuestChatRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.chatId == 0 || record.pageId <= 0) return DatabaseError::failure("чат без страницы");
+        Json* target = nullptr;
+        for (auto& item : mutableTable("telegram_guest_chats")) {
+            if (item.getInt("chat_id") == record.chatId) target = &item;
+        }
+        if (target == nullptr) {
+            Json row = Json::object();
+            row.set("chat_id", Json(record.chatId));
+            row.set("created_at", Json(isoNow()));
+            table("telegram_guest_chats").push(row);
+            target = &mutableTable("telegram_guest_chats").back();
+        }
+        target->set("page_id", Json(record.pageId));
+        target->set("owner_id", Json(record.ownerId));
+        target->set("guest_name", Json(record.guestName));
+        target->set("username", Json(record.username));
+        target->set("history", record.history.isArray() ? record.history : Json::array());
+        target->set("updated_at", Json(isoNow()));
+        flush();
+        return DatabaseError::success();
+    }
+
+    std::optional<TelegramGuestChatRecord> findTelegramGuestChat(long long chatId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& item : table("telegram_guest_chats").items()) {
+            if (item.getInt("chat_id") == chatId) return toGuestChat(item);
+        }
+        return std::nullopt;
+    }
+
+    static TelegramQuestionRecord toQuestion(const Json& entry) {
+        TelegramQuestionRecord record;
+        record.id = entry.getInt("id");
+        record.ownerId = entry.getInt("owner_id");
+        record.pageId = entry.getInt("page_id");
+        record.chatId = entry.getInt("chat_id");
+        record.guestName = entry.getString("guest_name");
+        record.username = entry.getString("username");
+        record.text = entry.getString("text");
+        record.status = entry.getString("status", "open");
+        record.answer = entry.getString("answer");
+        record.createdAt = entry.getString("created_at");
+        record.answeredAt = entry.getString("answered_at");
+        return record;
+    }
+
+    DatabaseError createTelegramQuestion(const TelegramQuestionRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const long long id = nextId("telegram_questions");
+        Json row = Json::object();
+        row.set("id", Json(id));
+        row.set("owner_id", Json(record.ownerId));
+        row.set("page_id", Json(record.pageId));
+        row.set("chat_id", Json(record.chatId));
+        row.set("guest_name", Json(record.guestName));
+        row.set("username", Json(record.username));
+        row.set("text", Json(record.text));
+        row.set("status", Json(std::string("open")));
+        row.set("answer", Json(""));
+        row.set("created_at", Json(isoNow()));
+        row.set("answered_at", Json(""));
+        table("telegram_questions").push(row);
+        flush();
+        outId = id;
+        return DatabaseError::success();
+    }
+
+    std::optional<TelegramQuestionRecord> findTelegramQuestion(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& item : table("telegram_questions").items()) {
+            if (item.getInt("id") == id) return toQuestion(item);
+        }
+        return std::nullopt;
+    }
+
+    std::vector<TelegramQuestionRecord> listTelegramQuestions(long long ownerId, const std::string& status,
+                                                              int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<TelegramQuestionRecord> result;
+        const auto& items = table("telegram_questions").items();
+        for (auto it = items.rbegin(); it != items.rend() && static_cast<int>(result.size()) < limit; ++it) {
+            if (it->getInt("owner_id") != ownerId) continue;
+            if (!status.empty() && it->getString("status") != status) continue;
+            result.push_back(toQuestion(*it));
+        }
+        return result;
+    }
+
+    bool answerTelegramQuestion(long long id, const std::string& answer) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& item : mutableTable("telegram_questions")) {
+            if (item.getInt("id") != id) continue;
+            item.set("status", Json(std::string("answered")));
+            item.set("answer", Json(answer));
+            item.set("answered_at", Json(isoNow()));
+            flush();
+            return true;
+        }
+        return false;
+    }
+
     std::vector<UserRecord> adminListUsers(const std::string& query,
                                            const std::string& role,
                                            const std::string& status,
@@ -1664,6 +1915,51 @@ public:
         return false;
     }
 
+    // ------------------------------------------------------------- ics feed
+    // Во встроенной БД — отдельная таблица ics_feeds {user_id, token_hash}
+    // (в PostgreSQL — колонка users.ics_token_hash).
+    std::string icsTokenHash(long long userId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("ics_feeds").items()) {
+            if (entry.getInt("user_id") == userId) return entry.getString("token_hash");
+        }
+        return "";
+    }
+
+    DatabaseError setIcsTokenHash(long long userId, const std::string& tokenHash) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto& users = table("users").items();
+        if (std::none_of(users.begin(), users.end(), [&](const Json& user) { return user.getInt("id") == userId; })) {
+            return DatabaseError::failure("пользователь не найден");
+        }
+        Json kept = Json::array();
+        for (const auto& entry : table("ics_feeds").items()) {
+            if (!tokenHash.empty() && entry.getString("token_hash") == tokenHash && entry.getInt("user_id") != userId) {
+                return DatabaseError::failure("токен уже занят");
+            }
+            if (entry.getInt("user_id") != userId) kept.push(entry);
+        }
+        if (!tokenHash.empty()) {
+            Json entry = Json::object();
+            entry.set("user_id", Json(userId));
+            entry.set("token_hash", Json(tokenHash));
+            entry.set("updated_at", Json(isoNow()));
+            kept.push(entry);
+        }
+        table("ics_feeds") = kept;
+        flush();
+        return DatabaseError::success();
+    }
+
+    long long findUserByIcsToken(const std::string& tokenHash) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (tokenHash.empty()) return 0;
+        for (const auto& entry : table("ics_feeds").items()) {
+            if (entry.getString("token_hash") == tokenHash) return entry.getInt("user_id");
+        }
+        return 0;
+    }
+
 private:
     // --------------------------------------------------------- booking_pages
     DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) override {
@@ -1737,6 +2033,23 @@ private:
         entry.set("max_series", Json(static_cast<long long>(record.maxSeries)));
         entry.set("weekends", Json(record.weekends));
         entry.set("status", Json(record.status));
+        entry.set("guest_reminders", Json(record.guestReminders));
+        entry.set("hide_branding", Json(record.hideBranding));
+        entry.set("price", Json(record.price));
+        entry.set("currency", Json(record.currency));
+        entry.set("prepay", Json(record.prepay));
+        entry.set("deposit", Json(record.deposit));
+        entry.set("payment_url", Json(record.paymentUrl));
+        entry.set("payment_note", Json(record.paymentNote));
+        entry.set("pay_within_minutes", Json(static_cast<long long>(record.payWithinMinutes)));
+        entry.set("cancel_hours", Json(static_cast<long long>(record.cancelHours)));
+        entry.set("late_cancel", Json(record.lateCancel));
+        entry.set("policy_text", Json(record.policyText));
+        entry.set("packages", record.packages.isArray() ? record.packages : Json::array());
+        entry.set("waitlist", Json(record.waitlist));
+        entry.set("waitlist_hold_minutes", Json(static_cast<long long>(record.waitlistHoldMinutes)));
+        entry.set("rebook_after_days", Json(static_cast<long long>(record.rebookAfterDays)));
+        entry.set("ai_admin", Json(record.aiAdmin));  // F7
         entry.set("updated_at", Json(isoNow()));
     }
 
@@ -1756,7 +2069,115 @@ private:
         record.status = entry.getString("status", "active");
         record.createdAt = entry.getString("created_at");
         record.updatedAt = entry.getString("updated_at");
+        record.guestReminders = entry.getBool("guest_reminders", true);
+        record.hideBranding = entry.getBool("hide_branding", false);
+        record.price = entry.getInt("price", 0);
+        record.currency = entry.getString("currency", "RUB");
+        record.prepay = entry.getString("prepay", "none");
+        record.deposit = entry.getInt("deposit", 0);
+        record.paymentUrl = entry.getString("payment_url");
+        record.paymentNote = entry.getString("payment_note");
+        record.payWithinMinutes = static_cast<int>(entry.getInt("pay_within_minutes", 60));
+        record.cancelHours = static_cast<int>(entry.getInt("cancel_hours", 0));
+        record.lateCancel = entry.getString("late_cancel", "allow");
+        record.policyText = entry.getString("policy_text");
+        if (entry.get("packages").isArray()) record.packages = entry.get("packages");
+        record.waitlist = entry.getBool("waitlist", false);
+        record.waitlistHoldMinutes = static_cast<int>(entry.getInt("waitlist_hold_minutes", 60));
+        record.rebookAfterDays = static_cast<int>(entry.getInt("rebook_after_days", 0));
+        record.aiAdmin = entry.getBool("ai_admin", false);  // F7
         return record;
+    }
+
+    // ------------------------------------------------------ booking_reminders
+    static BookingReminderRecord toReminder(const Json& entry) {
+        BookingReminderRecord record;
+        record.id = entry.getInt("id");
+        record.bookingId = entry.getInt("booking_id");
+        record.ownerId = entry.getInt("owner_id");
+        record.occurrenceStart = entry.getString("occurrence_start");
+        record.kind = entry.getString("kind");
+        record.dueAt = entry.getString("due_at");
+        record.sentAt = entry.getString("sent_at");
+        return record;
+    }
+
+    DatabaseError addBookingReminders(const std::vector<BookingReminderRecord>& reminders) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        bool added = false;
+        for (const auto& reminder : reminders) {
+            if (reminder.kind != "24h" && reminder.kind != "2h") return DatabaseError::failure("неизвестный вид напоминания");
+            bool exists = false;
+            for (const auto& entry : table("booking_reminders").items()) {
+                if (entry.getInt("booking_id") == reminder.bookingId &&
+                    entry.getString("occurrence_start") == reminder.occurrenceStart &&
+                    entry.getString("kind") == reminder.kind) {
+                    exists = true;  // UNIQUE (booking_id, occurrence_start, kind) — ON CONFLICT DO NOTHING
+                    break;
+                }
+            }
+            if (exists) continue;
+            Json entry = Json::object();
+            entry.set("id", Json(nextId("booking_reminders")));
+            entry.set("booking_id", Json(reminder.bookingId));
+            entry.set("owner_id", Json(reminder.ownerId));
+            entry.set("occurrence_start", Json(reminder.occurrenceStart));
+            entry.set("kind", Json(reminder.kind));
+            entry.set("due_at", Json(reminder.dueAt));
+            entry.set("sent_at", Json(std::string()));
+            table("booking_reminders").push(entry);
+            added = true;
+        }
+        if (added) flush();
+        return DatabaseError::success();
+    }
+
+    DatabaseError deleteBookingReminders(long long bookingId, const std::string& occurrenceStart) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& rows = mutableTable("booking_reminders");
+        const auto before = rows.size();
+        rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                  [&](const Json& entry) {
+                                      return entry.getInt("booking_id") == bookingId &&
+                                             entry.getString("sent_at").empty() &&
+                                             (occurrenceStart.empty() ||
+                                              entry.getString("occurrence_start") == occurrenceStart);
+                                  }),
+                   rows.end());
+        if (rows.size() != before) flush();
+        return DatabaseError::success();
+    }
+
+    std::vector<BookingReminderRecord> listBookingReminders(long long bookingId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingReminderRecord> result;
+        for (const auto& entry : table("booking_reminders").items()) {
+            if (entry.getInt("booking_id") == bookingId) result.push_back(toReminder(entry));
+        }
+        std::stable_sort(result.begin(), result.end(), [](const BookingReminderRecord& a, const BookingReminderRecord& b) {
+            return a.dueAt < b.dueAt;
+        });
+        return result;
+    }
+
+    // Эквивалент UPDATE … FOR UPDATE SKIP LOCKED: выбор и отметка — под одним мьютексом.
+    std::vector<BookingReminderRecord> claimDueReminders(const std::string& nowIso, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<Json*> due;
+        for (auto& entry : mutableTable("booking_reminders")) {
+            if (entry.getString("sent_at").empty() && entry.getString("due_at") <= nowIso) due.push_back(&entry);
+        }
+        std::stable_sort(due.begin(), due.end(),
+                         [](const Json* a, const Json* b) { return a->getString("due_at") < b->getString("due_at"); });
+        if (limit > 0 && static_cast<int>(due.size()) > limit) due.resize(static_cast<std::size_t>(limit));
+        std::vector<BookingReminderRecord> claimed;
+        const std::string sentAt = isoNow();
+        for (Json* entry : due) {
+            entry->set("sent_at", Json(sentAt));
+            claimed.push_back(toReminder(*entry));
+        }
+        if (!claimed.empty()) flush();
+        return claimed;
     }
 
     // -------------------------------------------------------------- bookings
@@ -1777,6 +2198,10 @@ private:
         entry.set("guest_name", Json(record.guestName));
         entry.set("guest_email", Json(record.guestEmail));
         entry.set("guest_comment", Json(record.guestComment));
+        entry.set("cc_email", Json(record.ccEmail));
+        entry.set("package_id", Json(record.packageId));
+        entry.set("price", Json(record.price));
+        entry.set("currency", Json(record.currency.empty() ? std::string("RUB") : record.currency));
         entry.set("created_at", Json(isoNow()));
         writeBooking(entry, record);
         table("bookings").push(entry);
@@ -1846,10 +2271,12 @@ private:
 
     static void writeBooking(Json& entry, const BookingRecord& record) {
         if (!record.manageHash.empty()) entry.set("manage_hash", Json(record.manageHash));
+        if (!record.manageTokenEnc.empty()) entry.set("manage_token_enc", Json(record.manageTokenEnc));
         entry.set("occurrences", record.occurrences.isArray() ? record.occurrences : Json::array());
         entry.set("status", Json(record.status));
         entry.set("cancelled_by", Json(record.cancelledBy));
         entry.set("reschedules", Json(static_cast<long long>(record.reschedules)));
+        entry.set("payment", record.payment.isObject() ? record.payment : Json());
         entry.set("updated_at", Json(isoNow()));
     }
 
@@ -1868,7 +2295,562 @@ private:
         record.reschedules = static_cast<int>(entry.getInt("reschedules"));
         record.createdAt = entry.getString("created_at");
         record.updatedAt = entry.getString("updated_at");
+        record.manageTokenEnc = entry.getString("manage_token_enc");
+        if (entry.get("payment").isObject()) record.payment = entry.get("payment");
+        record.ccEmail = entry.getString("cc_email");
+        record.packageId = entry.getInt("package_id");
+        // Снимок цены (у записей до снимка его проставляет backfillBookingPrices при открытии).
+        record.price = entry.getInt("price");
+        record.currency = entry.getString("currency", "RUB");
+        if (record.currency.empty()) record.currency = "RUB";
+        record.rebookSentAt = entry.getString("rebook_sent_at");
+        record.rebookStatus = entry.getString("rebook_status");
         return record;
+    }
+
+    std::vector<BookingRecord> listBookingsByPackage(long long packageId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingRecord> result;
+        if (packageId <= 0) return result;
+        for (const auto& entry : table("bookings").items()) {
+            if (entry.getInt("package_id") != packageId) continue;
+            result.push_back(toBooking(entry));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    // ------------------------------------------------------ package_purchases
+    static bool validPackageStatus(const std::string& status) {
+        return status == "pending" || status == "active" || status == "used" || status == "expired" ||
+               status == "cancelled";
+    }
+
+    static void writePackage(Json& entry, const PackagePurchaseRecord& record) {
+        entry.set("sessions_total", Json(static_cast<long long>(record.sessionsTotal)));
+        entry.set("sessions_used", Json(static_cast<long long>(record.sessionsUsed)));
+        entry.set("valid_until", Json(record.validUntil));
+        entry.set("status", Json(record.status));
+        entry.set("payment", record.payment.isObject() ? record.payment : Json());
+        entry.set("updated_at", Json(isoNow()));
+    }
+
+    static PackagePurchaseRecord toPackage(const Json& entry) {
+        PackagePurchaseRecord record;
+        record.id = entry.getInt("id");
+        record.ownerId = entry.getInt("owner_id");
+        record.pageId = entry.getInt("page_id");
+        record.offerId = entry.getInt("offer_id");
+        record.title = entry.getString("title");
+        record.sessionsTotal = static_cast<int>(entry.getInt("sessions_total"));
+        record.sessionsUsed = static_cast<int>(entry.getInt("sessions_used"));
+        record.validDays = static_cast<int>(entry.getInt("valid_days", 90));
+        record.price = entry.getInt("price");
+        record.currency = entry.getString("currency", "RUB");
+        record.validUntil = entry.getString("valid_until");
+        record.status = entry.getString("status", "pending");
+        if (entry.get("payment").isObject()) record.payment = entry.get("payment");
+        record.guestName = entry.getString("guest_name");
+        record.guestEmail = entry.getString("guest_email");
+        record.ccEmail = entry.getString("cc_email");
+        record.tokenHash = entry.getString("token_hash");
+        record.tokenEnc = entry.getString("token_enc");
+        record.createdAt = entry.getString("created_at");
+        record.updatedAt = entry.getString("updated_at");
+        return record;
+    }
+
+    DatabaseError createPackagePurchase(const PackagePurchaseRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.tokenHash.empty() || record.title.empty()) return DatabaseError::failure("пакет без токена или названия");
+        if (!validPackageStatus(record.status) || record.sessionsTotal < 1 || record.sessionsUsed < 0) {
+            return DatabaseError::failure("некорректный пакет");
+        }
+        for (const auto& entry : table("package_purchases").items()) {
+            if (entry.getString("token_hash") == record.tokenHash) return DatabaseError::failure("токен пакета уже существует");
+        }
+        const long long id = nextId("package_purchases");
+        Json entry = Json::object();
+        entry.set("id", Json(id));
+        entry.set("owner_id", Json(record.ownerId));
+        entry.set("page_id", Json(record.pageId));
+        entry.set("offer_id", Json(record.offerId));
+        entry.set("title", Json(record.title));
+        entry.set("valid_days", Json(static_cast<long long>(record.validDays)));
+        entry.set("price", Json(record.price));
+        entry.set("currency", Json(record.currency));
+        entry.set("guest_name", Json(record.guestName));
+        entry.set("guest_email", Json(record.guestEmail));
+        entry.set("cc_email", Json(record.ccEmail));
+        entry.set("token_hash", Json(record.tokenHash));
+        entry.set("token_enc", Json(record.tokenEnc));
+        entry.set("created_at", Json(isoNow()));
+        writePackage(entry, record);
+        table("package_purchases").push(entry);
+        flush();
+        outId = id;
+        return DatabaseError::success();
+    }
+
+    std::optional<PackagePurchaseRecord> findPackagePurchase(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("package_purchases").items()) {
+            if (entry.getInt("id") == id) return toPackage(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::optional<PackagePurchaseRecord> findPackagePurchaseByToken(const std::string& tokenHash) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (tokenHash.empty()) return std::nullopt;
+        for (const auto& entry : table("package_purchases").items()) {
+            if (entry.getString("token_hash") == tokenHash) return toPackage(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::vector<PackagePurchaseRecord> listPackagePurchases(long long ownerId, long long pageId,
+                                                           const std::string& status, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<PackagePurchaseRecord> result;
+        const auto& entries = table("package_purchases").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId) continue;
+            if (pageId > 0 && it->getInt("page_id") != pageId) continue;
+            if (!status.empty() && it->getString("status") != status) continue;
+            result.push_back(toPackage(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    DatabaseError updatePackagePurchase(const PackagePurchaseRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!validPackageStatus(record.status) || record.sessionsTotal < 1 || record.sessionsUsed < 0) {
+            return DatabaseError::failure("некорректный пакет");
+        }
+        for (auto& entry : mutableTable("package_purchases")) {
+            if (entry.getInt("id") != record.id) continue;
+            writePackage(entry, record);
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("пакет не найден");
+    }
+
+    std::vector<PackagePurchaseRecord> listPendingPackagePurchases(int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<PackagePurchaseRecord> result;
+        for (const auto& entry : table("package_purchases").items()) {
+            if (entry.getString("status") == "pending") result.push_back(toPackage(entry));
+        }
+        std::stable_sort(result.begin(), result.end(), [](const PackagePurchaseRecord& a, const PackagePurchaseRecord& b) {
+            return a.payment.getString("due_at") < b.payment.getString("due_at");
+        });
+        if (limit > 0 && static_cast<int>(result.size()) > limit) result.resize(static_cast<std::size_t>(limit));
+        return result;
+    }
+
+    std::vector<PackagePurchaseRecord> listExpiredPackagePurchases(const std::string& nowIso, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<PackagePurchaseRecord> result;
+        for (const auto& entry : table("package_purchases").items()) {
+            const std::string until = entry.getString("valid_until");
+            if (entry.getString("status") != "active" || until.empty() || until > nowIso) continue;
+            result.push_back(toPackage(entry));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    std::vector<BookingRecord> listAwaitingPayments(int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingRecord> result;
+        for (const auto& entry : table("bookings").items()) {
+            const Json payment = entry.get("payment");
+            if (payment.isObject() && payment.getString("status") == "pending") result.push_back(toBooking(entry));
+        }
+        std::stable_sort(result.begin(), result.end(), [](const BookingRecord& a, const BookingRecord& b) {
+            return a.payment.getString("due_at") < b.payment.getString("due_at");
+        });
+        if (limit > 0 && static_cast<int>(result.size()) > limit) result.resize(static_cast<std::size_t>(limit));
+        return result;
+    }
+
+    // ------------------------------------------------------ waitlist_entries (F8)
+    static bool activeWaitlist(const Json& entry) {
+        const std::string status = entry.getString("status");
+        return status == "waiting" || status == "offered";
+    }
+
+    static void writeWaitlist(Json& entry, const WaitlistEntryRecord& record) {
+        entry.set("guest_name", Json(record.guestName));
+        entry.set("days", record.days.isArray() ? record.days : Json::array());
+        entry.set("part_of_day", Json(record.partOfDay));
+        entry.set("comment", Json(record.comment));
+        entry.set("status", Json(record.status));
+        entry.set("offer_start", Json(record.offerStart));
+        entry.set("offer_end", Json(record.offerEnd));
+        entry.set("offer_day", Json(record.offerDay));
+        entry.set("offer_local", Json(record.offerLocal));
+        entry.set("offer_expires_at", Json(record.offerExpiresAt));
+        entry.set("offer_status", Json(record.offerStatus));
+        entry.set("booking_id", Json(record.bookingId));
+        if (!record.queuedAt.empty()) entry.set("queued_at", Json(record.queuedAt));
+        if (!record.expiresAt.empty()) entry.set("expires_at", Json(record.expiresAt));
+        entry.set("updated_at", Json(isoNow()));
+    }
+
+    static WaitlistEntryRecord toWaitlist(const Json& entry) {
+        WaitlistEntryRecord record;
+        record.id = entry.getInt("id");
+        record.ownerId = entry.getInt("owner_id");
+        record.pageId = entry.getInt("page_id");
+        record.guestName = entry.getString("guest_name");
+        record.guestEmail = entry.getString("guest_email");
+        record.days = entry.get("days").isArray() ? entry.get("days") : Json::array();
+        record.partOfDay = entry.getString("part_of_day", "any");
+        record.comment = entry.getString("comment");
+        record.status = entry.getString("status", "waiting");
+        record.tokenHash = entry.getString("token_hash");
+        record.tokenEnc = entry.getString("token_enc");
+        record.telegramChatId = entry.getInt("telegram_chat_id");
+        record.offerStart = entry.getString("offer_start");
+        record.offerEnd = entry.getString("offer_end");
+        record.offerDay = entry.getString("offer_day");
+        record.offerLocal = entry.getString("offer_local");
+        record.offerExpiresAt = entry.getString("offer_expires_at");
+        record.offerStatus = entry.getString("offer_status");
+        record.bookingId = entry.getInt("booking_id");
+        record.queuedAt = entry.getString("queued_at");
+        record.expiresAt = entry.getString("expires_at");
+        record.createdAt = entry.getString("created_at");
+        record.updatedAt = entry.getString("updated_at");
+        return record;
+    }
+
+    static bool validWaitlistStatus(const std::string& status) {
+        return status == "waiting" || status == "offered" || status == "booked" || status == "left" ||
+               status == "expired";
+    }
+
+    DatabaseError createWaitlistEntry(const WaitlistEntryRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.tokenHash.empty() || record.guestEmail.empty() || record.expiresAt.empty()) {
+            return DatabaseError::failure("запись листа без токена, email или срока");
+        }
+        if (!validWaitlistStatus(record.status)) return DatabaseError::failure("некорректный статус листа ожидания");
+        const std::string email = lower(record.guestEmail);
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getString("token_hash") == record.tokenHash) return DatabaseError::failure("токен уже существует");
+            // Частичный UNIQUE (page_id, lower(guest_email)) WHERE status IN (waiting, offered).
+            if (entry.getInt("page_id") == record.pageId && activeWaitlist(entry) &&
+                lower(entry.getString("guest_email")) == email) {
+                return DatabaseError::failure("гость уже в листе ожидания этой страницы");
+            }
+        }
+        const long long id = nextId("waitlist_entries");
+        const std::string now = isoNow();
+        Json entry = Json::object();
+        entry.set("id", Json(id));
+        entry.set("owner_id", Json(record.ownerId));
+        entry.set("page_id", Json(record.pageId));
+        entry.set("guest_email", Json(record.guestEmail));
+        entry.set("token_hash", Json(record.tokenHash));
+        entry.set("token_enc", Json(record.tokenEnc));
+        entry.set("telegram_chat_id", Json(0LL));
+        entry.set("queued_at", Json(record.queuedAt.empty() ? now : record.queuedAt));
+        entry.set("created_at", Json(now));
+        writeWaitlist(entry, record);
+        table("waitlist_entries").push(entry);
+        flush();
+        outId = id;
+        return DatabaseError::success();
+    }
+
+    std::optional<WaitlistEntryRecord> findWaitlistEntry(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getInt("id") == id) return toWaitlist(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::optional<WaitlistEntryRecord> findWaitlistEntryByToken(const std::string& tokenHash) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (tokenHash.empty()) return std::nullopt;
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getString("token_hash") == tokenHash) return toWaitlist(entry);
+        }
+        return std::nullopt;
+    }
+
+    std::optional<WaitlistEntryRecord> findActiveWaitlistEntry(long long pageId, const std::string& emailLower) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getInt("page_id") == pageId && activeWaitlist(entry) &&
+                lower(entry.getString("guest_email")) == emailLower) {
+                return toWaitlist(entry);
+            }
+        }
+        return std::nullopt;
+    }
+
+    std::vector<WaitlistEntryRecord> listWaitlistEntries(long long ownerId, long long pageId, const std::string& status,
+                                                         int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<WaitlistEntryRecord> result;
+        const auto& entries = table("waitlist_entries").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId) continue;
+            if (pageId > 0 && it->getInt("page_id") != pageId) continue;
+            if (!status.empty() && it->getString("status") != status) continue;
+            result.push_back(toWaitlist(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    std::vector<WaitlistEntryRecord> listWaitingEntries(long long pageId, const std::string& nowIso, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<WaitlistEntryRecord> result;
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getInt("page_id") != pageId || entry.getString("status") != "waiting") continue;
+            if (entry.getString("expires_at") <= nowIso) continue;
+            result.push_back(toWaitlist(entry));
+        }
+        std::stable_sort(result.begin(), result.end(), [](const WaitlistEntryRecord& a, const WaitlistEntryRecord& b) {
+            return a.queuedAt != b.queuedAt ? a.queuedAt < b.queuedAt : a.id < b.id;
+        });
+        if (limit > 0 && static_cast<int>(result.size()) > limit) result.resize(static_cast<std::size_t>(limit));
+        return result;
+    }
+
+    int countActiveWaitlistEntries(long long pageId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        int count = 0;
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getInt("page_id") == pageId && activeWaitlist(entry)) ++count;
+        }
+        return count;
+    }
+
+    DatabaseError updateWaitlistEntry(const WaitlistEntryRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!validWaitlistStatus(record.status)) return DatabaseError::failure("некорректный статус листа ожидания");
+        const bool active = record.status == "waiting" || record.status == "offered";
+        if (active) {
+            const std::string email = lower(record.guestEmail);
+            for (const auto& entry : table("waitlist_entries").items()) {
+                if (entry.getInt("id") != record.id && entry.getInt("page_id") == record.pageId &&
+                    activeWaitlist(entry) && lower(entry.getString("guest_email")) == email) {
+                    return DatabaseError::failure("гость уже в листе ожидания этой страницы");
+                }
+            }
+        }
+        for (auto& entry : mutableTable("waitlist_entries")) {
+            if (entry.getInt("id") != record.id) continue;
+            writeWaitlist(entry, record);
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("запись листа ожидания не найдена");
+    }
+
+    DatabaseError setWaitlistTelegram(long long entryId, long long chatId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : mutableTable("waitlist_entries")) {
+            if (entry.getInt("id") != entryId) continue;
+            entry.set("telegram_chat_id", Json(chatId));
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("запись листа ожидания не найдена");
+    }
+
+    std::vector<WaitlistEntryRecord> listWaitlistHolds(long long ownerId, const std::string& nowIso) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<WaitlistEntryRecord> result;
+        for (const auto& entry : table("waitlist_entries").items()) {
+            if (entry.getInt("owner_id") != ownerId || entry.getString("status") != "offered") continue;
+            if (entry.getString("offer_expires_at") <= nowIso || entry.getString("offer_start").empty()) continue;
+            result.push_back(toWaitlist(entry));
+        }
+        return result;
+    }
+
+    std::vector<WaitlistEntryRecord> listDueWaitlist(const std::string& nowIso, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<WaitlistEntryRecord> result;
+        for (const auto& entry : table("waitlist_entries").items()) {
+            const std::string status = entry.getString("status");
+            const bool offerDue = status == "offered" && entry.getString("offer_expires_at") <= nowIso;
+            const bool entryDue = status == "waiting" && entry.getString("expires_at") <= nowIso;
+            if (offerDue || entryDue) result.push_back(toWaitlist(entry));
+        }
+        std::stable_sort(result.begin(), result.end(), [](const WaitlistEntryRecord& a, const WaitlistEntryRecord& b) {
+            const std::string& left = a.status == "offered" ? a.offerExpiresAt : a.expiresAt;
+            const std::string& right = b.status == "offered" ? b.offerExpiresAt : b.expiresAt;
+            return left < right;
+        });
+        if (limit > 0 && static_cast<int>(result.size()) > limit) result.resize(static_cast<std::size_t>(limit));
+        return result;
+    }
+
+    // ------------------------------------------------------- повторный приём (F8)
+    // Эквивалент UPDATE … FOR UPDATE SKIP LOCKED: выбор и отметка — под одним мьютексом.
+    std::vector<BookingRecord> claimDueRebooks(const std::string& nowIso, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        table("booking_pages");  // ключи создаются до взятия ссылок на таблицы
+        table("bookings");
+        std::map<long long, int> days;
+        for (const auto& page : table("booking_pages").items()) {
+            const long long after = page.getInt("rebook_after_days");
+            if (after > 0) days[page.getInt("id")] = static_cast<int>(after);
+        }
+        std::vector<std::pair<std::string, Json*>> due;
+        for (auto& entry : mutableTable("bookings")) {
+            if (entry.getString("status", "active") != "active" || !entry.getString("rebook_sent_at").empty()) continue;
+            const auto page = days.find(entry.getInt("page_id"));
+            if (page == days.end()) continue;
+            const std::string ends = bookingEndsAt(entry.get("occurrences"));
+            std::time_t endsAt = 0;
+            if (ends.empty() || !parseIsoUtc(ends, endsAt)) continue;
+            if (isoUtc(endsAt + static_cast<std::time_t>(page->second) * 86400) > nowIso) continue;
+            due.emplace_back(ends, &entry);
+        }
+        std::stable_sort(due.begin(), due.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        if (limit > 0 && static_cast<int>(due.size()) > limit) due.resize(static_cast<std::size_t>(limit));
+        std::vector<BookingRecord> claimed;
+        for (auto& [ends, entry] : due) {
+            (void)ends;
+            entry->set("rebook_sent_at", Json(nowIso));
+            entry->set("rebook_status", Json(std::string("claimed")));
+            claimed.push_back(toBooking(*entry));
+        }
+        if (!claimed.empty()) flush();
+        return claimed;
+    }
+
+    DatabaseError setRebookStatus(long long bookingId, const std::string& status) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : mutableTable("bookings")) {
+            if (entry.getInt("id") != bookingId) continue;
+            entry.set("rebook_status", Json(status));
+            flush();
+            return DatabaseError::success();
+        }
+        return DatabaseError::failure("запись не найдена");
+    }
+
+    DatabaseError cancelPendingRebooks(long long pageId, const std::string& nowIso) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        bool changed = false;
+        for (auto& entry : mutableTable("bookings")) {
+            if (entry.getInt("page_id") != pageId || entry.getString("status", "active") != "active" ||
+                !entry.getString("rebook_sent_at").empty()) {
+                continue;
+            }
+            const std::string ends = bookingEndsAt(entry.get("occurrences"));
+            if (ends.empty() || ends > nowIso) continue;
+            entry.set("rebook_sent_at", Json(nowIso));
+            entry.set("rebook_status", Json(std::string("cancelled")));
+            changed = true;
+        }
+        if (changed) flush();
+        return DatabaseError::success();
+    }
+
+    bool hasLaterBooking(long long pageId, const std::string& emailLower, long long exceptBookingId,
+                         const std::string& endsAtIso) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (emailLower.empty()) return false;
+        for (const auto& entry : table("bookings").items()) {
+            if (entry.getInt("page_id") != pageId || entry.getInt("id") == exceptBookingId) continue;
+            if (entry.getString("status", "active") != "active" || lower(entry.getString("guest_email")) != emailLower) {
+                continue;
+            }
+            const std::string ends = bookingEndsAt(entry.get("occurrences"));
+            if (!ends.empty() && ends > endsAtIso) return true;
+        }
+        return false;
+    }
+
+    // ----------------------------------------------------------- чеки (F10)
+    static bool receiptPending(const Json& payment) {
+        return payment.isObject() && payment.getBool("npd") && payment.getString("status") == "paid" &&
+               payment.getString("receipt_at").empty();
+    }
+
+    std::vector<BookingRecord> listReceiptPendingBookings(long long ownerId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<BookingRecord> result;
+        const auto& entries = table("bookings").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId || !receiptPending(it->get("payment"))) continue;
+            result.push_back(toBooking(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    std::vector<PackagePurchaseRecord> listReceiptPendingPackages(long long ownerId, int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<PackagePurchaseRecord> result;
+        const auto& entries = table("package_purchases").items();
+        for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+            if (it->getInt("owner_id") != ownerId || !receiptPending(it->get("payment"))) continue;
+            result.push_back(toPackage(*it));
+            if (limit > 0 && static_cast<int>(result.size()) >= limit) break;
+        }
+        return result;
+    }
+
+    // ------------------------------------------------------- payment_accounts
+    std::optional<PaymentAccountRecord> findPaymentAccount(long long userId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& entry : table("payment_accounts").items()) {
+            if (entry.getInt("user_id") != userId) continue;
+            PaymentAccountRecord record;
+            record.userId = userId;
+            record.provider = entry.getString("provider", "yookassa");
+            record.shopId = entry.getString("shop_id");
+            record.secretEnc = entry.getString("secret_enc");
+            record.connectedAt = entry.getString("connected_at");
+            return record;
+        }
+        return std::nullopt;
+    }
+
+    DatabaseError setPaymentAccount(const PaymentAccountRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.provider != "yookassa" || record.shopId.empty() || record.secretEnc.empty()) {
+            return DatabaseError::failure("некорректное подключение оплаты");
+        }
+        auto& rows = mutableTable("payment_accounts");
+        rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                  [&](const Json& entry) { return entry.getInt("user_id") == record.userId; }),
+                   rows.end());
+        Json entry = Json::object();
+        entry.set("user_id", Json(record.userId));
+        entry.set("provider", Json(record.provider));
+        entry.set("shop_id", Json(record.shopId));
+        entry.set("secret_enc", Json(record.secretEnc));
+        entry.set("connected_at", Json(isoNow()));
+        rows.push_back(entry);
+        flush();
+        return DatabaseError::success();
+    }
+
+    DatabaseError deletePaymentAccount(long long userId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto& rows = mutableTable("payment_accounts");
+        const auto before = rows.size();
+        rows.erase(std::remove_if(rows.begin(), rows.end(),
+                                  [&](const Json& entry) { return entry.getInt("user_id") == userId; }),
+                   rows.end());
+        if (rows.size() != before) flush();
+        return DatabaseError::success();
     }
 
     // ------------------------------------------------------------- referrals
@@ -1934,6 +2916,35 @@ private:
         return 0;
     }
 
+    long long rewardReferral(long long referredId, int days, int cap, bool& referrerRewarded) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        referrerRewarded = false;
+        table("users");  // ключи — до взятия ссылок на таблицы
+        Json* row = nullptr;
+        for (auto& entry : mutableTable("referrals")) {
+            if (entry.getInt("referred_id") == referredId) {
+                row = &entry;
+                break;
+            }
+        }
+        if (!row || row->getString("verified_at").empty() || !row->getString("rewarded_at").empty() || days <= 0) {
+            return 0;
+        }
+        const long long referrerId = row->getInt("referrer_id");
+        int rewarded = 0;
+        for (const auto& entry : table("referrals").items()) {
+            if (entry.getInt("referrer_id") == referrerId && !entry.getString("rewarded_at").empty()) ++rewarded;
+        }
+        row->set("rewarded_at", Json(isoNow()));
+        extendPlanLocked(referredId, days);
+        if (rewarded < cap) {
+            extendPlanLocked(referrerId, days);
+            referrerRewarded = true;
+        }
+        flush();
+        return referrerId;
+    }
+
     std::vector<ReferralRecord> listReferrals(long long referrerId, int limit) override {
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<ReferralRecord> result;
@@ -1946,6 +2957,7 @@ private:
             record.source = it->getString("source");
             record.createdAt = it->getString("created_at");
             record.verifiedAt = it->getString("verified_at");
+            record.rewardedAt = it->getString("rewarded_at");
             for (const auto& user : table("users").items()) {
                 if (user.getInt("id") == record.referredId) {
                     record.displayName = user.getString("display_name");
@@ -2082,6 +3094,28 @@ private:
         return std::nullopt;
     }
 
+    // Записи из файла до снимка цены (нет поля price) получают цену своей страницы,
+    // как при миграции 2026_10_17_booking_price.sql; запись по пакету — 0.
+    void backfillBookingPrices() {
+        if (!state_.get("bookings").isArray() || !state_.get("booking_pages").isArray()) return;
+        const Json::Array& pages = state_["booking_pages"].items();
+        for (Json& entry : state_["bookings"].items()) {
+            if (entry.contains("price")) continue;
+            long long price = 0;
+            std::string currency = "RUB";
+            if (entry.getInt("package_id") == 0) {
+                for (const Json& page : pages) {
+                    if (page.getInt("id") != entry.getInt("page_id")) continue;
+                    price = page.getInt("price");
+                    currency = page.getString("currency", "RUB");
+                    break;
+                }
+            }
+            entry.set("price", Json(price));
+            entry.set("currency", Json(currency.empty() ? std::string("RUB") : currency));
+        }
+    }
+
     Json& table(const std::string& name) {
         if (!state_.contains(name)) state_.set(name, Json::array());
         return state_[name];
@@ -2109,7 +3143,7 @@ private:
         const std::string data = state_.dump(2);
         const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
         if (fd < 0) {
-            AURA_LOG(log::Level::Warn, "db") << "не удалось сохранить " << temporary << ": " << std::strerror(errno);
+            SELFVOY_LOG(log::Level::Warn, "db") << "не удалось сохранить " << temporary << ": " << std::strerror(errno);
             return;
         }
         ::fchmod(fd, 0600);  // файл мог остаться от старой версии с другими правами
@@ -2118,7 +3152,7 @@ private:
             const ssize_t chunk = ::write(fd, data.data() + written, data.size() - written);
             if (chunk < 0) {
                 if (errno == EINTR) continue;
-                AURA_LOG(log::Level::Warn, "db") << "ошибка записи " << temporary << ": " << std::strerror(errno);
+                SELFVOY_LOG(log::Level::Warn, "db") << "ошибка записи " << temporary << ": " << std::strerror(errno);
                 ::close(fd);
                 return;
             }
@@ -2126,7 +3160,7 @@ private:
         }
         ::close(fd);
         if (std::rename(temporary.c_str(), path_.c_str()) != 0) {
-            AURA_LOG(log::Level::Warn, "db")
+            SELFVOY_LOG(log::Level::Warn, "db")
                 << "не удалось заменить " << path_ << ": " << std::strerror(errno);
         }
     }
@@ -2147,6 +3181,9 @@ private:
         record.emailVerified = json.getBool("email_verified", true);
         record.role = json.getString("role", "user");
         if (record.role.empty()) record.role = "user";
+        record.planUntil = json.getString("plan_until");
+        record.telegramChatId = json.getInt("telegram_chat_id");
+        record.telegramUsername = json.getString("telegram_username");
         return record;
     }
 
@@ -2284,4 +3321,4 @@ std::unique_ptr<IDatabase> makeEmbeddedDatabase(const std::string& path) {
     return std::make_unique<EmbeddedDatabase>(path);
 }
 
-}  // namespace aura
+}  // namespace selfvoy

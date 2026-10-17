@@ -1,7 +1,7 @@
-# Aura для Android (этап 11)
+# Selfvoy для Android (этап 11)
 
 Нативный клиент: **Kotlin + Jetpack Compose**, минимальный API 26
-(Android 8.0), целевой API 34. Общий слой протокола — модуль `:aurakit`
+(Android 8.0), целевой API 34. Общий слой протокола — модуль `:selfvoykit`
 (чистый Kotlin/JVM, без Android-зависимостей): тот же WS-протокол, что у
 desktop- и iOS-клиентов (docs/PROTOCOL.md).
 
@@ -10,18 +10,18 @@ desktop- и iOS-клиентов (docs/PROTOCOL.md).
 ```
 android/
 ├── settings.gradle.kts, build.gradle.kts, gradle/libs.versions.toml
-├── aurakit/                          # общий слой (аналог AuraKit на iOS)
-│   └── src/main/kotlin/ai/aura/kit/  # Protocol, WebSocketTransport,
-│                                     # AuraClient, DeepLink
+├── selfvoykit/                          # общий слой (аналог SelfvoyKit на iOS)
+│   └── src/main/kotlin/app/selfvoy/kit/  # Protocol, WebSocketTransport,
+│                                     # SelfvoyClient, DeepLink
 │   └── src/test/kotlin/…             # JVM-тесты (без эмулятора)
 └── app/                              # Compose-приложение
     ├── google-services.json.example  # шаблон конфига Firebase
     └── src/main/
         ├── AndroidManifest.xml       # разрешения, deep links, FCM-сервис
-        ├── kotlin/ai/aura/app/       # MainActivity, AppStore, SecureStore,
+        ├── kotlin/app/selfvoy/       # MainActivity, AppStore, SecureStore,
         │                             # Notifications, push/FcmService,
         │                             # voice/VoiceService, ui/*
-        │   └── ui/                   # экраны v3: Home, MyAura, Negotiations,
+        │   └── ui/                   # экраны v3: Home, MySelfvoy, Negotiations,
         │                             # Tasks, Contacts, Settings, Confirmations,
         │                             # Notifications, Login, Onboarding;
         │                             # theme/ — токены, Manrope, компоненты
@@ -37,7 +37,7 @@ android/
 
 Workflow **`build-android.yml`** собирает `app-debug.apk` на каждый push:
 вкладка **Actions** репозитория → «Build Android APK» → последний запуск →
-**Artifacts → aura-android-debug**. Debug-APK ставится на устройство
+**Artifacts → selfvoy-android-debug**. Debug-APK ставится на устройство
 напрямую (подпись debug-ключом); для Google Play соберите release и
 подпишите своим keystore (ниже).
 
@@ -56,7 +56,7 @@ gradle wrapper --gradle-version 8.7   # если gradle установлен
 Тесты общего слоя — без эмулятора и SDK (только JDK 17):
 
 ```bash
-./gradlew :aurakit:test
+./gradlew :selfvoykit:test
 ```
 
 ### Адрес сервера
@@ -64,7 +64,7 @@ gradle wrapper --gradle-version 8.7   # если gradle установлен
 По умолчанию debug-сборка смотрит на `ws://10.0.2.2:9000` — это хост
 разработчика глазами эмулятора. Переопределение:
 
-- `android/local.properties`: `aura.server.url=ws://192.168.1.10:9000`
+- `android/local.properties`: `selfvoy.server.url=ws://192.168.1.10:9000`
   (файл в git не попадает);
 - или в самом приложении: экран входа → «Адрес сервера» (для прода —
   `wss://` за TLS-прокси, см. docs/SETUP.md).
@@ -72,7 +72,7 @@ gradle wrapper --gradle-version 8.7   # если gradle установлен
 ### Firebase / FCM (push)
 
 1. Создайте проект в консоли Firebase, добавьте приложение Android с
-   пакетом `ai.aura.app`;
+   пакетом `app.selfvoy`;
 2. скачайте `google-services.json` и положите в `android/app/`
    (в git не попадает — `.gitignore`; шаблон: `google-services.json.example`);
 3. при сборке без этого файла плагин google-services не применяется,
@@ -84,7 +84,7 @@ gradle wrapper --gradle-version 8.7   # если gradle установлен
 fcm:{url, message}}` (docs/PROTOCOL.md), шлюз получает OAuth2-токен
 сервисного аккаунта (role: Firebase Cloud Messaging) и делает
 `POST {fcm.url}` с `Authorization: Bearer <токен>` и телом `message`.
-`AURA_FCM_URL` должен содержать id вашего проекта Firebase.
+`SELFVOY_FCM_URL` должен содержать id вашего проекта Firebase.
 
 ## Разрешения — только необходимые
 
@@ -99,13 +99,13 @@ Accessibility API не используется; фоновых процессо
 
 ## Возможности
 
-- **Deep links** `aura://chats/<id> | voice | ask?text=… | tasks |
+- **Deep links** `selfvoy://chats/<id> | voice | ask?text=… | tasks |
   notifications | settings | oauth` — те же маршруты, что на iOS.
-- **Шорткаты лаунчера** (долгое нажатие на иконке): «Спросить Ауру»,
+- **Шорткаты лаунчера** (долгое нажатие на иконке): «Спросить Selfvoy»,
   «Голосом», «Новая задача»; activity принимает `ACTION_ASSIST`.
 - **Голос**: системный SpeechRecognizer (on-device), fallback — серверный
   STT (`speech.transcribe`, WAV 16 кГц моно); озвучка — TextToSpeech.
-- **Google OAuth**: Chrome Custom Tabs → редирект `aura://oauth` →
+- **Google OAuth**: Chrome Custom Tabs → редирект `selfvoy://oauth` →
   `integrations.callback`. Токены провайдеров клиент не видит.
 - **2FA**: TOTP + резервные коды; доверенное устройство — по стабильному
   `device_id`.
@@ -116,7 +116,7 @@ Accessibility API не используется; фоновых процессо
 
 - `tools/check_android_protocol.py` — все строковые типы сообщений
   Kotlin-клиента известны серверу (CI job `protocol`);
-- JVM-тесты `:aurakit` (кадры протокола, deep links) — CI job `android`;
+- JVM-тесты `:selfvoykit` (кадры протокола, deep links) — CI job `android`;
 - серверная часть FCM покрыта C++ unit-тестом `server_push_devices_fcm`
   и e2e-секцией 3e (конверт `{platform:"fcm", fcm.message…}` ловится
   push-моком);

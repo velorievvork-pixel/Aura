@@ -54,7 +54,7 @@ describe('deviceInfo', () => {
 
   it('id старой версии клиента переносится', async () => {
     const storage = fakeStorage();
-    storage.setItem('aura.deviceId', '0d7f9a3c-1111-4222-8333-944455556666');
+    storage.setItem('selfvoy.deviceId', '0d7f9a3c-1111-4222-8333-944455556666');
     vi.stubGlobal('localStorage', storage);
     const mod = await freshModule();
     expect((await mod.deviceInfo()).id).toBe('0d7f9a3c-1111-4222-8333-944455556666');
@@ -62,7 +62,7 @@ describe('deviceInfo', () => {
 
   it('мусор в хранилище заменяется новым id', async () => {
     const storage = fakeStorage();
-    storage.setItem('aura.secure.device', 'web-ephemeral');
+    storage.setItem('selfvoy.secure.device', 'web-ephemeral');
     vi.stubGlobal('localStorage', storage);
     const mod = await freshModule();
     expect((await mod.deviceInfo()).id).not.toBe('web-ephemeral');

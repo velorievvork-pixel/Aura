@@ -1,5 +1,5 @@
 /*
-  WebSocket-клиент протокола Aura (docs/PROTOCOL.md).
+  WebSocket-клиент протокола Selfvoy (docs/PROTOCOL.md).
 
   Запрос:  {"id", "type": "<домен>.<метод>", "payload": {...}}
   Ответ:   {"id", "type": "ok", "payload"} | {"id", "type": "error", "code", "message"}
@@ -14,20 +14,20 @@
 
 export type ConnState = 'connecting' | 'open' | 'offline' | 'closed';
 
-export class AuraError extends Error {
+export class SelfvoyError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
     super(message);
-    this.name = 'AuraError';
+    this.name = 'SelfvoyError';
     this.code = code;
   }
 }
 
 /** Сетевая проблема (не ответ сервера): повторить позже, а не показывать как ошибку данных. */
 export const isNetworkError = (e: unknown) =>
-  e instanceof AuraError && ['offline', 'disconnected', 'timeout'].includes(e.code);
+  e instanceof SelfvoyError && ['offline', 'disconnected', 'timeout'].includes(e.code);
 
-export interface AuraEvent {
+export interface SelfvoyEvent {
   event: string;
   payload: Record<string, unknown>;
 }
@@ -36,7 +36,7 @@ type Payload = Record<string, unknown>;
 
 interface Pending {
   resolve: (payload: Payload) => void;
-  reject: (error: AuraError) => void;
+  reject: (error: SelfvoyError) => void;
   timer: ReturnType<typeof setTimeout>;
 }
 
@@ -46,7 +46,7 @@ export interface SocketOptions {
   /** Адреса по порядку (см. net/config.ts); перечитываются при каждой попытке. */
   candidates: () => string[];
   /** Выполняется сразу после открытия, до запросов интерфейса: повторная авторизация. */
-  onOpen?: (socket: AuraSocket) => Promise<void>;
+  onOpen?: (socket: SelfvoySocket) => Promise<void>;
   connectTimeoutMs?: number;
   requestTimeoutMs?: number;
   /** Паузы между кругами попыток, мс. */
@@ -56,7 +56,7 @@ export interface SocketOptions {
 
 const OPEN = 1;
 
-export class AuraSocket {
+export class SelfvoySocket {
   state: ConnState = 'closed';
   url = '';
   /** Человекочитаемая причина последней неудачи подключения. */
@@ -66,7 +66,7 @@ export class AuraSocket {
   private seq = 0;
   private pending = new Map<string, Pending>();
   private waiters = new Set<() => void>();
-  private eventSubs = new Set<(e: AuraEvent) => void>();
+  private eventSubs = new Set<(e: SelfvoyEvent) => void>();
   private stateSubs = new Set<(s: ConnState) => void>();
   private candidate = 0;
   private round = 0;
@@ -136,7 +136,7 @@ export class AuraSocket {
     return this.send<T>(type, payload, timeoutMs ?? this.opts.requestTimeoutMs);
   }
 
-  onEvent(fn: (e: AuraEvent) => void): () => void {
+  onEvent(fn: (e: SelfvoyEvent) => void): () => void {
     this.eventSubs.add(fn);
     return () => this.eventSubs.delete(fn);
   }
@@ -235,13 +235,13 @@ export class AuraSocket {
   private send<T>(type: string, payload: Payload, timeout: number): Promise<T> {
     const ws = this.ws;
     if (!ws || ws.readyState !== OPEN) {
-      return Promise.reject(new AuraError('offline', 'Нет связи с сервером Aura'));
+      return Promise.reject(new SelfvoyError('offline', 'Нет связи с сервером Selfvoy'));
     }
     const id = `w${++this.seq}`;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new AuraError('timeout', 'Сервер не ответил вовремя'));
+        reject(new SelfvoyError('timeout', 'Сервер не ответил вовремя'));
       }, timeout);
       this.pending.set(id, { resolve: (p) => resolve(p as T), reject, timer });
       ws.send(JSON.stringify({ id, type, payload }));
@@ -265,7 +265,7 @@ export class AuraSocket {
     this.pending.delete(String(message.id));
     clearTimeout(pending.timer);
     if (message.type === 'ok') pending.resolve(message.payload ?? {});
-    else pending.reject(new AuraError(message.code ?? 'error', message.message ?? 'Ошибка сервера'));
+    else pending.reject(new SelfvoyError(message.code ?? 'error', message.message ?? 'Ошибка сервера'));
   }
 
   private waitReady(timeout: number): Promise<void> {
@@ -277,7 +277,7 @@ export class AuraSocket {
       };
       const timer = setTimeout(() => {
         this.waiters.delete(done);
-        reject(new AuraError('offline', 'Нет связи с сервером Aura'));
+        reject(new SelfvoyError('offline', 'Нет связи с сервером Selfvoy'));
       }, timeout);
       this.waiters.add(done);
     });
@@ -286,7 +286,7 @@ export class AuraSocket {
   private dropPending(reason: string): void {
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
-      p.reject(new AuraError('disconnected', reason));
+      p.reject(new SelfvoyError('disconnected', reason));
     }
     this.pending.clear();
   }

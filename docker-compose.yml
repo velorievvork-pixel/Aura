@@ -1,34 +1,34 @@
-# Прод-стек Aura: PostgreSQL + Python AI Service + C++-сервер.
+# Прод-стек Selfvoy: PostgreSQL + Python AI Service + C++-сервер.
 #
 # Секреты обязательны: compose откажется стартовать, если они не заданы в .env
 # (шаблон — .env.example, генерация — `openssl rand -hex 32`).
 # Наружу опубликован только порт сервера 9000 (за TLS-прокси, wss://);
 # PostgreSQL и AI-сервис доступны лишь внутри сети compose.
-# AURA_DEV_MODE здесь не задаётся и в проде задаваться не должен.
+# SELFVOY_DEV_MODE здесь не задаётся и в проде задаваться не должен.
 
 services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: aura
+      POSTGRES_DB: selfvoy
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (openssl rand -hex 32)}
       # Пароли ролей приложения — их создаёт deploy/postgres/20-app-roles.sh
-      AURA_DB_PASSWORD: ${AURA_DB_PASSWORD:?AURA_DB_PASSWORD is required (openssl rand -hex 32)}
-      AURA_AI_DB_PASSWORD: ${AURA_AI_DB_PASSWORD:?AURA_AI_DB_PASSWORD is required (openssl rand -hex 32)}
+      SELFVOY_DB_PASSWORD: ${SELFVOY_DB_PASSWORD:?SELFVOY_DB_PASSWORD is required (openssl rand -hex 32)}
+      SELFVOY_AI_DB_PASSWORD: ${SELFVOY_AI_DB_PASSWORD:?SELFVOY_AI_DB_PASSWORD is required (openssl rand -hex 32)}
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Только схема и роли. seed.sql (демо-аккаунты) в прод не монтируется.
       - ./schema/schema.sql:/docker-entrypoint-initdb.d/10-schema.sql:ro
       - ./deploy/postgres/20-app-roles.sh:/docker-entrypoint-initdb.d/20-app-roles.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d aura"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d selfvoy"]
       interval: 5s
       timeout: 3s
       retries: 5
     restart: unless-stopped
     # ports не публикуются: доступ к БД — только из сети compose.
-    # Для обслуживания: docker compose exec postgres psql -U postgres aura
+    # Для обслуживания: docker compose exec postgres psql -U postgres selfvoy
 
   ai:
     build:
@@ -38,18 +38,18 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      AURA_MEMORY_BACKEND: postgres
-      # Отдельная роль aura_ai: только user_memory и users(id, email).
-      AURA_DATABASE_URL: postgresql://aura_ai:${AURA_AI_DB_PASSWORD:?AURA_AI_DB_PASSWORD is required}@postgres/aura
-      AURA_AI_TOKEN: ${AURA_AI_TOKEN:?AURA_AI_TOKEN is required (openssl rand -hex 32)}
-      AURA_LLM_PROVIDER: ${AURA_LLM_PROVIDER:-mock}
-      AURA_LLM_MODEL: ${AURA_LLM_MODEL:-}
+      SELFVOY_MEMORY_BACKEND: postgres
+      # Отдельная роль selfvoy_ai: только user_memory и users(id, email).
+      SELFVOY_DATABASE_URL: postgresql://selfvoy_ai:${SELFVOY_AI_DB_PASSWORD:?SELFVOY_AI_DB_PASSWORD is required}@postgres/selfvoy
+      SELFVOY_AI_TOKEN: ${SELFVOY_AI_TOKEN:?SELFVOY_AI_TOKEN is required (openssl rand -hex 32)}
+      SELFVOY_LLM_PROVIDER: ${SELFVOY_LLM_PROVIDER:-mock}
+      SELFVOY_LLM_MODEL: ${SELFVOY_LLM_MODEL:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       # Другой OpenAI-совместимый провайдер (пусто — api.openai.com).
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      AURA_LLM_TIMEOUT: ${AURA_LLM_TIMEOUT:-20}
-      AURA_RAG_MODE: ${AURA_RAG_MODE:-auto}
-      AURA_CORS_ORIGINS: http://server:9000
+      SELFVOY_LLM_TIMEOUT: ${SELFVOY_LLM_TIMEOUT:-20}
+      SELFVOY_RAG_MODE: ${SELFVOY_RAG_MODE:-auto}
+      SELFVOY_CORS_ORIGINS: http://server:9000
     healthcheck:
       # В python:3.12-slim нет curl — проверяем средствами самого Python.
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
@@ -70,35 +70,45 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      # Роль aura_app: только DML, не суперпользователь.
-      AURA_DATABASE_URL: postgresql://aura_app:${AURA_DB_PASSWORD:?AURA_DB_PASSWORD is required}@postgres/aura
-      AURA_DB_POOL_SIZE: ${AURA_DB_POOL_SIZE:-8}
-      AURA_AI_URL: http://ai:8000
-      AURA_AI_TOKEN: ${AURA_AI_TOKEN:?AURA_AI_TOKEN is required (openssl rand -hex 32)}
-      AURA_JWT_SECRET: ${AURA_JWT_SECRET:?AURA_JWT_SECRET is required (openssl rand -hex 32)}
-      AURA_2FA_KEY: ${AURA_2FA_KEY:?AURA_2FA_KEY is required (openssl rand -hex 32)}
-      AURA_HOST: 0.0.0.0
-      AURA_PORT: 9000
-      AURA_MAX_CONNECTIONS: ${AURA_MAX_CONNECTIONS:-1024}
-      AURA_MAX_LOGIN_ATTEMPTS: ${AURA_MAX_LOGIN_ATTEMPTS:-}
-      AURA_LOGIN_WINDOW: ${AURA_LOGIN_WINDOW:-}
+      # Роль selfvoy_app: только DML, не суперпользователь.
+      SELFVOY_DATABASE_URL: postgresql://selfvoy_app:${SELFVOY_DB_PASSWORD:?SELFVOY_DB_PASSWORD is required}@postgres/selfvoy
+      SELFVOY_DB_POOL_SIZE: ${SELFVOY_DB_POOL_SIZE:-8}
+      SELFVOY_AI_URL: http://ai:8000
+      SELFVOY_AI_TOKEN: ${SELFVOY_AI_TOKEN:?SELFVOY_AI_TOKEN is required (openssl rand -hex 32)}
+      SELFVOY_JWT_SECRET: ${SELFVOY_JWT_SECRET:?SELFVOY_JWT_SECRET is required (openssl rand -hex 32)}
+      SELFVOY_2FA_KEY: ${SELFVOY_2FA_KEY:?SELFVOY_2FA_KEY is required (openssl rand -hex 32)}
+      SELFVOY_HOST: 0.0.0.0
+      SELFVOY_PORT: 9000
+      SELFVOY_MAX_CONNECTIONS: ${SELFVOY_MAX_CONNECTIONS:-1024}
+      SELFVOY_MAX_LOGIN_ATTEMPTS: ${SELFVOY_MAX_LOGIN_ATTEMPTS:-}
+      SELFVOY_LOGIN_WINDOW: ${SELFVOY_LOGIN_WINDOW:-}
       # Почта: smtp — настоящая отправка; log — только запись в лог (без кодов).
-      AURA_MAIL_DRIVER: ${AURA_MAIL_DRIVER:-log}
-      AURA_SMTP_HOST: ${AURA_SMTP_HOST:-}
-      AURA_SMTP_PORT: ${AURA_SMTP_PORT:-}
-      AURA_SMTP_TLS: ${AURA_SMTP_TLS:-}
-      AURA_SMTP_USER: ${AURA_SMTP_USER:-}
-      AURA_SMTP_PASSWORD: ${AURA_SMTP_PASSWORD:-}
-      AURA_SMTP_FROM: ${AURA_SMTP_FROM:-}
-      AURA_PUSH_DRIVER: ${AURA_PUSH_DRIVER:-dev}
-      AURA_PUSH_WEBHOOK_URL: ${AURA_PUSH_WEBHOOK_URL:-}
-      AURA_GOOGLE_CLIENT_ID: ${AURA_GOOGLE_CLIENT_ID:-}
-      AURA_GOOGLE_CLIENT_SECRET: ${AURA_GOOGLE_CLIENT_SECRET:-}
-      AURA_LOG_LEVEL: ${AURA_LOG_LEVEL:-info}
+      SELFVOY_MAIL_DRIVER: ${SELFVOY_MAIL_DRIVER:-log}
+      SELFVOY_SMTP_HOST: ${SELFVOY_SMTP_HOST:-}
+      SELFVOY_SMTP_PORT: ${SELFVOY_SMTP_PORT:-}
+      SELFVOY_SMTP_TLS: ${SELFVOY_SMTP_TLS:-}
+      SELFVOY_SMTP_USER: ${SELFVOY_SMTP_USER:-}
+      SELFVOY_SMTP_PASSWORD: ${SELFVOY_SMTP_PASSWORD:-}
+      SELFVOY_SMTP_FROM: ${SELFVOY_SMTP_FROM:-}
+      SELFVOY_PUSH_DRIVER: ${SELFVOY_PUSH_DRIVER:-dev}
+      SELFVOY_PUSH_WEBHOOK_URL: ${SELFVOY_PUSH_WEBHOOK_URL:-}
+      SELFVOY_GOOGLE_CLIENT_ID: ${SELFVOY_GOOGLE_CLIENT_ID:-}
+      SELFVOY_GOOGLE_CLIENT_SECRET: ${SELFVOY_GOOGLE_CLIENT_SECRET:-}
+      SELFVOY_LOG_LEVEL: ${SELFVOY_LOG_LEVEL:-info}
       # Админ-панель: email первых администраторов (только подтверждённые адреса).
-      AURA_ADMIN_EMAILS: ${AURA_ADMIN_EMAILS:-}
-      AURA_TRUSTED_PROXIES: ${AURA_TRUSTED_PROXIES:-}
-      AURA_PUBLIC_URL: ${AURA_PUBLIC_URL:-}
+      SELFVOY_ADMIN_EMAILS: ${SELFVOY_ADMIN_EMAILS:-}
+      SELFVOY_TRUSTED_PROXIES: ${SELFVOY_TRUSTED_PROXIES:-}
+      SELFVOY_PUBLIC_URL: ${SELFVOY_PUBLIC_URL:-}
+      # Тариф Pro (0 — бета, всё открыто) и Telegram-бот (пусто — выключен).
+      SELFVOY_PLANS_ENFORCED: ${SELFVOY_PLANS_ENFORCED:-}
+      SELFVOY_TELEGRAM_BOT_TOKEN: ${SELFVOY_TELEGRAM_BOT_TOKEN:-}
+      SELFVOY_TELEGRAM_BOT_USERNAME: ${SELFVOY_TELEGRAM_BOT_USERNAME:-}
+      SELFVOY_TELEGRAM_API_URL: ${SELFVOY_TELEGRAM_API_URL:-}
+      SELFVOY_TELEGRAM_POLL: ${SELFVOY_TELEGRAM_POLL:-}
+      # Оплата записи (F4): адрес API ЮKassa (пусто — https://api.yookassa.ru/v3).
+      SELFVOY_YOOKASSA_API_URL: ${SELFVOY_YOOKASSA_API_URL:-}
+      SELFVOY_CA_FILE: ${SELFVOY_CA_FILE:-}
+      SELFVOY_SERVER_PUBLIC_URL: ${SELFVOY_SERVER_PUBLIC_URL:-}
     healthcheck:
       # Порт 9000 принимает соединения (в образе есть bash, curl — нет).
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9000"]
@@ -109,8 +119,8 @@ services:
     restart: unless-stopped
     ports:
       # Публичная точка входа: ставьте TLS-прокси (wss://) перед ней.
-      # Только локально за прокси на этой же машине: AURA_BIND=127.0.0.1
-      - "${AURA_BIND:-0.0.0.0}:9000:9000"
+      # Только локально за прокси на этой же машине: SELFVOY_BIND=127.0.0.1
+      - "${SELFVOY_BIND:-0.0.0.0}:9000:9000"
 
 volumes:
   pgdata:

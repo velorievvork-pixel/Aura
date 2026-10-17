@@ -4,7 +4,7 @@ import { useSpeech } from '../lib/useSpeech';
 import { tap } from '../platform/native';
 
 /**
- * Строка запроса к Ауре: поле, голос и отправка. Голос — в один клик: нажали,
+ * Строка запроса к Selfvoy: поле, голос и отправка. Голос — в один клик: нажали,
  * сказали, распознанный текст уходит сам, как только распознавание закончилось.
  */
 export function CommandBar({
@@ -47,7 +47,7 @@ export function CommandBar({
 
   return (
     <form className="command" onSubmit={submit}>
-      <input value={text} onChange={(e) => setText(e.target.value)} placeholder={speech.listening ? 'Говорите…' : placeholder} aria-label="Запрос к Ауре" autoFocus={autoFocus} enterKeyHint="send" />
+      <input value={text} onChange={(e) => setText(e.target.value)} placeholder={speech.listening ? 'Говорите…' : placeholder} aria-label="Запрос к Selfvoy" autoFocus={autoFocus} enterKeyHint="send" />
       {speech.supported && (
         <button type="button" className={`icon-btn mic ${speech.listening ? 'listening' : ''}`} onClick={speech.toggle} aria-label={speech.listening ? 'Остановить запись' : 'Сказать голосом'} title={speech.listening ? 'Остановить' : 'Сказать голосом'}>
           {speech.listening ? <Square size={15} /> : <Mic size={17} />}

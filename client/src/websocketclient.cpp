@@ -4,7 +4,7 @@
 #include <QJsonDocument>
 #include <QNetworkProxy>
 
-namespace aura {
+namespace selfvoy {
 
 WebSocketClient::WebSocketClient(QObject* parent) : QObject(parent) {
     connect(&socket_, &QWebSocket::connected, this, &WebSocketClient::onConnected);
@@ -30,7 +30,7 @@ void WebSocketClient::connectToServer() {
         // Сервер принимает JWT прямо в рукопожатии — вход без лишнего round-trip.
         request.setRawHeader("Authorization", QStringLiteral("Bearer %1").arg(token_).toUtf8());
     }
-    request.setRawHeader("User-Agent", "aura-qt-client/0.1");
+    request.setRawHeader("User-Agent", "selfvoy-qt-client/0.1");
     socket_.open(request);
 }
 
@@ -106,4 +106,4 @@ void WebSocketClient::onTextMessageReceived(const QString& message) {
     if (callback) callback(object, QString());
 }
 
-}  // namespace aura
+}  // namespace selfvoy

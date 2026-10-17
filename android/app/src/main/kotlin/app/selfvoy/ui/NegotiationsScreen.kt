@@ -45,6 +45,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import app.selfvoy.AppStore
+import app.selfvoy.ui.theme.Card
+import app.selfvoy.ui.theme.Hairline
+import app.selfvoy.ui.theme.Tint
+import app.selfvoy.ui.theme.FillSoft
+import app.selfvoy.ui.theme.TintSoft
 import app.selfvoy.ui.theme.Accent
 import app.selfvoy.ui.theme.AccentSoft
 import app.selfvoy.ui.theme.SelfvoyAvatar
@@ -205,9 +210,8 @@ private fun AgentCard(name: String, selfvoy: String, talking: Boolean, them: Boo
     Column(
         modifier
             .clip(shape)
-            .background(Brush.verticalGradient(
-                if (them) listOf(Color(0x33BF99FF), Color(0x1A7352DB)) else listOf(Color(0x2E99ABFF), Color(0x1A7859DB))))
-            .border(1.dp, if (them) Color(0x6BCCAAFF) else Color(0x5CB3BDFF), shape)
+            .background(Card)
+            .border(1.dp, if (them) Hairline else Tint.copy(alpha = 0.35f), shape)
             .padding(14.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -218,7 +222,7 @@ private fun AgentCard(name: String, selfvoy: String, talking: Boolean, them: Boo
         Text(selfvoy, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
         Row(
             Modifier.padding(top = 8.dp).fillMaxWidth().height(52.dp).clip(RoundedCornerShape(12.dp))
-                .background(Color.White.copy(alpha = 0.86f)).padding(8.dp),
+                .background(FillSoft).padding(8.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
@@ -251,8 +255,8 @@ private fun StepRow(number: Int, step: Step) {
         }
         if (step.mine) { badge(); Spacer(Modifier.width(10.dp)) }
         Column(
-            Modifier.weight(1f, fill = false).clip(RoundedCornerShape(20.dp)).background(Color.White.copy(alpha = 0.05f))
-                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(20.dp)).padding(horizontal = 14.dp, vertical = 9.dp),
+            Modifier.weight(1f, fill = false).clip(RoundedCornerShape(20.dp)).background(Card)
+                .border(1.dp, Hairline, RoundedCornerShape(20.dp)).padding(horizontal = 14.dp, vertical = 9.dp),
             horizontalAlignment = if (step.mine) Alignment.Start else Alignment.End,
         ) {
             Text(step.text, style = MaterialTheme.typography.labelMedium, color = TextPrimary,
@@ -271,7 +275,7 @@ private fun ResultCard(n: AppStore.Negotiation) {
     val shape = RoundedCornerShape(24.dp)
     Column(
         Modifier.fillMaxWidth().clip(shape)
-            .background(Brush.horizontalGradient(listOf(Color(0x2E7863FF), Color(0x1F3D78FF))))
+            .background(TintSoft)
             .border(1.dp, (if (n.booking != null) Success else Accent).copy(alpha = 0.45f), shape)
             .padding(22.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),

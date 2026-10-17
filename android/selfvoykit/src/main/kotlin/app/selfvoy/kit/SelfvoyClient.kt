@@ -6,8 +6,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 /**
@@ -342,8 +341,13 @@ class SelfvoyClient(private val transport: WebSocketTransport = WebSocketTranspo
     suspend fun bookingPageDelete(pageId: Long): JsonObject? =
         request("booking.pageDelete", buildJsonObject { put("page_id", pageId) })
 
-    suspend fun bookingList(limit: Int = 50): List<Booking> =
-        request("booking.list", buildJsonObject { put("limit", limit) }).arr("bookings").map { Booking.from(it as? JsonObject) }
+    /** pageId 0 — все страницы. */
+    suspend fun bookingList(limit: Int = 50, pageId: Long = 0, activeOnly: Boolean = false): List<Booking> =
+        request("booking.list", buildJsonObject {
+            put("limit", limit)
+            if (pageId > 0) put("page_id", pageId)
+            if (activeOnly) put("active_only", true)
+        }).arr("bookings").map { Booking.from(it as? JsonObject) }
 
     /** occurrence — start одной встречи серии; null — все предстоящие. */
     suspend fun bookingOwnerCancel(bookingId: Long, occurrence: String? = null): Booking =
@@ -352,22 +356,123 @@ class SelfvoyClient(private val transport: WebSocketTransport = WebSocketTranspo
             if (occurrence != null) put("occurrence", occurrence)
         }).obj("booking"))
 
+    /** Отметка оплаты владельцем (F4): status — paid | waived | refunded. */
+    suspend fun bookingPaymentSet(bookingId: Long, status: String): Booking {
+        if (status !in Payment.OWNER_STATUSES) throw SelfvoyError("bad_request", "неизвестный статус оплаты: $status")
+        return Booking.from(request("booking.paymentSet", buildJsonObject {
+            put("booking_id", bookingId)
+            put("status", status)
+        }).obj("booking"))
+    }
+
+    /**
+     * Свободные окна своей страницы — те же, что видит гость (`booking.get` по slug).
+     * Пустой список — окон нет или AI-сервис недоступен.
+     */
+    suspend fun bookingFreeSlots(slug: String): List<BookingSlot> =
+        request("booking.get", buildJsonObject { put("slug", slug) }).obj("page").arr("slots").mapNotNull { element ->
+            val slot = element as? JsonObject ?: return@mapNotNull null
+            BookingSlot(slot.str("start"), slot.str("end"), slot.str("day"))
+        }
+
+    /** Пост «свободные окна» (F6): days 1–14, format telegram | vk | plain. */
+    suspend fun bookingSlotsPost(pageId: Long, days: Int = 7, format: String = SlotsPost.FORMAT_TELEGRAM): SlotsPost {
+        if (days !in 1..14) throw SelfvoyError("bad_request", "период — от 1 до 14 дней")
+        if (format !in SlotsPost.FORMATS) throw SelfvoyError("bad_request", "неизвестный формат поста: $format")
+        return SlotsPost.from(request("booking.slotsPost", buildJsonObject {
+            put("page_id", pageId)
+            put("days", days)
+            put("format", format)
+        }))
+    }
+
+    // ------------------------------------------------------ пакеты и абонементы (F5)
+
+    /** pageId 0 — все страницы; status "" — любые. */
+    suspend fun packageList(pageId: Long = 0, status: String = "", limit: Int = 50): List<PackagePurchase> {
+        if (status.isNotEmpty() && status !in PackagePurchase.STATUSES) throw SelfvoyError("bad_request", "неизвестный статус пакета: $status")
+        return request("package.list", buildJsonObject {
+            if (pageId > 0) put("page_id", pageId)
+            if (status.isNotEmpty()) put("status", status)
+            put("limit", limit)
+        }).arr("packages").map { PackagePurchase.from(it as? JsonObject) }
+    }
+
+    /** Выдать пакет вне сайта; токен ссылки в ответе — один раз. */
+    suspend fun packageIssue(issue: PackageIssueRequest): PackageIssued {
+        issue.validate()?.let { throw SelfvoyError("bad_request", it) }
+        val reply = request("package.issue", issue.toJson())
+        return PackageIssued(PackagePurchase.from(reply.obj("package")), reply.str("token"), reply.str("url"))
+    }
+
+    /** Корректировка остатка: delta −100..100, не 0. */
+    suspend fun packageAdjust(packageId: Long, delta: Int): PackagePurchase {
+        if (delta == 0 || delta !in -100..100) throw SelfvoyError("bad_request", "изменение — от −100 до 100, не 0")
+        return PackagePurchase.from(request("package.adjust", buildJsonObject {
+            put("package_id", packageId)
+            put("delta", delta)
+        }).obj("package"))
+    }
+
+    suspend fun packageCancel(packageId: Long): PackagePurchase =
+        PackagePurchase.from(request("package.cancel", buildJsonObject { put("package_id", packageId) }).obj("package"))
+
+    /** Отметка оплаты пакета: paid | waived | refunded. */
+    suspend fun packagePaymentSet(packageId: Long, status: String): PackagePurchase {
+        if (status !in Payment.OWNER_STATUSES) throw SelfvoyError("bad_request", "неизвестный статус оплаты: $status")
+        return PackagePurchase.from(request("package.paymentSet", buildJsonObject {
+            put("package_id", packageId)
+            put("status", status)
+        }).obj("package"))
+    }
+
+    // --------------------------------------------------------- рефералы и тариф
+
     suspend fun referralGet(): ReferralInfo = ReferralInfo.from(request("referral.get"))
 
     private fun pageJson(fields: BookingPageFields?, status: String?, pageId: Long? = null): JsonObject = buildJsonObject {
         if (pageId != null) put("page_id", pageId)
-        if (fields != null) {
-            put("title", fields.title.trim())
-            put("description", fields.description.trim())
-            put("duration_minutes", fields.durationMinutes)
-            put("days_ahead", fields.daysAhead)
-            put("max_per_day", fields.maxPerDay)
-            put("notice_hours", fields.noticeHours)
-            put("max_series", fields.maxSeries)
-            put("weekends", fields.weekends)
-        }
+        fields?.toJson()?.forEach { (key, value) -> put(key, value) }
         if (status != null) put("status", status)
     }
+
+    // -------------------------------------------------------- Telegram-бот (F2)
+
+    suspend fun telegramStatus(): TelegramStatus = TelegramStatus.from(request("telegram.status"))
+
+    /** Ссылка на бота (15 минут); бот не настроен → bad_request. */
+    suspend fun telegramLink(): TelegramLink = TelegramLink.from(request("telegram.link"))
+
+    suspend fun telegramUnlink(): JsonObject? = request("telegram.unlink")
+
+    /**
+     * Дублировать ли уведомления в Telegram (`prefs.notifications.telegram`).
+     * [current] — текущий объект notifications из prefs.get: его поля (тихие часы,
+     * отключённые виды) отправляются целиком, меняется только флаг.
+     */
+    suspend fun notificationsTelegramSet(enabled: Boolean, current: JsonObject?): JsonObject? =
+        prefsSet(buildJsonObject { put("notifications", notificationsWithTelegram(current, enabled)) })
+
+    // ------------------------------------------------------------- ЮKassa (F4)
+
+    suspend fun paymentsStatus(): PaymentsStatus = PaymentsStatus.from(request("payments.status"))
+
+    /** Подключить магазин; ключ проверяет сервер запросом к ЮKassa. Ключ нигде не сохраняется. */
+    suspend fun paymentsConnect(credentials: YooKassaCredentials): PaymentsStatus {
+        credentials.validate()?.let { throw SelfvoyError("bad_request", it) }
+        return PaymentsStatus.from(request("payments.connect", credentials.toJson()))
+    }
+
+    suspend fun paymentsDisconnect(): PaymentsStatus = PaymentsStatus.from(request("payments.disconnect"))
+
+    // ------------------------------------------------- календарь: ICS-подписка (F6)
+
+    suspend fun calendarFeed(): CalendarFeed = CalendarFeed.from(request("calendar.feed"))
+
+    /** Новая ссылка; прежняя перестаёт работать во всех календарях. */
+    suspend fun calendarFeedReset(): CalendarFeed = CalendarFeed.from(request("calendar.feedReset"))
+
+    suspend fun calendarFeedDisable(): CalendarFeed = CalendarFeed.from(request("calendar.feedDisable"))
 
     // ---------------------------------------------------------------- сервер
 
@@ -377,13 +482,30 @@ class SelfvoyClient(private val transport: WebSocketTransport = WebSocketTranspo
 // ---------------------------------------------------------- удобные доступы
 
 fun JsonObject?.str(key: String): String =
-    this?.get(key)?.jsonPrimitive?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.content ?: ""
+    (this?.get(key) as? JsonPrimitive)?.takeIf { it !is kotlinx.serialization.json.JsonNull }?.content ?: ""
 
-fun JsonObject?.long(key: String): Long =
-    this?.get(key)?.jsonPrimitive?.long ?: 0L
+/** Число из поля; нет поля, null, строка-не-число или объект → 0 (терпимо к старому серверу). */
+fun JsonObject?.long(key: String): Long {
+    val value = this?.get(key) as? JsonPrimitive ?: return 0L
+    if (value is kotlinx.serialization.json.JsonNull) return 0L
+    return value.longOrNull ?: value.content.toDoubleOrNull()?.toLong() ?: 0L
+}
 
-fun JsonObject?.bool(key: String): Boolean =
-    this?.get(key)?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false
+fun JsonObject?.bool(key: String): Boolean = boolOr(key, false)
+
+/** Флаг с умолчанием для отсутствующего поля (например, guest_reminders → true). */
+fun JsonObject?.boolOr(key: String, default: Boolean): Boolean {
+    val value = this?.get(key) as? JsonPrimitive ?: return default
+    if (value is kotlinx.serialization.json.JsonNull) return default
+    return value.content.toBooleanStrictOrNull() ?: default
+}
+
+/** prefs.notifications с флагом telegram: прочие поля (тихие часы, muted_kinds) сохраняются. */
+fun notificationsWithTelegram(current: JsonObject?, enabled: Boolean): JsonObject =
+    JsonObject((current ?: JsonObject(emptyMap())) + ("telegram" to JsonPrimitive(enabled)))
+
+/** Флаг prefs.notifications.telegram (нет — true: дублировать). */
+fun telegramNotificationsEnabled(prefs: JsonObject?): Boolean = prefs.obj("notifications").boolOr("telegram", true)
 
 fun JsonObject?.obj(key: String): JsonObject? =
     this?.get(key)?.takeIf { it is JsonObject } as JsonObject?

@@ -41,6 +41,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import app.selfvoy.AppStore
+import app.selfvoy.ui.theme.TintSoft
+import app.selfvoy.ui.theme.Card
 import app.selfvoy.ui.theme.SelfvoyChip
 import app.selfvoy.ui.theme.SelfvoyField
 import app.selfvoy.ui.theme.SelfvoyOrb
@@ -85,7 +87,7 @@ fun MySelfvoyScreen() {
         Row(
             Modifier
                 .fillMaxWidth()
-                .background(Brush.verticalGradient(listOf(Color(0x29D9B8FF), Color.Transparent)))
+                .background(Brush.verticalGradient(listOf(TintSoft, Color.Transparent)))
                 .padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -174,20 +176,9 @@ fun Bubble(
             .clip(shape)
             // «Жидкое стекло»: тонировка (у Selfvoy — сиреневая), блик сверху и
             // светлый кант по верхнему краю.
-            .background(if (fromSelfvoy) Color(0x613C2C64) else Color(0x73120E1E))
-            .background(
-                Brush.verticalGradient(
-                    0f to Color.White.copy(alpha = if (fromSelfvoy) 0.24f else 0.15f),
-                    0.5f to Color.White.copy(alpha = 0.04f),
-                    1f to Color.White.copy(alpha = 0.09f),
-                ),
-            )
-            .border(
-                1.dp,
-                if (error) Brush.verticalGradient(listOf(Danger.copy(alpha = 0.6f), Danger.copy(alpha = 0.6f)))
-                else Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.White.copy(alpha = 0.06f))),
-                shape,
-            )
+            // Пузырь ассистента — карточка, свой — мягкий акцент (.bub.ai / .bub.me).
+            .background(if (fromSelfvoy) Card else TintSoft)
+            .border(1.dp, if (error) Danger.copy(alpha = 0.6f) else Color.Transparent, shape)
             .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {

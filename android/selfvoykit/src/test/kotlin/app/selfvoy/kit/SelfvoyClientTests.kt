@@ -157,8 +157,8 @@ class BookingTests {
             BookingPageFields(" Консультация ", durationMinutes = 60, maxSeries = 3))
         val (type, payload) = transport.sent.single()
         assertEquals("booking.pageCreate", type)
-        assertEquals(setOf("title", "description", "duration_minutes", "days_ahead", "max_per_day",
-            "notice_hours", "max_series", "weekends"), payload.keys)
+        // Все поля страницы, включая F1/F3/F4/F5 (пакеты — целым массивом).
+        assertEquals(BookingPageFields.KEYS, payload.keys)
         assertEquals("Консультация", payload.str("title"))
         assertEquals(60L, payload.long("duration_minutes"))
         assertEquals(3, page.maxSeries)

@@ -7,6 +7,24 @@ import app.selfvoy.kit.SelfvoyEventName
 import app.selfvoy.kit.SelfvoyUser
 import app.selfvoy.kit.DeepLink
 import app.selfvoy.kit.Privacy
+import app.selfvoy.kit.Booking
+import app.selfvoy.kit.BookingPage
+import app.selfvoy.kit.BookingPageFields
+import app.selfvoy.kit.CalendarFeed
+import app.selfvoy.kit.PackageIssueRequest
+import app.selfvoy.kit.PackageIssued
+import app.selfvoy.kit.PackagePurchase
+import app.selfvoy.kit.PaymentsStatus
+import app.selfvoy.kit.Plan
+import app.selfvoy.kit.SelfvoyErrorCode
+import app.selfvoy.kit.SelfvoyNoticeKind
+import app.selfvoy.kit.SlotsPost
+import app.selfvoy.kit.TelegramLink
+import app.selfvoy.kit.TelegramStatus
+import app.selfvoy.kit.YooKassaCredentials
+import app.selfvoy.kit.telegramNotificationsEnabled
+import app.selfvoy.ui.theme.SelfvoyPalette
+import app.selfvoy.ui.theme.ThemeMode
 import app.selfvoy.kit.arr
 import app.selfvoy.kit.bool
 import app.selfvoy.kit.long
@@ -73,6 +91,19 @@ object AppStore {
     data class PermissionRow(val tool: String, val description: String, val dangerous: Boolean, val mode: String)
     data class ConnectionRow(val id: Long, val provider: String, val account: String, val status: String)
     data class TwoFaSetup(val secret: String, val otpauthUri: String)
+    /** Свободное окно страницы записи для ленты дня («Предложить»). */
+    data class FreeSlot(val start: String, val end: String, val pageId: Long)
+
+    /**
+     * Итог операции экрана: значение или текст ошибки для показа рядом с кнопкой
+     * ([proRequired] — нужен Pro: показать, как его получить).
+     */
+    data class Outcome<T>(val value: T? = null, val error: String? = null, val proRequired: Boolean = false) {
+        val ok: Boolean get() = error == null
+    }
+
+    /** Действие из «+» или с «Сегодня», которое выполнит открывшийся экран. */
+    enum class PendingAction { NEW_PAGE, SLOTS_POST, ISSUE_PACKAGE }
 
     sealed class AuthState {
         data object LoggedOut : AuthState()
@@ -82,8 +113,20 @@ object AppStore {
         data class LoggedIn(val displayName: String, val email: String, val bio: String = "") : AuthState()
     }
 
-    /** Разделы v3: пять во вкладках снизу, остальные открываются из шапки Home. */
-    enum class Tab { HOME, SELFVOY, NEGOTIATIONS, TASKS, CONTACTS, SETTINGS, CONFIRMATIONS, NOTICES, BOOKING }
+    /**
+     * Разделы 2026: четыре во вкладках снизу («Сегодня · Запись · ИИ · Ещё»),
+     * остальные открываются из «Ещё» и шапки «Сегодня» и закрываются «назад».
+     */
+    enum class Tab {
+        HOME, BOOKING, SELFVOY, MORE,
+        NEGOTIATIONS, TASKS, CONTACTS, SETTINGS, CONFIRMATIONS, NOTICES, PACKAGES, INTEGRATIONS;
+
+        /** Вкладка панели, к которой относится раздел (подсветка и «назад»). */
+        val root: Tab get() = when (this) {
+            HOME, BOOKING, SELFVOY, MORE -> this
+            else -> MORE
+        }
+    }
 
     // ------------------------------------------------------------- состояние
 
@@ -141,6 +184,30 @@ object AppStore {
     val bookings: StateFlow<List<app.selfvoy.kit.Booking>> = _bookings
     private val _referral = MutableStateFlow<app.selfvoy.kit.ReferralInfo?>(null)
     val referral: StateFlow<app.selfvoy.kit.ReferralInfo?> = _referral
+
+    /** Тариф пользователя (user.plan); null — старый сервер. */
+    private val _plan = MutableStateFlow<Plan?>(null)
+    val plan: StateFlow<Plan?> = _plan
+
+    /** Свободные окна первой открытой страницы (те же, что видит гость). */
+    private val _freeSlots = MutableStateFlow<List<FreeSlot>>(emptyList())
+    val freeSlots: StateFlow<List<FreeSlot>> = _freeSlots
+
+    /** Пакеты и абонементы (package.list); null — ещё не загружены. */
+    private val _packages = MutableStateFlow<List<PackagePurchase>?>(null)
+    val packages: StateFlow<List<PackagePurchase>?> = _packages
+
+    private val _telegram = MutableStateFlow<TelegramStatus?>(null)
+    val telegram: StateFlow<TelegramStatus?> = _telegram
+
+    private val _payments = MutableStateFlow<PaymentsStatus?>(null)
+    val payments: StateFlow<PaymentsStatus?> = _payments
+
+    private val _calendarFeed = MutableStateFlow<CalendarFeed?>(null)
+    val calendarFeed: StateFlow<CalendarFeed?> = _calendarFeed
+
+    private val _pendingAction = MutableStateFlow<PendingAction?>(null)
+    val pendingAction: StateFlow<PendingAction?> = _pendingAction
 
     private val _permissions = MutableStateFlow<List<PermissionRow>>(emptyList())
     val permissions: StateFlow<List<PermissionRow>> = _permissions
@@ -224,6 +291,7 @@ object AppStore {
     fun init(context: Context) {
         if (this::store.isInitialized) return
         store = SecureStore(context.applicationContext)
+        SelfvoyPalette.mode = ThemeMode.of(store.themeMode)
         startEvents()
         if (!store.accessToken.isNullOrEmpty()) {
             connectAndAuthenticate()
@@ -241,8 +309,14 @@ object AppStore {
                     SelfvoyEventName.NOTIFICATION_NEW -> {
                         refreshNotifications()
                         val kind = event.payload.str("kind")
-                        if (kind.startsWith("booking.") && _tab.value == Tab.BOOKING) refreshBooking()
-                        if (kind == "referral.joined" && _referral.value != null) refreshReferral()
+                        // «Сегодня» показывает записи всегда — перечитываем при любом событии записи.
+                        if (SelfvoyNoticeKind.touchesBookings(kind)) refreshBooking()
+                        if (SelfvoyNoticeKind.touchesPackages(kind) && _packages.value != null) refreshPackages()
+                        if (SelfvoyNoticeKind.touchesReferral(kind)) {
+                            if (_referral.value != null) refreshReferral()
+                            // Месяц Pro начислен — тариф в user.plan изменился.
+                            if (kind == SelfvoyNoticeKind.REFERRAL_REWARD) refreshMe()
+                        }
                     }
                     SelfvoyEventName.SESSION_REVOKED -> onSessionRevoked(event.payload.str("reason"))
                 }
@@ -401,6 +475,7 @@ object AppStore {
 
     private fun applyUser(user: SelfvoyUser) {
         _userId.value = user.id
+        _plan.value = user.plan
         _auth.value = AuthState.LoggedIn(user.displayName, user.email, user.bio)
     }
 
@@ -415,6 +490,7 @@ object AppStore {
         registerPushDevice()
         checkOnboarding()
         refreshMemory()
+        refreshBooking()
         // Deep link selfvoy://settings пришёл до входа: вкладка уже выбрана, догружаем то, чего нет выше.
         if (_tab.value == Tab.SETTINGS) refreshReferral()
         if (pendingFocus.isNotEmpty()) {
@@ -534,6 +610,21 @@ object AppStore {
         _negotiationHistory.value = emptyList(); _userResults.value = emptyList(); _memory.value = emptyList()
         _userId.value = 0; _tab.value = Tab.HOME
         _prefs.value = null; _privacy.value = null; _privacyError.value = null; _profileError.value = null
+        _plan.value = null; _freeSlots.value = emptyList(); _packages.value = null; _telegram.value = null
+        _payments.value = null; _calendarFeed.value = null; _pendingAction.value = null
+    }
+
+    /** Перечитать пользователя (тариф после награды за приглашение). */
+    fun refreshMe() = scope.launch {
+        runCatching {
+            val me = client.me()
+            applyUser(SelfvoyUser.from(me.obj("user") ?: me))
+        }
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        SelfvoyPalette.mode = mode
+        store.themeMode = mode.key
     }
 
     // ------------------------------------------------------------- Selfvoy/голос
@@ -672,7 +763,10 @@ object AppStore {
         if (value != Tab.CONTACTS) _openChatId.value = 0
         when (value) {
             Tab.SETTINGS -> { refreshPermissions(); refreshIntegrations(); refresh2faStatus(); refreshPrivacy(); refreshReferral() }
-            Tab.BOOKING -> refreshBooking()
+            Tab.HOME, Tab.BOOKING -> refreshBooking()
+            Tab.MORE -> refreshReferral()
+            Tab.PACKAGES -> { refreshPackages(); if (_bookingPages.value == null) refreshBooking() }
+            Tab.INTEGRATIONS -> { refreshTelegram(); refreshPayments(); refreshCalendarFeed(); refreshIntegrations() }
             Tab.CONFIRMATIONS -> refreshConfirmations()
             Tab.NOTICES -> refreshNotifications()
             Tab.TASKS -> refreshTasks()
@@ -793,25 +887,40 @@ object AppStore {
 
     fun refreshBooking() = scope.launch {
         guard {
-            _bookingPages.value = client.bookingPageList()
+            val pages = client.bookingPageList()
+            _bookingPages.value = pages
             _bookings.value = client.bookingList(100)
+            loadFreeSlots(pages)
         }
     }
 
-    /** pageId == null — новая страница. Возвращает true, если сохранено (форму можно закрыть). */
-    suspend fun saveBookingPage(pageId: Long?, fields: app.selfvoy.kit.BookingPageFields): Boolean {
-        var saved = false
-        guard {
-            val page = if (pageId == null) client.bookingPageCreate(fields) else client.bookingPageUpdate(pageId, fields)
-            val rest = _bookingPages.value.orEmpty().filter { it.id != page.id }
-            _bookingPages.value = if (pageId == null) listOf(page) + rest
-                else _bookingPages.value.orEmpty().map { if (it.id == page.id) page else it }
-            saved = true
-        }
-        return saved
+    /** Окна первой открытой страницы: ответ сервера кэшируется на минуту, ошибки не мешают ленте. */
+    private suspend fun loadFreeSlots(pages: List<BookingPage>) {
+        val page = pages.firstOrNull { it.active }
+        _freeSlots.value = if (page == null) emptyList() else runCatching {
+            client.bookingFreeSlots(page.slug).map { FreeSlot(it.start, it.end, page.id) }
+        }.getOrDefault(emptyList())
     }
 
-    fun setBookingPagePaused(page: app.selfvoy.kit.BookingPage, paused: Boolean) = scope.launch {
+    /** Действие из «+»: открыть раздел, где его выполнят. */
+    fun startAction(action: PendingAction) {
+        _pendingAction.value = action
+        selectTab(if (action == PendingAction.ISSUE_PACKAGE) Tab.PACKAGES else Tab.BOOKING)
+    }
+
+    fun consumePendingAction() { _pendingAction.value = null }
+
+    /** pageId == null — новая страница. Возвращает итог: ошибка показывается в форме. */
+    suspend fun saveBookingPage(pageId: Long?, fields: BookingPageFields): Outcome<BookingPage> = outcome {
+        val page = if (pageId == null) client.bookingPageCreate(fields) else client.bookingPageUpdate(pageId, fields)
+        val rest = _bookingPages.value.orEmpty().filter { it.id != page.id }
+        _bookingPages.value = if (pageId == null) listOf(page) + rest
+            else _bookingPages.value.orEmpty().map { if (it.id == page.id) page else it }
+        if (pageId == null) loadFreeSlots(_bookingPages.value.orEmpty())
+        page
+    }
+
+    fun setBookingPagePaused(page: BookingPage, paused: Boolean) = scope.launch {
         guard {
             val updated = client.bookingPageUpdate(page.id, status = if (paused) "paused" else "active")
             _bookingPages.value = _bookingPages.value.orEmpty().map { if (it.id == updated.id) updated else it }
@@ -819,7 +928,7 @@ object AppStore {
         }
     }
 
-    fun deleteBookingPage(page: app.selfvoy.kit.BookingPage) = scope.launch {
+    fun deleteBookingPage(page: BookingPage) = scope.launch {
         guard {
             client.bookingPageDelete(page.id)
             _bookingPages.value = _bookingPages.value.orEmpty().filter { it.id != page.id }
@@ -827,18 +936,137 @@ object AppStore {
         }
     }
 
-    fun cancelBooking(booking: app.selfvoy.kit.Booking) = scope.launch {
-        guard {
-            val updated = client.bookingOwnerCancel(booking.id)
-            _bookings.value = _bookings.value.map { if (it.id == updated.id) updated else it }
-            // Счётчик «Предстоит: N» считает сервер — перечитываем страницы.
-            _bookingPages.value = client.bookingPageList()
-            refreshTasks()
+    private fun putBooking(updated: Booking) {
+        _bookings.value = _bookings.value.map { if (it.id == updated.id) updated else it }
+    }
+
+    /** Отмена владельцем: [occurrence] — одна встреча серии, null — все предстоящие. */
+    suspend fun cancelBooking(booking: Booking, occurrence: String? = null): Outcome<Booking> = outcome {
+        val updated = client.bookingOwnerCancel(booking.id, occurrence)
+        putBooking(updated)
+        // Счётчик «Предстоит: N» и свободные окна считает сервер — перечитываем.
+        val pages = client.bookingPageList()
+        _bookingPages.value = pages
+        loadFreeSlots(pages)
+        refreshTasks()
+        updated
+    }
+
+    /** Отметка оплаты записи: paid | waived | refunded. */
+    suspend fun setBookingPayment(booking: Booking, status: String): Outcome<Booking> = outcome {
+        val updated = client.bookingPaymentSet(booking.id, status)
+        putBooking(updated)
+        _errorText.value = when (status) {
+            "paid" -> "Оплата отмечена — гостю ушло письмо"
+            "waived" -> "Отмечено: без оплаты"
+            else -> "Отмечен возврат"
+        }
+        updated
+    }
+
+    /** Пост «свободные окна» для отправки через «Поделиться». */
+    suspend fun slotsPost(pageId: Long, days: Int, format: String): Outcome<SlotsPost> = outcome {
+        client.bookingSlotsPost(pageId, days, format)
+    }
+
+    // ------------------------------------------------- пакеты и абонементы (F5)
+
+    fun refreshPackages() = scope.launch {
+        guard { _packages.value = client.packageList(limit = 200) }
+    }
+
+    private fun putPackage(updated: PackagePurchase) {
+        val list = _packages.value.orEmpty()
+        _packages.value = if (list.any { it.id == updated.id }) list.map { if (it.id == updated.id) updated else it }
+            else listOf(updated) + list
+    }
+
+    suspend fun issuePackage(request: PackageIssueRequest): Outcome<PackageIssued> = outcome {
+        val issued = client.packageIssue(request)
+        putPackage(issued.purchase)
+        issued
+    }
+
+    suspend fun adjustPackage(item: PackagePurchase, delta: Int): Outcome<PackagePurchase> = outcome {
+        client.packageAdjust(item.id, delta).also { putPackage(it) }
+    }
+
+    suspend fun cancelPackage(item: PackagePurchase): Outcome<PackagePurchase> = outcome {
+        client.packageCancel(item.id).also { putPackage(it) }
+    }
+
+    suspend fun setPackagePayment(item: PackagePurchase, status: String): Outcome<PackagePurchase> = outcome {
+        client.packagePaymentSet(item.id, status).also { putPackage(it) }
+    }
+
+    // ------------------------------------------- подключения: Telegram, ЮKassa, ICS
+
+    fun refreshTelegram() = scope.launch {
+        runCatching { client.telegramStatus() }.onSuccess { _telegram.value = it }
+        // Флаг «дублировать в Telegram» живёт в prefs.notifications.
+        runCatching { client.prefsGet() }.onSuccess { _prefs.value = it }
+    }
+
+    suspend fun telegramLink(): Outcome<TelegramLink> = outcome { client.telegramLink() }
+
+    suspend fun telegramUnlink(): Outcome<Unit> = outcome {
+        client.telegramUnlink()
+        _telegram.value = client.telegramStatus()
+        _errorText.value = "Telegram отключён"
+    }
+
+    /** Дублировать ли уведомления в Telegram; прочие настройки уведомлений сохраняются. */
+    suspend fun setTelegramNotifications(enabled: Boolean): Outcome<Unit> = outcome {
+        val current = (_prefs.value ?: client.prefsGet()).obj("notifications")
+        _prefs.value = client.notificationsTelegramSet(enabled, current)
+    }
+
+    fun telegramNotificationsOn(): Boolean = telegramNotificationsEnabled(_prefs.value)
+
+    fun refreshPayments() = scope.launch {
+        runCatching { client.paymentsStatus() }.onSuccess { _payments.value = it }
+    }
+
+    /**
+     * Подключение ЮKassa. Секретный ключ передаётся только в запрос: в сторе,
+     * на диске и в журналах его нет; поле ввода очищает экран.
+     */
+    suspend fun connectYooKassa(shopId: String, secretKey: String): Outcome<PaymentsStatus> = outcome {
+        client.paymentsConnect(YooKassaCredentials(shopId, secretKey)).also {
+            _payments.value = it
+            _errorText.value = "ЮKassa подключена — гости смогут платить картой и через СБП"
         }
     }
 
+    suspend fun disconnectYooKassa(): Outcome<PaymentsStatus> = outcome {
+        client.paymentsDisconnect().also {
+            _payments.value = client.paymentsStatus()
+            _errorText.value = "ЮKassa отключена"
+        }
+    }
+
+    fun refreshCalendarFeed() = scope.launch {
+        runCatching { client.calendarFeed() }.onSuccess { _calendarFeed.value = it }
+    }
+
+    /** Новая ссылка подписки (прежняя перестаёт работать); значение — готовый адрес или null. */
+    suspend fun resetCalendarFeed(): Outcome<String?> = outcome {
+        val feed = client.calendarFeedReset()
+        _calendarFeed.value = feed
+        feed.feedUrl(store.serverUrl)
+    }
+
+    suspend fun disableCalendarFeed(): Outcome<Unit> = outcome {
+        _calendarFeed.value = client.calendarFeedDisable()
+        _errorText.value = "Подписка на календарь выключена"
+    }
+
     fun refreshReferral() = scope.launch {
-        guard { _referral.value = client.referralGet() }
+        guard {
+            val info = client.referralGet()
+            _referral.value = info
+            info.plan?.let { _plan.value = it }
+        }
     }
 
     fun refreshPermissions() = scope.launch {
@@ -1056,19 +1284,34 @@ object AppStore {
         }
     }
 
-    private fun describe(error: SelfvoyError): String = when (error.code) {
+    /** Операция экрана с ошибкой рядом с кнопкой, а не в общем снекбаре. */
+    private suspend fun <T> outcome(block: suspend () -> T): Outcome<T> = try {
+        Outcome(value = block())
+    } catch (error: SelfvoyError) {
+        Outcome(error = describe(error), proRequired = error.isProRequired)
+    } catch (error: Exception) {
+        Outcome(error = error.message ?: "неизвестная ошибка")
+    }
+
+    /** Текст ошибки для человека: свой для известных кодов, иначе — текст сервера. */
+    fun describe(error: SelfvoyError): String = when (error.code) {
         "unauthorized" -> "Неверный email или пароль"
-        "forbidden" -> error.message ?: "доступ запрещён"
+        "forbidden" -> error.serverMessage.ifEmpty { "доступ запрещён" }
         "requires_2fa" -> "Нужен код двухфакторной аутентификации"
         "email_not_verified" -> "Email не подтверждён"
-        "conflict" -> "Такой email уже зарегистрирован"
-        "not_found" -> "Не найдено"
+        // conflict бывает не только у регистрации (время заняли, запись на паузе) — текст сервера точнее.
+        "conflict" -> error.serverMessage.ifEmpty { "Такой email уже зарегистрирован" }
+        "not_found" -> error.serverMessage.ifEmpty { "Не найдено" }
         "disconnected" -> "Нет соединения с сервером"
-        "upstream_error" -> "AI-сервис недоступен, попробуйте позже"
-        else -> error.message ?: "ошибка (${error.code})"
+        "upstream_error" -> error.serverMessage.ifEmpty { "Сервис недоступен, попробуйте позже" }
+        SelfvoyErrorCode.PRO_REQUIRED -> SelfvoyErrorCode.PRO_REQUIRED_TEXT
+        else -> error.serverMessage.ifEmpty { "ошибка (${error.code})" }
     }
 
     fun clearError() { _errorText.value = null }
+
+    /** Короткое сообщение внизу экрана (снекбар). */
+    fun notify(text: String) { _errorText.value = text }
 
     /** Task<T> → suspend без лишней зависимости (play-services не нужен). */
     private suspend fun <T> awaitTask(task: com.google.android.gms.tasks.Task<T>): T =

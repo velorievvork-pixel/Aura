@@ -18,6 +18,8 @@ data class SelfvoyUser(
     val displayName: String,
     val bio: String = "",
     val avatarUrl: String = "",
+    /** Тариф (`user.plan`); null — старый сервер без тарифов. */
+    val plan: Plan? = null,
 ) {
     companion object {
         /** Ограничения profile.update — те же, что проверяет сервер. */
@@ -30,6 +32,7 @@ data class SelfvoyUser(
             displayName = user.str("display_name"),
             bio = user.str("bio"),
             avatarUrl = user.str("avatar_url"),
+            plan = Plan.from(user.obj("plan")),
         )
     }
 }
@@ -70,5 +73,39 @@ data class Privacy(
 
         private fun JsonObject?.flag(key: String): Boolean =
             (this?.get(key) as? JsonPrimitive)?.content?.toBooleanStrictOrNull() ?: true
+    }
+}
+
+/**
+ * Тариф пользователя (`user.plan`, `referral.get → plan`): `name` — pro | free,
+ * `until` — ISO или "", `enforced` — сервер требует Pro для функций Pro
+ * (false — бета: всё открыто всем).
+ */
+data class Plan(val name: String, val until: String = "", val enforced: Boolean = false) {
+
+    /** Pro действует сейчас: name = pro и срок не истёк (пустой срок — бессрочно). */
+    fun isPro(now: java.time.Instant = java.time.Instant.now()): Boolean {
+        if (name != PRO) return false
+        if (until.isBlank()) return true
+        val end = runCatching { java.time.Instant.parse(until) }.getOrNull() ?: return true
+        return end.isAfter(now)
+    }
+
+    /** Функции Pro закрыты: тарифы включены на сервере, а Pro не действует. */
+    fun proLocked(now: java.time.Instant = java.time.Instant.now()): Boolean = enforced && !isPro(now)
+
+    /** Дата окончания Pro или null (нет срока / не разобрать). */
+    fun untilInstant(): java.time.Instant? =
+        until.takeIf { it.isNotBlank() }?.let { runCatching { java.time.Instant.parse(it) }.getOrNull() }
+
+    companion object {
+        const val PRO = "pro"
+        const val FREE = "free"
+
+        /** null — поля нет (старый сервер). */
+        fun from(json: JsonObject?): Plan? {
+            if (json == null || json.isEmpty()) return null
+            return Plan(name = json.str("name").ifEmpty { FREE }, until = json.str("until"), enforced = json.bool("enforced"))
+        }
     }
 }

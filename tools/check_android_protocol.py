@@ -47,6 +47,13 @@ KINDS = {
     "referral.reward",
     "booking.confirmed",
     "booking.payment",
+    # F1–F6: события записей и пакетов владельца (SelfvoyNoticeKind, Android)
+    "booking.created",
+    "booking.rescheduled",
+    "booking.cancelled",
+    "package.purchased",
+    "package.payment",
+    "package.low",
 }
 
 

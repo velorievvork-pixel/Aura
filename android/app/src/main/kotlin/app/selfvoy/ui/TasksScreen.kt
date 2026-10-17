@@ -44,6 +44,9 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.selfvoy.AppStore
+import app.selfvoy.ui.theme.FillSoft
+import app.selfvoy.ui.theme.Card
+import app.selfvoy.ui.theme.Ter
 import app.selfvoy.ui.theme.Accent
 import app.selfvoy.ui.theme.AccentSoft
 import app.selfvoy.ui.theme.SelfvoyField
@@ -129,7 +132,7 @@ fun TasksScreen() {
                     next?.let {
                         val minutes = parseInstant(it.whenAt)?.let { at -> Duration.between(LocalDateTime.now(), at).toMinutes() } ?: 0
                         val progress = (1f - minutes / 120f).coerceIn(0.05f, 1f)
-                        Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(Color.White.copy(alpha = 0.08f))) {
+                        Box(Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)).background(FillSoft)) {
                             Box(Modifier.fillMaxWidth(progress).height(6.dp).clip(RoundedCornerShape(3.dp))
                                 .background(Brush.horizontalGradient(listOf(GradStart, GradEnd))))
                         }
@@ -173,14 +176,14 @@ private fun TaskRow(task: AppStore.Task, day: LocalDate) {
     val shape = RoundedCornerShape(16.dp)
     Row(
         Modifier.fillMaxWidth().alpha(if (isDone) 0.62f else 1f).height(56.dp).clip(shape)
-            .background(Brush.horizontalGradient(listOf(Color.White.copy(alpha = 0.09f), Accent.copy(alpha = 0.08f), Color.White.copy(alpha = 0.03f))))
-            .border(1.dp, Color.White.copy(alpha = 0.16f), shape).padding(horizontal = 16.dp),
+            .background(Card)
+            .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
             Modifier.size(22.dp).clip(RoundedCornerShape(7.dp))
                 .background(if (isDone) Accent else Color.Transparent)
-                .border(1.5.dp, if (isDone) Accent else Color.White.copy(alpha = 0.3f), RoundedCornerShape(7.dp))
+                .border(1.5.dp, if (isDone) Accent else Ter, RoundedCornerShape(7.dp))
                 .clickable { AppStore.setTaskStatus(task.id, if (isDone) "reopen" else "complete") },
             contentAlignment = Alignment.Center,
         ) { if (isDone) Icon(Icons.Outlined.Check, contentDescription = "Выполнено", tint = Color.White, modifier = Modifier.size(14.dp)) }

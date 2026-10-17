@@ -98,13 +98,7 @@ fun LoginScreen() {
                     val isRegister = register && state is AppStore.AuthState.LoggedOut
                     if (isRegister) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                            Canvas(Modifier.size(28.dp)) {
-                                val s = size.width / 32f
-                                drawPath(Path().apply {
-                                    moveTo(16 * s, 2 * s); lineTo(29 * s, 27 * s); lineTo(21 * s, 27 * s); lineTo(16 * s, 17 * s)
-                                    lineTo(11 * s, 27 * s); lineTo(3 * s, 27 * s); close()
-                                }, Color.White)
-                            }
+                            SelfvoyEmblem(size = 28.dp)
                             Spacer(Modifier.width(10.dp))
                             Text("Selfvoy", style = MaterialTheme.typography.titleLarge, color = TextPrimary)
                         }

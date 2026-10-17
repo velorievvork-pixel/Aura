@@ -52,6 +52,11 @@ class SecureStore(context: Context) {
                 plain.edit().putString(KEY_DEVICE_ID, it).apply()
             }
 
+    /** Оформление: system | light | dark (не секрет — в обычных настройках). */
+    var themeMode: String
+        get() = plain.getString(KEY_THEME, null) ?: "system"
+        set(value) = plain.edit().putString(KEY_THEME, value).apply()
+
     val deviceName: String = "Android ${android.os.Build.MODEL}"
 
     fun clearTokens() {
@@ -63,5 +68,6 @@ class SecureStore(context: Context) {
         const val KEY_ACCESS = "access_token"
         const val KEY_REFRESH = "refresh_token"
         const val KEY_DEVICE_ID = "device_id"
+        const val KEY_THEME = "theme_mode"
     }
 }

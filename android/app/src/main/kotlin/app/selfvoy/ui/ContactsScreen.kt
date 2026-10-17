@@ -57,6 +57,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.selfvoy.AppStore
+import app.selfvoy.ui.theme.Hairline
+import app.selfvoy.ui.theme.Card
 import app.selfvoy.ui.theme.Accent
 import app.selfvoy.ui.theme.AccentSoft
 import app.selfvoy.ui.theme.SelfvoyAvatar
@@ -126,7 +128,7 @@ fun ContactsScreen() {
                         },
                     )
                 }
-                HorizontalDivider(Modifier.padding(top = 12.dp), color = Color.White.copy(alpha = 0.18f))
+                HorizontalDivider(Modifier.padding(top = 12.dp), color = Hairline)
             }
         }
         item {
@@ -185,8 +187,8 @@ private fun ContactCard(contact: AppStore.Contact, onBack: () -> Unit) {
         val shape = RoundedCornerShape(30.dp)
         Column(
             Modifier.fillMaxWidth().clip(shape)
-                .background(Brush.verticalGradient(listOf(Color(0x8C6E6E78), Color(0x993D3B45))))
-                .border(1.dp, Color.White.copy(alpha = 0.28f), shape).padding(24.dp),
+                .background(Card)
+                .border(1.dp, Hairline, shape).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -247,7 +249,7 @@ private fun ChatView(chatId: Long, title: String) {
             SelfvoyAvatar(title, size = 40.dp)
             Text(title, style = MaterialTheme.typography.titleMedium, color = TextPrimary, modifier = Modifier.padding(start = 12.dp))
         }
-        HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+        HorizontalDivider(color = Hairline)
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(), state = listState,
             contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),

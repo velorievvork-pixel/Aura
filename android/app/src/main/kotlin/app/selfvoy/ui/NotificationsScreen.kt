@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.selfvoy.AppStore
+import app.selfvoy.kit.SelfvoyNoticeKind
 import app.selfvoy.ui.theme.Dot
 import app.selfvoy.ui.theme.GlassButton
 import app.selfvoy.ui.theme.GlassCard
@@ -54,7 +55,10 @@ fun NotificationsScreen() {
         if (notices.isEmpty()) item { Muted("Пока пусто.") }
         items(notices, key = { it.id }) { notice ->
             GlassCard(Modifier.fillMaxWidth(), contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-                onClick = if (!notice.read) ({ AppStore.markRead(notice.id) }) else null) {
+                onClick = {
+                    if (!notice.read) AppStore.markRead(notice.id)
+                    noticeTarget(notice.kind)?.let { AppStore.selectTab(it) }
+                }) {
                 Row(verticalAlignment = Alignment.Top) {
                     Dot(if (notice.read) TextSecondary.copy(alpha = 0.3f) else statusColor(notice.kind), 9.dp)
                     Spacer(Modifier.width(12.dp))
@@ -79,4 +83,12 @@ fun NotificationsScreen() {
             }
         }
     }
+}
+
+/** Куда ведёт уведомление: записи — в «Запись», пакеты — в «Абонементы», награды — в «Ещё». */
+private fun noticeTarget(kind: String): AppStore.Tab? = when {
+    SelfvoyNoticeKind.touchesPackages(kind) -> AppStore.Tab.PACKAGES
+    SelfvoyNoticeKind.touchesBookings(kind) -> AppStore.Tab.BOOKING
+    SelfvoyNoticeKind.touchesReferral(kind) -> AppStore.Tab.MORE
+    else -> null
 }

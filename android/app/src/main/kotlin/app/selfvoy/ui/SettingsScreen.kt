@@ -60,6 +60,13 @@ import app.selfvoy.ui.theme.SectionTitle
 import app.selfvoy.ui.theme.TextPrimary
 import app.selfvoy.ui.theme.TextSecondary
 import app.selfvoy.ui.theme.Warning
+import app.selfvoy.ui.theme.FillSoft
+import app.selfvoy.ui.theme.Group
+import app.selfvoy.ui.theme.GroupDivider
+import app.selfvoy.ui.theme.ListRow
+import app.selfvoy.ui.theme.Segmented
+import app.selfvoy.ui.theme.SelfvoyPalette
+import app.selfvoy.ui.theme.ThemeMode
 import kotlinx.coroutines.launch
 
 /**
@@ -83,6 +90,7 @@ fun SettingsScreen() {
     val profileSaving by AppStore.profileSaving.collectAsState()
     val profileError by AppStore.profileError.collectAsState()
     val referral by AppStore.referral.collectAsState()
+    val themeMode = SelfvoyPalette.mode
     var serverUrl by remember { mutableStateOf(AppStore.store.serverUrl) }
     var totpCode by remember { mutableStateOf("") }
     var disablePassword by remember { mutableStateOf("") }
@@ -106,7 +114,7 @@ fun SettingsScreen() {
         contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        item { RoundIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "Назад", { AppStore.selectTab(AppStore.Tab.HOME) }, size = 40.dp) }
+        item { RoundIconButton(Icons.AutoMirrored.Outlined.ArrowBack, "Назад", { AppStore.selectTab(AppStore.Tab.MORE) }, size = 38.dp) }
         item { ScreenHeader("Настройки") }
 
         item {
@@ -146,8 +154,23 @@ fun SettingsScreen() {
         }
 
         item {
-            GlassButton("Страницы записи", { AppStore.selectTab(AppStore.Tab.BOOKING) }, Modifier.fillMaxWidth(),
-                icon = Icons.Outlined.EventAvailable, height = 44.dp)
+            Group(head = "Оформление") {
+                Column(Modifier.padding(14.dp)) {
+                    Segmented(ThemeMode.entries.map { it.key to it.label }, themeMode.key) { key ->
+                        AppStore.setThemeMode(ThemeMode.of(key))
+                    }
+                }
+            }
+        }
+
+        item {
+            Group {
+                ListRow("Страницы записи", icon = Icons.Outlined.EventAvailable, iconBackground = Accent,
+                    onClick = { AppStore.selectTab(AppStore.Tab.BOOKING) })
+                GroupDivider()
+                ListRow("Подключения", "Telegram, ЮKassa, календарь в телефоне", Icons.Outlined.CalendarMonth, Accent,
+                    onClick = { AppStore.selectTab(AppStore.Tab.INTEGRATIONS) })
+            }
         }
 
         item { SectionTitle("Пригласить друзей") }
@@ -169,7 +192,7 @@ fun SettingsScreen() {
                         }
                     }
                     Muted(toolDescription(row.tool, row.description))
-                    Segmented(row.mode) { AppStore.setPermission(row.tool, it) }
+                    PermissionModes(row.mode) { AppStore.setPermission(row.tool, it) }
                 }
             }
         }
@@ -318,19 +341,18 @@ private fun PrivacySwitch(title: String, hint: String, checked: Boolean, enabled
 
 /** Три режима инструмента: сам / с подтверждения / запрещено. */
 @Composable
-private fun Segmented(mode: String, onSelect: (String) -> Unit) {
+private fun PermissionModes(mode: String, onSelect: (String) -> Unit) {
     val shape = RoundedCornerShape(50)
-    Row(Modifier.fillMaxWidth().clip(shape).background(Color(0x730A0812)).border(1.dp, Color.White.copy(alpha = 0.14f), shape)
-        .padding(3.dp)) {
+    Row(Modifier.fillMaxWidth().clip(shape).background(FillSoft).padding(3.dp)) {
         listOf("allow" to "Сам", "ask" to "Спрашивать", "deny" to "Запретить").forEach { (value, label) ->
             val active = mode == value
             Box(
                 Modifier.weight(1f).clip(shape)
-                    .background(if (active) (if (value == "deny") Danger.copy(alpha = 0.3f) else Accent.copy(alpha = 0.35f)) else Color.Transparent)
+                    .background(if (active) (if (value == "deny") Danger.copy(alpha = 0.18f) else Accent.copy(alpha = 0.16f)) else Color.Transparent)
                     .clickable { if (!active) onSelect(value) }.padding(vertical = 8.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(label, style = MaterialTheme.typography.labelMedium, color = if (active) TextPrimary else TextSecondary,
+                Text(label, style = MaterialTheme.typography.labelMedium, color = if (active) (if (value == "deny") Danger else Accent) else TextSecondary,
                     textAlign = TextAlign.Center)
             }
         }

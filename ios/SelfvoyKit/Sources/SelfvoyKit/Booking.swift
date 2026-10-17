@@ -342,8 +342,31 @@ public struct Booking: Identifiable, Equatable, Sendable {
     public var payment: BookingPayment?
     public var createdAt: String
     public var updatedAt: String
+    /// Цена услуги, зафиксированная при записи (минимальные единицы): 0 — занятие по
+    /// абонементу или бесплатная услуга; nil — старый сервер без поля (берём цену страницы).
+    /// Не путать с `payment.amount` — это сумма оплаты онлайн (депозит или предоплата).
+    public var price: Int?
+    /// Валюта `price`; "" — старый сервер.
+    public var currency: String
 
     public var isActive: Bool { status == "active" }
+
+    /// Занятие по абонементу: деньги взяты при покупке пакета.
+    public var byPackage: Bool { packageId > 0 }
+
+    /// Стоимость встречи: цена записи; старый сервер — цена страницы; по абонементу — 0.
+    public func price(with page: BookingPage?) -> Int {
+        if byPackage { return 0 }
+        if let price { return max(0, price) }
+        return max(0, page?.fields.price ?? 0)
+    }
+
+    /// Валюта стоимости встречи (запись → страница → RUB).
+    public func currency(with page: BookingPage?) -> String {
+        if !currency.isEmpty { return currency }
+        if let code = page?.fields.currency, !code.isEmpty { return code }
+        return "RUB"
+    }
 
     public init(json: JSONValue) {
         id = json.int("id")
@@ -362,6 +385,8 @@ public struct Booking: Identifiable, Equatable, Sendable {
         payment = BookingPayment(json: json["payment"])
         createdAt = json.string("created_at")
         updatedAt = json.string("updated_at")
+        price = json["price"]?.intValue.map { Int($0) }
+        currency = json.string("currency")
     }
 }
 

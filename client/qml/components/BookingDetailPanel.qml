@@ -64,8 +64,18 @@ SheetPopup {
             hint: panel.focusOcc ? F.time(panel.focusOcc.start) + "–" + F.time(panel.focusOcc.end)
                                 + (panel.occurrences.length > 1 ? " · встреча " + (panel.occurrences.findIndex(o => o.start === panel.focusOcc.start) + 1)
                                                                    + " из " + panel.occurrences.length : "") : ""
-            value: panel.payment ? F.money(panel.payment.amount, panel.payment.currency)
-                   : panel.page && panel.page.price ? F.money(panel.page.price, panel.page.currency) : ""
+            // Главное число — цена услуги из записи; «По абонементу» — без денег.
+            value: F.bookingPriceText(panel.booking, panel.page)
+        }
+        // Оплата онлайн — отдельной строкой: «Депозит 1 000 ₽» и статус значком и словом.
+        Cell {
+            visible: !!panel.payment
+            label: F.paymentText(panel.payment)
+            StatusPill {
+                readonly property var pay: panel.payment ? F.paymentStatus(panel.payment.status) : null
+                status: pay
+                visible: !!pay
+            }
         }
         Cell {
             label: "Статус"
@@ -74,11 +84,6 @@ SheetPopup {
                         : panel.booking.status === "active" && panel.focusOcc.status === "active"
                           ? F.occurrenceStatus(panel.booking, panel.focusOcc, panel.now)
                           : F.bookingStatus(panel.booking, panel.now)
-            }
-            StatusPill {
-                readonly property var pay: panel.payment ? F.paymentStatus(panel.payment.status) : null
-                status: pay
-                visible: !!pay && !F.awaitingPayment(panel.payment)
             }
         }
         Cell {

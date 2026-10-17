@@ -727,6 +727,10 @@ Json BookingManager::bookingJson(const BookingRecord& booking, const std::string
     json.set("guest_comment", Json(booking.guestComment));
     json.set("cc_email", Json(booking.ccEmail));        // F5: второй получатель
     json.set("package_id", Json(booking.packageId));    // F5: запись по пакету (0 — нет)
+    // Цена одной встречи на момент записи (0 — по пакету или бесплатно); payment.amount —
+    // сколько нужно внести онлайн (депозит или полная предоплата).
+    json.set("price", Json(booking.price));
+    json.set("currency", Json(booking.currency));
     json.set("status", Json(booking.status));
     json.set("cancelled_by", Json(booking.cancelledBy));
     json.set("reschedules", Json(static_cast<long long>(booking.reschedules)));
@@ -792,6 +796,8 @@ Json BookingManager::guestBookingJson(const BookingRecord& booking, const Bookin
     json.set("guest_name", Json(booking.guestName));
     json.set("cc_email", Json(maskEmail(booking.ccEmail)));  // F5: замаскирован
     json.set("by_package", Json(booking.packageId > 0));
+    json.set("price", Json(booking.price));  // цена встречи на момент записи (0 — по пакету/бесплатно)
+    json.set("currency", Json(booking.currency));
     json.set("status", Json(booking.status));
     json.set("cancelled_by", Json(booking.cancelledBy));
     json.set("occurrences", occurrences);
@@ -1464,6 +1470,10 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
     BookingRecord booking;
     booking.pageId = page->id;
     booking.ownerId = page->ownerId;
+    // Снимок цены одной встречи на момент записи: смена цены страницы позже его не меняет.
+    // Запись по пакету (покупка пакета или package_token) оплачена абонементом — 0.
+    booking.price = intent.any() ? 0 : page->price;
+    booking.currency = page->currency.empty() ? std::string("RUB") : page->currency;
     booking.guestName = trim(payload.getString("guest_name"));
     if (booking.guestName.empty() && held) booking.guestName = held->guestName;
     if (booking.guestName.empty() || !validText(booking.guestName, 80, false)) {

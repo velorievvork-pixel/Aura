@@ -343,8 +343,30 @@ data class Booking(
     val payment: Payment? = null,
     val createdAt: String = "",
     val updatedAt: String = "",
+    /**
+     * Цена услуги, зафиксированная при записи (минимальные единицы): 0 — занятие по
+     * абонементу или бесплатная услуга; null — старый сервер без поля (берём цену страницы).
+     * Не путать с [Payment.amount] — это сумма к оплате онлайн (депозит или предоплата).
+     */
+    val price: Long? = null,
+    /** Валюта [price]; "" — старый сервер. */
+    val currency: String = "",
 ) {
     val active get() = status == "active"
+
+    /** Занятие по абонементу: деньги взяты при покупке пакета. */
+    val byPackage get() = packageId > 0
+
+    /** Стоимость встречи: цена записи; старый сервер — цена страницы; по абонементу — 0. */
+    fun priceWith(page: BookingPage?): Long = when {
+        byPackage -> 0L
+        price != null -> price.coerceAtLeast(0L)
+        else -> page?.price?.coerceAtLeast(0L) ?: 0L
+    }
+
+    /** Валюта стоимости встречи (запись → страница → RUB). */
+    fun currencyWith(page: BookingPage?): String =
+        currency.ifEmpty { page?.currency.orEmpty() }.ifEmpty { "RUB" }
 
     companion object {
         fun from(json: JsonObject?): Booking = Booking(
@@ -371,7 +393,59 @@ data class Booking(
             payment = Payment.from(json.obj("payment")),
             createdAt = json.str("created_at"),
             updatedAt = json.str("updated_at"),
+            price = if (json.present("price")) json.long("price") else null,
+            currency = json.str("currency"),
         )
+
+        private fun JsonObject?.present(key: String): Boolean {
+            val value = this?.get(key) ?: return false
+            return value !is kotlinx.serialization.json.JsonNull
+        }
+    }
+}
+
+/**
+ * Деньги записи на экранах владельца (зеркало web/src/lib/payment.ts): главное число —
+ * цена услуги ([Booking.price]); оплата онлайн ([Payment.amount]) — отдельной строкой.
+ */
+object BookingMoney {
+    const val BY_PACKAGE = "По абонементу"
+
+    /** «3 000 ₽» · «По абонементу» · "" (бесплатно / цены нет). */
+    fun priceText(booking: Booking, page: BookingPage?): String {
+        if (booking.byPackage) return BY_PACKAGE
+        val amount = booking.priceWith(page)
+        return if (amount > 0) Money.format(amount, booking.currencyWith(page)) else ""
+    }
+
+    /** «Депозит 1 000 ₽» · «Предоплата 3 000 ₽» · «Оплата 3 000 ₽». */
+    fun paymentText(payment: Payment): String {
+        val what = when (payment.kind) {
+            "deposit" -> "Депозит"
+            "full" -> "Предоплата"
+            else -> "Оплата"
+        }
+        return "$what ${Money.format(payment.amount, payment.currency)}"
+    }
+
+    /**
+     * Сумма встреч дня («4 встречи · 6 000 ₽»): цены активных записей без абонемента
+     * (занятия по абонементу оплачены пакетом); одна валюта — первая встреченная.
+     */
+    fun dayTotal(bookings: List<Booking>, pages: List<BookingPage>?): Pair<Long, String> {
+        var amount = 0L
+        var currency = ""
+        for (booking in bookings) {
+            if (!booking.active || booking.byPackage) continue
+            val page = pages.orEmpty().firstOrNull { it.id == booking.pageId }
+            val price = booking.priceWith(page)
+            if (price <= 0) continue
+            val cur = booking.currencyWith(page)
+            if (currency.isNotEmpty() && cur != currency) continue
+            currency = cur
+            amount += price
+        }
+        return amount to currency
     }
 }
 

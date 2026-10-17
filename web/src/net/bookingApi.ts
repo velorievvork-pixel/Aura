@@ -133,6 +133,13 @@ export interface Booking {
   cc_email?: string;
   /** Пакет, по которому сделана запись (F5): 0 — без пакета. */
   package_id?: number;
+  /**
+    Цена одной встречи на момент записи (мин. единицы currency): 0 — по абонементу или
+    бесплатно. Смена цены страницы её не меняет. Старый сервер не присылает — тогда
+    берём цену страницы (bookingMoney в lib/booking.ts).
+  */
+  price?: number;
+  currency?: Currency | string;
   status: BookingStatus;
   cancelled_by: CancelledBy;
   reschedules: number;
@@ -190,6 +197,9 @@ export interface GuestBooking {
   cc_email?: string;
   /** Запись по пакету занятий (F5). */
   by_package?: boolean;
+  /** Цена встречи на момент записи (0 — по абонементу или бесплатно); старый сервер — нет поля. */
+  price?: number;
+  currency?: Currency | string;
   status: BookingStatus;
   cancelled_by: CancelledBy;
   occurrences: Occurrence[];

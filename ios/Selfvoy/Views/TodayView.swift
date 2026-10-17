@@ -139,12 +139,9 @@ struct TodayView: View {
         .inkCard(padding: 18, radius: 26)
     }
 
+    /// Главное число карточки — цена услуги из записи (не сумма оплаты онлайн).
     private func price(for booking: Booking, pages: [BookingPage]) -> String {
-        if let payment = booking.payment { return payment.amountText }
-        if let page = pages.first(where: { $0.id == booking.pageId }), page.fields.price > 0 {
-            return Money.format(page.fields.price, currency: page.fields.currency)
-        }
-        return ""
+        OwnerToday.priceText(booking, page: pages.first(where: { $0.id == booking.pageId }))
     }
 
     /// Текст «Предложить» для свободного окна: время и ссылка записи.
@@ -186,6 +183,18 @@ private struct NextAppointmentCard: View {
              + Text(" · \(minutes) мин" + (price.isEmpty ? "" : " · \(price)")))
                 .font(InkFont.callout)
                 .foregroundStyle(.white)
+            if let payment = next.booking.payment {
+                // Оплата онлайн — второстепенно: значок статуса + «Депозит 1 000 ₽ · ждём оплату».
+                HStack(spacing: 4) {
+                    if let status = payment.ownerStatus {
+                        Image(systemName: Ink.symbol(status.icon)).font(.system(size: 11, weight: .semibold))
+                    }
+                    Text(OwnerToday.paymentLine(payment)).lineLimit(1)
+                }
+                .font(InkFont.footnote)
+                .foregroundStyle(.white.opacity(0.85))
+                .accessibilityElement(children: .combine)
+            }
             HStack(spacing: 10) {
                 Button("Подробнее", action: onOpen)
                     .buttonStyle(HeroButtonStyle())

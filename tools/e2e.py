@@ -921,6 +921,10 @@ async def s2a_payments(anna: "Client", yookassa: "YooKassaMock | None") -> None:
         check(link_payment.get("method") == "link" and link_payment.get("kind") == "deposit"
               and link_payment.get("amount") == 50000 and link_payment.get("action_url") == "https://pay.example/e2e",
               "booking.book: депозит по ссылке владельца", link_booked)
+        link_guest_view = link_booked.get("payload", {}).get("booking", {})
+        check(link_guest_view.get("price") == 200000 and link_guest_view.get("currency") == "RUB",
+              "booking.book: снимок цены у записи (price — цена услуги, не депозит)",
+              {k: link_guest_view.get(k) for k in ("price", "currency")})
         before_claim = payment_events("claimed")
         claimed = await guest.call("booking.paymentClaim", {"token": link_token})
         check(claimed.get("payload", {}).get("booking", {}).get("payment", {}).get("status") == "claimed",
@@ -931,6 +935,21 @@ async def s2a_payments(anna: "Client", yookassa: "YooKassaMock | None") -> None:
         owned = (await anna.call("booking.list", {"page_id": link_page.get("id", 0)})).get("payload", {}) \
             .get("bookings", [])
         link_id = owned[0].get("id", 0) if owned else 0
+        check(bool(owned) and owned[0].get("price") == 200000 and owned[0].get("currency") == "RUB"
+              and (owned[0].get("payment") or {}).get("amount") == 50000,
+              "booking.list: price = цена услуги, payment.amount = депозит", owned[:1])
+        # Владелец поднял цену страницы — у сделанной записи остаётся цена на момент записи.
+        raised = await anna.call("booking.pageUpdate", {"page_id": link_page.get("id", 0), "price": 300000})
+        check(raised.get("payload", {}).get("page", {}).get("price") == 300000,
+              "booking.pageUpdate: новая цена страницы", raised)
+        owned_after = (await anna.call("booking.list", {"page_id": link_page.get("id", 0)})).get("payload", {}) \
+            .get("bookings", [])
+        managed_after = (await guest.call("booking.manage", {"token": link_token}, timeout=40)) \
+            .get("payload", {}).get("booking", {})
+        check(bool(owned_after) and owned_after[0].get("price") == 200000 and managed_after.get("price") == 200000
+              and managed_after.get("currency") == "RUB",
+              "смена цены страницы не меняет price записи (вид владельца и гостя)",
+              {"owner": owned_after[0].get("price") if owned_after else None, "guest": managed_after.get("price")})
         set_paid = await anna.call("booking.paymentSet", {"booking_id": link_id, "status": "paid"})
         check(set_paid.get("payload", {}).get("booking", {}).get("payment", {}).get("status") == "paid",
               "booking.paymentSet: владелец отметил оплату", set_paid)
@@ -1010,7 +1029,7 @@ async def s2b_packages(anna: "Client", yookassa: "YooKassaMock | None") -> None:
     check(len(offers) == 1 and offers[0].get("id") == 1 and offers[0].get("valid_days") == 90,
           "booking.pageCreate: предложение пакета (id 1, срок 90 дней)", offers)
     kept = dict(offers[0], title="3 занятия (утро)") if offers else {}
-    updated = await anna.call("booking.pageUpdate", {"page_id": page.get("id", 0),
+    updated = await anna.call("booking.pageUpdate", {"page_id": page.get("id", 0), "price": 150000,
                                                      "packages": [kept, {"title": "5 занятий", "sessions": 5,
                                                                          "price": 1400000, "valid_days": 60}]})
     offers = updated.get("payload", {}).get("page", {}).get("packages", [])
@@ -1049,10 +1068,16 @@ async def s2b_packages(anna: "Client", yookassa: "YooKassaMock | None") -> None:
           "покупка пакета при записи: package_token/url, пакет active, остаток 2", info)
     check(info.get("booking", {}).get("cc_email") == f"p***@example.com",
           "вид гостя: cc_email замаскирован", info.get("booking", {}).get("cc_email"))
+    check(view.get("price") == 150000 and info.get("booking", {}).get("price") == 0
+          and info.get("booking", {}).get("by_package") is True,
+          "запись с покупкой пакета: price = 0 (оплачено абонементом), хотя цена страницы 150000",
+          {"page": view.get("price"), "booking": info.get("booking", {}).get("price")})
     owned = (await anna.call("booking.list", {"page_id": page.get("id", 0)})).get("payload", {}).get("bookings", [])
     package_id = owned[0].get("package_id", 0) if owned else 0
     check(bool(owned) and owned[0].get("cc_email") == cc_email and package_id > 0,
           "вид владельца: cc_email и package_id записи", owned[:1])
+    check(bool(owned) and owned[0].get("price") == 0,
+          "вид владельца: запись по пакету — price 0", owned[:1])
     await asyncio.sleep(0.5)
     check(len(owner_events("package.purchased")) - purchased_before == 1, "владелец получил package.purchased",
           owner_events("package.purchased")[-1:])
@@ -1064,6 +1089,9 @@ async def s2b_packages(anna: "Client", yookassa: "YooKassaMock | None") -> None:
     check(got.get("sessions_left") == 2 and got.get("page_slug") == slug and len(got.get("bookings", [])) == 1
           and got.get("branding", {}).get("text") == "Запись через Selfvoy",
           "package.get: остаток, страница, встречи, подпись", got)
+    check(len(got.get("ref", "")) == 8 and got.get("ref") == view.get("ref"),
+          "package.get: ref — реферальный код владельца (как booking.get)", {"package": got.get("ref"),
+                                                                              "page": view.get("ref")})
 
     low_before = len(owner_events("package.low"))
     by_token = await guest.call("booking.book", {"slug": slug, "start": far[1], "package_token": package_token},
@@ -1072,6 +1100,8 @@ async def s2b_packages(anna: "Client", yookassa: "YooKassaMock | None") -> None:
     check(by_token.get("type") == "ok" and by_token_info.get("booking", {}).get("guest_name") == "Маша"
           and by_token_info.get("package", {}).get("sessions_left") == 1,
           "запись по package_token: имя из пакета, остаток уменьшился до 1", by_token)
+    check(by_token_info.get("booking", {}).get("price") == 0,
+          "запись по package_token: price 0", by_token_info.get("booking", {}).get("price"))
     await asyncio.sleep(0.5)
     lows = owner_events("package.low")
     check(len(lows) - low_before == 1 and lows[-1].get("payload", {}).get("left") == 1,

@@ -21,6 +21,7 @@
 #include "selfvoy/payments.h"
 #include "selfvoy/plan.h"
 #include "selfvoy/protocol.h"
+#include "selfvoy/referralmanager.h"
 #include "selfvoy/schedulelock.h"
 #include "selfvoy/session.h"
 #include "selfvoy/slotspost.h"
@@ -216,6 +217,7 @@ Json BookingManager::packageGuestJson(const PackagePurchaseRecord& record, const
     json.set("owner_timezone", Json(ownerTimezone));
     json.set("bookings", bookings);
     json.set("branding", branding(page));
+    json.set("ref", Json(referrals_.codeFor(page.ownerId)));  // как booking.get / invite.get
     return json;
 }
 

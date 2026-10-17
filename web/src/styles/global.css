@@ -1981,6 +1981,18 @@ button.chip:hover {
   opacity: 0.85;
 }
 
+/* Оплата онлайн (депозит / предоплата) — второстепенно, под ценой встречи. */
+.next .pay {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 550;
+  opacity: 0.88;
+}
+
 .next .gb {
   display: grid;
   grid-template-columns: 1fr 1fr;

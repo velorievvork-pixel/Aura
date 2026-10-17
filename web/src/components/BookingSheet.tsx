@@ -10,9 +10,8 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { bookingOwnerErrorText, bookingStatus, isUpcoming, sortedOccurrences } from '../lib/booking';
 import { when } from '../lib/format';
-import { formatMoney } from '../lib/money';
 import { packageSessionNote } from '../lib/packages';
-import { bookingHistory, OWNER_PAYMENT_ACTION, ownerPaymentActions, paymentLabel } from '../lib/payment';
+import { bookingHistory, bookingMoney, bookingMoneyLabel, OWNER_PAYMENT_ACTION, ownerPaymentActions, paymentLabel, paymentSummary } from '../lib/payment';
 import { occurrenceStatus } from '../lib/today';
 import { dateLabel, dayTitle, hhmm } from '../lib/time';
 import type { Booking, BookingApi, BookingPage, OwnerPaymentStatus } from '../net/bookingApi';
@@ -62,6 +61,10 @@ export function BookingSheet({
   const steps = bookingHistory(booking, focus?.start);
   const payment = booking.payment;
   const payView = payment ? paymentLabel(payment.status, 'owner') : null;
+  // Цена встречи — снимок на момент записи (не payment.amount); оплата онлайн — отдельной строкой.
+  const money = bookingMoney(booking, page);
+  const moneyLabel = bookingMoneyLabel(booking, page);
+  const pay = paymentSummary(payment);
   const actions = ownerPaymentActions(payment);
   const focusUpcoming = focus ? isUpcoming(focus) : false;
 
@@ -103,7 +106,7 @@ export function BookingSheet({
               </small>
             </span>
             <span className="val">
-              {payment ? <span className="num">{formatMoney(payment.amount, payment.currency)}</span> : page?.price && !booking.package_id ? <span className="num">{formatMoney(page.price, page.currency)}</span> : null}
+              {moneyLabel ? <span className={money.kind === 'money' ? 'num' : 'muted'}>{moneyLabel}</span> : null}
             </span>
           </div>
           <div className="cell">
@@ -116,9 +119,17 @@ export function BookingSheet({
                   <StatusGlyph icon="x" /> {status.label === 'Предстоит' ? 'Встреча отменена' : status.label}
                 </span>
               )}
-              {payView && payView.label !== occurrenceStatus(booking, focus).label && <StatusPill status={payView} />}
             </span>
           </div>
+          {pay && (
+            <div className="cell">
+              <span className="lab">
+                <span className="num">{pay.text}</span>
+                <small>{payment?.method === 'yookassa' ? 'онлайн через ЮKassa' : 'по ссылке или реквизитам'}</small>
+              </span>
+              {payView && <StatusPill status={payView} />}
+            </div>
+          )}
           {Boolean(booking.package_id) && (
             <Link to={`/packages?id=${booking.package_id}`} className="cell" onClick={close}>
               <span className="lab">

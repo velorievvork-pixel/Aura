@@ -33,7 +33,7 @@ protocol-check:
 	python3 tools/check_ios_protocol.py
 	python3 tools/check_android_protocol.py
 
-# E2E-сценарий (268 проверок со всеми моками): нужны запущенные AI :8000 и сервер :9000
+# E2E-сценарий (400 проверок со всеми моками): нужны запущенные AI :8000 и сервер :9000
 e2e:
 	SELFVOY_E2E_GOOGLE_MOCK=1 SELFVOY_E2E_PUSH_MOCK=1 python3 tools/e2e.py
 

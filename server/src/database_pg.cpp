@@ -2360,16 +2360,17 @@ private:
         PGresult* result = nullptr;
         if (!execute("INSERT INTO bookings (page_id, owner_id, manage_hash, guest_name, guest_email, guest_comment, "
                      "occurrences, status, cancelled_by, reschedules, ends_at, manage_token_enc, payment, cc_email, "
-                     "package_id) "
+                     "package_id, price, currency) "
                      "VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::int, NULLIF($11, '')::timestamptz, "
-                     "NULLIF($12, ''), NULLIF($13, '')::jsonb, $14, NULLIF($15::bigint, 0)) "
+                     "NULLIF($12, ''), NULLIF($13, '')::jsonb, $14, NULLIF($15::bigint, 0), $16::int, $17) "
                      "RETURNING id",
                      {std::to_string(record.pageId), std::to_string(record.ownerId), record.manageHash,
                       record.guestName, record.guestEmail, record.guestComment,
                       record.occurrences.isArray() ? record.occurrences.dump() : std::string("[]"), record.status,
                       record.cancelledBy, std::to_string(record.reschedules), bookingEndsAt(record.occurrences),
                       record.manageTokenEnc, record.payment.isObject() ? record.payment.dump() : std::string(),
-                      record.ccEmail, std::to_string(record.packageId)},
+                      record.ccEmail, std::to_string(record.packageId), std::to_string(record.price),
+                      record.currency.empty() ? std::string("RUB") : record.currency},
                      &result)) {
             PQclear(result);
             return DatabaseError::failure(lastError());
@@ -2448,7 +2449,8 @@ private:
                "occurrences::text, status, cancelled_by, reschedules, "
                "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
-               "COALESCE(manage_token_enc, ''), COALESCE(payment::text, ''), cc_email, COALESCE(package_id, 0) "
+               "COALESCE(manage_token_enc, ''), COALESCE(payment::text, ''), cc_email, COALESCE(package_id, 0), "
+               "price, currency "
                "FROM bookings";
     }
 
@@ -2542,6 +2544,11 @@ private:
         if (PQnfields(result) > 16) {
             record.ccEmail = value_(result, row, 15);
             record.packageId = std::atoll(value_(result, row, 16).c_str());
+        }
+        if (PQnfields(result) > 18) {
+            record.price = std::atoll(value_(result, row, 17).c_str());
+            const std::string currency = value_(result, row, 18);
+            if (!currency.empty()) record.currency = currency;
         }
         return record;
     }

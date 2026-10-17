@@ -7,7 +7,7 @@ import type { Task } from '../net/api';
 import type { Booking, BookingPage, Occurrence } from '../net/bookingApi';
 import type { InviteSlot } from '../net/inviteApi';
 import { plural } from './format';
-import { awaitingPayment, paymentLabel, type StatusView } from './payment';
+import { awaitingPayment, bookingMoney, paymentLabel, type StatusView } from './payment';
 import { addDays, dateLabel, dayShort, hhmm, sameDay } from './time';
 
 /** Цвет капсулы — по странице записи (тип встречи): 5 цветов по кругу. */
@@ -187,18 +187,21 @@ export function buildDay(
   return entries;
 }
 
-/** «3 встречи · 6 000 ₽» — встречи дня и их стоимость по ценам страниц (одна валюта). */
+/**
+  «4 встречи · 6 000 ₽» — встречи дня и их стоимость: цена каждой встречи на момент
+  записи (booking.price; старый сервер — цена страницы), одна валюта. Встречи по
+  абонементу уже оплачены пакетом — в сумму не входят (но считаются встречами).
+*/
 export function daySummary(entries: DayEntry[], pages: Pick<BookingPage, 'id' | 'price' | 'currency'>[] | null | undefined): { text: string; amount: number; currency: string } {
   const meetings = entries.filter((e): e is DayBooking => e.kind === 'booking');
   let amount = 0;
   let currency = '';
   for (const m of meetings) {
-    const page = (pages ?? []).find((p) => p.id === m.booking.page_id);
-    if (!page?.price) continue;
-    const c = page.currency || 'RUB';
-    if (currency && c !== currency) continue;
-    currency = c;
-    amount += page.price;
+    const money = bookingMoney(m.booking, (pages ?? []).find((p) => p.id === m.booking.page_id));
+    if (money.kind !== 'money') continue;
+    if (currency && money.currency !== currency) continue;
+    currency = money.currency;
+    amount += money.amount;
   }
   const count = meetings.length;
   const text = count ? `${count} ${plural(count, 'встреча', 'встречи', 'встреч')}` : 'Встреч нет';

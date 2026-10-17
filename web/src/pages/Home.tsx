@@ -8,12 +8,13 @@ import { Bell, BookOpen, Check, ChevronRight, Handshake, Plus, ShieldAlert, Star
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { BookingSheet } from '../components/BookingSheet';
-import { Avatar, Empty, Segmented, StatusPill } from '../components/ui';
+import { Avatar, Empty, Segmented, StatusGlyph, StatusPill } from '../components/ui';
 import { pagePath, publicLink } from '../lib/booking';
 import { canShare, copyText } from '../lib/clipboard';
 import { shortWhen, toolTitle } from '../lib/format';
 import { formatMoney } from '../lib/money';
 import { selfvoyOf } from '../lib/negotiationSteps';
+import { bookingMoneyLabel, paymentSummary } from '../lib/payment';
 import { addDays, dayPhrase, hhmm, startOfDay } from '../lib/time';
 import { buildDay, daySummary, nextUp, pageColor, untilText, type DayEntry, type FreeSlot } from '../lib/today';
 import type { Booking } from '../net/bookingApi';
@@ -129,7 +130,7 @@ export function Home() {
               end={next.end}
               now={now}
               color={pageColor(next.booking.page_id, pages)}
-              price={next.booking.payment ? formatMoney(next.booking.payment.amount, next.booking.payment.currency) : nextPage?.price ? formatMoney(nextPage.price, nextPage.currency) : ''}
+              price={bookingMoneyLabel(next.booking, nextPage)}
               onOpen={() => setOpen({ id: next.booking.id, start: next.occurrence.start })}
             />
           ) : (
@@ -250,6 +251,8 @@ export function Home() {
 
 function NextCard({ booking, start, end, now, color, price, onOpen }: { booking: Booking; start: Date; end: Date; now: Date; color: number; price: string; onOpen: () => void }) {
   const minutes = Math.round((end.getTime() - start.getTime()) / 60_000);
+  // price — цена встречи на момент записи («По абонементу» у пакета); оплата онлайн — отдельно.
+  const pay = paymentSummary(booking.payment);
   return (
     <div className={`next c${color}`}>
       <div className="lbl">
@@ -265,6 +268,18 @@ function NextCard({ booking, start, end, now, color, price, onOpen }: { booking:
           · {minutes} мин{price ? ` · ${price}` : ''}
         </span>
       </div>
+      {pay && (
+        <div className="pay">
+          <span className="num">{pay.text}</span>
+          {pay.status && (
+            <>
+              <span aria-hidden="true">·</span>
+              <StatusGlyph icon={pay.status.icon} />
+              <span>{pay.status.label.toLowerCase()}</span>
+            </>
+          )}
+        </div>
+      )}
       <div className="gb">
         <button type="button" onClick={onOpen}>
           Подробнее

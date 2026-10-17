@@ -147,7 +147,7 @@ export function PackageGuest() {
     ) : undefined;
 
     return (
-      <GuestShell cta={cta} footer={<BrandingLink branding={pkg.branding} />}>
+      <GuestShell cta={cta} footer={<BrandingLink branding={pkg.branding} refCode={pkg.ref} />}>
         <GuestHead owner={pkg.owner_name} subtitle={pkg.page_title || 'Абонемент'} />
 
         <div className="card pkg-hero">

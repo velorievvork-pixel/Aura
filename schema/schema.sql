@@ -600,6 +600,29 @@ ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cc_email TEXT NOT NULL DEFAULT '';
 ALTER TABLE bookings ADD COLUMN IF NOT EXISTS package_id BIGINT REFERENCES package_purchases(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS bookings_package_idx ON bookings (package_id) WHERE package_id IS NOT NULL;
 
+-- Снимок цены записи (миграция 2026_10_17_booking_price.sql): цена одной встречи на
+-- момент записи (мин. единицы; 0 — по пакету или бесплатно) и её валюта. Колонки
+-- добавляются и заполняются (текущей ценой страницы, кроме записей по пакету) один
+-- раз — повторный запуск схемы снимки не трогает.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = current_schema() AND table_name = 'bookings'
+                     AND column_name = 'currency') THEN
+        ALTER TABLE bookings ADD COLUMN currency TEXT NOT NULL DEFAULT 'RUB'
+            CHECK (currency IN ('RUB', 'USD', 'EUR', 'KZT', 'BYN'));
+        UPDATE bookings b SET currency = p.currency FROM booking_pages p WHERE p.id = b.page_id;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = current_schema() AND table_name = 'bookings'
+                     AND column_name = 'price') THEN
+        ALTER TABLE bookings ADD COLUMN price INTEGER NOT NULL DEFAULT 0 CHECK (price >= 0);
+        UPDATE bookings b SET price = p.price FROM booking_pages p
+            WHERE p.id = b.page_id AND b.package_id IS NULL;
+    END IF;
+END
+$$;
+
 -- --------------------------------------------------------------- Триггер ---
 CREATE OR REPLACE FUNCTION selfvoy_touch_updated_at() RETURNS trigger AS $$
 BEGIN

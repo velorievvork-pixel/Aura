@@ -219,15 +219,37 @@ Item {
                             Layout.fillWidth: true
                             elide: Text.ElideRight
                             textFormat: Text.StyledText
-                            readonly property string price: !page.next ? ""
-                                : page.next.booking.payment ? F.money(page.next.booking.payment.amount, page.next.booking.payment.currency)
-                                : page.nextPage && page.nextPage.price ? F.money(page.nextPage.price, page.nextPage.currency) : ""
+                            // Главное число — цена услуги из записи (не сумма оплаты онлайн).
+                            readonly property string price: page.next ? F.bookingPriceText(page.next.booking, page.nextPage) : ""
                             readonly property int minutes: page.next ? Math.round((page.next.end - page.next.start) / 60000) : 0
                             text: page.next ? "<b>" + F.escape(page.next.booking.guest_name || "Гость") + "</b> · "
                                               + minutes + " мин" + (price ? " · " + price : "") : ""
                             font.family: SelfvoyTheme.fontFamily
                             font.pixelSize: 16
                             color: "#FFFFFF"
+                        }
+                        // Оплата онлайн — второстепенно: значок статуса + «Депозит 1 000 ₽ · ждём оплату».
+                        RowLayout {
+                            readonly property var payment: page.next ? page.next.booking.payment : null
+                            readonly property var payStatus: payment ? F.paymentStatus(payment.status) : null
+                            visible: !!payment
+                            Layout.topMargin: 2
+                            Layout.fillWidth: true
+                            spacing: 5
+                            Icon {
+                                visible: !!parent.payStatus
+                                name: parent.payStatus ? parent.payStatus.icon : "clock"
+                                size: 13
+                                color: Qt.rgba(1, 1, 1, 0.88)
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: F.paymentLine(parent.payment)
+                                elide: Text.ElideRight
+                                font.family: SelfvoyTheme.fontFamily
+                                font.pixelSize: SelfvoyTheme.fontSmall
+                                color: Qt.rgba(1, 1, 1, 0.88)
+                            }
                         }
                         // Пустое состояние
                         Text {

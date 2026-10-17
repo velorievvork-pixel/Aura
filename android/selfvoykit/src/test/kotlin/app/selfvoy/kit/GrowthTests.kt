@@ -245,6 +245,73 @@ class PaymentTests {
         assertEquals("system", booking.cancelledBy)
         assertFalse(booking.active)
     }
+
+    // Цена записи (price/currency) — отдельно от суммы оплаты онлайн (payment.amount).
+
+    private fun page(id: Long, price: Long, currency: String = "RUB") =
+        BookingPage.from(obj("""{"id":$id,"slug":"s$id","title":"Стр $id","price":$price,"currency":"$currency","status":"active"}"""))
+
+    @Test
+    fun `booking price is parsed apart from payment amount`() {
+        val booking = Booking.from(obj("""{"id":3,"page_id":1,"status":"active","price":300000,"currency":"RUB",
+            "payment":{"status":"pending","amount":100000,"currency":"RUB","kind":"deposit"}}"""))
+        assertEquals(300_000L, booking.price)
+        assertEquals("RUB", booking.currency)
+        assertEquals(100_000L, booking.payment?.amount)
+        val pages = listOf(page(1, 250_000))
+        assertEquals(300_000L, booking.priceWith(pages.first()))
+        assertEquals(Money.format(300_000), BookingMoney.priceText(booking, pages.first()))
+        assertEquals("Депозит ${Money.format(100_000)}", BookingMoney.paymentText(booking.payment!!))
+        assertEquals("Предоплата ${Money.format(300_000)}",
+            BookingMoney.paymentText(Payment("paid", 300_000, "RUB", kind = "full")))
+        assertEquals("Оплата ${Money.format(300_000)}", BookingMoney.paymentText(Payment("paid", 300_000, "RUB")))
+    }
+
+    @Test
+    fun `old server without price falls back to page price`() {
+        val booking = Booking.from(obj("""{"id":3,"page_id":1,"status":"active"}"""))
+        assertNull(booking.price)
+        assertEquals("", booking.currency)
+        assertEquals(250_000L, booking.priceWith(page(1, 250_000, "EUR")))
+        assertEquals("EUR", booking.currencyWith(page(1, 250_000, "EUR")))
+        assertEquals(0L, booking.priceWith(null))
+        assertEquals("RUB", booking.currencyWith(null))
+        assertEquals("", BookingMoney.priceText(booking, null))
+        // null — как отсутствие поля.
+        assertNull(Booking.from(obj("""{"id":3,"price":null}""")).price)
+    }
+
+    @Test
+    fun `zero price and package sessions do not fall back to page`() {
+        val free = Booking.from(obj("""{"id":4,"page_id":1,"status":"active","price":0,"currency":"RUB"}"""))
+        assertEquals(0L, free.priceWith(page(1, 250_000)))
+        assertEquals("", BookingMoney.priceText(free, page(1, 250_000)))
+        val pack = Booking.from(obj("""{"id":5,"page_id":1,"status":"active","package_id":7,"price":0}"""))
+        assertTrue(pack.byPackage)
+        assertEquals(BookingMoney.BY_PACKAGE, BookingMoney.priceText(pack, page(1, 250_000)))
+        // Абонемент без поля price (старый сервер) — тоже не цена страницы.
+        val oldPack = Booking.from(obj("""{"id":6,"page_id":1,"status":"active","package_id":7}"""))
+        assertEquals(0L, oldPack.priceWith(page(1, 250_000)))
+        assertEquals("По абонементу", BookingMoney.priceText(oldPack, null))
+    }
+
+    @Test
+    fun `day total sums booking prices without package sessions`() {
+        fun b(id: Long, json: String) = Booking.from(obj("""{"id":$id,"page_id":1,"status":"active"$json}"""))
+        val pages = listOf(page(1, 250_000))
+        val bookings = listOf(
+            b(1, ""","price":300000,"currency":"RUB","payment":{"status":"pending","amount":100000,"kind":"deposit"}"""),
+            b(2, ""","price":300000,"currency":"RUB""""),
+            b(3, ""","price":0,"currency":"RUB","package_id":4"""),
+            b(4, ""","price":0,"currency":"RUB""""),
+            b(5, ""), // старый сервер — цена страницы
+            b(6, ""","price":900000,"currency":"USD""""), // другая валюта не складывается
+            Booking.from(obj("""{"id":7,"page_id":1,"status":"cancelled","price":300000,"currency":"RUB"}""")),
+        )
+        assertEquals(850_000L to "RUB", BookingMoney.dayTotal(bookings, pages))
+        assertEquals(0L to "", BookingMoney.dayTotal(listOf(bookings[2], bookings[3]), pages))
+        assertEquals(0L to "", BookingMoney.dayTotal(emptyList(), null))
+    }
 }
 
 class PackageTests {

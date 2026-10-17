@@ -48,6 +48,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.selfvoy.AppStore
 import app.selfvoy.kit.Booking
+import app.selfvoy.kit.BookingMoney
 import app.selfvoy.kit.BookingOccurrence
 import app.selfvoy.kit.BookingPage
 import app.selfvoy.kit.Money
@@ -255,21 +256,22 @@ fun buildDay(
     return entries
 }
 
-/** «3 встречи · 6 000 ₽» — встречи дня и их стоимость по ценам страниц (одна валюта). */
+/**
+ * «3 встречи · 6 000 ₽» — встречи дня и их стоимость: цены записей (старый сервер —
+ * цены страниц), без занятий по абонементу; одна валюта.
+ */
 fun daySummary(entries: List<DayEntry>, pages: List<BookingPage>?): String {
     val meetings = entries.filterIsInstance<DayEntry.Meeting>()
-    var amount = 0L
-    var currency = ""
-    for (meeting in meetings) {
-        val page = pages.orEmpty().firstOrNull { it.id == meeting.booking.pageId } ?: continue
-        if (page.price <= 0) continue
-        if (currency.isNotEmpty() && page.currency != currency) continue
-        currency = page.currency
-        amount += page.price
-    }
+    val (amount, currency) = BookingMoney.dayTotal(meetings.map { it.booking }, pages)
     val count = meetings.size.toLong()
     val text = if (count > 0) "$count ${plural(count, "встреча", "встречи", "встреч")}" else "Встреч нет"
     return if (amount > 0) "$text · ${Money.format(amount, currency)}" else text
+}
+
+/** Строка оплаты под ценой: «Депозит 1 000 ₽ · ждём оплату» (статус — ещё и значком рядом). */
+fun paymentLine(payment: Payment): String {
+    val view = paymentStatusView(payment.status) ?: return BookingMoney.paymentText(payment)
+    return "${BookingMoney.paymentText(payment)} · ${view.label.replaceFirstChar { it.lowercaseChar() }}"
 }
 
 // ------------------------------------------------------------- история записи
@@ -359,11 +361,7 @@ fun BookingSheet(booking: Booking, start: String?, pages: List<BookingPage>?, on
     } ?: 0L
     val upcoming = list.filter { isUpcoming(it) }
     val payment = booking.payment
-    val price = when {
-        payment != null -> Money.format(payment.amount, payment.currency)
-        page != null && page.price > 0 -> Money.format(page.price, page.currency)
-        else -> ""
-    }
+    val price = BookingMoney.priceText(booking, page)
 
     fun run(key: String, action: suspend () -> AppStore.Outcome<*>) {
         busy = key
@@ -395,14 +393,16 @@ fun BookingSheet(booking: Booking, start: String?, pages: List<BookingPage>?, on
                         subtitle = range + series,
                         value = price,
                     )
+                    // Оплата онлайн — отдельно от цены: «Депозит 1 000 ₽» + статус (значок и слово).
+                    if (payment != null) {
+                        GroupDivider()
+                        ListRow(BookingMoney.paymentText(payment)) {
+                            paymentStatusView(payment.status)?.let { StatusPill(it) }
+                        }
+                    }
                     GroupDivider()
                     ListRow("Статус") {
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            val main = occurrenceStatus(booking, focus)
-                            StatusPill(main)
-                            val payView = payment?.let { paymentStatusView(it.status) }
-                            if (payView != null && payView.label != main.label) StatusPill(payView)
-                        }
+                        StatusPill(occurrenceStatus(booking, focus))
                     }
                 }
             }

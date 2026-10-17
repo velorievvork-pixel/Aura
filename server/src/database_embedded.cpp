@@ -104,6 +104,7 @@ public:
         // Ключ счётчиков id создаётся сразу: добавление ключа позже перераспределило бы
         // поля state_ и сделало висячими ссылки на таблицы у вызывающего кода.
         if (!state_.get("sequences").isObject()) state_.set("sequences", Json::object());
+        backfillBookingPrices();
         // Файл содержит хэши паролей и токенов — только владельцу процесса.
         ::chmod(path_.c_str(), 0600);
         return true;
@@ -2064,6 +2065,8 @@ private:
         entry.set("guest_comment", Json(record.guestComment));
         entry.set("cc_email", Json(record.ccEmail));
         entry.set("package_id", Json(record.packageId));
+        entry.set("price", Json(record.price));
+        entry.set("currency", Json(record.currency.empty() ? std::string("RUB") : record.currency));
         entry.set("created_at", Json(isoNow()));
         writeBooking(entry, record);
         table("bookings").push(entry);
@@ -2161,6 +2164,10 @@ private:
         if (entry.get("payment").isObject()) record.payment = entry.get("payment");
         record.ccEmail = entry.getString("cc_email");
         record.packageId = entry.getInt("package_id");
+        // Снимок цены (у записей до снимка его проставляет backfillBookingPrices при открытии).
+        record.price = entry.getInt("price");
+        record.currency = entry.getString("currency", "RUB");
+        if (record.currency.empty()) record.currency = "RUB";
         return record;
     }
 
@@ -2619,6 +2626,28 @@ private:
             if (item.getInt("id") == id) return toUser(item);
         }
         return std::nullopt;
+    }
+
+    // Записи из файла до снимка цены (нет поля price) получают цену своей страницы,
+    // как при миграции 2026_10_17_booking_price.sql; запись по пакету — 0.
+    void backfillBookingPrices() {
+        if (!state_.get("bookings").isArray() || !state_.get("booking_pages").isArray()) return;
+        const Json::Array& pages = state_["booking_pages"].items();
+        for (Json& entry : state_["bookings"].items()) {
+            if (entry.contains("price")) continue;
+            long long price = 0;
+            std::string currency = "RUB";
+            if (entry.getInt("package_id") == 0) {
+                for (const Json& page : pages) {
+                    if (page.getInt("id") != entry.getInt("page_id")) continue;
+                    price = page.getInt("price");
+                    currency = page.getString("currency", "RUB");
+                    break;
+                }
+            }
+            entry.set("price", Json(price));
+            entry.set("currency", Json(currency.empty() ? std::string("RUB") : currency));
+        }
     }
 
     Json& table(const std::string& name) {

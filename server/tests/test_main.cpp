@@ -2981,6 +2981,40 @@ TEST(audit_l22_internal_errors_are_generic) {
     CHECK(reply.getString("message").find("relation") == std::string::npos);
 }
 
+TEST(embedded_backfills_booking_price_snapshot) {
+    // Файл встроенной БД до снимка цены: у записей нет price/currency.
+    const std::string path = "/tmp/selfvoy-price-db-" + std::to_string(::getpid()) + ".json";
+    {
+        FILE* file = std::fopen(path.c_str(), "w");
+        std::fputs("{\"sequences\": {},"
+                   " \"booking_pages\": [{\"id\": 7, \"owner_id\": 1, \"price\": 250000, \"currency\": \"EUR\"}],"
+                   " \"bookings\": [{\"id\": 1, \"page_id\": 7, \"owner_id\": 1},"
+                   "                {\"id\": 2, \"page_id\": 7, \"owner_id\": 1, \"package_id\": 3},"
+                   "                {\"id\": 3, \"page_id\": 7, \"owner_id\": 1, \"price\": 100, \"currency\": \"RUB\"}]}",
+                   file);
+        std::fclose(file);
+    }
+    auto db = selfvoy::makeEmbeddedDatabase(path);
+    std::string error;
+    CHECK(db->connect(error));
+    const auto plain = db->findBooking(1);
+    CHECK(plain.has_value());
+    if (plain) {
+        CHECK_EQ(plain->price, 250000LL);
+        CHECK_EQ(plain->currency, std::string("EUR"));
+    }
+    const auto byPackage = db->findBooking(2);
+    CHECK(byPackage.has_value());
+    if (byPackage) CHECK_EQ(byPackage->price, 0LL);
+    const auto snapshot = db->findBooking(3);  // уже есть снимок — не трогаем
+    CHECK(snapshot.has_value());
+    if (snapshot) {
+        CHECK_EQ(snapshot->price, 100LL);
+        CHECK_EQ(snapshot->currency, std::string("RUB"));
+    }
+    std::remove(path.c_str());
+}
+
 TEST(audit_l23_embedded_file_safety) {
     const std::string path = "/tmp/selfvoy-audit-db-" + std::to_string(::getpid()) + ".json";
     {
@@ -8136,6 +8170,115 @@ TEST(cc_email_notices_limit_and_mask) {
 }
 
 // PostgreSQL (S2b): предложения страницы, покупки пакетов, cc_email и package_id записи.
+// Снимок цены записи: price/currency — цена страницы на момент booking.book; смена цены
+// страницы, перенос и отмена его не меняют; payment.amount (депозит) — отдельно.
+TEST(booking_price_snapshot_survives_page_price_change) {
+    using namespace packages_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    const std::time_t slotC = invite_test::future(78);
+    invite_test::FakeAi ai([&] { return slotsBody({slotA, slotB, slotC}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "price-owner");
+    fixture.registerUser(owner, "priceowner@example.com", "Вера");
+    auto& db = fixture.server->database().db();
+    Json pageReq = payPage("Консультация");
+    pageReq.set("price", Json(300000LL));
+    pageReq.set("currency", Json("EUR"));
+    pageReq.set("prepay", Json("deposit"));
+    pageReq.set("deposit", Json(100000LL));
+    pageReq.set("payment_url", Json("https://pay.example/vera"));
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageReq)).get("page");
+    const std::string slug = page.getString("slug");
+    auto guest = sockets.open(fixture, "price-guest");
+
+    const Json bookedA = integration::payloadOf(fixture.call(guest, "booking.book", bookPayload(slug, slotA, "Анна")));
+    const std::string tokenA = bookedA.getString("token");
+    CHECK_EQ(bookedA.get("booking").getInt("price"), 300000LL);
+    CHECK_EQ(bookedA.get("booking").getString("currency"), std::string("EUR"));
+    CHECK_EQ(bookedA.get("booking").get("payment").getInt("amount"), 100000LL);  // депозит — не цена
+    const auto storedA = db.findBookingByToken(selfvoy::BookingManager::tokenHash(tokenA));
+    CHECK(storedA && storedA->price == 300000 && storedA->currency == "EUR");
+
+    // Владелец поднял цену: старая запись хранит свою, новая — по новой цене.
+    Json raise = Json::object();
+    raise.set("page_id", Json(page.getInt("id")));
+    raise.set("price", Json(500000LL));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", raise).getString("type"), std::string("ok"));
+    const Json managed = integration::payloadOf(fixture.call(guest, "booking.manage", tokenPayload(tokenA))).get("booking");
+    CHECK_EQ(managed.getInt("price"), 300000LL);
+    CHECK_EQ(managed.getString("currency"), std::string("EUR"));
+    const Json bookedB = integration::payloadOf(fixture.call(guest, "booking.book", bookPayload(slug, slotB, "Борис")));
+    CHECK_EQ(bookedB.get("booking").getInt("price"), 500000LL);
+    const Json listed = integration::payloadOf(fixture.call(owner, "booking.list")).get("bookings");
+    CHECK_EQ(listed.size(), std::size_t(2));
+    for (const auto& item : listed.items()) {
+        CHECK_EQ(item.getInt("price"), item.getString("guest_name") == "Анна" ? 300000LL : 500000LL);
+        CHECK_EQ(item.getString("currency"), std::string("EUR"));
+    }
+
+    // Перенос и отмена цену не меняют.
+    Json move = tokenPayload(tokenA);
+    move.set("start", Json(selfvoy::isoUtc(slotC)));
+    const Json moved = fixture.call(guest, "booking.reschedule", move);
+    CHECK_EQ(moved.getString("type"), std::string("ok"));
+    CHECK_EQ(integration::payloadOf(moved).get("booking").getInt("price"), 300000LL);
+    CHECK_EQ(fixture.call(guest, "booking.cancel", tokenPayload(tokenA)).getString("type"), std::string("ok"));
+    const auto cancelledA = db.findBookingByToken(selfvoy::BookingManager::tokenHash(tokenA));
+    CHECK(cancelledA && cancelledA->status == "cancelled" && cancelledA->price == 300000 &&
+          cancelledA->currency == "EUR");
+}
+
+// Запись по пакету (покупка при записи и по package_token) — price 0; package.get отдаёт
+// ref — реферальный код владельца (как booking.get / invite.get).
+TEST(booking_price_zero_by_package_and_package_ref) {
+    using namespace packages_test;
+    const std::time_t slotA = invite_test::future(30);
+    const std::time_t slotB = invite_test::future(54);
+    invite_test::FakeAi ai([&] { return slotsBody({slotA, slotB}); });
+    Fixture fixture;
+    enablePayments(fixture, ai.url());
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "price-pk-owner");
+    fixture.registerUser(owner, "pricepk@example.com", "Ольга");
+    auto& db = fixture.server->database().db();
+    Json offers = Json::array();
+    offers.push(offer("3 занятия", 3, 900000));
+    Json pageReq = offersPage("Тренировки", offers);
+    pageReq.set("price", Json(350000LL));
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageReq)).get("page");
+    const std::string slug = page.getString("slug");
+    auto guest = sockets.open(fixture, "price-pk-guest");
+
+    Json buy = bookPayload(slug, slotA, "Мария");
+    buy.set("package_id", Json(1LL));
+    const Json bought = integration::payloadOf(fixture.call(guest, "booking.book", buy));
+    CHECK_EQ(bought.get("booking").getInt("price"), 0LL);
+    CHECK(bought.get("booking").getBool("by_package"));
+    const std::string packageToken = bought.getString("package_token");
+    const auto storedA = db.findBookingByToken(selfvoy::BookingManager::tokenHash(bought.getString("token")));
+    CHECK(storedA && storedA->price == 0 && storedA->packageId > 0);
+
+    Json byToken = slugPayload(slug);
+    byToken.set("start", Json(selfvoy::isoUtc(slotB)));
+    byToken.set("package_token", Json(packageToken));
+    const Json bookedB = integration::payloadOf(fixture.call(guest, "booking.book", byToken));
+    CHECK_EQ(bookedB.get("booking").getInt("price"), 0LL);
+    const Json listed = integration::payloadOf(fixture.call(owner, "booking.list")).get("bookings");
+    CHECK_EQ(listed.size(), std::size_t(2));
+    for (const auto& item : listed.items()) {
+        CHECK_EQ(item.getInt("price"), 0LL);
+        CHECK(item.getInt("package_id") > 0);
+    }
+
+    const Json pageView = integration::payloadOf(fixture.call(guest, "booking.get", slugPayload(slug))).get("page");
+    const Json pack = integration::payloadOf(fixture.call(guest, "package.get", tokenPayload(packageToken))).get("package");
+    CHECK_EQ(pack.getString("ref").size(), std::size_t(8));
+    CHECK_EQ(pack.getString("ref"), pageView.getString("ref"));
+}
+
 TEST(pg_packages_methods) {
     const char* url = std::getenv("SELFVOY_TEST_PG_URL");
     if (url == nullptr || *url == '\0') {
@@ -8246,4 +8389,21 @@ TEST(pg_packages_methods) {
     long long plainId = 0;
     CHECK(db->createBooking(plainBooking, plainId).ok);
     CHECK(db->findBooking(plainId) && db->findBooking(plainId)->packageId == 0);
+    // Снимок цены записи: price/currency сохраняются и не меняются updateBooking.
+    selfvoy::BookingRecord priced = plainBooking;
+    priced.manageHash = selfvoy::BookingManager::tokenHash(growth_test::newToken());
+    priced.price = 250000;
+    priced.currency = "EUR";
+    long long pricedId = 0;
+    CHECK(db->createBooking(priced, pricedId).ok);
+    auto pricedStored = db->findBooking(pricedId);
+    CHECK(pricedStored && pricedStored->price == 250000 && pricedStored->currency == "EUR");
+    if (pricedStored) {
+        pricedStored->status = "cancelled";
+        CHECK(db->updateBooking(*pricedStored).ok);
+        pricedStored = db->findBooking(pricedId);
+        CHECK(pricedStored && pricedStored->price == 250000 && pricedStored->currency == "EUR" &&
+              pricedStored->status == "cancelled");
+    }
+    CHECK(withPackage && withPackage->price == 0 && withPackage->currency == "RUB");
 }

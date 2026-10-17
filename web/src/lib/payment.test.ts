@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Booking, Payment } from '../net/bookingApi';
-import { awaitingPayment, bookingHistory, ownerPaymentActions, paymentLabel, policyLines, prepayLabel } from './payment';
+import { formatMoney } from './money';
+import { awaitingPayment, bookingHistory, bookingMoney, bookingMoneyLabel, ownerPaymentActions, paymentLabel, paymentSummary, policyLines, prepayLabel } from './payment';
 
 const NOW = new Date('2026-10-20T09:00:00Z');
 const payment = (status: Payment['status'], extra: Partial<Payment> = {}): Payment => ({
@@ -58,6 +59,36 @@ describe('подписи статусов оплаты', () => {
     expect(awaitingPayment(payment('claimed'))).toBe(true);
     expect(awaitingPayment(payment('paid'))).toBe(false);
     expect(awaitingPayment(null)).toBe(false);
+  });
+});
+
+describe('деньги встречи: цена на момент записи и оплата отдельно', () => {
+  const page = { price: 500000, currency: 'RUB' as const };
+  it('цена — снимок booking.price, а не текущая цена страницы и не payment.amount', () => {
+    const b = booking({ price: 300000, currency: 'RUB', payment: payment('pending', { kind: 'deposit', amount: 100000 }) });
+    expect(bookingMoney(b, page)).toEqual({ kind: 'money', amount: 300000, currency: 'RUB' });
+    expect(bookingMoneyLabel(b, page)).toBe(formatMoney(300000, 'RUB'));
+  });
+  it('по абонементу — «По абонементу» вместо денег', () => {
+    const b = booking({ price: 0, package_id: 4 });
+    expect(bookingMoney(b, page)).toEqual({ kind: 'package' });
+    expect(bookingMoneyLabel(b, page)).toBe('По абонементу');
+    expect(bookingMoneyLabel(booking({ package_id: 4 }), page)).toBe('По абонементу'); // старый сервер
+  });
+  it('price 0 — бесплатно; нет поля (старый сервер) — цена страницы', () => {
+    expect(bookingMoney(booking({ price: 0, currency: 'RUB' }), page)).toEqual({ kind: 'free' });
+    expect(bookingMoneyLabel(booking({ price: 0 }), page)).toBe('');
+    expect(bookingMoney(booking(), page)).toEqual({ kind: 'money', amount: 500000, currency: 'RUB' });
+    expect(bookingMoney(booking(), null)).toEqual({ kind: 'free' });
+    expect(bookingMoney(booking({ price: 2500, currency: 'EUR' }), page)).toEqual({ kind: 'money', amount: 2500, currency: 'EUR' });
+  });
+  it('оплата онлайн: вид и сумма + статус словом', () => {
+    const deposit = paymentSummary(payment('pending', { kind: 'deposit', amount: 100000 }));
+    expect(deposit?.text).toBe(`Депозит ${formatMoney(100000, 'RUB')}`);
+    expect(deposit?.status).toEqual({ label: 'Ждём оплату', tone: 'amber', icon: 'clock' });
+    expect(deposit?.line).toBe(`Депозит ${formatMoney(100000, 'RUB')} · ждём оплату`);
+    expect(paymentSummary(payment('paid', { amount: 300000 }))?.line).toBe(`Предоплата ${formatMoney(300000, 'RUB')} · оплачено`);
+    expect(paymentSummary(null)).toBeNull();
   });
 });
 

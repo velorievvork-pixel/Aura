@@ -118,6 +118,34 @@ describe('итог дня и цвета', () => {
     expect(daySummary([], []).text).toBe('Встреч нет');
   });
 
+  it('сумма — по цене на момент записи; встречи по абонементу не входят', () => {
+    const pages = [{ id: 1, price: 500000, currency: 'RUB' as const }];
+    const entries = buildDay(
+      {
+        bookings: [
+          booking(9, { price: 200000, currency: 'RUB' }), // цена до подорожания страницы
+          booking(10, { price: 200000, currency: 'RUB', payment: pay('pending') }), // депозит/предоплата — не цена
+          booking(12, { price: 0, currency: 'RUB', package_id: 7 }), // по абонементу
+          booking(15, { price: 0, currency: 'RUB' }), // бесплатно — цену страницы не подставляем
+          booking(17, { price: 200000, currency: 'RUB', status: 'cancelled', cancelled_by: 'guest' }),
+        ],
+      },
+      at(0),
+      NOW,
+    );
+    expect(daySummary(entries, pages)).toEqual({ text: '4 встречи', amount: 400000, currency: 'RUB' });
+  });
+
+  it('старый сервер без price — цена страницы; пакет без price — тоже не в сумме', () => {
+    const entries = buildDay({ bookings: [booking(10), booking(12, { package_id: 3 })] }, at(0), NOW);
+    expect(daySummary(entries, [{ id: 1, price: 300000, currency: 'EUR' }])).toEqual({ text: '2 встречи', amount: 300000, currency: 'EUR' });
+  });
+
+  it('другая валюта в сумму не смешивается', () => {
+    const entries = buildDay({ bookings: [booking(10, { price: 100000, currency: 'RUB' }), booking(12, { price: 5000, currency: 'EUR' })] }, at(0), NOW);
+    expect(daySummary(entries, [])).toEqual({ text: '2 встречи', amount: 100000, currency: 'RUB' });
+  });
+
   it('цвет страницы по порядку создания', () => {
     const pages = [{ id: 9 }, { id: 3 }, { id: 5 }];
     expect(pageColor(3, pages)).toBe(1);

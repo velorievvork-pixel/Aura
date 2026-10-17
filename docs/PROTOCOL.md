@@ -481,10 +481,17 @@ upcoming, created_at, updated_at}`; `url` пуст
 (бесплатно), `hide_branding` — скрыть подпись «Запись через Selfvoy» (Pro).
 `booking` (вид владельца): `{id, page_id, page_title, guest_name, guest_email,
 guest_comment, cc_email (второй получатель, "" — нет; F5), package_id (пакет записи,
-0 — без пакета; F5), status (active | cancelled), cancelled_by ("" | guest | owner),
+0 — без пакета; F5), price, currency, status (active | cancelled), cancelled_by ("" | guest | owner),
 reschedules, occurrences: [{start, end, local, status (active | cancelled),
 confirmed_at}], reminders: [{start, kind (24h | 2h), due_at, sent_at}],
 payment (объект оплаты целиком или null), created_at, updated_at}`;
+`price` — цена услуги (одной встречи) на момент записи, в минимальных единицах
+`currency` (0 — по абонементу или бесплатно): снимок цены страницы при
+`booking.book`, последующая смена цены страницы (`booking.pageUpdate`), перенос и
+отмена его не меняют; запись по пакету (`package_id` / `package_token`) — 0.
+`payment.amount` — сколько нужно внести / внесено онлайн (депозит или полная
+предоплата), это не цена услуги. Старый сервер `price` у записи не отдаёт —
+клиент тогда берёт цену страницы.
 `cancelled_by` у отменённой записи — `guest`, `owner` или `system` (оплата не
 поступила к сроку); `confirmed_at` — когда гость нажал «Приду» ("" — не
 подтверждал), `reminders` — запланированные и отправленные напоминания гостю
@@ -529,7 +536,8 @@ packages: [{id, title, sessions, price, valid_days}]}` —
 ссылки «Заведите свой Selfvoy». Вид записи для гостя: `{page_title, page_slug
 ("" — запись на странице закрыта), owner_name, owner_timezone,
 duration_minutes, guest_name, cc_email (замаскирован: `m***@example.com`; "" — нет),
-by_package (запись по пакету), status, cancelled_by, occurrences, can_cancel,
+by_package (запись по пакету), price, currency (цена встречи на момент записи — как в
+виде владельца; 0 — по абонементу или бесплатно), status, cancelled_by, occurrences, can_cancel,
 can_reschedule, can_change, reschedules_left, slots (свободное время для
 переноса ближайшей встречи), slots_unavailable, ref, branding, telegram_url,
 telegram_linked, payment (без `provider_id`; null — оплаты нет), late, policy,
@@ -748,7 +756,7 @@ sha256 и шифр AES-256-GCM, AAD `selfvoy-package-token`, для писем).
 
 | тип | payload | ответ |
 | --- | --- | --- |
-| `package.get` | `{token}` | `{package}` — вид гостя: `{title, sessions_total, sessions_left, valid_until ("" — ещё не оплачен), valid_days, status, price, currency, payment (без provider_id; null — без оплаты), payment_note, guest_name, cc_email (замаскирован), page_slug ("" — запись на странице закрыта), page_title, owner_name, owner_timezone, bookings: [{start, status}], branding}`; ЮKassa — статус платежа проверяется при каждом открытии; неизвестный токен → `not_found`; 30 в минуту с IP |
+| `package.get` | `{token}` | `{package}` — вид гостя: `{title, sessions_total, sessions_left, valid_until ("" — ещё не оплачен), valid_days, status, price, currency, payment (без provider_id; null — без оплаты), payment_note, guest_name, cc_email (замаскирован), page_slug ("" — запись на странице закрыта), page_title, owner_name, owner_timezone, bookings: [{start, status}], branding, ref}` (`ref` — реферальный код владельца, как у `booking.get` / `invite.get`: клиент добавляет его в ссылку «Запись через Selfvoy», даже если `branding.url` пуст); ЮKassa — статус платежа проверяется при каждом открытии; неизвестный токен → `not_found`; 30 в минуту с IP |
 | `package.paymentClaim` | `{token}` | `{package}` — «Я оплатил(а)» за пакет (способ `link`): оплата `pending` → `claimed`, покупка `pending` → `active`; владельцу `package.payment` (`claimed`); повтор — без изменений; ЮKassa / нет оплаты → `bad_request`; покупка отменена → `conflict`; лимит — как у переноса/отмены |
 
 Методы владельца:

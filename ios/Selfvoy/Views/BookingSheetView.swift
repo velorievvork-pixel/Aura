@@ -123,22 +123,28 @@ struct BookingSheetView: View {
                         .font(InkFont.footnote).foregroundStyle(Ink.secondary)
                 }
                 Spacer(minLength: 8)
-                if let payment = booking.payment {
-                    Text(payment.amountText).font(InkFont.headline.monospacedDigit()).foregroundStyle(Ink.label)
-                } else if let page, page.fields.price > 0 {
-                    Text(Money.format(page.fields.price, currency: page.fields.currency))
-                        .font(InkFont.headline.monospacedDigit()).foregroundStyle(Ink.label)
+                // Главное число — цена услуги из записи; «По абонементу» — без денег.
+                let price = OwnerToday.priceText(booking, page: page)
+                if !price.isEmpty {
+                    Text(price).font(InkFont.headline.monospacedDigit()).foregroundStyle(Ink.label)
                 }
             }
             .padding(14)
+            if let payment = booking.payment {
+                // Оплата онлайн — отдельной строкой: «Депозит 1 000 ₽» и статус (значок + слово).
+                InkDivider(inset: 14)
+                HStack {
+                    Text(OwnerToday.paymentText(payment)).font(InkFont.callout).foregroundStyle(Ink.secondary)
+                    Spacer(minLength: 8)
+                    if let payStatus { StatusBadge(status: payStatus) }
+                }
+                .padding(14)
+            }
             InkDivider(inset: 14)
             HStack {
                 Text("Статус").font(InkFont.callout).foregroundStyle(Ink.secondary)
                 Spacer(minLength: 8)
                 StatusBadge(status: status)
-                if let payStatus, payStatus.label != status.label {
-                    StatusBadge(status: payStatus)
-                }
             }
             .padding(14)
         }

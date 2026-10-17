@@ -32,7 +32,7 @@ iOS (SwiftUI). База — PostgreSQL, 31 таблица и 2 представ�
   и `app` (Compose-клиент, пакет `app.selfvoy`).
 - `ios/` — SwiftUI-клиент.
 - `schema/` — схема БД и миграции; `docs/` — PROTOCOL.md, DATABASE.md, SETUP.md, ANDROID.md.
-- `tools/e2e.py` — эталонный клиент протокола на Python (268 проверок со всеми моками).
+- `tools/e2e.py` — эталонный клиент протокола на Python (400 проверок со всеми моками).
 - `.github/workflows/` — `ci.yml` (тесты), `build-windows.yml` (.exe), `build-android.yml` (.apk).
 
 ## Протокол (главные грабли — читать перед правками)

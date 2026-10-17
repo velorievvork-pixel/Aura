@@ -81,6 +81,8 @@ export interface GuestPackage {
   owner_timezone: string;
   bookings: GuestPackageBooking[];
   branding?: Branding;
+  /** Реферальный код владельца — для ссылки «Запись через Selfvoy» (как booking.get / invite.get). */
+  ref?: string;
 }
 
 /** package.issue: готовое предложение страницы или своё (название + занятия). */

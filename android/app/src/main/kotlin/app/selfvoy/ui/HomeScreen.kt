@@ -55,7 +55,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.selfvoy.AppStore
-import app.selfvoy.kit.Money
+import app.selfvoy.kit.BookingMoney
 import app.selfvoy.ui.theme.Amber
 import app.selfvoy.ui.theme.Bg
 import app.selfvoy.ui.theme.BrandBlue
@@ -78,6 +78,7 @@ import app.selfvoy.ui.theme.Ter
 import app.selfvoy.ui.theme.Tint
 import app.selfvoy.ui.theme.TintSoft
 import app.selfvoy.ui.theme.glass
+import app.selfvoy.ui.theme.statusIconVector
 import kotlinx.coroutines.delay
 import java.time.LocalDateTime
 import java.time.format.TextStyle
@@ -159,8 +160,7 @@ fun HomeScreen() {
 
         if (next != null) {
             val page = pages.orEmpty().firstOrNull { it.id == next.booking.pageId }
-            val price = next.booking.payment?.let { Money.format(it.amount, it.currency) }
-                ?: page?.takeIf { it.price > 0 }?.let { Money.format(it.price, it.currency) }.orEmpty()
+            val price = BookingMoney.priceText(next.booking, page)
             NextCard(next, now, pageColor(next.booking.pageId, pages), price,
                 onOpen = { opened = next.booking.id to next.occurrence.start },
                 onWrite = {
@@ -258,8 +258,21 @@ private fun NextCard(next: NextUp, now: LocalDateTime, color: Color, price: Stri
                 },
                 color = Color.White, style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp),
             )
+            // Оплата онлайн — второстепенной строкой: значок статуса + «Депозит 1 000 ₽ · ждём оплату».
+            val payment = next.booking.payment
+            val payView = payment?.let { paymentStatusView(it.status) }
+            if (payment != null) {
+                Row(Modifier.padding(top = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (payView != null) {
+                        Icon(statusIconVector(payView.icon), contentDescription = null, tint = Color.White.copy(alpha = 0.85f),
+                            modifier = Modifier.size(13.dp))
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    Text(paymentLine(payment), color = Color.White.copy(alpha = 0.85f), style = MaterialTheme.typography.bodySmall)
+                }
+            }
             val status = occurrenceStatus(next.booking, next.occurrence, now)
-            if (status.label != "Записан(а)") {
+            if (status.label != "Записан(а)" && status.label != payView?.label) {
                 Text(status.label, color = Color.White.copy(alpha = 0.85f), style = MaterialTheme.typography.bodySmall)
             }
             Row(Modifier.fillMaxWidth().padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

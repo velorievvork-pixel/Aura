@@ -321,6 +321,78 @@ final class TodayTests: XCTestCase {
         XCTAssertEqual(OwnerToday.daySummary([], pages: pages).text, "Встреч нет")
     }
 
+    // Цена записи (price/currency) — отдельно от суммы оплаты онлайн (payment.amount).
+
+    private func priced(_ id: Int64, _ extra: String, status: String = "active") throws -> Booking {
+        Booking(json: try decode("""
+        {"id": \(id), "page_id": 2, "status": "\(status)"\(extra),
+         "occurrences": [{"start": "2026-10-22T10:00:00Z", "end": "2026-10-22T11:00:00Z", "status": "active"}]}
+        """))
+    }
+
+    func testBookingPriceApartFromPayment() throws {
+        let b = try priced(1, #", "price": 300000, "currency": "RUB", "payment": {"status": "pending", "amount": 100000, "currency": "RUB", "kind": "deposit"}"#)
+        let pg = try page(2, price: 250_000)
+        XCTAssertEqual(b.price, 300_000)
+        XCTAssertEqual(b.currency, "RUB")
+        XCTAssertEqual(b.payment?.amount, 100_000)
+        XCTAssertEqual(b.price(with: pg), 300_000)
+        XCTAssertEqual(OwnerToday.priceText(b, page: pg), Money.format(300_000, currency: "RUB"))
+        XCTAssertEqual(OwnerToday.paymentText(b.payment!), "Депозит \(Money.format(100_000, currency: "RUB"))")
+        XCTAssertEqual(OwnerToday.paymentLine(b.payment!), "Депозит \(Money.format(100_000, currency: "RUB")) · ждём оплату")
+        let full = BookingPayment(status: "paid", amount: 300_000, kind: "full")
+        XCTAssertEqual(OwnerToday.paymentLine(full), "Предоплата \(Money.format(300_000, currency: "RUB")) · оплачено")
+        XCTAssertEqual(OwnerToday.paymentText(BookingPayment(status: "paid", amount: 500, kind: "")),
+                       "Оплата \(Money.format(500, currency: "RUB"))")
+    }
+
+    func testOldServerFallsBackToPagePrice() throws {
+        let b = try priced(1, "")
+        XCTAssertNil(b.price)
+        XCTAssertEqual(b.currency, "")
+        XCTAssertEqual(b.price(with: try page(2, price: 250_000)), 250_000)
+        XCTAssertEqual(b.currency(with: try page(2, price: 250_000)), "RUB")
+        XCTAssertEqual(b.price(with: nil), 0)
+        XCTAssertEqual(b.currency(with: nil), "RUB")
+        XCTAssertEqual(OwnerToday.priceText(b, page: nil), "")
+        XCTAssertNil(try priced(2, #", "price": null"#).price, "null — как отсутствие поля")
+    }
+
+    func testZeroPriceAndPackageDoNotFallBack() throws {
+        let pg = try page(2, price: 250_000)
+        let free = try priced(1, #", "price": 0, "currency": "RUB""#)
+        XCTAssertEqual(free.price(with: pg), 0)
+        XCTAssertEqual(OwnerToday.priceText(free, page: pg), "")
+        let pack = try priced(2, #", "price": 0, "package_id": 7"#)
+        XCTAssertTrue(pack.byPackage)
+        XCTAssertEqual(OwnerToday.priceText(pack, page: pg), "По абонементу")
+        let oldPack = try priced(3, #", "package_id": 7"#)
+        XCTAssertEqual(oldPack.price(with: pg), 0, "абонемент без поля price — не цена страницы")
+    }
+
+    func testDayTotalSkipsPackageSessions() throws {
+        let pages = [try page(2, price: 250_000)]
+        let bookings = [
+            try priced(1, #", "price": 300000, "currency": "RUB", "payment": {"status": "pending", "amount": 100000, "kind": "deposit"}"#),
+            try priced(2, #", "price": 300000, "currency": "RUB""#),
+            try priced(3, #", "price": 0, "currency": "RUB", "package_id": 4"#),
+            try priced(4, #", "price": 0, "currency": "RUB""#),
+            try priced(5, ""), // старый сервер — цена страницы
+            try priced(6, #", "price": 900000, "currency": "USD""#), // другая валюта не складывается
+            try priced(7, #", "price": 300000, "currency": "RUB""#, status: "cancelled"),
+        ]
+        let total = OwnerToday.dayTotal(bookings, pages: pages)
+        XCTAssertEqual(total.amount, 850_000)
+        XCTAssertEqual(total.currency, "RUB")
+        let now = date("2026-10-22T08:00:00Z")
+        let entries = OwnerToday.buildDay(bookings: bookings, tasks: [], free: [], pages: pages,
+                                          day: now, now: now, calendar: utc)
+        let summary = OwnerToday.daySummary(entries, pages: pages)
+        XCTAssertEqual(summary.text, "6 встреч")
+        XCTAssertEqual(summary.amount, 850_000)
+        XCTAssertEqual(OwnerToday.dayTotal([bookings[2], bookings[3]], pages: pages).amount, 0)
+    }
+
     func testNextUpAndUntil() throws {
         let bookings = [
             try booking(1, page: 2, start: "2026-10-22T10:00:00Z", end: "2026-10-22T11:00:00Z"),

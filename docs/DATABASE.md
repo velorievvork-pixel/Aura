@@ -64,7 +64,7 @@ e2e — на реальном PostgreSQL.
 | таблица | назначение |
 | --- | --- |
 | `booking_pages` | постоянная ссылка владельца (`booking.*`): `slug` UNIQUE (10 символов), название, описание, `duration_minutes` CHECK 15–240, `days_ahead` 1–60, `max_per_day` 1–16, `notice_hours` 0–168, `max_series` 1–12, `weekends`, `status` CHECK (`active`/`paused`/`archived`); индекс (owner_id, id DESC) |
-| `bookings` | запись гостя: `page_id`, `owner_id`, `manage_hash` UNIQUE (sha256 токена ссылки управления), `guest_name/email/comment`, `occurrences` JSONB `[{start,end,day,local,status,task_id,confirmed_at?}]`, `status` CHECK (`active`/`cancelled`), `cancelled_by`, `reschedules`, `ends_at` (конец последней активной встречи; занятость и лимит в день читают только предстоящие записи); индексы (owner_id, id DESC), (page_id, status), частичные (owner_id, ends_at) и (page_id, ends_at) по активным |
+| `bookings` | запись гостя: `page_id`, `owner_id`, `manage_hash` UNIQUE (sha256 токена ссылки управления), `guest_name/email/comment`, `occurrences` JSONB `[{start,end,day,local,status,task_id,confirmed_at?}]`, `status` CHECK (`active`/`cancelled`), `cancelled_by`, `reschedules`, `ends_at` (конец последней активной встречи; занятость и лимит в день читают только предстоящие записи), `price` INTEGER (снимок цены одной встречи на момент записи, мин. единицы; 0 — по пакету или бесплатно) и `currency` (миграция `2026_10_17_booking_price.sql`); индексы (owner_id, id DESC), (page_id, status), частичные (owner_id, ends_at) и (page_id, ends_at) по активным |
 | `referral_codes` | реферальный код пользователя: `user_id` PK, `code` UNIQUE CHECK `^[A-Z0-9]{8}$` |
 | `referrals` | кто кого пригласил: `referrer_id`, `referred_id` UNIQUE (один пригласивший), `source` CHECK (`link`/`booking`/`invite`), `verified_at` (после подтверждения email); индекс (referrer_id, id DESC) |
 
@@ -134,6 +134,17 @@ PROTOCOL.md) с частичным индексом `bookings_payment_pending_id
 занятий = `sessions_total − sessions_used`; списание и возврат — под
 блокировкой расписания владельца. Во встроенном хранилище — поля в тех же
 записях и массив `package_purchases`.
+
+Миграция `2026_10_17_booking_price.sql` (то же — блоком в конце таблиц
+`schema.sql`): `bookings.price` INTEGER NOT NULL DEFAULT 0 (CHECK ≥ 0) и
+`bookings.currency` TEXT NOT NULL DEFAULT `'RUB'` (CHECK — те же валюты, что у
+страницы) — цена одной встречи на момент `booking.book` (снимок
+`booking_pages.price` / `currency`; запись по пакету — 0). Смена цены страницы,
+перенос и отмена снимок не меняют. Колонки добавляются в блоке `DO` только если их
+ещё нет, и тогда же заполняются: записи без пакета — текущей ценой своей страницы
+(точнее для старых записей не узнать), все — валютой страницы; повторный запуск
+ничего не перезаписывает. Во встроенном хранилище — поля `price` / `currency` в тех
+же записях (нет поля — 0 и `RUB`).
 
 Миграция `2026_10_15_audit_fixes.sql`: `users.email_verified DEFAULT FALSE`
 (новый аккаунт без явного значения не считается подтверждённым), `bookings.ends_at`

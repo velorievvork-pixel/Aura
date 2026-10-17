@@ -3,7 +3,7 @@
   слово, не только цвет), какие отметки доступны владельцу, шаги «истории» в
   карточке записи. Без React — тестируется в payment.test.ts.
 */
-import type { Booking, CancelledBy, Occurrence, OwnerPaymentStatus, Payment, PaymentStatus, Policy, Prepay } from '../net/bookingApi';
+import type { Booking, BookingPage, CancelledBy, Occurrence, OwnerPaymentStatus, Payment, PaymentStatus, Policy, Prepay } from '../net/bookingApi';
 import { when } from './format';
 import { formatMoney } from './money';
 
@@ -57,6 +57,52 @@ export const OWNER_PAYMENT_ACTION: Record<OwnerPaymentStatus, string> = {
 
 /** Ждёт ли запись денег от гостя (для ленты дня и списка). */
 export const awaitingPayment = (payment: Payment | null | undefined) => payment?.status === 'pending' || payment?.status === 'claimed';
+
+// ------------------------------------------------------------ деньги встречи
+
+/**
+  Сколько стоит встреча записи для владельца. Источник — снимок цены booking.price
+  (цена на момент записи; смена цены страницы её не меняет); старый сервер поля не
+  присылает — тогда цена страницы. Запись по пакету (package_id) уже оплачена
+  абонементом — денег за встречу нет. payment.amount — не цена, а сколько внесено
+  онлайн (депозит или предоплата): его показывает paymentSummary.
+*/
+export type BookingMoney = { kind: 'package' } | { kind: 'money'; amount: number; currency: string } | { kind: 'free' };
+
+export function bookingMoney(
+  booking: Pick<Booking, 'price' | 'currency' | 'package_id'>,
+  page?: Pick<BookingPage, 'price' | 'currency'> | null,
+): BookingMoney {
+  if (booking.package_id) return { kind: 'package' };
+  const snapshot = typeof booking.price === 'number';
+  const amount = snapshot ? (booking.price as number) : (page?.price ?? 0);
+  const currency = (snapshot ? booking.currency : page?.currency) || page?.currency || 'RUB';
+  return amount > 0 ? { kind: 'money', amount, currency } : { kind: 'free' };
+}
+
+export const BY_PACKAGE_LABEL = 'По абонементу';
+
+/** «3 000 ₽» / «По абонементу» / "" (бесплатно или цена не задана). */
+export function bookingMoneyLabel(
+  booking: Pick<Booking, 'price' | 'currency' | 'package_id'>,
+  page?: Pick<BookingPage, 'price' | 'currency'> | null,
+): string {
+  const money = bookingMoney(booking, page);
+  if (money.kind === 'package') return BY_PACKAGE_LABEL;
+  return money.kind === 'money' ? formatMoney(money.amount, money.currency) : '';
+}
+
+/**
+  Оплата онлайн — отдельно от цены: «Депозит 1 000 ₽» + статус (значок и слово);
+  line — одной строкой: «Депозит 1 000 ₽ · ждём оплату». null — оплаты нет.
+*/
+export function paymentSummary(payment: Payment | null | undefined): { text: string; status: StatusView | null; line: string } | null {
+  if (!payment) return null;
+  const what = payment.kind === 'deposit' ? 'Депозит' : payment.kind === 'package' ? 'Оплата пакета' : 'Предоплата';
+  const text = `${what} ${formatMoney(payment.amount, payment.currency)}`;
+  const status = paymentLabel(payment.status, 'owner');
+  return { text, status, line: status ? `${text} · ${status.label.toLowerCase()}` : text };
+}
 
 /** «Предоплата 2 000 ₽» / «Депозит 500 ₽» / "" — для карточки услуги гостя. */
 export function prepayLabel(page: { prepay?: Prepay; price?: number; deposit?: number; currency?: string }, count = 1): string {

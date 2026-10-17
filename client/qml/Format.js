@@ -449,18 +449,67 @@ function buildDay(bookings, tasks, free, pages, day, now) {
     return entries
 }
 
-// «3 встречи · 6 000 ₽» — встречи дня и их стоимость по ценам страниц (одна валюта).
+/*
+  Деньги записи: главное число — цена услуги, зафиксированная при записи
+  (booking.price, минимальные единицы; 0 — по абонементу или бесплатно). Старый
+  сервер без поля — цена страницы. payment.amount — только сумма оплаты онлайн
+  (депозит или предоплата), её показываем отдельной строкой.
+*/
+var BY_PACKAGE = "По абонементу"
+
+function hasBookingPrice(booking) {
+    return !!booking && booking.price !== undefined && booking.price !== null
+}
+
+function bookingPrice(booking, page) {
+    if (!booking || booking.package_id > 0) return 0
+    if (hasBookingPrice(booking)) return Math.max(0, Number(booking.price) || 0)
+    return page && page.price > 0 ? page.price : 0
+}
+
+function bookingCurrency(booking, page) {
+    return (booking && booking.currency) || (page && page.currency) || "RUB"
+}
+
+// «3 000 ₽» · «По абонементу» · "" (бесплатно / цены нет).
+function bookingPriceText(booking, page) {
+    if (!booking) return ""
+    if (booking.package_id > 0) return BY_PACKAGE
+    var amount = bookingPrice(booking, page)
+    return amount > 0 ? money(amount, bookingCurrency(booking, page)) : ""
+}
+
+// «Депозит 1 000 ₽» · «Предоплата 3 000 ₽» · «Оплата 3 000 ₽».
+function paymentText(payment) {
+    if (!payment) return ""
+    var what = payment.kind === "deposit" ? "Депозит" : payment.kind === "full" ? "Предоплата" : "Оплата"
+    return what + " " + money(payment.amount, payment.currency)
+}
+
+// «Депозит 1 000 ₽ · ждём оплату» — строка под ценой (рядом — значок статуса).
+function paymentLine(payment) {
+    if (!payment) return ""
+    var status = paymentStatus(payment.status)
+    if (!status) return paymentText(payment)
+    return paymentText(payment) + " · " + status.label.charAt(0).toLowerCase() + status.label.slice(1)
+}
+
+// «3 встречи · 6 000 ₽» — встречи дня и их стоимость: цены записей без занятий
+// по абонементу (оплачены пакетом); одна валюта — первая встреченная.
 function daySummary(entries, pages) {
     var count = 0, amount = 0, currency = ""
     for (var i = 0; i < entries.length; ++i) {
         if (entries[i].kind !== "booking") continue
         ++count
-        var page = pageById(pages, entries[i].booking.page_id)
-        if (!page || !page.price) continue
-        var c = page.currency || "RUB"
+        var booking = entries[i].booking
+        if (booking.status !== "active" || booking.package_id > 0) continue
+        var page = pageById(pages, booking.page_id)
+        var price = bookingPrice(booking, page)
+        if (price <= 0) continue
+        var c = bookingCurrency(booking, page)
         if (currency && c !== currency) continue
         currency = c
-        amount += page.price
+        amount += price
     }
     var text = count ? count + " " + plural(count, "встреча", "встречи", "встреч") : "Встреч нет"
     return amount ? text + " · " + money(amount, currency) : text

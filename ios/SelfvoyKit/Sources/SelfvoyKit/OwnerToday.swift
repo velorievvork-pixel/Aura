@@ -198,22 +198,61 @@ public enum OwnerToday {
         return entries
     }
 
-    /// «3 встречи» и их стоимость по ценам страниц (одна валюта).
+    /// «3 встречи» и их стоимость: цены записей (старый сервер — цены страниц), без занятий
+    /// по абонементу (оплачены пакетом); одна валюта — первая встреченная.
     public static func daySummary(_ entries: [DayEntry], pages: [BookingPage]) -> (text: String, amount: Int, currency: String) {
         var count = 0
-        var amount = 0
-        var currency = ""
+        var bookings: [Booking] = []
         for entry in entries {
             guard case .booking(let booking, _, _, _, _, _) = entry else { continue }
             count += 1
-            guard let page = pages.first(where: { $0.id == booking.pageId }), page.fields.price > 0 else { continue }
-            let code = page.fields.currency.isEmpty ? "RUB" : page.fields.currency
+            bookings.append(booking)
+        }
+        let total = dayTotal(bookings, pages: pages)
+        let text = count > 0 ? "\(count) \(SelfvoyDate.plural(count, "встреча", "встречи", "встреч"))" : "Встреч нет"
+        return (text, total.amount, total.currency)
+    }
+
+    /// Сумма встреч: активные записи без абонемента, цена > 0, одна валюта.
+    public static func dayTotal(_ bookings: [Booking], pages: [BookingPage]) -> (amount: Int, currency: String) {
+        var amount = 0
+        var currency = ""
+        for booking in bookings where booking.isActive && !booking.byPackage {
+            let page = pages.first { $0.id == booking.pageId }
+            let price = booking.price(with: page)
+            guard price > 0 else { continue }
+            let code = booking.currency(with: page)
             if !currency.isEmpty && code != currency { continue }
             currency = code
-            amount += page.fields.price
+            amount += price
         }
-        let text = count > 0 ? "\(count) \(SelfvoyDate.plural(count, "встреча", "встречи", "встреч"))" : "Встреч нет"
-        return (text, amount, currency)
+        return (amount, currency)
+    }
+
+    public static let byPackageText = "По абонементу"
+
+    /// Главное число карточки: «3 000 ₽» · «По абонементу» · "" (бесплатно / цены нет).
+    public static func priceText(_ booking: Booking, page: BookingPage?) -> String {
+        if booking.byPackage { return byPackageText }
+        let amount = booking.price(with: page)
+        return amount > 0 ? Money.format(amount, currency: booking.currency(with: page)) : ""
+    }
+
+    /// «Депозит 1 000 ₽» · «Предоплата 3 000 ₽» · «Оплата 3 000 ₽».
+    public static func paymentText(_ payment: BookingPayment) -> String {
+        let what: String
+        switch payment.kind {
+        case "deposit": what = "Депозит"
+        case "full": what = "Предоплата"
+        default: what = "Оплата"
+        }
+        return "\(what) \(payment.amountText)"
+    }
+
+    /// Строка оплаты под ценой: «Депозит 1 000 ₽ · ждём оплату» (в UI — ещё и значок статуса).
+    public static func paymentLine(_ payment: BookingPayment) -> String {
+        guard let status = payment.ownerStatus else { return paymentText(payment) }
+        return "\(paymentText(payment)) · \(status.label.prefix(1).lowercased() + status.label.dropFirst())"
     }
 
     /// Встреча, о которой рассказывает карточка: выбранная или ближайшая активная.

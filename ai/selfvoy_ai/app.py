@@ -6,6 +6,7 @@
 * ``POST /v1/agent/negotiate``  — Agent-to-Agent переговоры между двумя агентами Selfvoy;
 * ``POST /v1/agent/slots``      — слоты владельца: приглашение по ссылке и страница записи;
 * ``POST /v1/agent/series``     — еженедельная серия записи в местном времени владельца;
+* ``POST /v1/agent/admin``      — ИИ-администратор страницы записи в Telegram (F7);
 * ``POST /v1/memory/extract``   — извлечение фактов в долговременную память;
 * ``POST /v1/planner/slots``    — свободные слоты (Planner напрямую);
 * ``GET  /v1/tools``            — список инструментов (ToolManager).
@@ -38,6 +39,7 @@ from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
+from . import admin as admin_module
 from . import memory as memory_module
 from . import planner
 from .agent import SelfvoyAgent
@@ -280,6 +282,17 @@ def agent_slots(request: AgentSlotsRequest) -> AgentSlotsResponse:
         return get_agent().offer_slots(request)
     except OverflowError as exc:  # context.now у самой границы datetime.max
         raise HTTPException(status_code=422, detail="time is out of range") from exc
+
+
+def admin_client() -> Optional[admin_module.ChatJson]:
+    """JSON-клиент LLM для администратора: у MockLLM его нет — работает запасной режим."""
+    return getattr(get_agent().llm, "chat_json", None)
+
+
+@app.post("/v1/agent/admin", response_model=admin_module.AdminResponse, dependencies=[Depends(require_token)])
+def agent_admin(request: admin_module.AdminRequest) -> admin_module.AdminResponse:
+    """ИИ-администратор в Telegram (F7): ответ гостю и предложенное действие (сервер всё проверяет)."""
+    return admin_module.answer(request, admin_client())
 
 
 # -------------------------------------------------------------------- речь

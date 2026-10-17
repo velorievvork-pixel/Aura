@@ -9347,3 +9347,692 @@ TEST(pg_waitlist_rebook_tax_methods) {
     const auto pendingPackages = db->listReceiptPendingPackages(owner, 10);
     CHECK(pendingPackages.size() == 1 && pendingPackages.front().id == purchaseId);
 }
+
+// ------------------------------------------- F7: ИИ-администратор в Telegram
+namespace f7_test {
+
+using invite_test::FakeAi;
+using invite_test::future;
+
+// Поддельный AI для F7: /v1/agent/admin → admin (тело как есть), /v1/agent/series →
+// повторы, иначе (/v1/agent/slots) — три свободных окна в один день.
+struct Ai {
+    std::time_t first = future(30);
+    std::string admin = R"({"reply":"Здравствуйте!","action":"none","slots":[]})";
+    std::vector<std::string> adminRequests;
+    FakeAi* self = nullptr;
+    FakeAi fake;
+
+    Ai()
+        : fake([this] {
+              const std::string& request = self->requests.back();
+              if (request.find("POST /v1/agent/admin") != std::string::npos) {
+                  adminRequests.push_back(request.substr(request.find("\r\n\r\n") + 4));
+                  return admin;
+              }
+              if (request.find("POST /v1/agent/series") != std::string::npos) return booking_test::seriesBody(request);
+              const std::string day = selfvoy::isoUtc(first).substr(0, 10);
+              Json slots = Json::array();
+              for (int i = 0; i < 3; ++i) slots.push(booking_test::daySlot(first + i * 7200, 60, day));
+              Json body = Json::object();
+              body.set("slots", slots);
+              return body.dump();
+          }) {
+        self = &fake;
+    }
+    // Последний запрос к /v1/agent/admin (разобранный JSON).
+    Json lastAdmin() {
+        std::lock_guard<std::mutex> lock(fake.mutex);
+        return adminRequests.empty() ? Json() : Json::parse(adminRequests.back());
+    }
+    std::size_t adminCalls() {
+        std::lock_guard<std::mutex> lock(fake.mutex);
+        return adminRequests.size();
+    }
+    void answer(const std::string& body) {
+        std::lock_guard<std::mutex> lock(fake.mutex);
+        admin = body;
+    }
+};
+
+std::size_t utf8Count(const std::string& text) {
+    std::size_t count = 0;
+    for (const unsigned char ch : text) {
+        if ((ch & 0xC0) != 0x80) ++count;
+    }
+    return count;
+}
+
+Json guestText(long long chatId, const std::string& text, const std::string& first = "Анна",
+               const std::string& last = "Смирнова", const std::string& username = "anna_tg") {
+    Json update = growth_test::textUpdate(chatId, text, "private", username);
+    Json message = update.get("message");
+    Json from = message.get("from");
+    if (!first.empty()) from.set("first_name", Json(first));
+    if (!last.empty()) from.set("last_name", Json(last));
+    message.set("from", from);
+    update.set("message", message);
+    return update;
+}
+
+// Вызовы sendMessage в чат начиная с mark-го вызова sendMessage.
+std::vector<growth_test::FakeTelegram::Call> sentTo(growth_test::FakeTelegram& fake, long long chatId,
+                                                    std::size_t mark = 0) {
+    std::vector<growth_test::FakeTelegram::Call> out;
+    const auto all = fake.of("sendMessage");
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        if (i >= mark && all[i].body.getInt("chat_id") == chatId) out.push_back(all[i]);
+    }
+    return out;
+}
+
+std::size_t sendCount(growth_test::FakeTelegram& fake) { return fake.of("sendMessage").size(); }
+
+// callback_data кнопки row сообщения.
+std::string callbackOf(const growth_test::FakeTelegram::Call& call, std::size_t row = 0) {
+    const Json keyboard = call.body.get("reply_markup").get("inline_keyboard");
+    return keyboard.at(row).at(0).getString("callback_data");
+}
+
+std::string lastAnswer(growth_test::FakeTelegram& fake) {
+    const auto answers = fake.of("answerCallbackQuery");
+    return answers.empty() ? std::string() : answers.back().body.getString("text");
+}
+
+Json pageWithAdmin(const std::string& title, bool aiAdmin) {
+    Json payload = booking_test::pagePayload(title);
+    payload.set("ai_admin", Json(aiAdmin));
+    payload.set("price", Json(250000LL));
+    return payload;
+}
+
+// Сервер с ботом и поддельным AI, владелец «Ольга», страница «Массаж» с администратором,
+// гость 7201 привязан командой /start p_<slug>.
+struct Stage {
+    Ai ai;
+    Fixture fixture;
+    growth_test::FakeTelegram* fake = nullptr;
+    admin_test::Sockets sockets;
+    std::shared_ptr<selfvoy::Session> owner;
+    long long ownerId = 0;
+    long long pageId = 0;
+    std::string slug;
+    static constexpr long long kGuest = 7201;
+
+    explicit Stage(const std::string& email) {
+        fake = growth_test::enableBot(fixture, ai.fake.url(), "https://selfvoy.example.com");
+        owner = sockets.open(fixture, "f7-" + email);
+        ownerId = admin_test::userIdOf(fixture.registerUser(owner, email, "Ольга"));
+        const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageWithAdmin("Массаж", true)))
+                              .get("page");
+        pageId = page.getInt("id");
+        slug = page.getString("slug");
+        bot().handleUpdate(guestText(kGuest, "/start p_" + slug));
+        bot().flush();
+    }
+    selfvoy::TelegramBot& bot() { return fixture.server->telegram(); }
+    selfvoy::IDatabase& db() { return fixture.server->database().db(); }
+    void say(const std::string& text, long long chat = kGuest) {
+        bot().handleUpdate(guestText(chat, text));
+        bot().flush();
+    }
+    void press(const std::string& data, long long chat = kGuest) {
+        bot().handleUpdate(growth_test::callbackUpdate(chat, data));
+        fixture.server->bookings().flushMail();
+        bot().flush();
+    }
+};
+
+}  // namespace f7_test
+
+// Поле ai_admin (нужен бот, Pro), telegram_ask_url, привязка /start p_<slug>: неизвестная
+// страница, выключенный администратор, нет Pro, пауза.
+TEST(telegram_admin_start_binding_and_page_fields) {
+    using namespace f7_test;
+    Ai ai;
+    {
+        // Бот не настроен — включить нельзя (bad_request с понятным текстом).
+        Fixture plain;
+        invite_test::useAi(plain, ai.fake.url(), "https://selfvoy.example.com");
+        admin_test::Sockets sockets;
+        auto owner = sockets.open(plain, "f7-nobot");
+        plain.registerUser(owner, "f7nobot@example.com", "Ольга");
+        const Json refused = plain.call(owner, "booking.pageCreate", pageWithAdmin("Массаж", true));
+        CHECK_EQ(refused.getString("code"), std::string("bad_request"));
+        CHECK(refused.getString("message").find("Telegram-бот") != std::string::npos);
+        const Json page = integration::payloadOf(plain.call(owner, "booking.pageCreate", pageWithAdmin("Массаж", false)))
+                              .get("page");
+        CHECK_EQ(page.getBool("ai_admin", true), false);
+        CHECK_EQ(page.getString("telegram_ask_url", "x"), std::string());
+    }
+    Fixture fixture;
+    growth_test::FakeTelegram* fake = growth_test::enableBot(fixture, ai.fake.url(), "https://selfvoy.example.com");
+    admin_test::Sockets sockets;
+    auto owner = sockets.open(fixture, "f7-owner");
+    const long long ownerId = admin_test::userIdOf(fixture.registerUser(owner, "f7owner@example.com", "Ольга"));
+    auto& db = fixture.server->database().db();
+    auto& bot = fixture.server->telegram();
+
+    Json wrongType = pageWithAdmin("Массаж", true);
+    wrongType.set("ai_admin", Json("yes"));
+    CHECK_EQ(fixture.call(owner, "booking.pageCreate", wrongType).getString("code"), std::string("bad_request"));
+    const Json page = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageWithAdmin("Массаж", true)))
+                          .get("page");
+    const std::string slug = page.getString("slug");
+    const long long pageId = page.getInt("id");
+    CHECK(page.getBool("ai_admin"));
+    CHECK_EQ(page.getString("telegram_ask_url"), "https://t.me/selfvoy_test_bot?start=p_" + slug);
+    CHECK_EQ(db.findBookingPage(pageId)->aiAdmin, true);
+    auto guest = sockets.open(fixture, "f7-guest");
+    const Json view =
+        integration::payloadOf(fixture.call(guest, "booking.get", booking_test::slugPayload(slug))).get("page");
+    CHECK_EQ(view.getString("telegram_ask_url"), "https://t.me/selfvoy_test_bot?start=p_" + slug);
+
+    // Неизвестная страница и мусор — «не найдена», чат не привязан.
+    bot.handleUpdate(guestText(7101, "/start p_zzzzzzzzzz"));
+    bot.handleUpdate(guestText(7101, "/start p_bad"));
+    bot.flush();
+    const auto unknown = sentTo(*fake, 7101);
+    CHECK_EQ(unknown.size(), std::size_t(2));
+    for (const auto& item : unknown) CHECK(item.body.getString("text").find("Страница записи не найдена") == 0);
+    CHECK(!db.findTelegramGuestChat(7101).has_value());
+
+    // Администратор выключен на странице — отказ со ссылкой; текст в чате — справка.
+    const Json off = integration::payloadOf(fixture.call(owner, "booking.pageCreate", pageWithAdmin("Без бота", false)))
+                         .get("page");
+    CHECK_EQ(off.getString("telegram_ask_url", "x"), std::string());
+    bot.handleUpdate(guestText(7102, "/start p_" + off.getString("slug")));
+    bot.handleUpdate(guestText(7102, "Сколько стоит?"));
+    bot.flush();
+    const auto disabledAnswers = sentTo(*fake, 7102);
+    CHECK_EQ(disabledAnswers.size(), std::size_t(2));
+    if (disabledAnswers.size() == 2) {
+        CHECK(disabledAnswers[0].body.getString("text").find("нет ИИ-администратора") != std::string::npos);
+        CHECK(disabledAnswers[0].body.getString("text").find("https://selfvoy.example.com/#/b/" + off.getString("slug")) !=
+              std::string::npos);
+        CHECK(disabledAnswers[1].body.getString("text").find("Это бот Selfvoy") == 0);
+    }
+    CHECK(!db.findTelegramGuestChat(7102).has_value());
+    CHECK_EQ(ai.adminCalls(), std::size_t(0));
+
+    // Тарифы включены, Pro нет: ссылка пустая, привязка не работает, включить — pro_required.
+    selfvoy::plan::setEnforced(true);
+    CHECK_EQ(integration::payloadOf(fixture.call(guest, "booking.get", booking_test::slugPayload(slug)))
+                 .get("page")
+                 .getString("telegram_ask_url", "x"),
+             std::string());
+    bot.handleUpdate(guestText(7103, "/start p_" + slug));
+    bot.flush();
+    CHECK(fake->last(7103).find("нет ИИ-администратора") != std::string::npos);
+    CHECK(!db.findTelegramGuestChat(7103).has_value());
+    Json enable = Json::object();
+    enable.set("page_id", Json(off.getInt("id")));
+    enable.set("ai_admin", Json(true));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", enable).getString("code"), std::string("pro_required"));
+    // С Pro — привязка: приветствие, имя и ник из Telegram, пустая история.
+    CHECK(db.setUserPlanDays(ownerId, 30).ok);
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", enable).getString("type"), std::string("ok"));
+    bot.handleUpdate(guestText(7103, "/start p_" + slug));
+    bot.flush();
+    CHECK(fake->last(7103).find("Здравствуйте! Я ИИ-администратор «Массаж» (Ольга)") == 0);
+    const auto bound = db.findTelegramGuestChat(7103);
+    CHECK(bound.has_value());
+    if (bound) {
+        CHECK_EQ(bound->pageId, pageId);
+        CHECK_EQ(bound->ownerId, ownerId);
+        CHECK_EQ(bound->guestName, std::string("Анна Смирнова"));
+        CHECK_EQ(bound->username, std::string("anna_tg"));
+        CHECK_EQ(bound->history.size(), std::size_t(0));
+    }
+    selfvoy::plan::setEnforced(false);
+
+    // Пауза — запись закрыта, не привязывает; выключение поля — ссылка пустая.
+    Json pause = Json::object();
+    pause.set("page_id", Json(pageId));
+    pause.set("status", Json("paused"));
+    CHECK_EQ(fixture.call(owner, "booking.pageUpdate", pause).getString("type"), std::string("ok"));
+    bot.handleUpdate(guestText(7104, "/start p_" + slug));
+    bot.flush();
+    CHECK(fake->last(7104).find("сейчас закрыта") != std::string::npos);
+    CHECK(!db.findTelegramGuestChat(7104).has_value());
+    Json disable = Json::object();
+    disable.set("page_id", Json(pageId));
+    disable.set("status", Json("active"));
+    disable.set("ai_admin", Json(false));
+    const Json disabled = integration::payloadOf(fixture.call(owner, "booking.pageUpdate", disable)).get("page");
+    CHECK_EQ(disabled.getBool("ai_admin", true), false);
+    CHECK_EQ(disabled.getString("telegram_ask_url", "x"), std::string());
+    // Привязанный раньше чат: администратор выключен — ответ со ссылкой, без вызова ИИ.
+    bot.handleUpdate(guestText(7103, "Когда можно записаться?"));
+    bot.flush();
+    CHECK(fake->last(7103).find("Записаться можно на странице: https://selfvoy.example.com/#/b/" + slug) !=
+          std::string::npos);
+    CHECK_EQ(ai.adminCalls(), std::size_t(0));
+    // /stop — привязка к странице удаляется.
+    bot.handleUpdate(guestText(7103, "/stop"));
+    bot.flush();
+    CHECK(!db.findTelegramGuestChat(7103).has_value());
+}
+
+// Ответ ИИ не источник истины: чистка reply, только времена из free_slots, неизвестный
+// action → none, длинный ответ обрезается.
+TEST(telegram_admin_sanitize_ai_reply) {
+    using Admin = selfvoy::TelegramAdmin;
+    const std::time_t base = invite_test::future(30);
+    const std::vector<std::time_t> free = {base,         base + 3600,  base + 7200, base + 10800,
+                                           base + 14400, base + 18000, base + 21600};
+    const auto iso = [](std::time_t at) { return Json(selfvoy::isoUtc(at)); };
+
+    Json answer = Json::object();
+    answer.set("reply", Json(std::string("\x01Привет\tмир\r\n")));
+    answer.set("action", Json("offer_slots"));
+    Json slots = Json::array();
+    slots.push(iso(base));
+    slots.push(iso(base + 50 * 3600));  // не из списка
+    slots.push(iso(base));              // повтор
+    slots.push(Json(42LL));
+    slots.push(Json("завтра в 10"));
+    slots.push(iso(base + 3600));
+    answer.set("slots", slots);
+    Admin::Decision decision = Admin::sanitize(answer, free);
+    CHECK(decision.usable);
+    CHECK_EQ(decision.reply, std::string("Привет мир"));
+    CHECK_EQ(decision.action, std::string("offer_slots"));
+    CHECK(decision.slots == (std::vector<std::time_t>{base, base + 3600}));
+
+    // Неизвестный action → none, слоты отбрасываются.
+    answer.set("action", Json("delete_everything"));
+    decision = Admin::sanitize(answer, free);
+    CHECK_EQ(decision.action, std::string("none"));
+    CHECK(decision.slots.empty());
+    answer.set("action", Json(5LL));
+    CHECK_EQ(Admin::sanitize(answer, free).action, std::string("none"));
+
+    // Все времена чужие — offer_slots превращается в none; book с верным временем остаётся.
+    Json foreign = Json::array();
+    foreign.push(iso(base + 1800));
+    answer.set("action", Json("offer_slots"));
+    answer.set("slots", foreign);
+    CHECK_EQ(Admin::sanitize(answer, free).action, std::string("none"));
+    Json one = Json::array();
+    one.push(iso(base + 7200));
+    answer.set("action", Json("book"));
+    answer.set("slots", one);
+    decision = Admin::sanitize(answer, free);
+    CHECK_EQ(decision.action, std::string("book"));
+    CHECK(decision.slots == (std::vector<std::time_t>{base + 7200}));
+    // Не больше 6 кнопок.
+    Json all = Json::array();
+    for (const std::time_t at : free) all.push(iso(at));
+    answer.set("slots", all);
+    CHECK_EQ(Admin::sanitize(answer, free).slots.size(), std::size_t(6));
+
+    // Длинный ответ — ровно 1000 символов; escalate — причина в одну строку, без слотов.
+    answer = Json::object();
+    std::string longText;
+    for (int i = 0; i < 1500; ++i) longText += "я";
+    answer.set("reply", Json(longText));
+    answer.set("action", Json("escalate"));
+    answer.set("escalate_reason", Json("медицинский\nвопрос"));
+    answer.set("slots", one);
+    decision = Admin::sanitize(answer, free);
+    CHECK_EQ(f7_test::utf8Count(decision.reply), std::size_t(1000));
+    CHECK_EQ(decision.action, std::string("escalate"));
+    CHECK(decision.slots.empty());
+    CHECK_EQ(decision.reason, std::string("медицинский вопрос"));
+
+    // Не объект / пустой ответ без действия — непригоден (гостю — ссылка на страницу).
+    CHECK(!Admin::sanitize(Json("строка"), free).usable);
+    Json empty = Json::object();
+    empty.set("reply", Json("   "));
+    empty.set("action", Json("none"));
+    CHECK(!Admin::sanitize(empty, free).usable);
+    empty.set("action", Json("escalate"));
+    CHECK(Admin::sanitize(empty, free).usable);
+}
+
+// Диалог: запрос к ИИ (страница, free_slots, история), кнопки времени (подписаны и
+// привязаны к чату), «Записать на …?» и запись обычным путём booking.book по второму нажатию.
+TEST(telegram_admin_two_step_booking) {
+    using namespace f7_test;
+    Stage stage("f7book@example.com");
+    auto& fake = *stage.fake;
+    const std::time_t first = stage.ai.first;
+    const std::time_t second = first + 7200;
+
+    stage.ai.answer(R"({"reply":"Стоимость — 2 500 ₽ за 60 мин.","action":"none","slots":[]})");
+    std::size_t mark = sendCount(fake);
+    stage.say("Сколько стоит?");
+    auto sent = sentTo(fake, Stage::kGuest, mark);
+    CHECK_EQ(sent.size(), std::size_t(1));
+    if (!sent.empty()) {
+        CHECK_EQ(sent[0].body.getString("text"), std::string("Стоимость — 2 500 ₽ за 60 мин."));
+        CHECK(!sent[0].body.get("reply_markup").isObject());
+    }
+    Json request = stage.ai.lastAdmin();
+    CHECK_EQ(request.getString("message"), std::string("Сколько стоит?"));
+    CHECK_EQ(request.get("page").getString("title"), std::string("Массаж"));
+    CHECK_EQ(request.get("page").getInt("price"), 250000LL);
+    CHECK_EQ(request.get("page").getString("price_text"), selfvoy::slotspost::moneyLabel(250000, "RUB"));
+    CHECK_EQ(request.get("page").getString("owner_name"), std::string("Ольга"));
+    CHECK(request.get("page").contains("timezone") && request.get("page").contains("policy_text"));
+    CHECK_EQ(request.get("free_slots").size(), std::size_t(3));
+    CHECK_EQ(request.get("free_slots").at(0).asString(), selfvoy::isoUtc(first));
+    CHECK_EQ(request.get("history").size(), std::size_t(0));
+
+    // offer_slots: время не из списка отброшено, кнопки — только свободные.
+    Json offer = Json::object();
+    offer.set("reply", Json("Есть такие окна:"));
+    offer.set("action", Json("offer_slots"));
+    Json slots = Json::array();
+    slots.push(Json(selfvoy::isoUtc(first)));
+    slots.push(Json(selfvoy::isoUtc(first + 50 * 3600)));
+    slots.push(Json(selfvoy::isoUtc(second)));
+    offer.set("slots", slots);
+    stage.ai.answer(offer.dump());
+    mark = sendCount(fake);
+    stage.say("Когда можно записаться?");
+    sent = sentTo(fake, Stage::kGuest, mark);
+    CHECK_EQ(sent.size(), std::size_t(1));
+    if (sent.empty()) return;
+    const Json keyboard = sent[0].body.get("reply_markup").get("inline_keyboard");
+    CHECK_EQ(keyboard.size(), std::size_t(2));
+    const std::string pick = callbackOf(sent[0], 0);
+    CHECK(pick.rfind("as:" + std::to_string(stage.pageId) + ":" + std::to_string(static_cast<long long>(first)) + ":",
+                     0) == 0);
+    CHECK(pick.size() <= 64);
+    CHECK_EQ(stage.ai.lastAdmin().get("history").size(), std::size_t(2));  // вопрос о цене и ответ
+
+    // Чужой чат и подделка подписи — отказ, вопроса «Записать?» нет.
+    mark = sendCount(fake);
+    stage.press(pick, 7299);
+    CHECK(lastAnswer(fake).find("не для этого чата") != std::string::npos);
+    std::string forged = pick;
+    forged.back() = forged.back() == 'A' ? 'B' : 'A';
+    stage.press(forged);
+    CHECK(lastAnswer(fake).find("не для этого чата") != std::string::npos);
+    CHECK_EQ(sendCount(fake), mark);
+
+    // Первое нажатие — только вопрос «Записать на …?», записи ещё нет.
+    stage.press(pick);
+    CHECK_EQ(lastAnswer(fake), std::string("Подтвердите запись"));
+    sent = sentTo(fake, Stage::kGuest, mark);
+    CHECK_EQ(sent.size(), std::size_t(1));
+    if (sent.empty()) return;
+    CHECK(sent[0].body.getString("text").find("Записать вас на ") == 0);
+    CHECK(sent[0].body.getString("text").find("Имя для записи: Анна Смирнова") != std::string::npos);
+    CHECK(sent[0].body.getString("text").find("Стоимость: 2") != std::string::npos);
+    const std::string confirm = callbackOf(sent[0], 0);
+    CHECK(confirm.rfind("ab:", 0) == 0);
+    CHECK_EQ(callbackOf(sent[0], 1), std::string("an"));
+    CHECK(stage.db().listBookings(stage.ownerId, 0, false, 10).empty());
+
+    // «Нет» — ничего не записано; подтверждение из чужого чата — отказ.
+    stage.press("an");
+    CHECK_EQ(lastAnswer(fake), std::string("Хорошо, не записываю"));
+    stage.press(confirm, 7299);
+    CHECK(lastAnswer(fake).find("не для этого чата") != std::string::npos);
+    CHECK(stage.db().listBookings(stage.ownerId, 0, false, 10).empty());
+
+    // Второе нажатие — запись обычным путём: имя из Telegram, без email, чат привязан к записи.
+    mark = sendCount(fake);
+    stage.press(confirm);
+    CHECK_EQ(lastAnswer(fake), std::string("Записано"));
+    const auto bookings = stage.db().listBookings(stage.ownerId, 0, false, 10);
+    CHECK_EQ(bookings.size(), std::size_t(1));
+    if (bookings.empty()) return;
+    const auto& booking = bookings.front();
+    CHECK_EQ(booking.guestName, std::string("Анна Смирнова"));
+    CHECK_EQ(booking.guestEmail, std::string());
+    CHECK(booking.guestComment.find("@anna_tg") != std::string::npos);
+    CHECK_EQ(booking.occurrences.at(0).getString("start"), selfvoy::isoUtc(first));
+    CHECK_EQ(booking.price, 250000LL);
+    CHECK(growth_test::hasChat(stage.db(), booking.id, Stage::kGuest));
+    CHECK_EQ(booking_test::countNotifications(stage.fixture, stage.owner, "booking.created"), 1);
+    CHECK(!stage.db().listBookingReminders(booking.id).empty());
+    sent = sentTo(fake, Stage::kGuest, mark);
+    bool notice = false;
+    bool done = false;
+    for (const auto& item : sent) {
+        const std::string text = item.body.getString("text");
+        if (text.find("Вы записаны") == 0) notice = true;  // извещение booking.created — в этот чат
+        if (text.find("Готово: вы записаны на ") == 0) done = true;
+    }
+    CHECK(notice);
+    CHECK(done);
+    CHECK(!fake.of("editMessageReplyMarkup").empty());
+
+    // Повторное подтверждение — время уже занято, второй записи нет.
+    stage.press(confirm);
+    CHECK(lastAnswer(fake).find("уже заняли") != std::string::npos);
+    CHECK_EQ(stage.db().listBookings(stage.ownerId, 0, false, 10).size(), std::size_t(1));
+    // Занятое время больше не среди free_slots.
+    stage.say("А ещё время есть?");
+    const Json after = stage.ai.lastAdmin().get("free_slots");
+    bool stillFree = false;
+    for (const auto& item : after.items()) stillFree = stillFree || item.asString() == selfvoy::isoUtc(first);
+    CHECK(!stillFree);
+    CHECK(stage.ai.lastAdmin().get("history").size() <= selfvoy::TelegramAdmin::kMaxHistory);
+}
+
+// Предоплата: после записи бот присылает сумму и ссылку на оплату.
+TEST(telegram_admin_booking_with_prepay_link) {
+    using namespace f7_test;
+    Stage stage("f7pay@example.com");
+    Json prepay = Json::object();
+    prepay.set("page_id", Json(stage.pageId));
+    prepay.set("prepay", Json("full"));
+    prepay.set("payment_url", Json("https://pay.example.com/olga"));
+    CHECK_EQ(stage.fixture.call(stage.owner, "booking.pageUpdate", prepay).getString("type"), std::string("ok"));
+    stage.press(stage.fixture.server->telegramAdmin().callbackData("as", Stage::kGuest, stage.pageId, stage.ai.first));
+    const std::string question = stage.fake->last(Stage::kGuest);
+    CHECK(question.find("Нужна предоплата") != std::string::npos);
+    std::size_t mark = sendCount(*stage.fake);
+    stage.press(stage.fixture.server->telegramAdmin().callbackData("ab", Stage::kGuest, stage.pageId, stage.ai.first));
+    CHECK_EQ(lastAnswer(*stage.fake), std::string("Записано"));
+    bool payment = false;
+    for (const auto& item : sentTo(*stage.fake, Stage::kGuest, mark)) {
+        const std::string text = item.body.getString("text");
+        if (text.find("Готово: вы записаны") != 0) continue;
+        payment = text.find("внесите предоплату 2") != std::string::npos &&
+                  text.find("Оплатить: https://pay.example.com/olga") != std::string::npos;
+        CHECK_EQ(item.body.get("reply_markup").get("inline_keyboard").at(0).at(0).getString("url"),
+                 std::string("https://pay.example.com/olga"));
+    }
+    CHECK(payment);
+    const auto bookings = stage.db().listBookings(stage.ownerId, 0, false, 10);
+    CHECK(bookings.size() == 1 && bookings.front().payment.getString("status") == "pending");
+}
+
+// Лимиты (сообщения чата и вызовы ИИ владельца в сутки), обрезка длинного сообщения,
+// сбой ИИ и неизвестное действие — ответ со ссылкой на страницу / без кнопок.
+TEST(telegram_admin_limits_and_ai_failure) {
+    using namespace f7_test;
+    Stage stage("f7limits@example.com");
+    auto& fake = *stage.fake;
+    auto& admin = stage.fixture.server->telegramAdmin();
+    const std::string link = "https://selfvoy.example.com/#/b/" + stage.slug;
+
+    // Длинное сообщение обрезается до 1000 символов.
+    std::string longText;
+    for (int i = 0; i < 1500; ++i) longText += "ж";
+    stage.say(longText);
+    CHECK_EQ(utf8Count(stage.ai.lastAdmin().getString("message")), std::size_t(1000));
+
+    // Сбой ИИ (не JSON) — ответ со ссылкой на страницу и url-кнопкой.
+    stage.ai.answer("oops");
+    stage.say("Есть ли парковка?");
+    CHECK(fake.last(Stage::kGuest).find("Сейчас не получается ответить автоматически. Записаться можно на странице: " +
+                                        link) == 0);
+    const auto lastCall = sentTo(fake, Stage::kGuest).back();
+    CHECK_EQ(lastCall.body.get("reply_markup").get("inline_keyboard").at(0).at(0).getString("url"), link);
+    // Неизвестное действие → просто ответ, без кнопок.
+    stage.ai.answer(R"({"reply":"Парковка есть во дворе.","action":"rm -rf","slots":["2030-01-01T10:00:00Z"]})");
+    stage.say("Есть ли парковка?");
+    CHECK_EQ(fake.last(Stage::kGuest), std::string("Парковка есть во дворе."));
+    CHECK(!sentTo(fake, Stage::kGuest).back().body.get("reply_markup").isObject());
+
+    // Лимит чата: 3 сообщения в сутки — 4-е без вызова ИИ, со ссылкой.
+    admin.setDailyLimits(3, 100);  // уже засчитано 3 сообщения этого чата
+    const std::size_t calls = stage.ai.adminCalls();
+    stage.say("И ещё вопрос");
+    CHECK_EQ(stage.ai.adminCalls(), calls);
+    CHECK(fake.last(Stage::kGuest).find(link) != std::string::npos);
+
+    // Лимит владельца: вызовов ИИ уже 3 — четвёртый (другой чат) проходит, пятый — нет.
+    admin.setDailyLimits(100, 4);
+    stage.bot().handleUpdate(guestText(7202, "/start p_" + stage.slug, "Борис", ""));
+    CHECK_EQ(stage.db().findTelegramGuestChat(7202)->guestName, std::string("Борис"));
+    stage.say("Здравствуйте", 7202);
+    CHECK_EQ(stage.ai.adminCalls(), calls + 1);
+    stage.say("Сколько стоит?", 7202);
+    CHECK_EQ(stage.ai.adminCalls(), calls + 1);
+    CHECK(fake.last(7202).find(link) != std::string::npos);
+}
+
+// escalate → вопрос и уведомление telegram.question владельцу; telegram.questions;
+// telegram.reply доходит гостю через бота «<имя>: …»; /stop — ответить нельзя.
+TEST(telegram_admin_escalate_and_owner_reply) {
+    using namespace f7_test;
+    Stage stage("f7esc@example.com");
+    auto& fake = *stage.fake;
+    stage.ai.answer(R"({"reply":"Уточню.","action":"escalate","slots":[],"escalate_reason":"медицина"})");
+    stage.say("Можно ли при беременности?");
+    CHECK_EQ(fake.last(Stage::kGuest), std::string(selfvoy::TelegramAdmin::kEscalated));
+    CHECK_EQ(booking_test::countNotifications(stage.fixture, stage.owner, "telegram.question"), 1);
+    long long questionId = 0;
+    for (const auto& item : stage.db().listNotifications(stage.ownerId, false, 50)) {
+        if (item.kind != "telegram.question") continue;
+        questionId = item.payload.getInt("question_id");
+        CHECK_EQ(item.payload.getInt("page_id"), stage.pageId);
+        CHECK_EQ(item.payload.getString("guest_name"), std::string("Анна Смирнова"));
+        CHECK_EQ(item.payload.getString("telegram_username"), std::string("anna_tg"));
+        CHECK_EQ(item.payload.getString("text"), std::string("Можно ли при беременности?"));
+    }
+    CHECK(questionId > 0);
+
+    Json open = Json::object();
+    open.set("status", Json("open"));
+    const Json listed = integration::payloadOf(stage.fixture.call(stage.owner, "telegram.questions", open));
+    CHECK_EQ(listed.get("questions").size(), std::size_t(1));
+    const Json first = listed.get("questions").at(0);
+    CHECK_EQ(first.getInt("id"), questionId);
+    CHECK_EQ(first.getString("page_title"), std::string("Массаж"));
+    CHECK_EQ(first.getString("status"), std::string("open"));
+    CHECK(first.getBool("can_reply"));
+    Json badStatus = Json::object();
+    badStatus.set("status", Json("closed"));
+    CHECK_EQ(stage.fixture.call(stage.owner, "telegram.questions", badStatus).getString("code"),
+             std::string("bad_request"));
+
+    // Ответ: пустой — bad_request, чужой владелец — not_found, свой — гостю в Telegram.
+    Json reply = Json::object();
+    reply.set("question_id", Json(questionId));
+    reply.set("text", Json("   "));
+    CHECK_EQ(stage.fixture.call(stage.owner, "telegram.reply", reply).getString("code"), std::string("bad_request"));
+    auto other = stage.sockets.open(stage.fixture, "f7-other");
+    stage.fixture.registerUser(other, "f7other@example.com", "Чужой");
+    reply.set("text", Json("Да, можно."));
+    CHECK_EQ(stage.fixture.call(other, "telegram.reply", reply).getString("code"), std::string("not_found"));
+    std::string tooLong;
+    for (int i = 0; i < 1001; ++i) tooLong += "a";
+    Json longReply = reply;
+    longReply.set("text", Json(tooLong));
+    CHECK_EQ(stage.fixture.call(stage.owner, "telegram.reply", longReply).getString("code"), std::string("bad_request"));
+    const Json answered = stage.fixture.call(stage.owner, "telegram.reply", reply);
+    CHECK_EQ(answered.getString("type"), std::string("ok"));
+    CHECK_EQ(integration::payloadOf(answered).get("question").getString("status"), std::string("answered"));
+    stage.bot().flush();
+    CHECK_EQ(fake.last(Stage::kGuest), std::string("Ольга: Да, можно."));
+    Json done = Json::object();
+    done.set("status", Json("answered"));
+    const Json answeredList =
+        integration::payloadOf(stage.fixture.call(stage.owner, "telegram.questions", done)).get("questions");
+    CHECK(answeredList.size() == 1 && answeredList.at(0).getString("answer") == "Да, можно." &&
+          !answeredList.at(0).getString("answered_at").empty());
+    // Ответ специалиста попадает в историю чата (контекст ИИ).
+    const auto chat = stage.db().findTelegramGuestChat(Stage::kGuest);
+    CHECK(chat && chat->history.size() > 0 &&
+          chat->history.at(chat->history.size() - 1).getString("text") == "Ольга: Да, можно.");
+
+    // Не больше 5 вопросов специалисту в сутки на чат.
+    for (int i = 0; i < 5; ++i) stage.say("Вопрос " + std::to_string(i));
+    CHECK(fake.last(Stage::kGuest).find("уже передал") != std::string::npos);
+    CHECK_EQ(booking_test::countNotifications(stage.fixture, stage.owner, "telegram.question"), 5);
+
+    // /stop — гость отключил бота: ответить нельзя, can_reply = false.
+    stage.say("/stop");
+    CHECK_EQ(stage.fixture.call(stage.owner, "telegram.reply", reply).getString("code"), std::string("conflict"));
+    const Json closed = integration::payloadOf(stage.fixture.call(stage.owner, "telegram.questions")).get("questions");
+    CHECK(closed.size() == 5 && !closed.at(0).getBool("can_reply", true));
+}
+
+#ifdef SELFVOY_WITH_LIBPQ
+// PostgreSQL: ai_admin страницы, чат гостя (upsert, история, /stop), вопросы (SELFVOY_TEST_PG_URL).
+TEST(pg_telegram_admin_methods) {
+    const char* url = std::getenv("SELFVOY_TEST_PG_URL");
+    if (url == nullptr || *url == '\0') {
+        std::cout << "  (пропущен: SELFVOY_TEST_PG_URL не задан)\n";
+        return;
+    }
+    auto db = selfvoy::makePostgresDatabase(url);
+    std::string error;
+    CHECK(db && db->connect(error));
+    if (!db) return;
+    const std::string suffix = selfvoy::crypto::randomHex(4);
+    long long owner = 0;
+    CHECK(db->createUser("pg-f7-" + suffix + "@example.com", "argon2id$x", "Ольга", owner).ok);
+    selfvoy::BookingPageRecord page;
+    page.ownerId = owner;
+    page.slug = "f7" + suffix + "zz";
+    page.title = "Массаж";
+    page.aiAdmin = true;
+    long long pageId = 0;
+    CHECK(db->createBookingPage(page, pageId).ok);
+    CHECK(db->findBookingPage(pageId)->aiAdmin);
+    auto stored = *db->findBookingPage(pageId);
+    stored.aiAdmin = false;
+    CHECK(db->updateBookingPage(stored).ok);
+    CHECK(!db->findBookingPage(pageId)->aiAdmin);
+    CHECK(!db->findBookingPageBySlug(page.slug)->aiAdmin);
+
+    const long long chat = 910000000000LL + (std::time(nullptr) % 100000);
+    selfvoy::TelegramGuestChatRecord record;
+    record.chatId = chat;
+    record.pageId = pageId;
+    record.ownerId = owner;
+    record.guestName = "Анна";
+    record.username = "anna";
+    CHECK(db->saveTelegramGuestChat(record).ok);
+    Json item = Json::object();
+    item.set("role", Json("guest"));
+    item.set("text", Json("Привет"));
+    record.history.push(item);
+    record.guestName = "Анна С.";
+    CHECK(db->saveTelegramGuestChat(record).ok);  // upsert
+    const auto found = db->findTelegramGuestChat(chat);
+    CHECK(found && found->guestName == "Анна С." && found->history.size() == 1 && found->pageId == pageId &&
+          !found->createdAt.empty());
+
+    selfvoy::TelegramQuestionRecord question;
+    question.ownerId = owner;
+    question.pageId = pageId;
+    question.chatId = chat;
+    question.guestName = "Анна";
+    question.username = "anna";
+    question.text = "Можно ли?";
+    long long qid = 0;
+    CHECK(db->createTelegramQuestion(question, qid).ok && qid > 0);
+    CHECK_EQ(db->listTelegramQuestions(owner, "open", 10).size(), std::size_t(1));
+    CHECK_EQ(db->listTelegramQuestions(owner, "answered", 10).size(), std::size_t(0));
+    CHECK(db->answerTelegramQuestion(qid, "Да"));
+    CHECK(!db->answerTelegramQuestion(qid + 100000, "Да"));
+    const auto answered = db->findTelegramQuestion(qid);
+    CHECK(answered && answered->status == "answered" && answered->answer == "Да" && !answered->answeredAt.empty());
+    CHECK_EQ(db->listTelegramQuestions(owner, "", 10).size(), std::size_t(1));
+
+    CHECK(db->unlinkTelegramChat(chat).ok);
+    CHECK(!db->findTelegramGuestChat(chat).has_value());
+    CHECK(db->findTelegramQuestion(qid).has_value());  // вопросы владельца остаются
+}
+#endif

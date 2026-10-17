@@ -58,6 +58,8 @@ KINDS = {
     "waitlist.booked",
     "tax.receipt",
     "tax.refund",
+    # F7: вопрос гостя ИИ-администратору, переданный специалисту
+    "telegram.question",
 }
 
 

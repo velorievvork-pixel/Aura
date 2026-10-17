@@ -105,7 +105,9 @@ public:
 
     // Гость (без входа): slug страницы или токен ссылки управления в payload.
     Result get(const Json& payload, const std::string& remoteAddr);
-    Result book(const Json& payload, const std::string& remoteAddr);
+    // telegramChat != 0 — запись из Telegram (F7, telegramBook): чат привязывается к записи
+    // до извещения гостю.
+    Result book(const Json& payload, const std::string& remoteAddr, long long telegramChat = 0);
     Result manage(const Json& payload, const std::string& remoteAddr);
     Result reschedule(const Json& payload, const std::string& remoteAddr);
     Result cancel(const Json& payload, const std::string& remoteAddr);
@@ -243,8 +245,32 @@ public:
     static constexpr int kTaxPendingMax = 200;
     Result taxPending(long long ownerId, const Json& payload);
     Result taxReceiptDone(long long ownerId, const Json& payload);
+    // --- F7: ИИ-администратор в Telegram (диалог ведёт TelegramAdmin) -------
+    // Свободное время для бота: те же окна, что гость видит в booking.get, ближайшие
+    // первыми, не больше limit. label — «чт, 15 октября, 10:30», when — «чт, 15 октября
+    // 2026, 10:30 (Europe/Moscow)» (местное время владельца). false — AI-сервис недоступен.
+    struct FreeSlot {
+        std::time_t start = 0;
+        std::time_t end = 0;
+        std::string label;
+        std::string when;
+    };
+    bool freeSlots(const BookingPageRecord& page, std::size_t limit, std::vector<FreeSlot>& out);
+    // Запись из Telegram — обычный путь booking.book (те же проверки времени, лимиты дня,
+    // оплата, задачи, уведомления): имя — из Telegram, email нет, комментарий — источник;
+    // лимиты частоты записи — на чат («tg-<chat>» вместо IP). Чат привязывается к записи
+    // (извещения и напоминания гостю — в этот чат).
+    Result telegramBook(const BookingPageRecord& page, long long chatId, std::time_t start,
+                        const std::string& guestName, const std::string& comment);
+    // https://t.me/<бот>?start=p_<slug> — пока ai_admin включён, бот настроен, у владельца
+    // Pro и страница открыта; иначе "".
+    std::string telegramAskUrl(const BookingPageRecord& page);
+    // Ссылка страницы записи <PUBLIC_URL>/#/b/<slug> ("" — нет PUBLIC_URL).
+    std::string pageUrl(const BookingPageRecord& page) const;
 
 private:
+    // F7: поле страницы ai_admin (pageCreate/pageUpdate): bool, нужен бот, Pro.
+    Result applyAiAdmin(long long ownerId, const Json& payload, bool creating, BookingPageRecord& page);
     // Пакет записи (booking.book): покупка (offerId > 0, offer — предложение страницы)
     // или запись по пакету (packageId > 0, найден по package_token).
     struct PackageIntent {
@@ -289,10 +315,11 @@ private:
     // booking.book после разбора запроса (кандидаты и серия уже получены): проверка под
     // блокировкой расписания, оплата, сохранение, задачи, уведомления, письмо. waitlistEntry —
     // гость забирает предложение листа ожидания (F8): держание проверяется и закрывается
-    // под той же блокировкой, владельцу — waitlist.booked вместо booking.created.
+    // под той же блокировкой, владельцу — waitlist.booked вместо booking.created. telegramChat —
+    // запись из Telegram (F7): чат гостя привязывается к записи сразу после сохранения.
     Result commitBooking(const BookingPageRecord& page, BookingRecord booking, const PackageIntent& intent,
                          const std::vector<Offer>& candidates, const std::vector<Offer>& plan, long long count,
-                         long long waitlistEntry);
+                         long long waitlistEntry, long long telegramChat = 0);
     // Активные встречи страницы по местным дням (для лимита max_per_day) и держания листа
     // ожидания этой страницы (F8), кроме держания skipHold.
     std::unordered_map<std::string, int> dayCounts(const BookingPageRecord& page, long long skipBooking,

@@ -53,7 +53,7 @@ bool NotificationsManager::telegramKind(const std::string& kind) {
     for (const char* prefix : {"booking.", "package.", "invite.", "referral.", "waitlist.", "tax."}) {
         if (kind.rfind(prefix, 0) == 0) return true;
     }
-    return kind == "task.due";
+    return kind == "task.due" || kind == "telegram.question";  // F7: вопрос гостя специалисту
 }
 
 void NotificationsManager::deliverTelegram(const NotificationRecord& record) {

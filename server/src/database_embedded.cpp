@@ -1599,6 +1599,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         if (chatId == 0) return DatabaseError::success();
         table("booking_telegram");  // ключи создаются до взятия ссылок на таблицы
+        table("telegram_guest_chats");
         table("waitlist_entries");
         for (auto& item : mutableTable("waitlist_entries")) {
             if (item.getInt("telegram_chat_id") == chatId) item.set("telegram_chat_id", Json(0LL));
@@ -1612,8 +1613,129 @@ public:
         links.erase(std::remove_if(links.begin(), links.end(),
                                    [chatId](const Json& item) { return item.getInt("chat_id") == chatId; }),
                     links.end());
+        auto& guests = mutableTable("telegram_guest_chats");
+        guests.erase(std::remove_if(guests.begin(), guests.end(),
+                                    [chatId](const Json& item) { return item.getInt("chat_id") == chatId; }),
+                     guests.end());
         flush();
         return DatabaseError::success();
+    }
+
+    // ------------------------------------------- F7: ИИ-администратор в Telegram
+    static TelegramGuestChatRecord toGuestChat(const Json& entry) {
+        TelegramGuestChatRecord record;
+        record.chatId = entry.getInt("chat_id");
+        record.pageId = entry.getInt("page_id");
+        record.ownerId = entry.getInt("owner_id");
+        record.guestName = entry.getString("guest_name");
+        record.username = entry.getString("username");
+        if (entry.get("history").isArray()) record.history = entry.get("history");
+        record.createdAt = entry.getString("created_at");
+        record.updatedAt = entry.getString("updated_at");
+        return record;
+    }
+
+    DatabaseError saveTelegramGuestChat(const TelegramGuestChatRecord& record) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (record.chatId == 0 || record.pageId <= 0) return DatabaseError::failure("чат без страницы");
+        Json* target = nullptr;
+        for (auto& item : mutableTable("telegram_guest_chats")) {
+            if (item.getInt("chat_id") == record.chatId) target = &item;
+        }
+        if (target == nullptr) {
+            Json row = Json::object();
+            row.set("chat_id", Json(record.chatId));
+            row.set("created_at", Json(isoNow()));
+            table("telegram_guest_chats").push(row);
+            target = &mutableTable("telegram_guest_chats").back();
+        }
+        target->set("page_id", Json(record.pageId));
+        target->set("owner_id", Json(record.ownerId));
+        target->set("guest_name", Json(record.guestName));
+        target->set("username", Json(record.username));
+        target->set("history", record.history.isArray() ? record.history : Json::array());
+        target->set("updated_at", Json(isoNow()));
+        flush();
+        return DatabaseError::success();
+    }
+
+    std::optional<TelegramGuestChatRecord> findTelegramGuestChat(long long chatId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& item : table("telegram_guest_chats").items()) {
+            if (item.getInt("chat_id") == chatId) return toGuestChat(item);
+        }
+        return std::nullopt;
+    }
+
+    static TelegramQuestionRecord toQuestion(const Json& entry) {
+        TelegramQuestionRecord record;
+        record.id = entry.getInt("id");
+        record.ownerId = entry.getInt("owner_id");
+        record.pageId = entry.getInt("page_id");
+        record.chatId = entry.getInt("chat_id");
+        record.guestName = entry.getString("guest_name");
+        record.username = entry.getString("username");
+        record.text = entry.getString("text");
+        record.status = entry.getString("status", "open");
+        record.answer = entry.getString("answer");
+        record.createdAt = entry.getString("created_at");
+        record.answeredAt = entry.getString("answered_at");
+        return record;
+    }
+
+    DatabaseError createTelegramQuestion(const TelegramQuestionRecord& record, long long& outId) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const long long id = nextId("telegram_questions");
+        Json row = Json::object();
+        row.set("id", Json(id));
+        row.set("owner_id", Json(record.ownerId));
+        row.set("page_id", Json(record.pageId));
+        row.set("chat_id", Json(record.chatId));
+        row.set("guest_name", Json(record.guestName));
+        row.set("username", Json(record.username));
+        row.set("text", Json(record.text));
+        row.set("status", Json(std::string("open")));
+        row.set("answer", Json(""));
+        row.set("created_at", Json(isoNow()));
+        row.set("answered_at", Json(""));
+        table("telegram_questions").push(row);
+        flush();
+        outId = id;
+        return DatabaseError::success();
+    }
+
+    std::optional<TelegramQuestionRecord> findTelegramQuestion(long long id) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& item : table("telegram_questions").items()) {
+            if (item.getInt("id") == id) return toQuestion(item);
+        }
+        return std::nullopt;
+    }
+
+    std::vector<TelegramQuestionRecord> listTelegramQuestions(long long ownerId, const std::string& status,
+                                                              int limit) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::vector<TelegramQuestionRecord> result;
+        const auto& items = table("telegram_questions").items();
+        for (auto it = items.rbegin(); it != items.rend() && static_cast<int>(result.size()) < limit; ++it) {
+            if (it->getInt("owner_id") != ownerId) continue;
+            if (!status.empty() && it->getString("status") != status) continue;
+            result.push_back(toQuestion(*it));
+        }
+        return result;
+    }
+
+    bool answerTelegramQuestion(long long id, const std::string& answer) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& item : mutableTable("telegram_questions")) {
+            if (item.getInt("id") != id) continue;
+            item.set("status", Json(std::string("answered")));
+            item.set("answer", Json(answer));
+            item.set("answered_at", Json(isoNow()));
+            flush();
+            return true;
+        }
+        return false;
     }
 
     std::vector<UserRecord> adminListUsers(const std::string& query,
@@ -1927,6 +2049,7 @@ private:
         entry.set("waitlist", Json(record.waitlist));
         entry.set("waitlist_hold_minutes", Json(static_cast<long long>(record.waitlistHoldMinutes)));
         entry.set("rebook_after_days", Json(static_cast<long long>(record.rebookAfterDays)));
+        entry.set("ai_admin", Json(record.aiAdmin));  // F7
         entry.set("updated_at", Json(isoNow()));
     }
 
@@ -1962,6 +2085,7 @@ private:
         record.waitlist = entry.getBool("waitlist", false);
         record.waitlistHoldMinutes = static_cast<int>(entry.getInt("waitlist_hold_minutes", 60));
         record.rebookAfterDays = static_cast<int>(entry.getInt("rebook_after_days", 0));
+        record.aiAdmin = entry.getBool("ai_admin", false);  // F7
         return record;
     }
 

@@ -13,6 +13,7 @@
 #include "selfvoy/idatabase.h"
 #include "selfvoy/log.h"
 #include "selfvoy/memorymanager.h"  // isoUtc
+#include "selfvoy/telegramadmin.h"
 
 namespace selfvoy {
 
@@ -300,6 +301,8 @@ void TelegramBot::handleMessage(const Json& message) {
             linkGuest(chatId, argument);
         } else if (argument.rfind("w_", 0) == 0) {
             linkWaitlist(chatId, argument);
+        } else if (argument.rfind("p_", 0) == 0 && admin_) {
+            admin_->start(chatId, message.get("from"), argument);  // F7: ИИ-администратор страницы
         } else {
             reply(chatId, kHelp);
         }
@@ -312,6 +315,8 @@ void TelegramBot::handleMessage(const Json& message) {
                       "Подключить снова можно по ссылке из Selfvoy.");
         return;
     }
+    // F7: чат, привязанный к странице, разговаривает с ИИ-администратором.
+    if (command.rfind("/", 0) != 0 && admin_ && admin_->handleText(chatId, message.get("from"), text)) return;
     reply(chatId, kHelp);
 }
 
@@ -427,6 +432,10 @@ void TelegramBot::handleCallback(const Json& callback) {
                 }
             }
         }
+    } else if (admin_) {
+        // F7: кнопки ИИ-администратора (время, «Да, записать», «Нет»).
+        bool clear = false;
+        if (admin_->handleCallback(chatId, data, answer, clear)) done = clear;
     }
 
     Json body = Json::object();

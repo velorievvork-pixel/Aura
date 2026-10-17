@@ -179,6 +179,9 @@ bool Server::start(std::string& error) {
                                                    "OpenSSL — онлайн-оплата работать не будет";
     }
     notifications_->setTelegram(telegram_.get());
+    // F7: ИИ-администратор страниц записи в Telegram (бот + путь booking.book + уведомления).
+    telegramAdmin_ = std::make_unique<TelegramAdmin>(*database_, config_, *telegram_, *bookings_, notifications_.get());
+    telegram_->setAdmin(telegramAdmin_.get());
     if (config_.telegramEnabled() && config_.telegramApiUrl.rfind("https://", 0) == 0 && !tls::available()) {
         SELFVOY_LOG(log::Level::Warn, "server") << "Telegram-бот: SELFVOY_TELEGRAM_API_URL — https, а сервер собран "
                                                    "без OpenSSL — бот работать не будет";
@@ -1526,6 +1529,19 @@ void Server::registerHandlers() {
 
     registerHandler("telegram.unlink", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
         return protocol::ok(request.id, telegram_->unlink(session->userId()));
+    });
+
+    // F7: вопросы гостей ИИ-администратору, переданные специалисту, и ответ из приложения.
+    registerHandler("telegram.questions", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = telegramAdmin_->questions(session->userId(), request.payload);
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
+    });
+
+    registerHandler("telegram.reply", [this](std::shared_ptr<Session> session, const protocol::Request& request) {
+        const auto result = telegramAdmin_->reply(session->userId(), request.payload);
+        return result.ok ? protocol::ok(request.id, result.payload)
+                         : protocol::error(request.id, result.code, result.message);
     });
 }
 

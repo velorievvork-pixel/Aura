@@ -23,6 +23,22 @@ export function packageTokenFrom(search: string | URLSearchParams): string | nul
   return /^[A-Za-z0-9_-]{20,64}$/.test(token) ? token : null;
 }
 
+/**
+  Подпись строки «Оплата · По абонементу» в карточке записи владельца. Списано —
+  пока встреча в силе; отмена владельцем возвращает занятие всегда, отмена гостем —
+  только не позже срока бесплатной отмены (поздняя — нет), поэтому про гостевую
+  отмену без точного остатка ничего не утверждаем.
+*/
+export function packageSessionNote(
+  booking: { status: string; cancelled_by?: string },
+  occurrence: { status: string } | undefined,
+): string {
+  const cancelled = booking.status === 'cancelled' || occurrence?.status === 'cancelled';
+  if (!cancelled) return 'занятие списано с абонемента клиента';
+  if (booking.status === 'cancelled' && booking.cancelled_by === 'owner') return 'вы отменили встречу — занятие вернулось на абонемент';
+  return 'встреча отменена — остаток занятий в «Абонементах»';
+}
+
 // ------------------------------------------------------------------ подписи
 
 const STATUS: Record<PackageStatus, { owner: string; guest: string; tone: StatusView['tone']; icon: StatusView['icon'] }> = {

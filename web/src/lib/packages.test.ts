@@ -13,6 +13,7 @@ import {
   packageBookPath,
   packageNoticeDetail,
   packagePath,
+  packageSessionNote,
   packageProgress,
   packageStatusView,
   packageTokenFrom,
@@ -176,5 +177,15 @@ describe('уведомления о пакетах', () => {
     expect(packageNoticeDetail('package.payment', { status: 'expired' })).toMatch(/не поступила/);
     expect(packageNoticeDetail('package.payment', { status: 'refund_due', amount: 100 })).toMatch(/вручную/);
     expect(packageNoticeDetail('booking.created', {})).toBe('');
+  });
+});
+
+describe('подпись «По абонементу» в карточке записи', () => {
+  it('списано, пока встреча в силе; отмена владельцем — вернулось; гостем — без обещаний', () => {
+    expect(packageSessionNote({ status: 'active' }, { status: 'active' })).toBe('занятие списано с абонемента клиента');
+    expect(packageSessionNote({ status: 'cancelled', cancelled_by: 'owner' }, { status: 'cancelled' })).toBe('вы отменили встречу — занятие вернулось на абонемент');
+    expect(packageSessionNote({ status: 'cancelled', cancelled_by: 'guest' }, { status: 'cancelled' })).toBe('встреча отменена — остаток занятий в «Абонементах»');
+    // Отменена одна встреча серии (запись в силе) — кто отменил, неизвестно.
+    expect(packageSessionNote({ status: 'active' }, { status: 'cancelled' })).toBe('встреча отменена — остаток занятий в «Абонементах»');
   });
 });

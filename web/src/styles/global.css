@@ -268,6 +268,11 @@ h4 {
   white-space: nowrap;
 }
 
+/* Длинный токен или адрес без пробелов — переносится в любом месте, а не раздвигает блок. */
+.break-all {
+  overflow-wrap: anywhere;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -576,6 +581,9 @@ html[data-os='darwin'] .sidebar {
 
 .list {
   display: grid;
+  /* Колонка не шире карточки: иначе строка с длинным текстом в nowrap (.ellipsis)
+     растягивает неявную auto-колонку по своему min-content и вылезает за экран. */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .list-row {
@@ -635,6 +643,9 @@ a.list-row:hover {
 /* Сгруппированный список (настройки, страница записи). */
 .group {
   display: grid;
+  /* minmax(0, 1fr), а не неявная auto-колонка: длинная строка в nowrap (ссылка,
+     .ellipsis) иначе раздувает колонку до своей ширины и карточка вылезает за экран. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
 }
 
@@ -714,6 +725,7 @@ a.cell:hover {
 
 .cell.stacked {
   display: grid;
+  grid-template-columns: minmax(0, 1fr); /* см. .group */
   gap: 8px;
   align-items: stretch;
 }

@@ -167,7 +167,9 @@ function DevCode({ code }: { code?: string }) {
   if (!code) return null;
   return (
     <div className="notice">
-      Сервер в режиме разработки и не отправляет письма. Код: <b className="mono">{code}</b>
+      <span>
+        Сервер в режиме разработки и не отправляет письма. Код: <b className="mono">{code}</b>
+      </span>
     </div>
   );
 }

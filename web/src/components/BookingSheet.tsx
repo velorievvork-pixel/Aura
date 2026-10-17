@@ -11,6 +11,7 @@ import { Link } from 'react-router-dom';
 import { bookingOwnerErrorText, bookingStatus, isUpcoming, sortedOccurrences } from '../lib/booking';
 import { when } from '../lib/format';
 import { formatMoney } from '../lib/money';
+import { packageSessionNote } from '../lib/packages';
 import { bookingHistory, OWNER_PAYMENT_ACTION, ownerPaymentActions, paymentLabel } from '../lib/payment';
 import { occurrenceStatus } from '../lib/today';
 import { dateLabel, dayTitle, hhmm } from '../lib/time';
@@ -121,7 +122,7 @@ export function BookingSheet({
           {Boolean(booking.package_id) && (
             <Link to={`/packages?id=${booking.package_id}`} className="cell" onClick={close}>
               <span className="lab">
-                Оплата<small>занятие списано с абонемента клиента</small>
+                Оплата<small>{packageSessionNote(booking, focus)}</small>
               </span>
               <StatusPill status={{ label: 'По абонементу', tone: 'accent', icon: 'calendar' }} />
             </Link>

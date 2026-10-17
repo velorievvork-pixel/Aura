@@ -54,6 +54,8 @@ KINDS = {
     "package.purchased",
     "package.payment",
     "package.low",
+    # F7: вопрос гостя ИИ-администратору, переданный специалисту
+    "telegram.question",
 }
 
 

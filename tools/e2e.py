@@ -360,10 +360,12 @@ class TelegramMock:
         self._updates.append(update)
         self._event.set()
 
-    def text(self, chat_id: int, text: str, username: str = "e2e_user") -> None:
+    def text(self, chat_id: int, text: str, username: str = "e2e_user", first_name: str = "") -> None:
+        sender: Dict[str, Any] = {"id": chat_id, "is_bot": False, "username": username}
+        if first_name:
+            sender["first_name"] = first_name
         self.push({"message": {"message_id": self._next_id, "date": int(time.time()), "text": text,
-                               "chat": {"id": chat_id, "type": "private"},
-                               "from": {"id": chat_id, "is_bot": False, "username": username}}})
+                               "chat": {"id": chat_id, "type": "private"}, "from": sender}})
 
     def callback(self, chat_id: int, data: str, message_id: int = 1) -> None:
         self.push({"callback_query": {"id": f"cb{self._next_id}", "data": data,
@@ -665,6 +667,143 @@ async def f6_slots_post_and_ics(anna: "Client", anya: "Client") -> None:
 
     if booking_id:
         await anna.call("booking.ownerCancel", {"booking_id": booking_id})
+    await anna.call("booking.pageDelete", {"page_id": page_id})
+
+
+async def f7_ai_admin(anna: "Client", telegram_mock: "TelegramMock | None") -> None:
+    """F7: ИИ-администратор страницы в Telegram — цена, кнопки времени, двухшаговая запись, вопрос специалисту."""
+    print("\n3b++. ИИ-администратор в Telegram (F7)")
+    bot_name = (await anna.call("server.info")).get("payload", {}).get("telegram_bot", "")
+    if telegram_mock is None or not bot_name:
+        refused = await anna.call("booking.pageCreate", {"title": f"ИИ {RUN}", "ai_admin": True})
+        if not bot_name:
+            check(refused.get("code") == "bad_request", "бот не настроен: ai_admin — bad_request", refused)
+        print("  — пропуск сценария F7: нужны SELFVOY_E2E_TELEGRAM_MOCK=1 и SELFVOY_TELEGRAM_* у сервера")
+        return
+    tg = telegram_mock
+    guest_chat, stranger_chat = 5552001, 5552009
+    owner_name = (await anna.call("auth.me")).get("payload", {}).get("display_name", "")
+
+    bad = await anna.call("booking.pageCreate", {"title": f"ИИ {RUN}", "ai_admin": "да"})
+    check(bad.get("code") == "bad_request", "ai_admin не bool — bad_request", bad)
+    created = await anna.call("booking.pageCreate", {
+        "title": f"Массаж {RUN}", "duration_minutes": 30, "days_ahead": 14, "max_per_day": 4, "notice_hours": 1,
+        "price": 150000, "currency": "RUB", "cancel_hours": 12, "ai_admin": True,
+    })
+    page = created.get("payload", {}).get("page", {})
+    page_id, slug = page.get("id", 0), page.get("slug", "")
+    ask_url = page.get("telegram_ask_url", "")
+    check(page.get("ai_admin") is True and ask_url == f"https://t.me/{bot_name}?start=p_{slug}",
+          "booking.pageCreate: ai_admin и telegram_ask_url (deep link p_<slug>)", page)
+    guest = Client("f7-guest")
+    await guest.connect()
+    view = (await guest.call("booking.get", {"slug": slug}, timeout=40)).get("payload", {}).get("page", {})
+    check(view.get("telegram_ask_url") == ask_url, "booking.get: гость видит telegram_ask_url", view.get("telegram_ask_url"))
+    await guest.close()
+
+    # /start p_<slug> — чат гостя привязан к странице.
+    mark = len(tg.sent)
+    tg.text(guest_chat, "/start p_" + slug, username="timofey_e2e", first_name="Тимофей")
+    hello = await tg.wait_for("sendMessage", guest_chat, mark, timeout=20)
+    check(hello is not None and hello.get("text", "").startswith(f"Здравствуйте! Я ИИ-администратор «Массаж {RUN}»"),
+          "/start p_<slug>: приветствие ИИ-администратора", hello)
+    mark = len(tg.sent)
+    tg.text(stranger_chat, "/start p_zzzzzzzzzz")
+    unknown = await tg.wait_for("sendMessage", stranger_chat, mark)
+    check(unknown is not None and "не найдена" in unknown.get("text", ""), "/start с неизвестной страницей — отказ",
+          unknown)
+
+    # Вопрос о цене — ответ с ценой и политикой (запасной режим AI без LLM).
+    mark = len(tg.sent)
+    tg.text(guest_chat, "Сколько стоит сеанс?", username="timofey_e2e", first_name="Тимофей")
+    price = await tg.wait_for("sendMessage", guest_chat, mark, timeout=30)
+    check(price is not None and "Стоимость — 1" in price.get("text", "") and "500 ₽" in price.get("text", "")
+          and "за 12 ч" in price.get("text", ""), "вопрос о цене: цена и политика отмены", price)
+
+    # Запрос времени — кнопки (подписанные callback), без записи.
+    mark = len(tg.sent)
+    tg.text(guest_chat, "Когда можно записаться?", username="timofey_e2e", first_name="Тимофей")
+    offer = await tg.wait_for("sendMessage", guest_chat, mark, timeout=40)
+    rows = (offer or {}).get("reply_markup", {}).get("inline_keyboard", [])
+    pick = rows[0][0].get("callback_data", "") if rows and rows[0] else ""
+    check(offer is not None and 1 <= len(rows) <= 3 and pick.startswith(f"as:{page_id}:") and len(pick) <= 64,
+          "запрос времени: до 3 кнопок свободного времени", offer)
+    listed = (await anna.call("booking.list", {"page_id": page_id})).get("payload", {}).get("bookings", [])
+    check(listed == [], "кнопки времени ничего не записывают", listed)
+
+    # Чужой чат с той же кнопкой — отказ.
+    mark = len(tg.sent)
+    tg.callback(stranger_chat, pick)
+    foreign = await tg.wait_for("answerCallbackQuery", None, mark)
+    check(foreign is not None and "не для этого чата" in foreign.get("text", ""), "кнопка времени из чужого чата отвергнута",
+          foreign)
+
+    # Нажатие — вопрос «Записать на …?», подтверждение — запись обычным путём.
+    mark = len(tg.sent)
+    tg.callback(guest_chat, pick)
+    ask = await tg.wait_for("sendMessage", guest_chat, mark, timeout=30, contains="Записать вас на")
+    confirm_rows = (ask or {}).get("reply_markup", {}).get("inline_keyboard", [])
+    confirm = confirm_rows[0][0].get("callback_data", "") if confirm_rows and confirm_rows[0] else ""
+    check(ask is not None and confirm.startswith(f"ab:{page_id}:") and "Имя для записи: Тимофей" in ask.get("text", ""),
+          "нажатие времени: вопрос «Записать на …?» с кнопкой подтверждения", ask)
+    mark = len(tg.sent)
+    tg.callback(guest_chat, confirm)
+    done = await tg.wait_for("sendMessage", guest_chat, mark, timeout=40, contains="Готово: вы записаны на")
+    answered = await tg.wait_for("answerCallbackQuery", None, mark, timeout=10)
+    notice = await tg.wait_for("sendMessage", guest_chat, mark, timeout=20, contains="Вы записаны")
+    check(done is not None and answered is not None and answered.get("text") == "Записано",
+          "подтверждение: «Записано», бот подтвердил запись", {"done": done, "answer": answered})
+    check(notice is not None, "извещение о записи пришло в этот чат (как booking.created)", notice)
+    listed = (await anna.call("booking.list", {"page_id": page_id})).get("payload", {}).get("bookings", [])
+    check(len(listed) == 1 and listed[0].get("guest_name") == "Тимофей" and listed[0].get("guest_email") == ""
+          and "@timofey_e2e" in listed[0].get("guest_comment", "") and listed[0].get("price") == 150000,
+          "запись создана обычным путём: имя из Telegram, без email, цена страницы", listed[:1])
+    mark = len(tg.sent)
+    tg.callback(guest_chat, confirm)
+    again = await tg.wait_for("answerCallbackQuery", None, mark)
+    check(again is not None and "заняли" in again.get("text", ""), "повторное подтверждение — время уже занято", again)
+
+    # Вопрос вне сценариев — специалисту: уведомление telegram.question, ответ telegram.reply.
+    mark = len(tg.sent)
+    tg.text(guest_chat, "У меня аллергия на масла, это важно?", username="timofey_e2e", first_name="Тимофей")
+    escalated = await tg.wait_for("sendMessage", guest_chat, mark, timeout=30)
+    check(escalated is not None and escalated.get("text") == "Передал специалисту, он ответит вам здесь или напишет.",
+          "escalate: гостю — «Передал специалисту»", escalated)
+    question = None
+    for _ in range(30):
+        for item in (await anna.call("notifications.list", {"limit": 50})).get("payload", {}).get("notifications", []):
+            if item.get("kind") == "telegram.question" and item.get("payload", {}).get("page_id") == page_id:
+                question = item
+                break
+        if question:
+            break
+        await asyncio.sleep(0.2)
+    qp = (question or {}).get("payload", {})
+    check(question is not None and qp.get("guest_name") == "Тимофей" and qp.get("telegram_username") == "timofey_e2e"
+          and "аллергия" in qp.get("text", "") and qp.get("question_id", 0) > 0,
+          "владелец получил telegram.question {question_id, page_id, guest_name, telegram_username, text}", question)
+    questions = (await anna.call("telegram.questions", {"status": "open"})).get("payload", {}).get("questions", [])
+    mine = [q for q in questions if q.get("id") == qp.get("question_id")]
+    check(len(mine) == 1 and mine[0].get("can_reply") is True and mine[0].get("page_title") == f"Массаж {RUN}",
+          "telegram.questions: вопрос открыт, можно ответить", questions[:2])
+    mark = len(tg.sent)
+    replied = await anna.call("telegram.reply", {"question_id": qp.get("question_id", 0),
+                                                 "text": "Масла без запаха, всё будет хорошо."})
+    delivered = await tg.wait_for("sendMessage", guest_chat, mark, timeout=15, contains="Масла без запаха")
+    check(replied.get("payload", {}).get("question", {}).get("status") == "answered" and delivered is not None
+          and delivered.get("text") == f"{owner_name}: Масла без запаха, всё будет хорошо.",
+          "telegram.reply: ответ специалиста дошёл гостю в Telegram", {"reply": replied, "sent": delivered})
+    empty = await anna.call("telegram.reply", {"question_id": qp.get("question_id", 0), "text": ""})
+    check(empty.get("code") == "bad_request", "telegram.reply без текста — bad_request", empty)
+    missing = await anna.call("telegram.reply", {"question_id": 999999999, "text": "x"})
+    check(missing.get("code") == "not_found", "telegram.reply на чужой/несуществующий вопрос — not_found", missing)
+
+    # /stop — ответить в Telegram больше нельзя.
+    mark = len(tg.sent)
+    tg.text(guest_chat, "/stop")
+    await tg.wait_for("sendMessage", guest_chat, mark)
+    stopped = await anna.call("telegram.reply", {"question_id": qp.get("question_id", 0), "text": "Ещё?"})
+    check(stopped.get("code") == "conflict", "после /stop гостя telegram.reply — conflict", stopped)
     await anna.call("booking.pageDelete", {"page_id": page_id})
 
 
@@ -1874,6 +2013,7 @@ async def main() -> int:
         await anna.call("booking.pageDelete", {"page_id": tg_page.get("id", 0)})
 
     await s1b_reminders_confirm_branding(anna, telegram_mock)
+    await f7_ai_admin(anna, telegram_mock)
 
     # ------------------------------------- разрешения и барьер подтверждения
     print("\n3c. Разрешения и барьер подтверждения (этап 8)")

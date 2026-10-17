@@ -28,6 +28,7 @@
 #include "selfvoy/payments.h"
 #include "selfvoy/referralmanager.h"
 #include "selfvoy/schedulelock.h"
+#include "selfvoy/telegramadmin.h"
 #include "selfvoy/telegrambot.h"
 
 namespace selfvoy {
@@ -68,6 +69,7 @@ public:
     ConnectionManager& connections() { return connections_; }
     AdminManager& admin() { return *admin_; }
     TelegramBot& telegram() { return *telegram_; }
+    TelegramAdmin& telegramAdmin() { return *telegramAdmin_; }  // F7
     BookingManager& bookings() { return *bookings_; }
     PaymentManager& payments() { return *payments_; }  // F4: ЮKassa владельцев
     // Pro-функция доступна пользователю: !SELFVOY_PLANS_ENFORCED или действующий Pro.
@@ -116,6 +118,9 @@ private:
     std::unique_ptr<ScheduleLock> scheduleLock_;
     std::unique_ptr<InviteManager> invites_;
     std::unique_ptr<ReferralManager> referrals_;
+    // F7: ИИ-администратор — раньше бота: бот (его поток опроса вызывает администратора)
+    // разрушается первым.
+    std::unique_ptr<TelegramAdmin> telegramAdmin_;
     // Бот объявлен раньше bookings_: разрушается позже — очередь извещений гостям
     // (поток BookingManager) до конца может ставить сообщения боту.
     std::unique_ptr<TelegramBot> telegram_;

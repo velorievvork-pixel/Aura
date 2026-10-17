@@ -57,6 +57,7 @@ set(SELFVOY_SOURCES
     src/tls.cpp
     src/plan.cpp
     src/telegrambot.cpp
+    src/telegramadmin.cpp
     src/memorymanager.cpp
     src/net.cpp
     src/notificationsmanager.cpp
@@ -100,6 +101,7 @@ set(SELFVOY_HEADERS
     include/selfvoy/tls.h
     include/selfvoy/plan.h
     include/selfvoy/telegrambot.h
+    include/selfvoy/telegramadmin.h
 )
 
 add_library(selfvoy-core STATIC ${SELFVOY_SOURCES} ${SELFVOY_HEADERS})

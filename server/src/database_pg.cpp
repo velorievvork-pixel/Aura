@@ -2141,7 +2141,139 @@ private:
         const std::string chat = std::to_string(chatId);
         if (!execute("UPDATE users SET telegram_chat_id = NULL, telegram_username = '' WHERE telegram_chat_id = $1::bigint",
                      {chat}, nullptr) ||
-            !execute("DELETE FROM booking_telegram WHERE chat_id = $1::bigint", {chat}, nullptr)) {
+            !execute("DELETE FROM booking_telegram WHERE chat_id = $1::bigint", {chat}, nullptr) ||
+            !execute("DELETE FROM telegram_guest_chats WHERE chat_id = $1::bigint", {chat}, nullptr)) {
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
+    }
+
+    // ------------------------------------------- F7: ИИ-администратор в Telegram
+    DatabaseError saveTelegramGuestChat(const TelegramGuestChatRecord& record) override {
+        if (record.chatId == 0 || record.pageId <= 0) return DatabaseError::failure("чат без страницы");
+        Lease lease(pool_);
+        if (!execute("INSERT INTO telegram_guest_chats (chat_id, page_id, owner_id, guest_name, username, history) "
+                     "VALUES ($1::bigint, $2, $3, $4, $5, $6::jsonb) "
+                     "ON CONFLICT (chat_id) DO UPDATE SET page_id = EXCLUDED.page_id, owner_id = EXCLUDED.owner_id, "
+                     "guest_name = EXCLUDED.guest_name, username = EXCLUDED.username, history = EXCLUDED.history, "
+                     "updated_at = now()",
+                     {std::to_string(record.chatId), std::to_string(record.pageId), std::to_string(record.ownerId),
+                      record.guestName, record.username,
+                      record.history.isArray() ? record.history.dump() : std::string("[]")},
+                     nullptr)) {
+            return DatabaseError::failure(lastError());
+        }
+        return DatabaseError::success();
+    }
+
+    std::optional<TelegramGuestChatRecord> findTelegramGuestChat(long long chatId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("SELECT chat_id, page_id, owner_id, guest_name, username, history::text, "
+                     "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+                     "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') "
+                     "FROM telegram_guest_chats WHERE chat_id = $1::bigint",
+                     {std::to_string(chatId)}, &result)) {
+            return std::nullopt;
+        }
+        std::optional<TelegramGuestChatRecord> record;
+        if (PQntuples(result) > 0) {
+            TelegramGuestChatRecord row;
+            row.chatId = std::atoll(value_(result, 0, 0).c_str());
+            row.pageId = std::atoll(value_(result, 0, 1).c_str());
+            row.ownerId = std::atoll(value_(result, 0, 2).c_str());
+            row.guestName = value_(result, 0, 3);
+            row.username = value_(result, 0, 4);
+            const Json history = Json::parse(value_(result, 0, 5));
+            if (history.isArray()) row.history = history;
+            row.createdAt = value_(result, 0, 6);
+            row.updatedAt = value_(result, 0, 7);
+            record = row;
+        }
+        PQclear(result);
+        return record;
+    }
+
+    static std::string questionSelect() {
+        return "SELECT id, owner_id, page_id, chat_id, guest_name, username, text, status, answer, "
+               "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
+               "COALESCE(to_char(answered_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '') "
+               "FROM telegram_questions";
+    }
+
+    TelegramQuestionRecord readQuestion(PGresult* result, int row) const {
+        TelegramQuestionRecord record;
+        record.id = std::atoll(value_(result, row, 0).c_str());
+        record.ownerId = std::atoll(value_(result, row, 1).c_str());
+        record.pageId = std::atoll(value_(result, row, 2).c_str());
+        record.chatId = std::atoll(value_(result, row, 3).c_str());
+        record.guestName = value_(result, row, 4);
+        record.username = value_(result, row, 5);
+        record.text = value_(result, row, 6);
+        record.status = value_(result, row, 7);
+        record.answer = value_(result, row, 8);
+        record.createdAt = value_(result, row, 9);
+        record.answeredAt = value_(result, row, 10);
+        return record;
+    }
+
+    DatabaseError createTelegramQuestion(const TelegramQuestionRecord& record, long long& outId) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("INSERT INTO telegram_questions (owner_id, page_id, chat_id, guest_name, username, text) "
+                     "VALUES ($1, $2, $3::bigint, $4, $5, $6) RETURNING id",
+                     {std::to_string(record.ownerId), std::to_string(record.pageId), std::to_string(record.chatId),
+                      record.guestName, record.username, record.text},
+                     &result)) {
+            PQclear(result);
+            return DatabaseError::failure(lastError());
+        }
+        outId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
+        PQclear(result);
+        return DatabaseError::success();
+    }
+
+    std::optional<TelegramQuestionRecord> findTelegramQuestion(long long id) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute(questionSelect() + " WHERE id = $1", {std::to_string(id)}, &result)) return std::nullopt;
+        std::optional<TelegramQuestionRecord> record;
+        if (PQntuples(result) > 0) record = readQuestion(result, 0);
+        PQclear(result);
+        return record;
+    }
+
+    std::vector<TelegramQuestionRecord> listTelegramQuestions(long long ownerId, const std::string& status,
+                                                              int limit) override {
+        Lease lease(pool_);
+        std::vector<TelegramQuestionRecord> list;
+        PGresult* result = nullptr;
+        if (!execute(questionSelect() + " WHERE owner_id = $1 AND ($2 = '' OR status = $2) ORDER BY id DESC LIMIT $3",
+                     {std::to_string(ownerId), status, std::to_string(limit > 0 ? limit : 50)}, &result)) {
+            return list;
+        }
+        for (int row = 0; row < PQntuples(result); ++row) list.push_back(readQuestion(result, row));
+        PQclear(result);
+        return list;
+    }
+
+    bool answerTelegramQuestion(long long id, const std::string& answer) override {
+        Lease lease(pool_);
+        PGresult* result = nullptr;
+        if (!execute("UPDATE telegram_questions SET status = 'answered', answer = $2, answered_at = now() "
+                     "WHERE id = $1",
+                     {std::to_string(id), answer}, &result)) {
+            return false;
+        }
+        const bool touched = std::atoi(PQcmdTuples(result)) > 0;
+        PQclear(result);
+        return touched;
+    }
+
+    // F7: поле страницы ai_admin — отдельным запросом после основной вставки/обновления.
+    DatabaseError writePageAiAdmin(long long pageId, bool aiAdmin) {
+        if (!execute("UPDATE booking_pages SET ai_admin = $2::bool WHERE id = $1",
+                     {std::to_string(pageId), aiAdmin ? "true" : "false"}, nullptr)) {
             return DatabaseError::failure(lastError());
         }
         return DatabaseError::success();
@@ -2174,6 +2306,7 @@ private:
         }
         outId = PQntuples(result) > 0 ? std::atoll(value_(result, 0, 0).c_str()) : 0;
         PQclear(result);
+        if (record.aiAdmin && outId > 0) return writePageAiAdmin(outId, true);
         return DatabaseError::success();
     }
 
@@ -2222,7 +2355,8 @@ private:
         }
         const bool touched = std::atoi(PQcmdTuples(result)) > 0;
         PQclear(result);
-        return touched ? DatabaseError::success() : DatabaseError::failure("страница записи не найдена");
+        if (!touched) return DatabaseError::failure("страница записи не найдена");
+        return writePageAiAdmin(record.id, record.aiAdmin);
     }
 
     static std::string bookingPageSelect() {
@@ -2231,7 +2365,8 @@ private:
                "to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), "
                "guest_reminders, hide_branding, price, currency, prepay, deposit, payment_url, payment_note, "
-               "pay_within_minutes, cancel_hours, late_cancel, policy_text, packages::text "
+               "pay_within_minutes, cancel_hours, late_cancel, policy_text, packages::text, "
+               "ai_admin "  // F7
                "FROM booking_pages";
     }
 
@@ -2275,6 +2410,7 @@ private:
         record.policyText = value_(result, row, 25);
         const Json packages = Json::parse(value_(result, row, 26));
         if (packages.isArray()) record.packages = packages;
+        record.aiAdmin = value_(result, row, 27) == "t";  // F7
         return record;
     }
 

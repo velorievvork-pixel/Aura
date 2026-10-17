@@ -56,7 +56,7 @@ public:
     Result listDevices(long long userId);
     Result revokeDevice(long long userId, long long id);
 
-    // Telegram владельца (F2): виды booking.*, package.*, invite.*, referral.*, task.due
+    // Telegram владельца (F2): виды booking.*, package.*, invite.*, referral.*, task.due, telegram.question
     // дублируются в привязанный чат «<title>\n<body>» — если вид не в muted_kinds, не тихие
     // часы и prefs.notifications.telegram != false. Отправка — очередь бота (не ждём сеть).
     void setTelegram(TelegramBot* telegram) { telegram_ = telegram; }

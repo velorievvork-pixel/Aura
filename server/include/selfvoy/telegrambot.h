@@ -7,8 +7,11 @@
 // "selfvoy-telegram-link"), подпись — первые 16 байт в base64url (22 символа):
 //   o_<user_id>_<expires_unix>_<sig>  — владелец, sig над "o:<user_id>:<expires>", 15 минут;
 //   g_<booking_id>_<sig>              — гость, sig над "g:<booking_id>:<manage_hash>"
-//                                       (перевыпуск ссылки управления делает её недействительной).
-// Команды: /start <payload>, /stop (отвязать чат везде), иное — справка.
+//                                       (перевыпуск ссылки управления делает её недействительной);
+//   p_<slug>                          — гость спрашивает ИИ-администратора страницы (F7,
+//                                       без подписи: ссылка публичная, как сама страница).
+// Команды: /start <payload>, /stop (отвязать чат везде), иное — справка; текст в чате,
+// привязанном к странице (p_), и кнопки as:/ab:/an — TelegramAdmin.
 // Кнопка «Приду» (callback cf:<booking_id>:<start_unix>, F1) — только из чата,
 // привязанного к записи; подтверждение выполняет BookingManager::telegramConfirm.
 //
@@ -35,6 +38,7 @@ namespace selfvoy {
 
 class BookingManager;
 class DatabaseManager;
+class TelegramAdmin;
 struct BookingRecord;
 struct Config;
 
@@ -68,6 +72,8 @@ public:
     bool enabled() const;
     std::string username() const;
     void setBookings(BookingManager* bookings) { bookings_ = bookings; }
+    // F7: ИИ-администратор страниц (nullptr — выключен). Задаётся до start().
+    void setAdmin(TelegramAdmin* admin) { admin_ = admin; }
     // Подмена транспорта (тесты) — до первой отправки.
     void setTransport(std::unique_ptr<Transport> transport);
 
@@ -130,6 +136,7 @@ private:
     DatabaseManager& database_;
     const Config& config_;
     BookingManager* bookings_ = nullptr;
+    TelegramAdmin* admin_ = nullptr;
     std::shared_ptr<Transport> transport_;
     std::string signKey_;
 

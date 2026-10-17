@@ -244,6 +244,35 @@ class OpenAILLM(BaseLLM):
         except json.JSONDecodeError as exc:
             raise LLMError("LLM returned non-JSON payload") from exc
 
+    def chat_json(self, system: str, user: str) -> Any:
+        """Произвольный запрос в JSON mode (ИИ-администратор, F7): разобранный JSON ответа.
+
+        Проверку схемы делает вызывающий; сеть/лимиты/не-JSON — ``LLMError``.
+        """
+        import httpx
+
+        payload = {
+            "model": self.model,
+            "temperature": self.temperature,
+            "response_format": {"type": "json_object"},
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        }
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+        except Exception as exc:
+            raise LLMError(f"LLM request failed: {exc}") from exc
+        try:
+            return json.loads(content)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise LLMError("LLM returned non-JSON payload") from exc
+
 
 def build_llm(settings: Any) -> BaseLLM:
     """Фабрика провайдера по настройкам."""

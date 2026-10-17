@@ -709,6 +709,8 @@ Json BookingManager::pageJson(const BookingPageRecord& page) {
     json.set("late_cancel", Json(page.lateCancel));
     json.set("policy_text", Json(page.policyText));
     json.set("packages", page.packages.isArray() ? page.packages : Json::array());  // F5: предложения пакетов
+    json.set("ai_admin", Json(page.aiAdmin));                                      // F7
+    json.set("telegram_ask_url", Json(telegramAskUrl(page)));
     json.set("upcoming", Json(upcoming));
     json.set("created_at", Json(page.createdAt));
     json.set("updated_at", Json(page.updatedAt));
@@ -1072,6 +1074,9 @@ BookingManager::Result BookingManager::pageCreate(long long ownerId, const Json&
     // F5: предложения пакетов.
     const Result packageOffers = applyPackageOffers(ownerId, payload, true, page);
     if (!packageOffers.ok) return packageOffers;
+    // F7: ИИ-администратор в Telegram.
+    const Result aiAdmin = applyAiAdmin(ownerId, payload, true, page);
+    if (!aiAdmin.ok) return aiAdmin;
     page.durationMinutes = static_cast<int>(duration);
     page.daysAhead = static_cast<int>(daysAhead);
     page.maxPerDay = static_cast<int>(maxPerDay);
@@ -1179,6 +1184,8 @@ BookingManager::Result BookingManager::pageUpdate(long long ownerId, const Json&
     if (!paymentFields.ok) return paymentFields;
     const Result packageOffers = applyPackageOffers(ownerId, payload, false, *page);
     if (!packageOffers.ok) return packageOffers;
+    const Result aiAdmin = applyAiAdmin(ownerId, payload, false, *page);
+    if (!aiAdmin.ok) return aiAdmin;
     if (payload.contains("status")) {
         const std::string status = payload.getString("status");
         if (status != "active" && status != "paused") {
@@ -1436,13 +1443,16 @@ BookingManager::Result BookingManager::get(const Json& payload, const std::strin
     view.set("policy", policyJson(*page));
     // F5: предложения пакетов (абонементов).
     view.set("packages", page->packages.isArray() ? page->packages : Json::array());
+    // F7: «Спросить в Telegram» — ИИ-администратор страницы ("" — выключен).
+    view.set("telegram_ask_url", Json(telegramAskUrl(*page)));
     Result result;
     result.ok = true;
     result.payload.set("page", view);
     return result;
 }
 
-BookingManager::Result BookingManager::book(const Json& payload, const std::string& remoteAddr) {
+BookingManager::Result BookingManager::book(const Json& payload, const std::string& remoteAddr,
+                                            long long telegramChat) {
     const std::string ip = Session::ipOf(remoteAddr);
     if (limited("booking.book:" + ip, kBookPerMinute) || limited("booking.book.h:" + ip, kBookPerHour, 3600)) {
         return Result::failure(protocol::code::kForbidden, "слишком много записей, попробуйте позже");
@@ -1624,6 +1634,10 @@ BookingManager::Result BookingManager::book(const Json& payload, const std::stri
         return Result::failure(protocol::code::kInternal, "не удалось сохранить запись");
     }
     booking.id = id;
+    // F7: запись из Telegram — чат гостя привязывается сразу (извещение о записи уйдёт туда).
+    if (telegramChat != 0 && !database_.db().linkBookingTelegram(id, telegramChat, TelegramBot::kMaxBookingChats)) {
+        SELFVOY_LOG(log::Level::Warn, "booking") << "чат Telegram не привязан к записи " << id;
+    }
     // F5: запись по пакету списывает занятия (по одному на встречу).
     std::optional<PackagePurchaseRecord> consumed;
     if (intent.packageId > 0) shiftPackageUsedLocked(intent.packageId, static_cast<int>(count), std::time(nullptr), consumed);
@@ -2067,6 +2081,88 @@ BookingManager::Result BookingManager::resendLink(const Json& payload, const std
 }
 
 // ------------------------------------------------------------ оплата (F4)
+
+// ------------------------------------------------- F7: ИИ-администратор в Telegram
+
+BookingManager::Result BookingManager::applyAiAdmin(long long ownerId, const Json& payload, bool creating,
+                                                    BookingPageRecord& page) {
+    Result ok;
+    ok.ok = true;
+    if (!payload.contains("ai_admin")) return ok;
+    if (!payload.get("ai_admin").isBool()) {
+        return Result::failure(protocol::code::kBadRequest, "ai_admin — true или false");
+    }
+    const bool enable = payload.getBool("ai_admin");
+    // Проверки — только при включении (выключить можно всегда, как hide_branding).
+    if (enable && (creating || !page.aiAdmin)) {
+        if (!telegram_ || !telegram_->enabled()) {
+            return Result::failure(protocol::code::kBadRequest,
+                                   "ИИ-администратор отвечает гостям через Telegram-бота, а бот не настроен на "
+                                   "сервере (SELFVOY_TELEGRAM_BOT_TOKEN и SELFVOY_TELEGRAM_BOT_USERNAME)");
+        }
+        if (!plan::proAllowed(database_.db(), ownerId)) {
+            return Result::failure(protocol::code::kProRequired, "ИИ-администратор в Telegram доступен на тарифе Pro");
+        }
+    }
+    page.aiAdmin = enable;
+    return ok;
+}
+
+std::string BookingManager::pageUrl(const BookingPageRecord& page) const {
+    return config_.publicUrl.empty() ? std::string() : config_.publicUrl + "/#/b/" + page.slug;
+}
+
+std::string BookingManager::telegramAskUrl(const BookingPageRecord& page) {
+    if (!page.aiAdmin || page.status != "active" || !telegram_ || !telegram_->enabled() || !validSlug(page.slug)) {
+        return "";
+    }
+    if (!plan::proAllowed(database_.db(), page.ownerId)) return "";
+    return telegram_->linkUrl("p_" + page.slug);
+}
+
+bool BookingManager::freeSlots(const BookingPageRecord& page, std::size_t limit, std::vector<FreeSlot>& out) {
+    static const char* const kMonths[] = {"января", "февраля", "марта",    "апреля",  "мая",    "июня",
+                                          "июля",   "августа", "сентября", "октября", "ноября", "декабря"};
+    static const char* const kDays[] = {"вс", "пн", "вт", "ср", "чт", "пт", "сб"};
+    out.clear();
+    std::vector<Offer> candidates;
+    if (!offers(page, candidates)) return false;
+    std::string ownerName;
+    std::string ownerTimezone;
+    ownerInfo(page.ownerId, ownerName, ownerTimezone);
+    for (const auto& offer : available(page, candidates)) {
+        if (out.size() >= limit) break;
+        FreeSlot slot;
+        slot.start = offer.start;
+        slot.end = offer.end;
+        Json occurrence = Json::object();
+        occurrence.set("start", Json(isoUtc(offer.start)));
+        occurrence.set("local", Json(offer.local));
+        slot.when = whenText(occurrence, ownerTimezone);
+        // Короткая подпись кнопки: местное время владельца, иначе UTC.
+        const std::string local = validLocal(offer.local) ? offer.local : isoUtc(offer.start).substr(0, 16);
+        std::time_t date = 0;
+        parseIsoUtc(local.substr(0, 10) + "T00:00:00Z", date);
+        std::tm parts{};
+        gmtime_r(&date, &parts);
+        slot.label = std::string(kDays[parts.tm_wday]) + ", " + std::to_string(parts.tm_mday) + " " +
+                     kMonths[parts.tm_mon] + ", " + local.substr(11, 5);
+        out.push_back(slot);
+    }
+    return true;
+}
+
+BookingManager::Result BookingManager::telegramBook(const BookingPageRecord& page, long long chatId, std::time_t start,
+                                                    const std::string& guestName, const std::string& comment) {
+    if (chatId == 0 || start <= 0) return Result::failure(protocol::code::kBadRequest, "Кнопка устарела");
+    Json payload = Json::object();
+    payload.set("slug", Json(page.slug));
+    payload.set("start", Json(isoUtc(start)));
+    payload.set("guest_name", Json(guestName));
+    payload.set("comment", Json(comment));
+    // «tg-<chat>» без двоеточия: Session::ipOf вернёт строку как есть — лимит на чат.
+    return book(payload, "tg-" + std::to_string(chatId), chatId);
+}
 
 bool BookingManager::lateFor(const BookingPageRecord& page, std::time_t start, std::time_t now) {
     return page.cancelHours > 0 && start - now < static_cast<std::time_t>(page.cancelHours) * 3600;

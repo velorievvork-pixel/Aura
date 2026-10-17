@@ -9,7 +9,7 @@ e2e — на реальном PostgreSQL.
 изменения — файлами `schema/migrations/` (применяются по порядку имени).
 Демо-данные: `schema/seed.sql`.
 
-## 31 таблица и 2 представления по доменам
+## 33 таблицы и 2 представления по доменам
 
 ### Аутентификация и безопасность
 | таблица | назначение |
@@ -145,6 +145,18 @@ PROTOCOL.md) с частичным индексом `bookings_payment_pending_id
 (точнее для старых записей не узнать), все — валютой страницы; повторный запуск
 ничего не перезаписывает. Во встроенном хранилище — поля `price` / `currency` в тех
 же записях (нет поля — 0 и `RUB`).
+
+Миграция `2026_10_17_telegram_admin.sql` (F7; то же — блоком в конце таблиц
+`schema.sql`, идемпотентно): `booking_pages.ai_admin` BOOLEAN NOT NULL DEFAULT
+false (ИИ-администратор в Telegram, Pro) и две таблицы:
+
+| таблица | назначение |
+| --- | --- |
+| `telegram_guest_chats` | чат гостя, привязанный к странице командой `/start p_<slug>`: `chat_id` PK, `page_id` (ON DELETE CASCADE), `owner_id` (ON DELETE CASCADE), `guest_name` и `username` из Telegram, `history` JSONB (последние ≤ 10 сообщений `[{role: guest\|admin, text}]` — контекст ИИ), `created_at`, `updated_at`; индекс по `page_id`. `/stop` и 403 от Telegram удаляют строку |
+| `telegram_questions` | вопросы гостей, переданные специалисту (`escalate`): `owner_id`, `page_id` (ON DELETE CASCADE), `chat_id`, `guest_name`, `username`, `text`, `status` CHECK (`open`/`answered`), `answer` (последний ответ `telegram.reply`), `created_at`, `answered_at`; индекс (owner_id, id DESC) |
+
+Во встроенном хранилище — поле `ai_admin` в записи страницы и массивы
+`telegram_guest_chats`, `telegram_questions` с теми же полями.
 
 Миграция `2026_10_15_audit_fixes.sql`: `users.email_verified DEFAULT FALSE`
 (новый аккаунт без явного значения не считается подтверждённым), `bookings.ends_at`

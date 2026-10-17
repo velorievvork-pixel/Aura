@@ -311,6 +311,8 @@ struct BookingPageRecord {
     std::string policyText;              // текст политики отмены
     // F5: предложения пакетов (абонементов) — [{id, title, sessions, price, valid_days}], ≤ 5.
     Json packages = Json::array();
+    // F7: ИИ-администратор в Telegram (Pro; нужен настроенный бот).
+    bool aiAdmin = false;
 };
 
 // Запись гостя на странице. occurrences — встречи (одна или еженедельная серия):
@@ -432,6 +434,35 @@ struct InviteRecord {
     std::string expiresAt;
     std::string createdAt;
     std::string respondedAt;
+};
+
+// F7: чат гостя с ИИ-администратором (telegram_guest_chats): /start p_<slug> привязывает
+// чат к странице (один чат — одна страница; повтор с другой страницы перепривязывает и
+// очищает историю). history — последние ≤ 10 сообщений [{role: guest|admin, text}].
+struct TelegramGuestChatRecord {
+    long long chatId = 0;
+    long long pageId = 0;
+    long long ownerId = 0;
+    std::string guestName;  // имя из Telegram (first_name + last_name)
+    std::string username;   // ник без @ ("" — нет)
+    Json history = Json::array();
+    std::string createdAt;
+    std::string updatedAt;
+};
+
+// F7: вопрос гостя, переданный специалисту (telegram_questions). status: open | answered.
+struct TelegramQuestionRecord {
+    long long id = 0;
+    long long ownerId = 0;
+    long long pageId = 0;
+    long long chatId = 0;
+    std::string guestName;
+    std::string username;
+    std::string text;
+    std::string status = "open";
+    std::string answer;      // последний ответ специалиста ("" — нет)
+    std::string createdAt;
+    std::string answeredAt;  // "" — ещё не отвечен
 };
 
 struct DatabaseError {
@@ -685,8 +716,21 @@ public:
     // false — у записи уже maxChats чатов или ошибка.
     virtual bool linkBookingTelegram(long long bookingId, long long chatId, int maxChats) = 0;
     virtual std::vector<long long> bookingTelegramChats(long long bookingId) = 0;
-    // /stop или 403 от Telegram: чат отвязывается от пользователя и от всех записей.
+    // /stop или 403 от Telegram: чат отвязывается от пользователя и от всех записей
+    // (и от страницы ИИ-администратора, F7: строка telegram_guest_chats удаляется).
     virtual DatabaseError unlinkTelegramChat(long long chatId) = 0;
+
+    // --- F7: ИИ-администратор в Telegram ------------------------------------
+    // Вставка или замена по chat_id (created_at сохраняется, updated_at = now).
+    virtual DatabaseError saveTelegramGuestChat(const TelegramGuestChatRecord& record) = 0;
+    virtual std::optional<TelegramGuestChatRecord> findTelegramGuestChat(long long chatId) = 0;
+    virtual DatabaseError createTelegramQuestion(const TelegramQuestionRecord& record, long long& outId) = 0;
+    virtual std::optional<TelegramQuestionRecord> findTelegramQuestion(long long id) = 0;
+    // Вопросы владельца, новые сверху; status "" — любые.
+    virtual std::vector<TelegramQuestionRecord> listTelegramQuestions(long long ownerId, const std::string& status,
+                                                                      int limit) = 0;
+    // Ответ специалиста: status = answered, answer, answered_at = now. false — вопроса нет.
+    virtual bool answerTelegramQuestion(long long id, const std::string& answer) = 0;
 
     // Страницы записи (booking.*).
     virtual DatabaseError createBookingPage(const BookingPageRecord& record, long long& outId) = 0;

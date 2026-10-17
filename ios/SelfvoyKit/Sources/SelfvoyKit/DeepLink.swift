@@ -16,6 +16,8 @@ public enum DeepLink: Equatable, Sendable {
     case voice
     case ask(text: String)
     case tasks
+    /// Входящие уведомления (пуш о записи, оплате, «Приду» ведёт сюда).
+    case notifications
     case settings
     /// Нормализованный реферальный код или "" (неверный код отбрасывается).
     case signup(ref: String)
@@ -45,6 +47,8 @@ public enum DeepLink: Equatable, Sendable {
             self = .ask(text: query("text") ?? "")
         case "tasks":
             self = .tasks
+        case "notifications":
+            self = .notifications
         case "settings":
             self = .settings
         case "signup":

@@ -40,6 +40,9 @@ struct SettingsView: View {
                 GlassButton(title: "Страницы записи", systemImage: "calendar.badge.plus", height: 44) {
                     store.selectTab(.booking)
                 }
+                GlassButton(title: "Telegram, ЮKassa и календарь", systemImage: "link", height: 44) {
+                    store.selectTab(.integrations)
+                }
                 section("Пригласить друзей") { referralSection }
                 permissionsSection
                 section("Приватность ИИ") { privacy }
@@ -81,6 +84,7 @@ struct SettingsView: View {
         if let info = store.referral {
             VStack(alignment: .leading, spacing: 10) {
                 Muted("Друг заведёт свой Selfvoy — и ваши Selfvoy смогут договариваться о встречах напрямую. Регистрации со страниц записи тоже засчитываются вам.")
+                Text(info.rewardText).font(SelfvoyFont.small).foregroundStyle(SelfvoyColor.warning)
                 HStack {
                     Muted("Ваш код")
                     Spacer()
@@ -153,6 +157,13 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(store.userName).font(SelfvoyFont.manrope(20, .bold)).foregroundStyle(SelfvoyColor.textPrimary)
                     Text(store.userEmail).font(SelfvoyFont.small).foregroundStyle(SelfvoyColor.textSecondary)
+                    if let plan = store.userPlan {
+                        HStack(spacing: 6) {
+                            PlanBadge(plan: plan)
+                            Text(plan.hint()).font(SelfvoyFont.micro).foregroundStyle(SelfvoyColor.textMuted)
+                        }
+                        .padding(.top, 2)
+                    }
                 }
                 Spacer(minLength: 0)
                 if !editingProfile {

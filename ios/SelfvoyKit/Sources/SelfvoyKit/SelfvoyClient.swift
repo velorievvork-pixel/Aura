@@ -324,6 +324,16 @@ public final class SelfvoyClient: @unchecked Sendable {
         return BookingPage(json: try await request("booking.pageUpdate", payload)["page"] ?? .null)
     }
 
+    /// booking.pageUpdate только с изменёнными полями (`fields.changes(from: original)`):
+    /// сервер проверяет способ оплаты и Pro, лишь когда трогают эти поля.
+    public func bookingPageUpdate(id: Int64, fields: BookingPageFields,
+                                  original: BookingPageFields) async throws -> BookingPage {
+        if let problem = fields.validate() { throw SelfvoyError(code: "bad_request", message: problem) }
+        var payload = fields.changes(from: original)
+        payload["page_id"] = .from(id)
+        return BookingPage(json: try await request("booking.pageUpdate", payload)["page"] ?? .null)
+    }
+
     public func bookingPageList() async throws -> [BookingPage] {
         try await request("booking.pageList").array("pages").map(BookingPage.init(json:))
     }
@@ -332,8 +342,11 @@ public final class SelfvoyClient: @unchecked Sendable {
         try await request("booking.pageDelete", ["page_id": .from(id)])
     }
 
-    public func bookingList(limit: Int = 50) async throws -> [Booking] {
-        try await request("booking.list", ["limit": .from(limit)]).array("bookings").map(Booking.init(json:))
+    public func bookingList(pageId: Int64 = 0, activeOnly: Bool = false, limit: Int = 50) async throws -> [Booking] {
+        var payload: [String: JSONValue] = ["limit": .from(limit)]
+        if pageId > 0 { payload["page_id"] = .from(pageId) }
+        if activeOnly { payload["active_only"] = .from(true) }
+        return try await request("booking.list", payload).array("bookings").map(Booking.init(json:))
     }
 
     /// occurrence — start одной встречи серии; nil — все предстоящие.
@@ -342,6 +355,130 @@ public final class SelfvoyClient: @unchecked Sendable {
         if let occurrence { payload["occurrence"] = .string(occurrence) }
         return Booking(json: try await request("booking.ownerCancel", payload)["booking"] ?? .null)
     }
+
+    /// booking.paymentSet: отметка оплаты владельцем (paid | waived | refunded).
+    public func bookingPaymentSet(id: Int64, status: OwnerPaymentMark) async throws -> Booking {
+        Booking(json: try await request("booking.paymentSet", Self.paymentSetPayload(key: "booking_id", id: id,
+                                                                                   status: status))["booking"] ?? .null)
+    }
+
+    public static func paymentSetPayload(key: String, id: Int64, status: OwnerPaymentMark) -> [String: JSONValue] {
+        [key: .from(id), "status": .string(status.rawValue)]
+    }
+
+    /// Свободные окна своей страницы — те же, что видит гость (`booking.get` по slug).
+    public func bookingFreeSlots(page: BookingPage) async throws -> [FreeSlot] {
+        let reply = try await request("booking.get", ["slug": .string(page.slug)])
+        return (reply["page"] ?? .null).array("slots").map {
+            FreeSlot(start: $0.string("start"), end: $0.string("end"), pageId: page.id)
+        }
+    }
+
+    /// booking.slotsPost: готовый текст поста со свободными окнами (F6).
+    public func bookingSlotsPost(pageId: Int64, days: Int = 7,
+                                 format: SlotsPostFormat = .telegram) async throws -> SlotsPost {
+        SlotsPost(json: try await request("booking.slotsPost", Self.slotsPostPayload(pageId: pageId, days: days,
+                                                                                    format: format)))
+    }
+
+    public static func slotsPostPayload(pageId: Int64, days: Int, format: SlotsPostFormat) -> [String: JSONValue] {
+        ["page_id": .from(pageId), "days": .from(min(14, max(1, days))), "format": .string(format.rawValue)]
+    }
+
+    // MARK: - Пакеты и абонементы (F5)
+
+    public func packageList(pageId: Int64 = 0, status: String? = nil, limit: Int = 100) async throws -> [OwnerPackage] {
+        try await request("package.list", Self.packageListPayload(pageId: pageId, status: status, limit: limit))
+            .array("packages").map(OwnerPackage.init(json:))
+    }
+
+    public static func packageListPayload(pageId: Int64, status: String?, limit: Int) -> [String: JSONValue] {
+        var payload: [String: JSONValue] = ["limit": .from(min(200, max(1, limit)))]
+        if pageId > 0 { payload["page_id"] = .from(pageId) }
+        if let status, !status.isEmpty { payload["status"] = .string(status) }
+        return payload
+    }
+
+    /// package.issue: токен ссылки пакета в ответе показывается один раз.
+    public func packageIssue(_ issue: PackageIssueRequest) async throws -> PackageIssueResult {
+        if let problem = issue.validate() { throw SelfvoyError(code: "bad_request", message: problem) }
+        return PackageIssueResult(json: try await request("package.issue", issue.payload))
+    }
+
+    /// package.adjust: delta −100…100, не 0.
+    public func packageAdjust(id: Int64, delta: Int) async throws -> OwnerPackage {
+        guard delta != 0, (-100...100).contains(delta) else {
+            throw SelfvoyError(code: "bad_request", message: "Изменение — от −100 до 100 занятий")
+        }
+        return OwnerPackage(json: try await request("package.adjust", ["package_id": .from(id), "delta": .from(delta)])["package"] ?? .null)
+    }
+
+    public func packageCancel(id: Int64) async throws -> OwnerPackage {
+        OwnerPackage(json: try await request("package.cancel", ["package_id": .from(id)])["package"] ?? .null)
+    }
+
+    public func packagePaymentSet(id: Int64, status: OwnerPaymentMark) async throws -> OwnerPackage {
+        OwnerPackage(json: try await request("package.paymentSet", Self.paymentSetPayload(key: "package_id", id: id,
+                                                                                        status: status))["package"] ?? .null)
+    }
+
+    // MARK: - ЮKassa (F4)
+
+    public func paymentsStatus() async throws -> PaymentsStatus {
+        PaymentsStatus(json: try await request("payments.status"))
+    }
+
+    /// Секретный ключ уходит только в этот запрос: клиент его не хранит и не логирует.
+    public func paymentsConnect(shopId: String, secretKey: String) async throws -> PaymentsStatus {
+        if let problem = YooKassaCredentials.validate(shopId: shopId, secretKey: secretKey) {
+            throw SelfvoyError(code: "bad_request", message: problem)
+        }
+        return PaymentsStatus(json: try await request("payments.connect",
+                                                      YooKassaCredentials.payload(shopId: shopId, secretKey: secretKey)))
+    }
+
+    public func paymentsDisconnect() async throws -> PaymentsStatus {
+        PaymentsStatus(json: try await request("payments.disconnect"))
+    }
+
+    // MARK: - Telegram (F2)
+
+    public func telegramStatus() async throws -> TelegramStatus {
+        TelegramStatus(json: try await request("telegram.status"))
+    }
+
+    public func telegramLink() async throws -> TelegramLink {
+        TelegramLink(json: try await request("telegram.link"))
+    }
+
+    public func telegramUnlink() async throws -> JSONValue {
+        try await request("telegram.unlink")
+    }
+
+    /// prefs.set для `notifications.telegram`. Сервер заменяет объект `notifications`
+    /// целиком, поэтому сохраняем прежние ключи (quiet_hours, muted_kinds, …).
+    public static func telegramNotificationsPayload(current preferences: JSONValue, enabled: Bool) -> JSONValue {
+        var notifications = preferences["notifications"]?.objectValue ?? [:]
+        notifications["telegram"] = .bool(enabled)
+        return .object(["notifications": .object(notifications)])
+    }
+
+    // MARK: - Календарь: ICS-подписка (F6)
+
+    public func calendarFeed() async throws -> CalendarFeed {
+        CalendarFeed(json: try await request("calendar.feed"))
+    }
+
+    /// Новая ссылка; прежняя перестаёт работать во всех календарях.
+    public func calendarFeedReset() async throws -> CalendarFeed {
+        CalendarFeed(json: try await request("calendar.feedReset"))
+    }
+
+    public func calendarFeedDisable() async throws -> CalendarFeed {
+        CalendarFeed(json: try await request("calendar.feedDisable"))
+    }
+
+    // MARK: - Рефералы
 
     public func referralGet() async throws -> ReferralInfo {
         ReferralInfo(json: try await request("referral.get"))
@@ -429,5 +566,9 @@ public final class SelfvoyClient: @unchecked Sendable {
 
     public func serverInfo() async throws -> JSONValue {
         try await request("server.info")
+    }
+
+    public func serverDetails() async throws -> ServerInfo {
+        ServerInfo(json: try await serverInfo())
     }
 }

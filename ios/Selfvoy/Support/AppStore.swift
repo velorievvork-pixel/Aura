@@ -12,7 +12,8 @@ import SwiftUI
 import UIKit
 import UserNotifications
 
-/// Разделы v3: пять во вкладках снизу, остальные открываются из шапки «Главной».
+/// Разделы: четыре вкладки снизу («Сегодня · Запись · ИИ · Ещё») и отдельная «+»;
+/// остальные открываются из «Ещё» или шапки «Сегодня» и возвращаются кнопкой «назад».
 enum AppTab: Hashable {
     case home
     case selfvoy
@@ -23,6 +24,39 @@ enum AppTab: Hashable {
     case confirmations
     case notifications
     case booking
+    case more
+    case packages
+    case integrations
+
+    /// Вкладка нижней панели (корень навигации).
+    var isRoot: Bool {
+        switch self {
+        case .home, .booking, .selfvoy, .more: return true
+        default: return false
+        }
+    }
+
+    /// Экран ещё в тёмном стекле v3 (не переведён на дизайн 2026): для него
+    /// приложение принудительно в тёмной теме, чтобы текст оставался читаемым.
+    var usesLegacyTheme: Bool {
+        switch self {
+        case .home, .booking, .more, .packages, .integrations: return false
+        default: return true
+        }
+    }
+}
+
+/// Что открыть на «Записи» по кнопке из «+» или «Сегодня».
+enum BookingIntent: Hashable {
+    case newPage
+    case post
+}
+
+/// Какую запись показать в карточке: запись и (для серии) встреча.
+struct BookingFocus: Identifiable, Hashable {
+    let bookingId: Int64
+    let start: String?
+    var id: String { "\(bookingId)-\(start ?? "")" }
 }
 
 // MARK: - Модели экранов
@@ -144,6 +178,8 @@ struct Notice: Identifiable, Hashable {
     let body: String
     var read: Bool
     let createdAt: String
+    /// Данные уведомления (booking_id, status оплаты, left…).
+    var payload: JSONValue = .emptyObject
 }
 
 struct PushDevice: Identifiable, Hashable {
@@ -209,6 +245,14 @@ final class AppStore: ObservableObject {
     @Published var savingProfile = false
 
     @Published var tab: AppTab = .home
+    /// Вкладка, в которую ведёт «назад» из вложенного раздела.
+    @Published var rootTab: AppTab = .home
+    /// Окно «+» (быстрые действия).
+    @Published var quickCreateVisible = false
+    /// Запрос из «+»/«Сегодня»: открыть на «Записи» новую страницу или пост.
+    @Published var bookingIntent: BookingIntent?
+    /// Запрос из «+»: открыть «Абонементы» сразу с выдачей пакета.
+    @Published var issuePackageRequested = false
     /// Deep link selfvoy://signup?ref=…: nil — ссылки не было; иначе код приглашения
     /// ("" — без валидного кода). Экран входа открывает регистрацию и забирает код.
     @Published var signupRef: String?
@@ -236,7 +280,21 @@ final class AppStore: ObservableObject {
     // Страницы записи (booking.*) и рефералы (referral.*); nil — ещё не загружены.
     @Published var bookingPages: [BookingPage]?
     @Published var bookings: [Booking] = []
+    /// nil — записи ещё не загружались.
+    @Published var bookingsLoaded = false
+    /// Свободные окна первой открытой страницы (лента «Сегодня»).
+    @Published var freeSlots: [FreeSlot] = []
     @Published var referral: ReferralInfo?
+    /// Тариф из user.plan (F3); у старого сервера — nil.
+    @Published var userPlan: SelfvoyPlan?
+    /// F5: пакеты владельца (nil — не загружались).
+    @Published var packages: [OwnerPackage]?
+    /// F2/F4/F6: подключения.
+    @Published var telegram: TelegramStatus?
+    @Published var payments: PaymentsStatus?
+    @Published var calendarFeed: CalendarFeed?
+    /// Ссылка подписки — видна только сразу после calendar.feedReset (токен не хранится).
+    @Published var calendarFeedLink: String?
     @Published var connections: [ConnectionRow] = []
     @Published var providers: [IntegrationProvider] = []
 
@@ -457,6 +515,7 @@ final class AppStore: ObservableObject {
         applyUser(SelfvoyUser(json: user))
         authState = .loggedIn
         tab = .home
+        rootTab = .home
         startEventLoop()
         loadAll()
         await checkOnboarding()
@@ -477,6 +536,7 @@ final class AppStore: ObservableObject {
         userName = user.displayName.isEmpty ? user.email : user.displayName
         userEmail = user.email
         userBio = user.bio
+        userPlan = user.plan
     }
 
     private func deviceId() -> String {
@@ -492,7 +552,9 @@ final class AppStore: ObservableObject {
         chats = []; contacts = []; foundUsers = []; openChatId = 0; messages = []
         tasks = []; confirmations = []; permissions = []; connections = []; providers = []
         notices = []; unreadNotifications = 0; pushDevices = []
-        bookingPages = nil; bookings = []; referral = nil
+        bookingPages = nil; bookings = []; bookingsLoaded = false; freeSlots = []; referral = nil
+        userPlan = nil; packages = nil; telegram = nil; payments = nil; calendarFeed = nil; calendarFeedLink = nil
+        quickCreateVisible = false; bookingIntent = nil; issuePackageRequested = false; rootTab = .home
         twoFaEnabled = false; twoFaSecret = ""; recoveryCodes = []
         userId = 0; userName = ""; userEmail = ""; userBio = ""; profileError = ""; tab = .home
         updateBadge()
@@ -530,8 +592,12 @@ final class AppStore: ObservableObject {
         case SelfvoyEventName.notificationNew:
             loadNotifications()
             let kind = payload.string("kind")
-            if kind.hasPrefix("booking."), tab == .booking { loadBooking() }
-            if kind == "referral.joined", referral != nil { loadReferral() }
+            if SelfvoyNotificationKind.touchesBookings(kind) { loadBooking() }
+            if SelfvoyNotificationKind.touchesPackages(kind), packages != nil { loadPackages() }
+            if SelfvoyNotificationKind.touchesPlan(kind) {
+                if referral != nil { loadReferral() }
+                refreshPlan()
+            }
         case SelfvoyEventName.sessionRevoked:
             sessionRevoked(reason: payload.string("reason"))
         default:
@@ -548,16 +614,24 @@ final class AppStore: ObservableObject {
         loadIntegrations()
         load2faStatus()
         loadMemory()
+        loadBooking()
     }
 
     func selectTab(_ value: AppTab) {
         tab = value
+        if value.isRoot { rootTab = value }
         if value != .contacts { openChatId = 0 }
         switch value {
         case .settings:
             loadPermissions(); loadIntegrations(); load2faStatus(); loadPrivacy(); loadReferral()
-        case .booking:
+        case .booking, .home:
             loadBooking()
+        case .more:
+            loadReferral(); refreshPlan()
+        case .packages:
+            loadPackages(); loadBooking()
+        case .integrations:
+            loadGrowthIntegrations(); loadPrivacy()
         case .confirmations:
             loadConfirmations()
         case .notifications:
@@ -951,26 +1025,202 @@ final class AppStore: ObservableObject {
 
     func loadBooking() {
         run {
-            self.bookingPages = try await self.client.bookingPageList()
-            self.bookings = try await self.client.bookingList(limit: 100)
+            let pages = try await self.client.bookingPageList()
+            self.bookingPages = pages
+            self.bookings = try await self.client.bookingList(limit: 200)
+            self.bookingsLoaded = true
+            await self.loadFreeSlots(pages: pages)
         }
     }
 
-    /// pageId == nil — новая страница. true — сохранено (форму можно закрыть).
-    func saveBookingPage(id: Int64?, fields: BookingPageFields) async -> Bool {
-        do {
-            let page: BookingPage
-            if let id {
-                page = try await client.bookingPageUpdate(id: id, fields: fields)
-                bookingPages = (bookingPages ?? []).map { $0.id == page.id ? page : $0 }
-            } else {
-                page = try await client.bookingPageCreate(fields)
-                bookingPages = [page] + (bookingPages ?? []).filter { $0.id != page.id }
-            }
-            return true
-        } catch {
-            fail(error)
-            return false
+    /// Свободные окна первой открытой страницы — те же, что видит гость (ответ
+    /// сервера кэшируется на минуту). Ошибка AI-сервиса — просто без окон.
+    private func loadFreeSlots(pages: [BookingPage]) async {
+        guard let page = pages.first(where: { $0.isActive }) else {
+            freeSlots = []
+            return
+        }
+        freeSlots = (try? await client.bookingFreeSlots(page: page)) ?? []
+    }
+
+    /// Задачи со сроком для ленты дня.
+    var dayTasks: [DayTaskInput] {
+        tasks.compactMap { task in
+            guard task.status == "pending", let at = Format.parseISO(task.whenAt) else { return nil }
+            return DayTaskInput(id: task.id, title: task.title, at: at)
+        }
+    }
+
+    func page(id: Int64) -> BookingPage? {
+        bookingPages?.first { $0.id == id }
+    }
+
+    /// Публичная ссылка страницы для текста «Предложить» и поста.
+    func publicLink(_ page: BookingPage) -> String? {
+        page.url.isEmpty ? nil : page.url
+    }
+
+    private func put(_ booking: Booking) {
+        if bookings.contains(where: { $0.id == booking.id }) {
+            bookings = bookings.map { $0.id == booking.id ? booking : $0 }
+        } else {
+            bookings.insert(booking, at: 0)
+        }
+    }
+
+    /// booking.paymentSet из карточки записи; ошибка — текстом для окна.
+    func setBookingPayment(_ booking: Booking, _ mark: OwnerPaymentMark) async throws {
+        let updated = try await client.bookingPaymentSet(id: booking.id, status: mark)
+        put(updated)
+        switch mark {
+        case .paid: setStatus("Оплата отмечена — гостю ушло письмо «Оплата получена»")
+        case .waived: setStatus("Отмечено: без оплаты")
+        case .refunded: setStatus("Отмечен возврат")
+        }
+    }
+
+    /// Отмена одной встречи серии (occurrence) или всех предстоящих (nil).
+    func cancelBooking(_ booking: Booking, occurrence: String?) async throws {
+        let updated = try await client.bookingOwnerCancel(id: booking.id, occurrence: occurrence)
+        put(updated)
+        setStatus(occurrence == nil ? "Запись отменена — гость получит письмо" : "Встреча отменена — гость получит письмо")
+        bookingPages = try? await client.bookingPageList()
+        loadTasks()
+    }
+
+    /// Создание или правка страницы со всеми полями (F1–F5). Правка уходит только
+    /// изменёнными полями; pro_required и прочие ошибки — исключением для формы.
+    func saveBookingPage(page: BookingPage?, fields: BookingPageFields) async throws {
+        let saved: BookingPage
+        if let page {
+            let changes = fields.changes(from: page.fields)
+            if changes.isEmpty { return }
+            saved = try await client.bookingPageUpdate(id: page.id, fields: fields, original: page.fields)
+            bookingPages = (bookingPages ?? []).map { $0.id == saved.id ? saved : $0 }
+        } else {
+            saved = try await client.bookingPageCreate(fields)
+            bookingPages = [saved] + (bookingPages ?? []).filter { $0.id != saved.id }
+        }
+        setStatus(page == nil ? "Страница создана — поделитесь ссылкой" : "Сохранено")
+        await loadFreeSlots(pages: bookingPages ?? [])
+    }
+
+    func slotsPost(page: BookingPage, days: Int, format: SlotsPostFormat) async throws -> SlotsPost {
+        try await client.bookingSlotsPost(pageId: page.id, days: days, format: format)
+    }
+
+    // MARK: Пакеты и абонементы (F5)
+
+    func loadPackages() {
+        run { self.packages = try await self.client.packageList(limit: 200) }
+    }
+
+    private func put(_ package: OwnerPackage) {
+        var list = packages ?? []
+        if list.contains(where: { $0.id == package.id }) {
+            list = list.map { $0.id == package.id ? package : $0 }
+        } else {
+            list.insert(package, at: 0)
+        }
+        packages = list
+    }
+
+    func issuePackage(_ request: PackageIssueRequest) async throws -> PackageIssueResult {
+        let result = try await client.packageIssue(request)
+        put(result.package)
+        return result
+    }
+
+    func adjustPackage(_ package: OwnerPackage, delta: Int) async throws {
+        put(try await client.packageAdjust(id: package.id, delta: delta))
+    }
+
+    func cancelPackage(_ package: OwnerPackage) async throws {
+        put(try await client.packageCancel(id: package.id))
+        setStatus("Абонемент отменён — клиент получит письмо")
+    }
+
+    func setPackagePayment(_ package: OwnerPackage, _ mark: OwnerPaymentMark) async throws {
+        put(try await client.packagePaymentSet(id: package.id, status: mark))
+    }
+
+    // MARK: Подключения: Telegram, ЮKassa, календарь (F2, F4, F6)
+
+    func loadGrowthIntegrations() {
+        Task {
+            if let value = try? await client.telegramStatus() { telegram = value }
+            if let value = try? await client.paymentsStatus() { payments = value }
+            if let value = try? await client.calendarFeed() { calendarFeed = value }
+        }
+    }
+
+    /// Ссылка на бота (15 минут) — открывается в Telegram.
+    func telegramConnectURL() async throws -> URL {
+        let link = try await client.telegramLink()
+        guard let url = URL(string: link.url) else {
+            throw SelfvoyError(code: "bad_request", message: "Сервер вернул неверную ссылку на бота")
+        }
+        return url
+    }
+
+    func telegramUnlink() {
+        run {
+            _ = try await self.client.telegramUnlink()
+            self.telegram = try await self.client.telegramStatus()
+            self.setStatus("Telegram отключён")
+        }
+    }
+
+    /// `prefs.notifications.telegram` (по умолчанию true).
+    var telegramNotifications: Bool {
+        prefs["notifications"]?["telegram"]?.boolValue ?? true
+    }
+
+    func setTelegramNotifications(_ enabled: Bool) {
+        run {
+            let current = try await self.client.prefsGet()
+            let payload = SelfvoyClient.telegramNotificationsPayload(current: current, enabled: enabled)
+            self.applyPrefs(try await self.client.prefsSet(payload))
+        }
+    }
+
+    /// Секрет ЮKassa живёт только в аргументе этого вызова: не сохраняется и не логируется.
+    func connectPayments(shopId: String, secretKey: String) async throws {
+        payments = try await client.paymentsConnect(shopId: shopId, secretKey: secretKey)
+        setStatus("ЮKassa подключена — гости смогут платить картой и через СБП")
+    }
+
+    func disconnectPayments() {
+        run {
+            self.payments = try await self.client.paymentsDisconnect()
+            self.setStatus("ЮKassa отключена")
+        }
+    }
+
+    /// Новая ссылка подписки: прежняя перестаёт работать во всех календарях.
+    func resetCalendarFeed() async throws {
+        let feed = try await client.calendarFeedReset()
+        calendarFeed = feed
+        calendarFeedLink = feed.resolvedURL(serverURL: serverURLText)
+        if calendarFeedLink == nil {
+            throw SelfvoyError(code: "bad_request",
+                               message: "Ссылку не собрать: адрес сервера неизвестен. Задайте на сервере SELFVOY_SERVER_PUBLIC_URL.")
+        }
+    }
+
+    func disableCalendarFeed() {
+        run {
+            self.calendarFeed = try await self.client.calendarFeedDisable()
+            self.calendarFeedLink = nil
+            self.setStatus("Подписка на календарь выключена")
+        }
+    }
+
+    /// Тариф меняется наградой за приглашение — перечитываем пользователя.
+    func refreshPlan() {
+        Task {
+            guard let me = try? await client.me() else { return }
+            userPlan = SelfvoyUser(json: me["user"] ?? me).plan
         }
     }
 
@@ -990,18 +1240,12 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func cancelBooking(_ booking: Booking) {
-        run {
-            let updated = try await self.client.bookingOwnerCancel(id: booking.id)
-            self.bookings = self.bookings.map { $0.id == updated.id ? updated : $0 }
-            // Счётчик «Предстоит: N» считает сервер — перечитываем страницы.
-            self.bookingPages = try await self.client.bookingPageList()
-            self.loadTasks()
-        }
-    }
-
     func loadReferral() {
-        run { self.referral = try await self.client.referralGet() }
+        run {
+            let info = try await self.client.referralGet()
+            self.referral = info
+            if let plan = info.plan { self.userPlan = plan }
+        }
     }
 
     func loadPermissions() {
@@ -1117,7 +1361,8 @@ final class AppStore: ObservableObject {
             let payload = try await self.client.notificationsList()
             self.notices = payload.array("notifications").map {
                 Notice(id: $0.int("id"), kind: $0.string("kind"), title: $0.string("title"),
-                       body: $0.string("body"), read: $0.bool("read"), createdAt: $0.string("created_at"))
+                       body: $0.string("body"), read: $0.bool("read"), createdAt: $0.string("created_at"),
+                       payload: $0["payload"] ?? .emptyObject)
             }
             self.unreadNotifications = payload.int("unread")
             self.updateBadge()
@@ -1190,6 +1435,8 @@ final class AppStore: ObservableObject {
             ask(text)
         case .tasks:
             selectTab(.tasks)
+        case .notifications:
+            selectTab(.notifications)
         case .settings:
             selectTab(.settings)
         case .signup(let ref):
@@ -1224,13 +1471,15 @@ final class AppStore: ObservableObject {
         errorMessage = describe(error)
     }
 
-    private func describe(_ error: Error) -> String {
+    /// Текст ошибки для пользователя (окна и формы показывают его у себя).
+    func describe(_ error: Error) -> String {
         guard let error = error as? SelfvoyError else { return error.localizedDescription }
         switch error.code {
+        case ProRequired.code: return ProRequired.text
         case "unauthorized": return "Неверный email или пароль"
         case "requires_2fa": return "Нужен код двухфакторной аутентификации"
         case "email_not_verified": return "Email не подтверждён"
-        case "conflict": return "Такой email уже зарегистрирован"
+        case "conflict": return error.message.isEmpty ? "Такой email уже зарегистрирован" : error.message
         case "not_found": return "Не найдено"
         case "disconnected": return "Нет соединения с сервером"
         case "upstream_error": return "AI-сервис недоступен, попробуйте позже"

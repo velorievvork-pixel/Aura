@@ -52,7 +52,8 @@ targets:
           - Manrope-SemiBold.ttf
           - Manrope-Bold.ttf
           - Manrope-ExtraBold.ttf
-        UIUserInterfaceStyle: Dark
+        # Тема — системная: экраны дизайна 2026 бывают светлыми и тёмными; экраны v3
+        # (вход, чат, переговоры…) сами включают тёмную тему (AppTab.usesLegacyTheme).
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

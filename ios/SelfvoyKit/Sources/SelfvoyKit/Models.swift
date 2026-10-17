@@ -15,6 +15,8 @@ public struct SelfvoyUser: Codable, Equatable, Sendable {
     /// «О себе» (до 300 символов); у старых payload поля нет — пустая строка.
     public var bio: String
     public var avatarUrl: String
+    /// Тариф (F3); у старого сервера поля нет — nil.
+    public var plan: SelfvoyPlan?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -22,15 +24,17 @@ public struct SelfvoyUser: Codable, Equatable, Sendable {
         case displayName = "display_name"
         case bio
         case avatarUrl = "avatar_url"
+        case plan
     }
 
     public init(id: Int64 = 0, email: String = "", displayName: String = "",
-                bio: String = "", avatarUrl: String = "") {
+                bio: String = "", avatarUrl: String = "", plan: SelfvoyPlan? = nil) {
         self.id = id
         self.email = email
         self.displayName = displayName
         self.bio = bio
         self.avatarUrl = avatarUrl
+        self.plan = plan
     }
 
     public init(from decoder: Decoder) throws {
@@ -40,13 +44,71 @@ public struct SelfvoyUser: Codable, Equatable, Sendable {
         displayName = try container.decodeIfPresent(String.self, forKey: .displayName) ?? ""
         bio = try container.decodeIfPresent(String.self, forKey: .bio) ?? ""
         avatarUrl = try container.decodeIfPresent(String.self, forKey: .avatarUrl) ?? ""
+        plan = try container.decodeIfPresent(SelfvoyPlan.self, forKey: .plan)
     }
 
     /// Из динамического payload (`auth.me` отдаёт пользователя в корне, прочие — в `user`).
     public init(json: JSONValue) {
         self.init(id: json.int("id"), email: json.string("email"),
                   displayName: json.string("display_name"), bio: json.string("bio"),
-                  avatarUrl: json.string("avatar_url"))
+                  avatarUrl: json.string("avatar_url"),
+                  plan: SelfvoyPlan(json: json["plan"]))
+    }
+}
+
+// MARK: - Тариф
+
+/// `user.plan`: `{name: pro|free, until: ISO|"", enforced}` (docs/PROTOCOL.md → «Авторизация»).
+/// `name` честный: Pro, пока `until` в будущем; `enforced` — включены ли ограничения Free.
+public struct SelfvoyPlan: Codable, Equatable, Sendable {
+    public var name: String
+    public var until: String
+    public var enforced: Bool
+
+    public init(name: String = "free", until: String = "", enforced: Bool = false) {
+        self.name = name
+        self.until = until
+        self.enforced = enforced
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "free"
+        until = try container.decodeIfPresent(String.self, forKey: .until) ?? ""
+        enforced = try container.decodeIfPresent(Bool.self, forKey: .enforced) ?? false
+    }
+
+    /// Из объекта `plan`; нет объекта (старый сервер) — nil.
+    public init?(json: JSONValue?) {
+        guard let json, case .object = json else { return nil }
+        self.init(name: json.string("name", default: "free"), until: json.string("until"),
+                  enforced: json.bool("enforced"))
+    }
+
+    /// Действует ли Pro сейчас: `name == pro` и срок не прошёл (пустой срок — бессрочно).
+    public func isPro(now: Date = Date()) -> Bool {
+        guard name == "pro" else { return false }
+        guard let date = SelfvoyDate.parse(until) else { return true }
+        return date > now
+    }
+
+    /// Доступны ли функции Pro: действует Pro или идёт бета (ограничения выключены).
+    public func proFeaturesOpen(now: Date = Date()) -> Bool {
+        isPro(now: now) || !enforced
+    }
+
+    /// Подпись бейджа: «Pro до 12 ноября» / «Pro» / «Free».
+    public func badge(now: Date = Date()) -> String {
+        guard isPro(now: now) else { return "Free" }
+        guard let date = SelfvoyDate.parse(until) else { return "Pro" }
+        return "Pro до \(SelfvoyDate.dayMonth(date))"
+    }
+
+    /// Пояснение под бейджем.
+    public func hint(now: Date = Date()) -> String {
+        if isPro(now: now) { return "Скрытая подпись, предоплата, пакеты и ЮKassa доступны" }
+        return enforced ? "Функции Pro: скрыть подпись, предоплата, пакеты, ЮKassa"
+                        : "Пока идёт бета, функции Pro открыты всем"
     }
 }
 

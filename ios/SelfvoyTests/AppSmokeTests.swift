@@ -37,6 +37,20 @@ final class AppSmokeTests: XCTestCase {
         XCTAssertEqual(Format.genitive("Ольга"), "Ольги")
     }
 
+    func testTabsOfDesign2026() {
+        // Четыре вкладки снизу; вложенные разделы возвращают «назад» в них.
+        XCTAssertEqual([AppTab.home, .booking, .selfvoy, .more].filter(\.isRoot).count, 4)
+        XCTAssertFalse(AppTab.packages.isRoot)
+        XCTAssertFalse(AppTab.home.usesLegacyTheme)
+        XCTAssertFalse(AppTab.integrations.usesLegacyTheme)
+        XCTAssertTrue(AppTab.contacts.usesLegacyTheme)
+        let store = AppStore()
+        store.selectTab(.more)
+        store.selectTab(.packages)
+        XCTAssertEqual(store.rootTab, .more)
+        XCTAssertEqual(BookingFocus(bookingId: 7, start: nil).id, "7-")
+    }
+
     func testIsoRoundTrip() {
         let date = Date(timeIntervalSince1970: 1_900_000_000)
         XCTAssertEqual(Format.parseISO(Format.isoString(date)), date)

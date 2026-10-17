@@ -41,6 +41,9 @@ ALLOWED: set[str] = {
     "home.notifications",
     "home.settings",
     "nav.back",
+    # SF Symbols статусов (значок + слово) в дизайне 2026: Ink.symbol, история записи
+    "bell.fill",
+    "clock.fill",
 }
 
 # Серверные события: их клиент не отправляет, только принимает.
@@ -57,8 +60,14 @@ KINDS = {
     "twofactor.disabled",
     "referral.joined",
     "referral.reward",
+    "booking.created",
+    "booking.rescheduled",
+    "booking.cancelled",
     "booking.confirmed",
     "booking.payment",
+    "package.purchased",
+    "package.payment",
+    "package.low",
 }
 
 

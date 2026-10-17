@@ -1,5 +1,6 @@
 // NotificationsView.swift — входящие уведомления (notifications.list/read)
 // и устройства, на которые приходят push (devices.push.*).
+import SelfvoyKit
 import SwiftUI
 
 struct NotificationsView: View {
@@ -31,6 +32,7 @@ struct NotificationsView: View {
                 ForEach(store.notices) { notice in
                     Button {
                         if !notice.read { store.markNotificationsRead(id: notice.id) }
+                        open(notice)
                     } label: {
                         HStack(alignment: .top, spacing: 12) {
                             Circle()
@@ -39,6 +41,11 @@ struct NotificationsView: View {
                                 .padding(.top, 5)
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(notice.title).font(SelfvoyFont.titleSmall).foregroundStyle(SelfvoyColor.textPrimary)
+                                // Записи, оплаты, пакеты, награды — статус значком и словом (дизайн 2026).
+                                if Self.growthKinds.contains(where: { notice.kind.hasPrefix($0) }) {
+                                    StatusBadge(status: SelfvoyNotificationKind.status(notice.kind, payload: notice.payload),
+                                                compact: true)
+                                }
                                 // У login.new в body сетевой адрес — пользователю он ни о чём не говорит.
                                 if !notice.body.isEmpty && notice.kind != "login.new" {
                                     Text(notice.body).font(SelfvoyFont.small).foregroundStyle(SelfvoyColor.textSecondary)
@@ -73,6 +80,19 @@ struct NotificationsView: View {
             .padding(.top, 6)
             .padding(.bottom, 20)
         }
-        .refreshable { await store.loadNotifications() }
+        .refreshable { store.loadNotifications() }
+    }
+
+    private static let growthKinds = ["booking.", "package.", "referral."]
+
+    /// Уведомление ведёт в свой раздел: записи, абонементы, тариф.
+    private func open(_ notice: Notice) {
+        if notice.kind.hasPrefix("booking.") {
+            store.selectTab(.booking)
+        } else if notice.kind.hasPrefix("package.") {
+            store.selectTab(.packages)
+        } else if notice.kind.hasPrefix("referral.") {
+            store.selectTab(.more)
+        }
     }
 }

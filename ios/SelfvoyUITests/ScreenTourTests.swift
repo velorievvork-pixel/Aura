@@ -43,7 +43,8 @@ final class ScreenTourTests: XCTestCase {
         password.typeText(env["SELFVOY_TOUR_PASSWORD"] ?? "")
         shot("login-keyboard")
         app.buttons["Войти"].firstMatch.tap()
-        guard app.staticTexts["Все системы работают"].waitForExistence(timeout: 25) else {
+        // После входа — «Сегодня» (дизайн 2026): вкладки «Сегодня · Запись · ИИ · Ещё» и «+».
+        guard app.buttons["tab.home"].waitForExistence(timeout: 25) else {
             shot("login-failed")
             XCTFail("вход не удался")
             return
@@ -53,8 +54,24 @@ final class ScreenTourTests: XCTestCase {
         app.swipeUp()
         shot("home-scrolled")
 
-        // Мой Selfvoy
-        tapTab("Selfvoy")
+        // Запись: страницы, пост со свободными окнами, записи гостей
+        tapTab("Запись")
+        shot("booking")
+        if tapButton(containing: "Пост со свободными окнами") {
+            sleep(3)
+            shot("slots-post")
+            _ = tapButton(containing: "Готово")
+        }
+
+        // «+» — быстрые действия
+        if tapButton(containing: "Создать", id: "tab.create") {
+            shot("quick-create")
+            app.swipeDown()
+            sleep(1)
+        }
+
+        // Ассистент
+        tapTab("ИИ")
         shot("selfvoy")
         if tapButton(containing: "расписании") {
             sleep(10)
@@ -67,8 +84,21 @@ final class ScreenTourTests: XCTestCase {
             shot("selfvoy-keyboard")
         }
 
+        // «Ещё»: тариф, награда за приглашение, разделы
+        tapTab("Ещё")
+        shot("more")
+        if tapButton(containing: "Абонементы") {
+            shot("packages")
+            tapBack()
+        }
+        if tapButton(containing: "Подключения") {
+            shot("integrations")
+            tapBack()
+        }
+
         // Переговоры
-        tapTab("Переговоры")
+        tapTab("Ещё")
+        _ = tapButton(containing: "Переговоры")
         shot("negotiation")
         if tapButton(containing: "Начать переговоры") {
             sleep(8)
@@ -79,7 +109,8 @@ final class ScreenTourTests: XCTestCase {
         }
 
         // Задачи
-        tapTab("Задачи")
+        tapBack()
+        _ = tapButton(containing: "Задачи")
         shot("tasks")
         if tapButton(containing: "Новая задача") {
             sleep(1)
@@ -88,7 +119,8 @@ final class ScreenTourTests: XCTestCase {
         }
 
         // Контакты
-        tapTab("Контакты")
+        tapBack()
+        _ = tapButton(containing: "Контакты и чаты")
         shot("contacts")
         if tapButton(containing: "Дима Волков") {
             shot("contact-card")
@@ -99,8 +131,8 @@ final class ScreenTourTests: XCTestCase {
             }
         }
 
-        // Шапка «Главной»
-        tapTab("Главная")
+        // Шапка «Сегодня»
+        tapTab("Сегодня")
         // Строка «назад» вложенных разделов закреплена над прокруткой, поэтому
         // кнопка доступна и после прокрутки длинных настроек.
         if tapButton(containing: "Настройки", id: "home.settings") {

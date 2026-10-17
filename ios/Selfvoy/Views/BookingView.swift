@@ -1,7 +1,7 @@
-// BookingView.swift — «Запись»: страницы записи владельца (booking.*).
-// Постоянная ссылка #/b/<slug>: люди без Selfvoy сами выбирают свободное время
-// (страница гостя — в веб-клиенте). Здесь — создать/изменить страницу, пауза,
-// удаление, ссылка (копировать/поделиться) и записи гостей с отменой.
+// BookingView.swift — «Запись» (дизайн 2026): страницы записи владельца
+// (booking.*), постоянная ссылка #/b/<slug> (страница гостя — в веб-клиенте),
+// настройки страницы (PageSettingsView), «Пост со свободными окнами»
+// (booking.slotsPost) и записи гостей; нажатие на запись — карточка записи.
 import SelfvoyKit
 import SwiftUI
 import UIKit
@@ -9,271 +9,308 @@ import UIKit
 struct BookingView: View {
 
     @EnvironmentObject private var store: AppStore
-    @State private var editing: BookingPage?
-    @State private var creating = false
+    /// nil — окно настроек закрыто; .new — новая страница; .edit — правка.
+    @State private var editor: PageEditorTarget?
+    @State private var postPage: BookingPage?
+    @State private var focus: BookingFocus?
+    @State private var showPast = false
+
+    private var upcoming: [Booking] {
+        let now = Date()
+        return store.bookings.filter { booking in
+            booking.isActive && booking.occurrences.contains { item in
+                item.active && (SelfvoyDate.parse(item.end.isEmpty ? item.start : item.end).map { $0 > now } ?? false)
+            }
+        }
+        .sorted { nextStart($0) < nextStart($1) }
+    }
+
+    private var past: [Booking] {
+        let ids = Set(upcoming.map(\.id))
+        return store.bookings.filter { !ids.contains($0.id) }
+    }
+
+    private func nextStart(_ booking: Booking) -> String {
+        let now = Date()
+        return booking.occurrences.first { item in
+            item.active && (SelfvoyDate.parse(item.start).map { $0 > now } ?? false)
+        }?.start ?? booking.occurrences.last?.start ?? ""
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            SubscreenBar {
-                if !creating && editing == nil {
-                    GlassButton(title: "Новая", systemImage: "plus", height: 38, fullWidth: false) { creating = true }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                InkHeader(eyebrow: "Страницы и записи", title: "Запись") {
+                    InkRoundButton(systemImage: "plus", label: "Новая страница") { editor = .new }
                 }
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ScreenHeader("Запись")
-                    Muted("Постоянная ссылка: люди без Selfvoy сами выбирают свободное время в вашем расписании — можно сразу серией раз в неделю.")
-                    if creating || editing != nil {
-                        BookingPageForm(page: editing) {
-                            creating = false
-                            editing = nil
+                pagesSection
+                InkSectionHeader(title: "Записи", trailing: upcoming.isEmpty ? "" : "\(upcoming.count) предстоит")
+                if !store.bookingsLoaded {
+                    InkEmpty(text: "Загружаем записи…")
+                } else if upcoming.isEmpty {
+                    InkEmpty(text: "Здесь появятся люди, которые записались по вашим ссылкам.")
+                } else {
+                    InkGroup {
+                        ForEach(Array(upcoming.enumerated()), id: \.element.id) { index, booking in
+                            if index > 0 { InkDivider() }
+                            BookingRow(booking: booking) { focus = BookingFocus(bookingId: booking.id, start: nil) }
                         }
-                        .id(editing?.id ?? 0)
                     }
-                    SectionTitle(text: "Страницы").padding(.top, 6)
-                    if let pages = store.bookingPages {
-                        if pages.isEmpty && !creating {
-                            Muted("Создайте первую страницу — например, «Консультация, 30 минут» — и отправьте ссылку клиентам.")
-                        }
-                        ForEach(pages) { page in
-                            BookingPageCard(page: page) {
-                                creating = false
-                                editing = page
+                }
+                if !past.isEmpty {
+                    Button(showPast ? "Скрыть прошедшие и отменённые" : "Прошедшие и отменённые: \(past.count)") {
+                        withAnimation { showPast.toggle() }
+                    }
+                    .buttonStyle(InkSecondaryButtonStyle())
+                    if showPast {
+                        InkGroup {
+                            ForEach(Array(past.prefix(50).enumerated()), id: \.element.id) { index, booking in
+                                if index > 0 { InkDivider() }
+                                BookingRow(booking: booking) { focus = BookingFocus(bookingId: booking.id, start: nil) }
                             }
                         }
-                    } else {
-                        Muted("Загружаем…")
-                    }
-                    SectionTitle(text: "Записи гостей").padding(.top, 6)
-                    if store.bookings.isEmpty {
-                        Muted("Здесь появятся люди, которые записались по вашим ссылкам.")
-                    }
-                    ForEach(store.bookings) { booking in
-                        BookingRowView(booking: booking)
                     }
                 }
-                .padding(20)
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 24)
         }
-        .onAppear { store.loadBooking() }
-    }
-}
-
-private struct BookingPageForm: View {
-
-    @EnvironmentObject private var store: AppStore
-    let page: BookingPage?
-    let onClose: () -> Void
-
-    @State private var title = ""
-    @State private var details = ""
-    @State private var duration = 30
-    @State private var days = 14
-    @State private var perDay = "4"
-    @State private var notice = "2"
-    @State private var series = "1"
-    @State private var weekends = false
-    @State private var problem: String?
-    @State private var busy = false
-
-    private let durations = [(15, "15 мин"), (30, "30 мин"), (45, "45 мин"), (60, "1 час"), (90, "1,5 часа")]
-    private let horizons = [(7, "Неделя"), (14, "2 недели"), (30, "Месяц"), (60, "2 месяца")]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(page == nil ? "Новая страница записи" : "Изменить страницу")
-                .font(SelfvoyFont.titleSmall).foregroundStyle(SelfvoyColor.textPrimary)
-            SelfvoyField(text: $title, placeholder: "Например, консультация", label: "Название")
-            SelfvoyField(text: $details, placeholder: "Что будет на встрече, где и как", label: "Описание для гостей")
-            Muted("Длительность")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(durations, id: \.0) { item in
-                        SelfvoyChip(title: item.1, active: duration == item.0) { duration = item.0 }
-                    }
-                }
-            }
-            Muted("Запись открыта на")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(horizons, id: \.0) { item in
-                        SelfvoyChip(title: item.1, active: days == item.0) { days = item.0 }
-                    }
-                }
-            }
-            SelfvoyField(text: $perDay, placeholder: "4", label: "Встреч в день, не больше", keyboard: .numberPad)
-            SelfvoyField(text: $notice, placeholder: "2", label: "Запас до встречи, часов", keyboard: .numberPad)
-            SelfvoyField(text: $series, placeholder: "1", label: "Серия: до скольких встреч раз в неделю", keyboard: .numberPad)
-            Toggle(isOn: $weekends) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Выходные").font(SelfvoyFont.titleSmall).foregroundStyle(SelfvoyColor.textPrimary)
-                    Muted(weekends ? "Будни и выходные" : "Только будни")
-                }
-            }
-            if let problem {
-                Text(problem).font(SelfvoyFont.small).foregroundStyle(SelfvoyColor.danger)
-            }
-            HStack(spacing: 10) {
-                GlassButton(title: busy ? "Сохраняем…" : (page == nil ? "Создать" : "Сохранить"), enabled: !busy) { save() }
-                GlassButton(title: "Отмена", quiet: true) { onClose() }
-            }
-        }
-        .glassCard(padding: 16)
+        .inkScreen()
+        .refreshable { store.loadBooking() }
         .onAppear {
-            guard let fields = page?.fields else { return }
-            title = fields.title
-            details = fields.description
-            duration = fields.durationMinutes
-            days = fields.daysAhead
-            perDay = String(fields.maxPerDay)
-            notice = String(fields.noticeHours)
-            series = String(fields.maxSeries)
-            weekends = fields.weekends
+            store.loadBooking()
+            consumeIntent()
+        }
+        .onChange(of: store.bookingIntent) { _ in consumeIntent() }
+        .sheet(item: $editor) { target in
+            PageSettingsView(page: target.page)
+                .inkSheet(large: true)
+        }
+        .sheet(item: $postPage) { page in
+            SlotsPostSheet(page: page)
+                .inkSheet()
+        }
+        .sheet(item: $focus) { target in
+            BookingSheetView(focus: target)
+                .inkSheet()
         }
     }
 
-    private func save() {
-        let fields = BookingPageFields(
-            title: title, description: details, durationMinutes: duration, daysAhead: days,
-            maxPerDay: Int(perDay) ?? 0, noticeHours: Int(notice) ?? -1, maxSeries: Int(series) ?? 0,
-            weekends: weekends)
-        problem = fields.validate()
-        guard problem == nil else { return }
-        busy = true
-        Task {
-            let saved = await store.saveBookingPage(id: page?.id, fields: fields)
-            busy = false
-            if saved { onClose() }
+    /// Запрос из «+» или «Сегодня»: новая страница или пост.
+    private func consumeIntent() {
+        guard let intent = store.bookingIntent else { return }
+        store.bookingIntent = nil
+        switch intent {
+        case .newPage:
+            editor = .new
+        case .post:
+            if let page = (store.bookingPages ?? []).first(where: { $0.isActive }) {
+                postPage = page
+            } else {
+                store.errorMessage = "Сначала откройте страницу записи — пост собирается из её свободных окон"
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pagesSection: some View {
+        if let pages = store.bookingPages {
+            if pages.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Постоянная ссылка для клиентов").font(InkFont.headline).foregroundStyle(Ink.label)
+                    Text("Люди без Selfvoy сами выбирают свободное время в вашем расписании — можно сразу серией раз в неделю, с ценой, предоплатой и напоминаниями.")
+                        .font(InkFont.callout).foregroundStyle(Ink.secondary)
+                    Button("Создать страницу") { editor = .new }
+                        .buttonStyle(InkPrimaryButtonStyle())
+                        .padding(.top, 4)
+                }
+                .inkCard(padding: 18)
+            }
+            ForEach(pages) { page in
+                PageCard(page: page,
+                         onEdit: { editor = .edit(page) },
+                         onPost: { postPage = page })
+            }
+        } else {
+            InkEmpty(text: "Загружаем страницы…")
         }
     }
 }
 
-private struct BookingPageCard: View {
+/// Цель окна настроек страницы.
+enum PageEditorTarget: Identifiable {
+    case new
+    case edit(BookingPage)
+
+    var id: String {
+        switch self {
+        case .new: return "new"
+        case .edit(let page): return "page-\(page.id)"
+        }
+    }
+
+    var page: BookingPage? {
+        if case .edit(let page) = self { return page }
+        return nil
+    }
+}
+
+// MARK: - Карточка страницы
+
+private struct PageCard: View {
 
     @EnvironmentObject private var store: AppStore
     let page: BookingPage
     let onEdit: () -> Void
+    let onPost: () -> Void
     @State private var confirmDelete = false
-    @State private var copied = false
 
     private var facts: String {
-        var parts = ["\(page.fields.durationMinutes) мин",
-                     "на \(page.fields.daysAhead) \(Format.plural(page.fields.daysAhead, "день", "дня", "дней")) вперёд",
-                     "до \(page.fields.maxPerDay) в день"]
-        if page.fields.maxSeries > 1 { parts.append("серия до \(page.fields.maxSeries)") }
-        parts.append(page.fields.weekends ? "и в выходные" : "только будни")
+        let f = page.fields
+        var parts = ["\(f.durationMinutes) мин"]
+        if f.price > 0 { parts.append(Money.format(f.price, currency: f.currency)) }
+        parts.append("на \(f.daysAhead) \(Format.plural(f.daysAhead, "день", "дня", "дней")) вперёд")
+        parts.append("до \(f.maxPerDay) в день")
+        if f.maxSeries > 1 { parts.append("серия до \(f.maxSeries)") }
         return parts.joined(separator: " · ")
+    }
+
+    private var extras: [String] {
+        let f = page.fields
+        var list: [String] = []
+        switch f.prepay {
+        case .full: list.append("предоплата")
+        case .deposit: list.append("депозит \(Money.format(f.deposit, currency: f.currency))")
+        case .off: break
+        }
+        if f.cancelHours > 0 { list.append("отмена за \(f.cancelHours) ч") }
+        if f.guestReminders { list.append("напоминания") }
+        if !f.packages.isEmpty { list.append("пакетов: \(f.packages.count)") }
+        if f.hideBranding { list.append("без подписи") }
+        return list
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(page.fields.title).font(SelfvoyFont.titleSmall).foregroundStyle(SelfvoyColor.textPrimary)
-                Spacer(minLength: 8)
-                Text(page.status == "active" ? "Открыта" : "На паузе")
-                    .font(SelfvoyFont.small)
-                    .foregroundStyle(page.status == "active" ? SelfvoyColor.textSecondary : SelfvoyColor.danger)
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "calendar.badge.clock")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(Ink.capsule(OwnerToday.pageColor(page.id, pages: store.bookingPages ?? []))))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(page.fields.title).font(InkFont.headline).foregroundStyle(Ink.label)
+                    Text(facts).font(InkFont.footnote).foregroundStyle(Ink.secondary)
+                }
+                Spacer(minLength: 4)
+                StatusBadge(status: page.isActive ? StatusView("Открыта", .green, .check)
+                                                  : StatusView("На паузе", .amber, .clock), compact: true)
             }
-            Muted(facts)
-            if !page.fields.description.isEmpty { Muted(page.fields.description) }
-            Text(page.link).font(SelfvoyFont.small).foregroundStyle(SelfvoyColor.textPrimary).textSelection(.enabled)
-            if page.url.isEmpty {
-                Muted("Сервер не знает свой публичный адрес (SELFVOY_PUBLIC_URL) — полную ссылку соберите из адреса веб-клиента.")
+            if !extras.isEmpty {
+                Text(extras.joined(separator: " · ")).font(InkFont.footnote).foregroundStyle(Ink.secondary)
             }
-            Muted(page.upcoming > 0
-                  ? "Предстоит: \(page.upcoming) \(Format.plural(page.upcoming, "встреча", "встречи", "встреч"))"
-                  : "Пока никто не записался")
             HStack(spacing: 8) {
-                GlassButton(title: copied ? "Скопировано" : "Копировать", systemImage: "doc.on.doc", height: 40) {
+                Text(page.link).font(InkFont.footnote.monospaced()).foregroundStyle(Ink.label)
+                    .lineLimit(1).truncationMode(.middle).textSelection(.enabled)
+                Spacer(minLength: 4)
+                Button {
                     UIPasteboard.general.string = page.link
-                    copied = true
+                    store.setStatus("Ссылка скопирована")
+                } label: {
+                    Image(systemName: "doc.on.doc").font(.system(size: 14, weight: .semibold))
                 }
+                .accessibilityLabel("Копировать ссылку")
                 ShareLink(item: page.link) {
-                    Label("Поделиться", systemImage: "square.and.arrow.up")
-                        .font(SelfvoyFont.small)
-                        .frame(maxWidth: .infinity, minHeight: 40)
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 14, weight: .semibold))
                 }
-                .foregroundStyle(SelfvoyColor.textPrimary)
+                .accessibilityLabel("Поделиться ссылкой")
             }
-            if confirmDelete {
+            .foregroundStyle(Ink.accent)
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Ink.fill))
+            if page.url.isEmpty {
+                Text("Сервер не знает свой публичный адрес (SELFVOY_PUBLIC_URL) — полную ссылку соберите из адреса веб-клиента.")
+                    .font(InkFont.caption).foregroundStyle(Ink.secondary)
+            }
+            Text(page.upcoming > 0
+                 ? "Предстоит: \(page.upcoming) \(Format.plural(page.upcoming, "встреча", "встречи", "встреч"))"
+                 : "Пока никто не записался")
+                .font(InkFont.footnote).foregroundStyle(Ink.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    Muted("Удалить страницу?")
-                    Spacer(minLength: 4)
-                    GlassButton(title: "Удалить", danger: true, height: 38, fullWidth: false) {
-                        store.deleteBookingPage(page)
-                        confirmDelete = false
-                    }
-                    GlassButton(title: "Нет", quiet: true, height: 38, fullWidth: false) { confirmDelete = false }
-                }
-            } else {
-                HStack(spacing: 8) {
-                    GlassButton(title: "Изменить", systemImage: "pencil", quiet: true, height: 38) { onEdit() }
-                    if page.status == "active" {
-                        GlassButton(title: "Пауза", systemImage: "pause", quiet: true, height: 38) {
-                            store.setBookingPagePaused(page, paused: true)
-                        }
+                    Button("Настроить", action: onEdit).buttonStyle(InkSecondaryButtonStyle())
+                    if page.isActive {
+                        Button("Пост со свободными окнами", action: onPost).buttonStyle(InkSecondaryButtonStyle(tint: Ink.amberInk))
+                        Button("Пауза") { store.setBookingPagePaused(page, paused: true) }
+                            .buttonStyle(InkSecondaryButtonStyle(tint: Ink.secondary))
                     } else {
-                        GlassButton(title: "Открыть", systemImage: "play", quiet: true, height: 38) {
-                            store.setBookingPagePaused(page, paused: false)
-                        }
+                        Button("Открыть запись") { store.setBookingPagePaused(page, paused: false) }
+                            .buttonStyle(InkSecondaryButtonStyle(tint: Ink.green))
                     }
-                    GlassButton(title: "", systemImage: "trash", quiet: true, height: 38, fullWidth: false) {
-                        confirmDelete = true
-                    }
+                    Button("Удалить") { confirmDelete = true }
+                        .buttonStyle(InkSecondaryButtonStyle(tint: Ink.red))
                 }
             }
         }
-        .glassCard(padding: 16)
+        .inkCard()
+        .confirmationDialog("Удалить страницу «\(page.fields.title)»? Ссылка перестанет работать, сделанные записи останутся.",
+                            isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Удалить страницу", role: .destructive) { store.deleteBookingPage(page) }
+            Button("Не удалять", role: .cancel) {}
+        }
     }
 }
 
-private struct BookingRowView: View {
+// MARK: - Строка записи
 
-    @EnvironmentObject private var store: AppStore
+private struct BookingRow: View {
     let booking: Booking
-    @State private var confirming = false
+    let onOpen: () -> Void
 
-    private var upcoming: [BookingOccurrence] {
-        booking.occurrences.filter { occurrence in
-            occurrence.active && (Format.parseISO(occurrence.start).map { $0 > Date() } ?? false)
+    private var status: StatusView {
+        let now = Date()
+        if !booking.isActive {
+            switch booking.cancelledBy {
+            case "owner": return StatusView("Отменили вы", .red, .cross)
+            case "system": return StatusView("Не оплачено", .red, .cross)
+            default: return StatusView("Отменил гость", .red, .cross)
+            }
         }
+        if let next = OwnerToday.focusOccurrence(booking, start: nil, now: now) {
+            return OwnerToday.occurrenceStatus(booking, next, now: now)
+        }
+        return StatusView("Прошла", .neutral, .check)
     }
 
-    private var statusText: String {
-        if booking.status == "cancelled" { return booking.cancelledBy == "owner" ? "Отменили вы" : "Отменил гость" }
-        return upcoming.isEmpty ? "Прошла" : "Предстоит"
+    private var when: String {
+        let now = Date()
+        let shown = booking.occurrences.filter { item in
+            item.active && (SelfvoyDate.parse(item.start).map { $0 > now } ?? false)
+        }
+        let list = shown.isEmpty ? Array(booking.occurrences.suffix(1)) : Array(shown.prefix(2))
+        var text = list.map { SelfvoyDate.when($0.start) }.joined(separator: " · ")
+        if shown.count > 2 { text += " · ещё \(shown.count - 2)" }
+        return text
     }
 
     var body: some View {
-        let shown = Array((upcoming.isEmpty ? booking.occurrences : upcoming).prefix(3))
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("\(booking.guestName) · \(booking.pageTitle)")
-                    .font(SelfvoyFont.titleSmall).foregroundStyle(SelfvoyColor.textPrimary)
-                Spacer(minLength: 8)
-                Text(statusText).font(SelfvoyFont.small)
-                    .foregroundStyle(booking.status == "cancelled" ? SelfvoyColor.danger : SelfvoyColor.textSecondary)
-            }
-            Muted(shown.map { "\(Format.dayPhrase($0.start)), \(Format.timeOf($0.start))" }.joined(separator: " · ")
-                  + (booking.reschedules > 0 ? " · переносов: \(booking.reschedules)" : ""))
-            if !booking.guestEmail.isEmpty { Muted(booking.guestEmail) }
-            if !booking.guestComment.isEmpty { Muted("«\(booking.guestComment)»") }
-            if !upcoming.isEmpty && booking.status == "active" {
-                if confirming {
-                    HStack(spacing: 8) {
-                        Muted("Отменить все встречи?")
-                        Spacer(minLength: 4)
-                        GlassButton(title: "Да", danger: true, height: 36, fullWidth: false) {
-                            store.cancelBooking(booking)
-                            confirming = false
-                        }
-                        GlassButton(title: "Нет", quiet: true, height: 36, fullWidth: false) { confirming = false }
-                    }
-                } else {
-                    GlassButton(title: "Отменить запись", quiet: true, height: 36, fullWidth: false) { confirming = true }
+        Button(action: onOpen) {
+            HStack(spacing: 12) {
+                InkAvatar(name: booking.guestName, size: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(booking.guestName.isEmpty ? "Гость" : booking.guestName)
+                        .font(InkFont.headline).foregroundStyle(Ink.label).lineLimit(1)
+                    Text("\(booking.pageTitle) · \(when)").font(InkFont.footnote).foregroundStyle(Ink.secondary).lineLimit(1)
                 }
+                Spacer(minLength: 4)
+                StatusBadge(status: status, compact: true)
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
         }
-        .glassCard(padding: 16)
+        .buttonStyle(.plain)
     }
 }

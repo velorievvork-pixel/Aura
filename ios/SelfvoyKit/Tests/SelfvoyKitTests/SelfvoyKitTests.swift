@@ -75,6 +75,7 @@ final class DeepLinkTests: XCTestCase {
         XCTAssertEqual(DeepLink(url: URL(string: "selfvoy://voice")!), .voice)
         XCTAssertEqual(DeepLink(url: URL(string: "selfvoy://tasks")!), .tasks)
         XCTAssertEqual(DeepLink(url: URL(string: "selfvoy://settings")!), .settings)
+        XCTAssertEqual(DeepLink(url: URL(string: "selfvoy://notifications")!), .notifications)
     }
 
     func testAsk() {
@@ -191,7 +192,15 @@ final class BookingModelTests: XCTestCase {
         XCTAssertEqual(payload["title"], .string("Консультация"))
         XCTAssertEqual(payload["duration_minutes"], .number(60))
         XCTAssertEqual(Set(payload.keys), ["title", "description", "duration_minutes", "days_ahead",
-                                           "max_per_day", "notice_hours", "max_series", "weekends"])
+                                           "max_per_day", "notice_hours", "max_series", "weekends",
+                                           "guest_reminders", "hide_branding", "price", "currency", "prepay",
+                                           "deposit", "payment_url", "payment_note", "pay_within_minutes",
+                                           "cancel_hours", "late_cancel", "policy_text", "packages"])
+        // Старый сервер без полей F1–F5 — значения по умолчанию.
+        XCTAssertTrue(page.fields.guestReminders)
+        XCTAssertEqual(page.fields.prepay, .off)
+        XCTAssertEqual(page.fields.currency, "RUB")
+        XCTAssertEqual(page.fields.payWithinMinutes, 60)
     }
 
     func testValidateLikeServer() {

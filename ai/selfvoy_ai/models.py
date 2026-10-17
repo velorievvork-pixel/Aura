@@ -260,7 +260,7 @@ class NegotiateRequest(BaseModel):
 #: (booking.get на сервере).
 OFFER_MIN_DURATION = 15
 OFFER_MAX_DURATION = 240
-OFFER_MAX_SLOTS = 120
+OFFER_MAX_SLOTS = 400
 OFFER_MAX_PER_DAY = 16
 #: Минимальный зазор до начала встречи: от 0 до 7 суток (по умолчанию час).
 OFFER_MAX_LEAD_MINUTES = 7 * 24 * 60

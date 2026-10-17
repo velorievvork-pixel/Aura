@@ -1,6 +1,7 @@
 // selfvoy/session.cpp
 #include "selfvoy/session.h"
 
+#include <arpa/inet.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -8,6 +9,7 @@
 #include <cerrno>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <sstream>
 #include <vector>
@@ -41,7 +43,25 @@ std::string Session::ipOf(const std::string& remoteAddr) {
     }
     std::string ip = remoteAddr.substr(0, colon);
     if (ip.size() > 2 && ip.front() == '[' && ip.back() == ']') ip = ip.substr(1, ip.size() - 2);
-    return ip;
+    return limitKey(ip);
+}
+
+std::string Session::limitKey(const std::string& ip) {
+    // IPv6: у абонента обычно целая сеть /64 — лимиты считаем по ней, иначе
+    // смена адреса внутри своей сети обходила бы любой лимит «на IP».
+    in6_addr address{};
+    if (ip.find(':') == std::string::npos || ::inet_pton(AF_INET6, ip.c_str(), &address) != 1) return ip;
+    const unsigned char* bytes = address.s6_addr;
+    static const unsigned char kMapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+    if (std::memcmp(bytes, kMapped, sizeof(kMapped)) == 0) {
+        char text[INET_ADDRSTRLEN] = {0};
+        ::inet_ntop(AF_INET, bytes + 12, text, sizeof(text));
+        return text;
+    }
+    char prefix[48] = {0};
+    std::snprintf(prefix, sizeof(prefix), "%x:%x:%x:%x::/64", (bytes[0] << 8) | bytes[1], (bytes[2] << 8) | bytes[3],
+                  (bytes[4] << 8) | bytes[5], (bytes[6] << 8) | bytes[7]);
+    return prefix;
 }
 
 Session::~Session() {
@@ -63,7 +83,10 @@ void Session::applyForwardedFor(const std::string& forwardedFor) {
             }
             return false;
         };
-        if (trusted(remoteIp_)) {
+        // Сравниваем «сырой» адрес соединения: remoteIp_ для IPv6 — уже сеть /64.
+        std::string peer = remoteAddr_.substr(0, remoteAddr_.rfind(':'));
+        if (peer.size() > 2 && peer.front() == '[' && peer.back() == ']') peer = peer.substr(1, peer.size() - 2);
+        if (trusted(peer)) {
             std::vector<std::string> hops;
             std::stringstream chain(forwardedFor);
             std::string hop;
@@ -79,7 +102,7 @@ void Session::applyForwardedFor(const std::string& forwardedFor) {
                                        });
                 if (!plausible) break;
                 if (trusted(*it)) continue;
-                remoteIp_ = *it;
+                remoteIp_ = limitKey(*it);
                 remoteAddr_ = (it->find(':') != std::string::npos ? "[" + *it + "]" : *it) + ":0";
                 break;
             }

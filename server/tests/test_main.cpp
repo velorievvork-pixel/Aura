@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "selfvoy/authmanager.h"
+#include "selfvoy/bookingmanager.h"
 #include "selfvoy/calendarfeed.h"
 #include "selfvoy/crypto.h"
 #include "selfvoy/databasemanager.h"
@@ -41,6 +42,7 @@
 #include "selfvoy/protocol.h"
 #include "selfvoy/schedulelock.h"
 #include "selfvoy/server.h"
+#include "selfvoy/session.h"
 #include "selfvoy/slotspost.h"
 #include "selfvoy/plan.h"
 #include "selfvoy/smtp.h"
@@ -2645,7 +2647,8 @@ TEST(audit_h5_verify_code_attempts) {
 
 TEST(audit_h6_totp_bruteforce_and_ip_key) {
     CHECK_EQ(selfvoy::Session::ipOf("127.0.0.1:54321"), std::string("127.0.0.1"));
-    CHECK_EQ(selfvoy::Session::ipOf("2001:db8::1:443"), std::string("2001:db8::1"));
+    // IPv6 — ключ лимитов по сети /64 (см. session_limit_key_ipv6_prefix).
+    CHECK_EQ(selfvoy::Session::ipOf("2001:db8::1:443"), std::string("2001:db8:0:0::/64"));
     CHECK_EQ(selfvoy::Session::ipOf("10.0.0.1"), std::string("10.0.0.1"));
 
     Fixture fixture;
@@ -4101,6 +4104,27 @@ TEST(invite_effective_status_and_open_limit) {
              std::string("forbidden"));
 }
 
+TEST(session_limit_key_ipv6_prefix) {
+    // IPv6 — сеть /64 (смена адреса внутри своей сети не обходит лимиты).
+    CHECK_EQ(selfvoy::Session::limitKey("2001:db8:1:2:aaaa:bbbb:cccc:dddd"), std::string("2001:db8:1:2::/64"));
+    CHECK_EQ(selfvoy::Session::limitKey("2001:db8:1:2::1"), std::string("2001:db8:1:2::/64"));
+    CHECK_EQ(selfvoy::Session::ipOf("2001:db8:1:2::ffff:55000"), std::string("2001:db8:1:2::/64"));
+    // IPv4 и IPv4-mapped — как адрес IPv4.
+    CHECK_EQ(selfvoy::Session::limitKey("203.0.113.7"), std::string("203.0.113.7"));
+    CHECK_EQ(selfvoy::Session::limitKey("::ffff:203.0.113.7"), std::string("203.0.113.7"));
+    CHECK_EQ(selfvoy::Session::ipOf("203.0.113.7:4242"), std::string("203.0.113.7"));
+    // Не адрес — без изменений.
+    CHECK_EQ(selfvoy::Session::limitKey("unix-socket"), std::string("unix-socket"));
+}
+
+TEST(booking_mailbox_key_normalized) {
+    using selfvoy::BookingManager;
+    CHECK_EQ(BookingManager::mailboxKey("Anna.Smith+tutor@GMail.com"), std::string("annasmith@gmail.com"));
+    CHECK_EQ(BookingManager::mailboxKey("a.b@googlemail.com"), std::string("ab@gmail.com"));
+    CHECK_EQ(BookingManager::mailboxKey("Ivan+x@Yandex.ru"), std::string("ivan@yandex.ru"));
+    CHECK_EQ(BookingManager::mailboxKey("i.van@yandex.ru"), std::string("i.van@yandex.ru"));
+}
+
 int main(int argc, char** argv) {
     std::signal(SIGPIPE, SIG_IGN);  // сессии в тестах пишут в socketpair
     std::cout.setf(std::ios::unitbuf);
@@ -4309,8 +4333,10 @@ TEST(booking_page_book_reschedule_cancel) {
     }
 
     // Запись: неверные данные, затем серия из двух встреч.
+    // Время не из списка — тот же conflict, что и «занято»: по ответу нельзя
+    // узнать личное расписание владельца.
     CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, first + 600, "Пётр")).getString("code"),
-             std::string("bad_request"));
+             std::string("conflict"));
     CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, first, " ")).getString("code"),
              std::string("bad_request"));
     CHECK_EQ(fixture.call(guest, "booking.book", bookPayload(slug, first, "Пётр", 4)).getString("code"),

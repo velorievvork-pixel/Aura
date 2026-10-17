@@ -172,8 +172,8 @@ void Listener::acceptLoop() {
             continue;
         }
 
-        // Один адрес не может занять все слоты: лимит соединений на IP.
-        const std::string ip = addressText;
+        // Один адрес не может занять все слоты: лимит соединений на IP (IPv6 — на сеть /64).
+        const std::string ip = Session::limitKey(addressText);
         if (!acquireIpSlot(ip)) {
             SELFVOY_LOG(log::Level::Warn, "listener")
                 << "превышен лимит соединений с " << ip << " (" << config_.maxConnectionsPerIp << "), отказываю";
@@ -187,7 +187,7 @@ void Listener::acceptLoop() {
         const int noDelay = 1;
         ::setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &noDelay, sizeof(noDelay));
 
-        const std::string remote = ip + ":" + std::to_string(ntohs(peer.sin6_port));
+        const std::string remote = std::string(addressText) + ":" + std::to_string(ntohs(peer.sin6_port));
         auto session = std::make_shared<Session>(client, crypto::randomHex(8), remote, config_);
         accepted_.fetch_add(1);
         SELFVOY_LOG(log::Level::Info, "listener") << "новое подключение от " << remote;

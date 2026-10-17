@@ -208,7 +208,7 @@ void BookingManager::notifyWaitlist(const WaitlistEntryRecord& entry, const Book
                                     const std::vector<std::string>& footer) {
     GuestNotice notice;
     if (mail_ && !entry.guestEmail.empty()) {
-        if (!limited("booking.mail:" + lowerAscii(entry.guestEmail), kMailPerAddressHour, 3600)) {
+        if (!limited("booking.mail:" + mailboxKey(entry.guestEmail), kMailPerAddressHour, 3600)) {
             notice.emails.push_back(entry.guestEmail);
         } else {
             SELFVOY_LOG(log::Level::Warn, "booking") << "лимит писем на адрес исчерпан, письмо (" << kind << ") не отправлено";

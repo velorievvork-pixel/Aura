@@ -394,6 +394,7 @@ export function guestErrorText(error: unknown): string {
   }
   const message = error instanceof SelfvoyError ? sentence(error.message) : '';
   if (kind === 'limited') return message || 'Слишком много попыток — подождите минуту';
-  if (kind === 'notFound') return 'Приглашение не найдено';
+  // Сервер говорит, что именно не найдено (приглашение, страница или запись).
+  if (kind === 'notFound') return message || 'Не найдено — проверьте ссылку';
   return message || 'Что-то пошло не так';
 }

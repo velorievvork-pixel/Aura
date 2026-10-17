@@ -485,7 +485,7 @@ bool BookingManager::packageRecipients(const PackagePurchaseRecord& record, cons
                                        const std::string& kind, GuestNotice& notice) {
     const auto addEmail = [&](const std::string& email) {
         if (email.empty() || !mail_) return;
-        if (!limited("booking.mail:" + lowerAscii(email), kMailPerAddressHour, 3600)) {
+        if (!limited("booking.mail:" + mailboxKey(email), kMailPerAddressHour, 3600)) {
             notice.emails.push_back(email);
         } else {
             SELFVOY_LOG(log::Level::Warn, "booking") << "лимит писем на адрес исчерпан, письмо (" << kind << ") не отправлено";

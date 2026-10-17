@@ -413,3 +413,15 @@ def test_slots_endpoint_booking_params(client):
 def test_local_is_owner_wall_time():
     slot = _offer(tz="Europe/Moscow")[0]
     assert slot.local == "2026-09-14T09:00"
+
+
+def test_booking_mode_fills_nearest_days_first():
+    # Страница записи (per_day > 2) на длинном окне: ближайшие дни — целиком,
+    # а не по паре вариантов на каждый из 60 дней.
+    slots = _offer(hours=60 * 24, per_day=16, max_slots=20, duration=60)
+    days = sorted({slot.start.date() for slot in slots})
+    first_day = [slot for slot in slots if slot.start.date() == days[0]]
+    assert len(slots) == 20
+    assert len(first_day) == len(WORK)  # весь рабочий день: по слоту на час
+    assert len(days) <= 3
+    assert slots == sorted(slots, key=lambda slot: slot.start)

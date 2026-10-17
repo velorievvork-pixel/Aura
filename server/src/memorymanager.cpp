@@ -430,7 +430,9 @@ std::vector<std::pair<Json, std::pair<std::time_t, std::time_t>>> MemoryManager:
                 continue;
             }
             Json event = Json::object();
-            event.set("title", Json("Запись: " + booking.guestName));
+            // Имя гостя вводит аноним — в контекст LLM владельца оно не попадает
+            // (защита от подсказок-инъекций); для занятости хватает факта записи.
+            event.set("title", Json(std::string("Запись гостя")));
             event.set("start", Json(isoUtc(start)));
             event.set("end", Json(isoUtc(end)));
             event.set("source", Json("booking"));

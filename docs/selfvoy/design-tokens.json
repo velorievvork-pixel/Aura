@@ -1,0 +1,680 @@
+{
+  "color": {
+    "paper": {
+      "$value": "#F3EFE6",
+      "$type": "color",
+      "$description": "фон приложения",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "card": {
+      "$value": "#FBF9F4",
+      "$type": "color",
+      "$description": "поверхность",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "sunken": {
+      "$value": "#EAE5D9",
+      "$type": "color",
+      "$description": "утопленная поверхность",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "ink": {
+      "$value": "#191712",
+      "$type": "color",
+      "$description": "основной текст",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "ink-2": {
+      "$value": "#57524A",
+      "$type": "color",
+      "$description": "вторичный текст",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "ink-3": {
+      "$value": "#6E685A",
+      "$type": "color",
+      "$description": "третичный текст",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "line": {
+      "$value": "#E0D9CB",
+      "$type": "color",
+      "$description": "граница",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "line-strong": {
+      "$value": "#C9C0AE",
+      "$type": "color",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "voy": {
+      "$value": "#2F3BFF",
+      "$type": "color",
+      "$description": "вы и действие",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "voy-hover": {
+      "$value": "#2430E0",
+      "$type": "color",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "voy-soft": {
+      "$value": "#E3E5FF",
+      "$type": "color",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "peer": {
+      "$value": "#B83A24",
+      "$type": "color",
+      "$description": "собеседник",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "peer-soft": {
+      "$value": "#F8E1D9",
+      "$type": "color",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "agreed": {
+      "$value": "#1E7A4F",
+      "$type": "color",
+      "$description": "договорились",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "agreed-soft": {
+      "$value": "#DCEFE4",
+      "$type": "color",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "warning": {
+      "$value": "#A86A00",
+      "$type": "color",
+      "$description": "ждёт решения",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "danger": {
+      "$value": "#B42318",
+      "$type": "color",
+      "$description": "опасно",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "night": {
+      "$value": "#141311",
+      "$type": "color",
+      "$description": "фон",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "night-card": {
+      "$value": "#1C1B18",
+      "$type": "color",
+      "$description": "поверхность",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "night-line": {
+      "$value": "#2E2C27",
+      "$type": "color",
+      "$description": "граница",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "night-text": {
+      "$value": "#F1EDE4",
+      "$type": "color",
+      "$description": "текст",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "night-muted": {
+      "$value": "#A39D90",
+      "$type": "color",
+      "$description": "вторичный текст",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "night-voy": {
+      "$value": "#8F96FF",
+      "$type": "color",
+      "$description": "вы и действие",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "night-peer": {
+      "$value": "#FF8A6E",
+      "$type": "color",
+      "$description": "собеседник",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "night-agreed": {
+      "$value": "#5FD49B",
+      "$type": "color",
+      "$description": "договорились",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    }
+  },
+  "typography": {
+    "font-family": {
+      "display": {
+        "$value": "Literata, Georgia, serif",
+        "$type": "fontFamily",
+        "$description": "приветствие, лендинг, итог встречи",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "heading": {
+        "$value": "Inter, system-ui, sans-serif",
+        "$type": "fontFamily",
+        "$description": "заголовок карточки",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "mono": {
+        "$value": "JetBrains Mono, ui-monospace, monospace",
+        "$type": "fontFamily",
+        "$description": "14:30, «Раунд 2/5», коды 2FA",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      }
+    },
+    "font-size": {
+      "display": {
+        "$value": "64px",
+        "$type": "dimension",
+        "$description": "приветствие, лендинг, итог встречи",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "title": {
+        "$value": "36px",
+        "$type": "dimension",
+        "$description": "заголовок экрана",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "heading": {
+        "$value": "17px",
+        "$type": "dimension",
+        "$description": "заголовок карточки",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "body": {
+        "$value": "15px",
+        "$type": "dimension",
+        "$description": "текст, сообщения",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "label": {
+        "$value": "12px",
+        "$type": "dimension",
+        "$description": "метки секций, ПРОПИСНЫЕ, разрядка 0.06em",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "mono": {
+        "$value": "13px",
+        "$type": "dimension",
+        "$description": "14:30, «Раунд 2/5», коды 2FA",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      }
+    },
+    "font-weight": {
+      "display": {
+        "$value": 400,
+        "$type": "fontWeight",
+        "$description": "приветствие, лендинг, итог встречи",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "title": {
+        "$value": 400,
+        "$type": "fontWeight",
+        "$description": "заголовок экрана",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "heading": {
+        "$value": 600,
+        "$type": "fontWeight",
+        "$description": "заголовок карточки",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "body": {
+        "$value": 400,
+        "$type": "fontWeight",
+        "$description": "текст, сообщения",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "label": {
+        "$value": 600,
+        "$type": "fontWeight",
+        "$description": "метки секций, ПРОПИСНЫЕ, разрядка 0.06em",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "mono": {
+        "$value": 500,
+        "$type": "fontWeight",
+        "$description": "14:30, «Раунд 2/5», коды 2FA",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      }
+    },
+    "line-height": {
+      "display": {
+        "$value": 1.02,
+        "$type": "number",
+        "$description": "приветствие, лендинг, итог встречи",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "title": {
+        "$value": 1.1,
+        "$type": "number",
+        "$description": "заголовок экрана",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "heading": {
+        "$value": 1.35,
+        "$type": "number",
+        "$description": "заголовок карточки",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "body": {
+        "$value": 1.5,
+        "$type": "number",
+        "$description": "текст, сообщения",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      }
+    },
+    "letter-spacing": {
+      "display": {
+        "$value": "-0.02em",
+        "$type": "dimension",
+        "$description": "приветствие, лендинг, итог встречи",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "title": {
+        "$value": "-0.01em",
+        "$type": "dimension",
+        "$description": "заголовок экрана",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "heading": {
+        "$value": "-0.01em",
+        "$type": "dimension",
+        "$description": "заголовок карточки",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      },
+      "label": {
+        "$value": "0.06em",
+        "$type": "dimension",
+        "$description": "метки секций, ПРОПИСНЫЕ, разрядка 0.06em",
+        "$extensions": {
+          "anydesign": {
+            "source": "design.md frontmatter"
+          }
+        }
+      }
+    }
+  },
+  "spacing": {
+    "base": {
+      "$value": "4px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "4": {
+      "$value": "4px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "8": {
+      "$value": "8px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "12": {
+      "$value": "12px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "16": {
+      "$value": "16px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "20": {
+      "$value": "20px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "24": {
+      "$value": "24px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "32": {
+      "$value": "32px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "48": {
+      "$value": "48px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "64": {
+      "$value": "64px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "96": {
+      "$value": "96px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    }
+  },
+  "radius": {
+    "control": {
+      "$value": "10px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "card": {
+      "$value": "16px",
+      "$type": "dimension",
+      "$description": "поверхность",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter",
+          "confidence": "high"
+        }
+      }
+    },
+    "sheet": {
+      "$value": "24px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "pill": {
+      "$value": "999px",
+      "$type": "dimension",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    }
+  },
+  "shadow": {
+    "float": {
+      "$value": "0 1px 0 rgba(25,23,18,0.04), 0 12px 32px -16px rgba(25,23,18,0.28)",
+      "$type": "shadow",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    },
+    "focus": {
+      "$value": "0 0 0 3px rgba(47,59,255,0.28)",
+      "$type": "shadow",
+      "$extensions": {
+        "anydesign": {
+          "source": "design.md frontmatter"
+        }
+      }
+    }
+  },
+  "$extensions": {
+    "anydesign": {
+      "source": "docs/selfvoy/RESEARCH.md (разбор Blockit, Howie, Granola, Poke, Lindy, Reclaim/Motion)",
+      "captured_at": "2026-10-16",
+      "method": "generated from design.md by scripts/build_tokens_json.py",
+      "spec": "W3C Design Tokens Community Group 2025.10"
+    }
+  }
+}

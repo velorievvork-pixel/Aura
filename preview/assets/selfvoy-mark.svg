@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 40" role="img" aria-label="Selfvoy">
+  <defs><clipPath id="sv-l"><circle cx="22" cy="20" r="16"/></clipPath></defs>
+  <circle cx="22" cy="20" r="16" fill="#2F3BFF"/>
+  <circle cx="42" cy="20" r="16" fill="#B83A24"/>
+  <circle cx="42" cy="20" r="16" fill="#191712" clip-path="url(#sv-l)"/>
+</svg>

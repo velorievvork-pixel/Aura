@@ -2,357 +2,365 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Aura — дизайн-превью Qt-клиента</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Selfvoy — дизайн-превью</title>
+<meta name="description" content="Selfvoy — ваш посланник. Интерактивный пример дизайн-системы: все экраны приложения." />
+<link rel="icon" href="/static/assets/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="/static/fonts/fonts.css" />
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
 
-<div class="backdrop" aria-hidden="true">
-  <div class="blob blob-a"></div>
-  <div class="blob blob-b"></div>
-</div>
+<div class="shell">
 
-<div class="stage">
-
-  <aside class="rail glass">
-    <div class="rail-brand">
-      <div class="logo"><span></span></div>
-      <div>
-        <div class="rail-title">Aura</div>
-        <div class="rail-sub">AI agent network</div>
-      </div>
-    </div>
-    <nav class="rail-nav">
-      <button class="rail-btn" data-screen="login">Вход</button>
-      <button class="rail-btn" data-screen="register">Регистрация</button>
-      <button class="rail-btn is-active" data-screen="home">Home</button>
-      <button class="rail-btn" data-screen="chat">My Aura</button>
-      <button class="rail-btn" data-screen="negotiation">Negotiations</button>
-      <button class="rail-btn" data-screen="tasks">Tasks</button>
-      <button class="rail-btn" data-screen="contacts">Contacts</button>
-      <button class="rail-btn" data-screen="settings">Settings</button>
-      <button class="rail-btn" data-screen="kit">Компоненты</button>
+  <!-- ============================================================ САЙДБАР -->
+  <aside class="sidebar">
+    <div class="wordmark"><svg class="mark" data-mark></svg><span>selfvoy</span></div>
+    <nav class="nav" aria-label="Разделы">
+      <button class="nav-item is-active" data-screen="home"><i data-icon="home"></i><span class="txt">Главная</span></button>
+      <button class="nav-item" data-screen="chat"><i data-icon="message"></i><span class="txt">Selfvoy</span></button>
+      <button class="nav-item" data-screen="negotiation"><i data-icon="handshake"></i><span class="txt">Переговоры</span><span class="count">1</span></button>
+      <button class="nav-item" data-screen="tasks"><i data-icon="check-square"></i><span class="txt">Задачи</span></button>
+      <button class="nav-item" data-screen="contacts"><i data-icon="users"></i><span class="txt">Контакты</span></button>
+      <p class="label nav-group">Превью</p>
+      <button class="nav-item" data-screen="landing"><i data-icon="sparkle"></i><span class="txt">Лендинг</span></button>
+      <button class="nav-item" data-screen="login"><i data-icon="log-in"></i><span class="txt">Вход</span></button>
+      <button class="nav-item" data-screen="kit"><i data-icon="grid"></i><span class="txt">Компоненты</span></button>
     </nav>
-    <div class="rail-note">
-      Токены идентичны QML-клиенту
-      (<code>client/qml/theme/AuraTheme.qml</code>).
-      «Спросить Ауру» шлёт настоящий запрос в AI-сервис.
+    <div class="sidebar-foot">
+      <button class="nav-item" data-theme-toggle><i data-icon="moon"></i><span class="txt">Тема</span></button>
+      <button class="nav-item" data-screen="settings"><i data-icon="settings"></i><span class="txt">Настройки</span></button>
+      <div class="me">
+        <span class="avatar" style="--c:#2F3BFF">АМ</span>
+        <div class="info"><div class="name">Алекс Морган</div><div class="mail">alex@selfvoy.app</div></div>
+      </div>
     </div>
   </aside>
 
-  <main class="screen-area">
+  <main class="main">
 
-    <!-- ================= LOGIN ================= -->
+    <!-- мобильная шапка -->
+    <header class="topbar">
+      <div class="wordmark"><svg class="mark" data-mark></svg><span>selfvoy</span></div>
+      <div style="display:flex;gap:4px;align-items:center">
+        <label class="visually-hidden" for="screen-select">Экран превью</label>
+        <select id="screen-select">
+          <option value="home">Главная</option><option value="chat">Selfvoy</option>
+          <option value="negotiation">Переговоры</option><option value="tasks">Задачи</option>
+          <option value="contacts">Контакты</option><option value="settings">Настройки</option>
+          <option value="landing">Лендинг</option><option value="login">Вход</option><option value="kit">Компоненты</option>
+        </select>
+        <button class="icon-btn" data-theme-toggle aria-label="Сменить тему"><i data-icon="moon"></i></button>
+      </div>
+    </header>
+
+    <!-- ============================================================ ЛЕНДИНГ -->
+    <section class="screen" id="screen-landing">
+      <div class="hero">
+        <span class="badge badge--voy">Личный ИИ-посланник</span>
+        <h1 class="display">Пусть договорится <em>ваш</em> посланник</h1>
+        <p class="lead">Selfvoy сам находит время и место с посланниками других людей, ставит напоминания и готовит письма. Последнее слово — всегда за вами.</p>
+        <div class="cta">
+          <button class="btn btn--primary" data-goto="login">Начать бесплатно</button>
+          <button class="btn btn--secondary" data-goto="negotiation"><i data-icon="play"></i>Посмотреть переговоры</button>
+        </div>
+      </div>
+      <div class="stage" aria-label="Анимация: две точки встречаются"><canvas id="meet-canvas"></canvas></div>
+      <div class="steps3">
+        <div class="card"><div class="n">01</div><h3>Скажите, <em>что нужно</em></h3><p>«Встретиться с Димой на неделе, обсудить стартап» — голосом или текстом.</p></div>
+        <div class="card"><div class="n">02</div><h3>Посланники <em>договорятся</em></h3><p>До пяти раундов: свободное время, питание, город. Чужой посланник видит только то, что вы разрешили.</p></div>
+        <div class="card"><div class="n">03</div><h3>Вы <em>подтверждаете</em></h3><p>Бронь, письмо и сообщение — только по вашей кнопке. Ничего не уходит само.</p></div>
+      </div>
+      <p class="promise">Меньше переписки о встрече — <em>больше</em> самой встречи.</p>
+    </section>
+
+    <!-- ============================================================ ВХОД -->
     <section class="screen" id="screen-login">
-      <div class="glass panel narrow center">
-        <div class="logo logo--lg"><span></span></div>
-        <h1 class="hero">Welcome to Aura</h1>
-        <p class="muted center">Your personal AI agent network</p>
-        <label class="field" style="text-align:left"><span class="field-label">Email</span>
-          <input type="email" placeholder="Enter your email" value="anna@example.com" /></label>
-        <label class="field" style="text-align:left"><span class="field-label">Пароль</span>
-          <input type="password" placeholder="••••••••" value="aura1234" /></label>
-        <button class="btn btn--accent" style="width:100%" id="login-btn">Sign in</button>
-        <button class="btn" style="width:100%;margin-top:10px"><span class="glyph">G</span> Continue with Google</button>
-        <div class="hint">Forgot password? · Create account</div>
+      <div class="auth">
+        <form class="auth-form" id="login-form" novalidate>
+          <svg class="mark mark--lg" data-mark></svg>
+          <h1 class="title">Вход в <em>Selfvoy</em></h1>
+          <p class="lead">Ваш посланник ждёт поручений.</p>
+          <label class="field"><span>Email</span>
+            <input class="input" id="login-email" type="email" autocomplete="email" placeholder="you@example.com" /></label>
+          <label class="field"><span>Пароль</span>
+            <input class="input" id="login-pass" type="password" autocomplete="current-password" placeholder="Минимум 8 символов, буквы и цифры" />
+            <span class="error" id="login-error" hidden></span></label>
+          <div style="display:flex;justify-content:flex-end;margin:-6px 0 18px"><a class="link" href="#" style="font-size:14px">Забыли пароль?</a></div>
+          <button class="btn btn--primary btn--block" type="submit">Войти</button>
+          <div class="divider">или</div>
+          <button class="btn btn--secondary btn--block" type="button" disabled title="Сервер пока не поддерживает вход через Google">Продолжить с Google</button>
+          <p class="subtle" style="text-align:center;font-size:14px;margin-top:20px">Нет аккаунта? <a class="link" href="#">Зарегистрироваться</a></p>
+        </form>
+        <div class="auth-aside">
+          <div class="label">Как это работает</div>
+          <blockquote>«Дима свободен в четверг после двух. Предложил кофейню на Мира — <em>подтвердить?</em>»</blockquote>
+          <div class="parties">
+            <div class="party"><span class="avatar avatar--sm" style="--c:#2F3BFF">АМ</span><div><div class="who">Ваш посланник</div><div class="role">Алекс</div></div></div>
+            <svg class="mark" data-mark></svg>
+            <div class="party party--peer"><span class="avatar avatar--sm" style="--c:#B83A24">ДВ</span><div><div class="who">Посланник Димы</div><div class="role">Дима Волков</div></div></div>
+          </div>
+        </div>
       </div>
     </section>
 
-    <!-- ================= REGISTER ================= -->
-    <section class="screen" id="screen-register">
-      <div class="glass panel narrow">
-        <div class="row"><div class="logo"><span></span></div><div class="title">Aura</div></div>
-        <h1 class="title--lg" style="margin:14px 0 4px">Create your Aura</h1>
-        <label class="field"><span class="field-label">Full Name</span><input placeholder="Enter your full name" /></label>
-        <label class="field"><span class="field-label">Email</span><input placeholder="Enter your email address" /></label>
-        <label class="field"><span class="field-label">Password</span><input type="password" placeholder="Enter your password" /></label>
-        <label class="field"><span class="field-label">Timezone</span><input value="UTC +3:00" /></label>
-        <label class="field"><span class="field-label">What should your Aura help you with?</span>
-          <input placeholder="e.g., coding, productivity, etc." /></label>
-        <button class="btn btn--accent" style="width:100%">Create account</button>
-        <div class="hint center">Terms · Privacy · Already have an account?</div>
-      </div>
-    </section>
-
-    <!-- ================= HOME ================= -->
+    <!-- ============================================================ ГЛАВНАЯ -->
     <section class="screen is-active" id="screen-home">
-      <div class="row spread">
-        <div class="title--lg">Good evening, Alex</div>
-        <div class="muted--sm">All systems operational</div>
-      </div>
-
-      <div class="glass panel panel--glow">
-        <div class="title">Your Aura is active</div>
-        <div class="muted small">3 tasks completed today</div>
-      </div>
-
-      <div class="glass panel row">
-        <input class="field-inline grow" id="home-input" placeholder="What would you like to do?"
-               value="Хочу встретиться с Аней в эти выходные, чтобы обсудить стартап" />
-        <button class="btn btn--icon" title="голос">🎙</button>
-        <button class="btn btn--accent btn--icon" id="home-ask">➤</button>
-      </div>
-
-      <div class="row wrap">
-        <button class="btn btn--sm">Plan a meeting</button>
-        <button class="btn btn--sm">Check my schedule</button>
-        <button class="btn btn--sm">Send an email</button>
-        <button class="btn btn--sm">Create a reminder</button>
-      </div>
-
-      <div class="glass panel grow">
-        <div class="title small">Upcoming tasks</div>
-        <div class="list">
-          <div class="list-row"><div class="task-dot p"></div><div class="grow">Prepare presentation for Q3 review</div></div>
-          <div class="list-row"><div class="task-dot w"></div><div class="grow">Follow up on client proposal</div></div>
-          <div class="list-row"><div class="task-dot g"></div><div class="grow">Review marketing campaign metrics</div></div>
+      <div class="page-head">
+        <div>
+          <p class="label" id="today-label">Пятница, 16 октября</p>
+          <h1 class="display" id="greeting">Доброе утро, <em>Алекс</em></h1>
         </div>
       </div>
 
-      <div class="glass panel">
-        <div class="title small">Recent AI activity</div>
-        <div class="memory"><i></i>18:27 Aura initiated task: Draft Q3 marketing report</div>
-        <div class="memory"><i class="alt"></i>18:25 Aura sent reminder: Team meeting at 9 AM</div>
-        <div class="memory"><i></i>18:16 Aura scheduled meeting: Client call at 10 AM</div>
+      <div class="composer" style="margin-bottom:12px">
+        <input id="home-input" placeholder="Что поручить посланнику?" aria-label="Поручение посланнику" />
+        <button class="icon-btn" aria-label="Голосом"><i data-icon="mic"></i></button>
+        <button class="btn btn--primary send" id="home-ask" aria-label="Отправить"><i data-icon="arrow-up"></i></button>
+      </div>
+      <div class="chips">
+        <button class="chip" data-fill="Встретиться с Димой на неделе, обсудить стартап"><i data-icon="handshake"></i>Договориться о встрече</button>
+        <button class="chip" data-fill="Что у меня сегодня?">Что у меня сегодня?</button>
+        <button class="chip" data-fill="Напомни завтра в 10 позвонить юристу">Напомни завтра в 10 позвонить юристу</button>
+      </div>
+
+      <div class="home-grid section">
+        <div>
+          <div class="section-head"><p class="label">Ждёт вашего решения</p></div>
+          <div class="card card--pending">
+            <div class="decision">
+              <span class="avatar" style="--c:#B83A24">ДВ</span>
+              <div class="body">
+                <p class="heading">Договорились с Димой: <span class="mono">чт, 14:30</span></p>
+                <p class="muted" style="margin:4px 0 0;font-size:14px">Кофейня «Зерно» на Мира, 1 час. Забронировать стол и отправить приглашение?</p>
+                <div class="actions">
+                  <button class="btn btn--primary btn--sm" data-toast="Забронировано. Приглашение ушло Диме."><i data-icon="check"></i>Подтвердить</button>
+                  <button class="btn btn--secondary btn--sm" data-goto="negotiation">Открыть переговоры</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-head section"><p class="label">Ближайшие задачи</p><button class="link" data-goto="tasks" style="font-size:14px">Все задачи</button></div>
+          <div class="list" id="home-tasks"></div>
+        </div>
+
+        <div>
+          <div class="section-head"><p class="label">Посланник работал</p></div>
+          <div class="card" style="padding:4px 20px">
+            <div class="feed">
+              <div class="feed-item"><span class="ico is-agreed"><i data-icon="check"></i></span><div><p>Договорился с посланником Димы</p><p class="sub">3 раунда · чт 14:30</p></div><span class="mono subtle">09:12</span></div>
+              <div class="feed-item"><span class="ico is-voy"><i data-icon="mail"></i></span><div><p>Подготовил ответ инвестору</p><p class="sub">Черновик, ждёт проверки</p></div><span class="mono subtle">08:40</span></div>
+              <div class="feed-item"><span class="ico"><i data-icon="bell"></i></span><div><p>Поставил напоминание</p><p class="sub">Позвонить юристу · завтра 10:00</p></div><span class="mono subtle">вчера</span></div>
+              <div class="feed-item"><span class="ico is-warning"><i data-icon="shield"></i></span><div><p>Не отправил письмо без вас</p><p class="sub">Требуется подтверждение</p></div><span class="mono subtle">вчера</span></div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
-    <!-- ================= AGENT CHAT ================= -->
-    <section class="screen" id="screen-chat">
-      <div class="glass panel row">
-        <div class="avatar avatar--agent">✦</div>
-        <div class="grow">
-          <div class="title">Aura</div>
-          <div class="muted--sm online">Online · Personal assistant</div>
+    <!-- ============================================================ ЧАТ С ПОСЛАННИКОМ -->
+    <section class="screen screen--narrow" id="screen-chat">
+      <div class="chat">
+        <div class="chat-head">
+          <svg class="mark" data-mark></svg>
+          <div style="flex:1">
+            <p class="heading">Selfvoy</p>
+            <p class="subtle" style="margin:0;font-size:13px"><span class="dot dot--agreed" style="display:inline-block;margin-right:6px"></span>На связи · помнит 12 ваших предпочтений</p>
+          </div>
+          <button class="btn btn--quiet btn--sm"><i data-icon="brain"></i>Память</button>
         </div>
-        <button class="btn btn--sm" data-goto="settings">View memory</button>
-      </div>
-
-      <div class="glass panel grow chat-scroll" id="chat-log">
-        <div class="bubble-wrap">
-          <div class="bubble">Хочу встретиться с Димой в эти выходные и обсудить стартап</div>
-          <div class="meta-line">Анна · 21:04</div>
+        <div class="chat-log" id="chat-log" aria-live="polite">
+          <div class="msg msg--envoy">Доброе утро, Алекс. Скажите, что нужно — договорюсь с посланниками других людей, поставлю напоминание или подготовлю письмо. Опасное — только после вашего «да».<span class="time">09:00</span></div>
+          <div class="msg msg--mine">Хочу встретиться с Димой на неделе, обсудить стартап<span class="time">09:04</span></div>
+          <div class="steps">
+            <div class="step"><i data-icon="check-circle"></i>Проверил ваш календарь — 4 свободных окна</div>
+            <div class="step" style="animation-delay:.1s"><i data-icon="check-circle"></i>Связался с посланником Димы</div>
+            <div class="step" style="animation-delay:.2s"><i data-icon="check-circle"></i>Договорились за 3 раунда</div>
+          </div>
+          <div class="msg msg--envoy">Четверг, 14:30, кофейня «Зерно» на Мира — у обоих свободно, у Димы там есть безглютеновое. Забронировать?<span class="time">09:05</span></div>
         </div>
-        <div class="bubble-wrap agent">
-          <div class="agent-badge"><i></i>Аура</div>
-          <div class="bubble">Я проверю ваши расписания и свяжусь с Аурой Димы. Бюджет до 1000 ₽?</div>
-          <div class="meta-line">Аура · 21:05</div>
+        <div class="chat-foot">
+          <div class="chips">
+            <button class="chip" data-reply="Да, бронируй">Да, бронируй</button>
+            <button class="chip" data-reply="Лучше в пятницу">Лучше в пятницу</button>
+            <button class="chip" data-reply="Что у меня сегодня?">Что у меня сегодня?</button>
+          </div>
+          <div class="composer">
+            <input id="composer" placeholder="Напишите посланнику…" aria-label="Сообщение посланнику" />
+            <button class="icon-btn" aria-label="Голосом"><i data-icon="mic"></i></button>
+            <button class="btn btn--primary send" id="send-btn" aria-label="Отправить"><i data-icon="arrow-up"></i></button>
+          </div>
         </div>
-        <div class="row wrap">
-          <button class="chip is-on">Да, учитывать</button>
-          <button class="chip">Без ограничений</button>
-          <button class="chip">Изменить условия</button>
-        </div>
-      </div>
-
-      <div class="glass panel row">
-        <input class="field-inline grow" id="composer" placeholder="Type something…" />
-        <button class="btn btn--icon" title="голос">🎙</button>
-        <button class="btn btn--icon" title="вложение">⎘</button>
-        <button class="btn btn--accent btn--icon" id="send-btn">➤</button>
-      </div>
-
-      <div class="glass panel panel--glow">
-        <div class="row">
-          <div class="agent-dot">✦</div>
-          <input class="field-inline grow" id="agent-input"
-                 placeholder="Хочу встретиться с Аней в эти выходные, чтобы обсудить стартап" />
-          <button class="btn btn--accent" id="agent-btn">Спросить Ауру</button>
-        </div>
-        <div class="hint" id="agent-status">POST /v1/agent/run — ответ настоящий.</div>
       </div>
     </section>
 
-    <!-- ================= NEGOTIATION ================= -->
+    <!-- ============================================================ ПЕРЕГОВОРЫ -->
     <section class="screen" id="screen-negotiation">
-      <div class="row spread">
-        <div class="title--lg">Meeting arrangement</div>
-        <div class="row"><span class="tag">In progress</span><span class="tag" id="neg-round">Round 2 of 5</span></div>
+      <div class="page-head">
+        <div>
+          <p class="label">Переговоры · до 5 раундов</p>
+          <h1 class="title">Встреча с <em>Димой</em></h1>
+          <p class="lead">Обсудить стартап · 1 час · на этой неделе</p>
+        </div>
+        <button class="btn btn--secondary" id="neg-replay"><i data-icon="rotate"></i>Повторить переговоры</button>
       </div>
 
-      <div class="row">
-        <div class="glass panel grow center">
-          <div class="avatar avatar--lg" style="margin:0 auto">АН</div>
-          <div class="title" style="margin-top:8px">Анна</div>
-          <div class="muted--sm">Анна's Aura</div>
-        </div>
-        <div class="agent-dot" style="width:44px;height:44px;font-size:18px">✦</div>
-        <div class="glass panel grow center">
-          <div class="avatar avatar--lg avatar--agent" style="margin:0 auto">АН</div>
-          <div class="title" style="margin-top:8px">Аня</div>
-          <div class="muted--sm">Аня's Aura</div>
-        </div>
-      </div>
-
-      <div class="glass panel grow">
-        <div class="title small">Negotiation timeline</div>
-        <div class="timeline" id="neg-timeline">
-          <div class="tl-item"><div class="tl-dot is-done">1</div><div class="tl-card">Аура Анны предложила субботу 14:00</div></div>
-          <div class="tl-item"><div class="tl-dot is-done">2</div><div class="tl-card">Аура Ани проверила календарь</div></div>
-          <div class="tl-item"><div class="tl-dot is-done">3</div><div class="tl-card">Аура Ани предложила кофейню без глютена</div></div>
-          <div class="tl-item"><div class="tl-dot">4</div><div class="tl-card">Ожидание подтверждения…</div></div>
-        </div>
-      </div>
-
-      <div class="glass panel panel--glow">
-        <div class="row wrap">
-          <div class="grow">
-            <div class="title--lg" id="neg-result">Saturday, 14:00 — Кофе на полпути</div>
-            <div class="muted small" id="neg-meta">Two people · Estimated cost: 900 ₽</div>
+      <div class="neg-grid">
+        <div class="card">
+          <div class="parties">
+            <div class="party"><span class="avatar" style="--c:#2F3BFF">АМ</span><div><div class="who">Ваш посланник</div><div class="role">Алекс · свободно 4 окна</div></div></div>
+            <div class="party party--peer"><span class="avatar" style="--c:#B83A24">ДВ</span><div><div class="who">Посланник Димы</div><div class="role">Дима · без глютена</div></div></div>
           </div>
-          <button class="btn btn--accent">Approve and book</button>
-          <button class="btn">Stop negotiation</button>
+          <div class="track" id="track" aria-hidden="true">
+            <div class="track-line"></div>
+            <div class="track-fill" id="track-fill"></div>
+            <div class="track-tick" style="left:10%"><span>1</span></div>
+            <div class="track-tick" style="left:30%"><span>2</span></div>
+            <div class="track-tick" style="left:50%"><span>3</span></div>
+            <div class="track-tick" style="left:70%"><span>4</span></div>
+            <div class="track-tick" style="left:90%"><span>5</span></div>
+            <div class="track-dot track-dot--voy" id="dot-voy"></div>
+            <div class="track-dot track-dot--peer" id="dot-peer"></div>
+            <div class="track-meet"></div>
+          </div>
+          <div class="track-status" style="margin-top:24px">
+            <span class="badge" id="neg-badge"><span class="mono" id="neg-round">Раунд 0/5</span></span>
+            <span class="subtle" style="font-size:13px">Посланник Димы видит только «занят / свободен» — без названий событий.</span>
+          </div>
+          <div class="thread" id="neg-thread"></div>
+        </div>
+
+        <aside class="card deal is-waiting" id="deal">
+          <p class="label" id="deal-label">Ищем общее время…</p>
+          <p class="when" id="deal-when">—</p>
+          <p class="muted" id="deal-place" style="margin:0">Посланники сверяют календари</p>
+          <dl>
+            <dt>Кто</dt><dd><span class="avatars"><span class="avatar avatar--sm" style="--c:#2F3BFF">АМ</span><span class="avatar avatar--sm" style="--c:#B83A24">ДВ</span></span></dd>
+            <dt>Длится</dt><dd class="mono">60 мин</dd>
+            <dt>Учтено</dt><dd>без глютена · центр · ваш бюджет</dd>
+          </dl>
+          <button class="btn btn--primary btn--block" id="deal-confirm" disabled><i data-icon="check"></i>Подтвердить и забронировать</button>
+          <button class="btn btn--quiet btn--block" style="margin-top:6px">Предложить другое время</button>
+          <p class="deal-note">Бронь и приглашение уйдут только после вашего подтверждения.</p>
+        </aside>
+      </div>
+
+      <div class="section">
+        <div class="section-head"><p class="label">Новые переговоры</p></div>
+        <div class="card">
+          <div class="form-grid">
+            <div class="field full"><span>С кем</span>
+              <div class="chips"><button class="chip is-on"><span class="avatar" style="--c:#B83A24">ДВ</span>Дима Волков</button><button class="chip"><span class="avatar" style="--c:#7A5C2E">МЧ</span>Мария Чен</button><button class="chip"><i data-icon="link"></i>Пригласить по ссылке</button></div>
+            </div>
+            <label class="field full"><span>О чём</span><input class="input" id="agent-input" placeholder="Например, обсудить стартап" value="Хочу встретиться с Димой в выходные и обсудить стартап" /></label>
+            <div class="field"><span>Когда</span><div class="segmented" data-segmented><button>Сегодня–завтра</button><button class="is-on">Неделя</button><button>Две недели</button></div></div>
+            <div class="field"><span>Длительность</span><div class="segmented" data-segmented><button>30 мин</button><button class="is-on">1 час</button><button>1,5 часа</button></div></div>
+          </div>
+          <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn--primary" id="agent-btn"><i data-icon="handshake"></i>Начать переговоры</button>
+            <span class="subtle" id="agent-status" style="font-size:13px">Запрос уходит в AI-сервис: <span class="mono">POST /v1/agent/run</span></span>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- ================= TASKS ================= -->
-    <section class="screen" id="screen-tasks">
-      <div class="row spread"><div class="title--lg">Tasks</div><span class="tag">Week</span></div>
-      <div class="row">
-        <button class="btn btn--sm">‹</button>
-        <div class="title small">Aug 18 – Sat</div>
-        <button class="btn btn--sm">›</button>
-        <div class="grow"></div>
-        <div class="muted--sm">Mon 17 · Tue 18 · Wed 19 · Thu 20 · Fri 21 · Sat 22 · Sun 23</div>
+    <!-- ============================================================ ЗАДАЧИ -->
+    <section class="screen screen--narrow" id="screen-tasks">
+      <div class="page-head">
+        <div><p class="label">Октябрь</p><h1 class="title">Задачи на <em>неделю</em></h1></div>
       </div>
-      <div class="glass panel grow">
-        <div class="title small">Today</div>
-        <div class="list">
-          <div class="list-row"><div class="task-dot p"></div><div class="grow">Meet Dima at Green Point</div></div>
-          <div class="list-row"><div class="task-dot g"></div><div class="grow">Prepare startup presentation</div></div>
-          <div class="list-row"><div class="task-dot w"></div><div class="grow">Reply to investor email</div></div>
-        </div>
-        <div class="title small" style="margin-top:14px">Upcoming</div>
-        <div class="list">
-          <div class="list-row"><div class="task-dot p"></div><div class="grow">Send out invitations for investor demo day</div></div>
+      <div class="week" id="week"></div>
+
+      <div class="card" style="margin-bottom:32px">
+        <div class="next-event">
+          <div style="flex:none"><p class="label" style="margin-bottom:4px">До следующего</p><p class="heading">Ревью Q3 · <span class="mono">через 48 мин</span></p></div>
+          <div class="bar" role="progressbar" aria-valuenow="62" aria-valuemin="0" aria-valuemax="100" aria-label="Время до события"><i></i></div>
         </div>
       </div>
-      <div class="glass panel">
-        <div class="title small">Aura suggestions</div>
-        <div class="muted small">You have 45 minutes free before your meeting</div>
-        <div class="progress" style="margin-top:10px"><i></i></div>
-        <div class="muted--xs" style="margin-top:6px">Time until next event</div>
-      </div>
+
+      <div class="section-head"><p class="label">Сегодня</p><span class="mono subtle">2</span></div>
+      <div class="list" id="tasks-today"></div>
+      <div class="section-head section"><p class="label">Дальше</p><span class="mono subtle">3</span></div>
+      <div class="list" id="tasks-next"></div>
+      <div class="section-head section"><p class="label">Выполнено</p><span class="mono subtle">1</span></div>
+      <div class="list" id="tasks-done"></div>
+      <button class="fab" aria-label="Новая задача" data-toast="Скажите посланнику: «Напомни…» — он поставит задачу сам"><i data-icon="plus"></i></button>
     </section>
 
-    <!-- ================= CONTACTS ================= -->
+    <!-- ============================================================ КОНТАКТЫ -->
     <section class="screen" id="screen-contacts">
-      <div class="title--lg">Contacts</div>
-      <div class="muted">Search people or Aura agents</div>
-      <input class="field-inline" placeholder="Поиск…" />
-      <div class="row"><button class="chip is-on">All</button><button class="chip">Favorites</button><button class="chip">Recent</button></div>
-      <div class="row grow">
-        <div class="glass panel grow">
-          <div class="list">
-            <button class="list-row"><div class="avatar avatar--agent">AM</div><div class="grow">Alex Morgan</div><span class="muted--sm">Aura active</span><div class="task-dot p"></div></button>
-            <button class="list-row"><div class="avatar">DV</div><div class="grow">Dima Volkov</div><span class="muted--sm">Available</span><div class="task-dot g"></div></button>
-            <button class="list-row"><div class="avatar is-away">MC</div><div class="grow">Maria Chen</div><span class="muted--sm">Away</span><div class="task-dot w"></div></button>
-          </div>
-          <button class="btn" style="margin-top:14px">Invite to Aura</button>
+      <div class="page-head">
+        <div><p class="label">Люди с посланниками</p><h1 class="title"><em>Контакты</em></h1></div>
+        <button class="btn btn--secondary"><i data-icon="link"></i>Пригласить по ссылке</button>
+      </div>
+      <div class="contacts-grid">
+        <div>
+          <div class="input-wrap" style="margin-bottom:16px"><i data-icon="search"></i><input class="input" placeholder="Найти по имени" aria-label="Поиск контактов" /></div>
+          <div class="list" id="contacts-list"></div>
         </div>
-        <div class="glass panel grow center">
-          <div class="avatar avatar--lg avatar--agent" style="margin:0 auto">AM</div>
-          <div class="title" style="margin-top:8px">Alex Morgan</div>
-          <div class="muted--sm">Aura available</div>
-          <div class="label">Shared meetings</div>
-          <div class="muted--sm">AI Strategy Workshop · Product Design Sprint</div>
-          <div class="label">Permissions</div>
-          <div class="muted--sm">Edit documents · Manage tasks · View analytics</div>
-          <button class="btn btn--accent" style="margin-top:14px;width:100%">Start negotiation</button>
-        </div>
+        <aside class="card person-card" id="person"></aside>
       </div>
     </section>
 
-    <!-- ================= SETTINGS ================= -->
+    <!-- ============================================================ НАСТРОЙКИ -->
     <section class="screen" id="screen-settings">
-      <div class="row spread"><div class="title--lg">Settings</div><button class="btn btn--icon btn--sm">+</button></div>
-      <div class="glass panel row">
-        <div class="avatar avatar--lg">АН</div>
-        <div class="grow"><div class="title">Анна</div><div class="muted--sm">anna@example.com</div></div>
-        <button class="btn btn--danger"><span class="glyph">⎋</span> Выйти</button>
-      </div>
+      <div class="page-head"><div><p class="label">Аккаунт</p><h1 class="title"><em>Настройки</em></h1></div></div>
+      <div class="settings-grid">
+        <nav class="settings-nav" aria-label="Разделы настроек">
+          <button class="is-on">Что можно посланнику</button><button>Профиль</button><button>Приватность</button><button>Безопасность</button><button>Сервер</button>
+        </nav>
+        <div>
+          <p class="muted" style="margin:0 0 16px">Посланник проверяет эти разрешения до любого действия. «Спрашивать» — он подготовит всё и попросит вашу кнопку.</p>
+          <div class="list">
+            <div class="perm"><span class="ico"><i data-icon="calendar"></i></span><div><div class="t">Календарь</div><div class="d">Смотреть занятость, ставить встречи</div></div><div class="segmented" data-segmented><button class="is-on">Сам</button><button>Спрашивать</button><button>Нельзя</button></div></div>
+            <div class="perm"><span class="ico"><i data-icon="mail"></i></span><div><div class="t">Письма</div><div class="d">Готовить и отправлять от вашего имени</div></div><div class="segmented" data-segmented><button>Сам</button><button class="is-on">Спрашивать</button><button>Нельзя</button></div></div>
+            <div class="perm"><span class="ico"><i data-icon="message"></i></span><div><div class="t">Сообщения</div><div class="d">Писать контактам в Selfvoy</div></div><div class="segmented" data-segmented><button>Сам</button><button class="is-on">Спрашивать</button><button>Нельзя</button></div></div>
+            <div class="perm"><span class="ico"><i data-icon="map-pin"></i></span><div><div class="t">Бронирование</div><div class="d">Столики, переговорные</div></div><div class="segmented" data-segmented><button>Сам</button><button class="is-on">Спрашивать</button><button>Нельзя</button></div></div>
+            <div class="perm"><span class="ico"><i data-icon="card"></i></span><div><div class="t">Платежи</div><div class="d">Оплата брони и депозитов</div></div><div class="segmented" data-segmented><button>Сам</button><button>Спрашивать</button><button class="is-on">Нельзя</button></div></div>
+          </div>
 
-      <div class="glass panel">
-        <div class="center">
-          <div class="title">Your Aura always asks before performing sensitive actions</div>
-          <div class="row" style="justify-content:center;margin-top:14px">
-            <button class="btn btn--sm">Export my data</button>
-            <button class="btn btn--sm btn--danger">Delete account</button>
+          <div class="section-head section"><p class="label">Что видит чужой посланник</p></div>
+          <div class="list">
+            <div class="row"><div class="grow"><span>Названия моих событий</span><span class="sub">Иначе — только «занят / свободен»</span></div><button class="switch" role="switch" aria-checked="false" aria-label="Названия моих событий"></button></div>
+            <div class="row"><div class="grow"><span>Предпочтения в еде</span><span class="sub">Чтобы выбрать место, подходящее обоим</span></div><button class="switch is-on" role="switch" aria-checked="true" aria-label="Предпочтения в еде"></button></div>
+            <div class="row"><div class="grow"><span>Выбор места</span><span class="sub">Посланник может предлагать кафе и переговорные</span></div><button class="switch is-on" role="switch" aria-checked="true" aria-label="Выбор места"></button></div>
           </div>
-        </div>
-      </div>
 
-      <div class="glass panel">
-        <div class="title small">Permissions</div>
-        <div class="row wrap">
-          <div class="glass glass--sm panel grow">
-            <div class="title small">Calendar</div><div class="muted--sm">Allowed</div>
-            <div class="muted--xs" style="margin-top:6px">Aura can create events and add them to your calendar</div>
-            <div class="switch is-on" style="margin-top:10px"></div>
-          </div>
-          <div class="glass glass--sm panel grow">
-            <div class="title small">Email</div><div class="muted--sm">Approval required</div>
-            <div class="muted--xs" style="margin-top:6px">Aura can send emails from your calendar</div>
-            <div class="switch" style="margin-top:10px"></div>
-          </div>
-          <div class="glass glass--sm panel grow">
-            <div class="title small">Booking</div><div class="muted--sm">Allowed up to 1000 ₽</div>
-            <div class="muted--xs" style="margin-top:6px">Aura cannot make appointments above the limit</div>
-            <div class="switch is-on" style="margin-top:10px"></div>
+          <div class="section-head section"><p class="label">Безопасность</p></div>
+          <div class="list">
+            <div class="row"><span class="ico" style="width:36px;height:36px;border-radius:10px;background:var(--agreed-soft);color:var(--agreed);display:grid;place-items:center"><i data-icon="shield"></i></span><div class="grow"><span>Двухфакторная защита (TOTP)</span><span class="sub">Включена · 8 резервных кодов</span></div><span class="badge badge--agreed">Вкл.</span></div>
+            <div class="row"><div class="grow"><span>Активные сессии</span><span class="sub">Этот браузер · Android · Windows</span></div><button class="btn btn--secondary btn--sm">Управлять</button></div>
           </div>
         </div>
-      </div>
-
-      <div class="glass panel">
-        <div class="title small">Что знает ваша Аура</div>
-        <div class="row gap">
-          <label class="field grow"><span class="field-label">Город</span><input value="Керкраде" /></label>
-          <label class="field grow"><span class="field-label">Бюджет, €</span><input value="3" /></label>
-        </div>
-        <div class="label">Диета</div>
-        <div class="chips" data-group="diet">
-          <button class="chip is-on">vegan</button><button class="chip">vegetarian</button>
-          <button class="chip">gluten_free</button><button class="chip">halal</button>
-        </div>
-        <button class="btn btn--accent"><span class="glyph">✓</span> Сохранить</button>
       </div>
     </section>
 
-    <!-- ================= KIT ================= -->
+    <!-- ============================================================ КОМПОНЕНТЫ -->
     <section class="screen" id="screen-kit">
-      <div class="glass panel">
-        <div class="title small">Кнопки — пузыри</div>
-        <div class="row wrap">
-          <button class="btn">Glass</button>
-          <button class="btn btn--accent">Accent</button>
-          <button class="btn btn--quiet">Quiet</button>
-          <button class="btn btn--danger">Danger</button>
-          <button class="btn is-busy"><span class="glyph">✦</span> Busy</button>
-          <button class="btn" disabled>Disabled</button>
+      <div class="page-head"><div><p class="label">Дизайн-система · docs/selfvoy/design.md</p><h1 class="title">Компоненты <em>Selfvoy</em></h1></div></div>
+      <div class="kit">
+        <div class="card"><h3 class="label">Цвета сторон</h3><div class="swatches" id="swatches-brand"></div></div>
+        <div class="card"><h3 class="label">Бумага и чернила</h3><div class="swatches" id="swatches-base"></div></div>
+        <div class="card"><h3 class="label">Шрифты</h3>
+          <div class="type-row"><code>display 64</code><span class="serif" style="font-size:44px;line-height:1">Доброе <em>утро</em></span></div>
+          <div class="type-row"><code>title 36</code><span class="serif" style="font-size:30px">Встреча с <em>Димой</em></span></div>
+          <div class="type-row"><code>heading 17</code><span class="heading">Ждёт вашего решения</span></div>
+          <div class="type-row"><code>body 15</code><span>Посланник сверит календари.</span></div>
+          <div class="type-row"><code>mono 13</code><span class="mono">чт 14:30 · раунд 3/5</span></div>
         </div>
-      </div>
-      <div class="glass panel">
-        <div class="title small">Пузыри сообщений</div>
-        <div class="bubble-wrap"><div class="bubble">Чужое сообщение</div></div>
-        <div class="bubble-wrap mine"><div class="bubble">Своё сообщение</div></div>
-        <div class="bubble-wrap agent"><div class="agent-badge"><i></i>Аура</div><div class="bubble">Сообщение агента</div></div>
-      </div>
-      <div class="glass panel">
-        <div class="title small">Палитра</div>
-        <div class="swatches">
-          <div><span style="background:#0d0d0f"></span>bg-deep</div>
-          <div><span style="background:#16161a"></span>bg-base</div>
-          <div><span style="background:#1e1e24"></span>bg-surface</div>
-          <div><span style="background:#26262e"></span>bg-elevated</div>
-          <div><span style="background:#7c6aff"></span>accent</div>
-          <div><span style="background:#a78bfa"></span>accent-soft</div>
-          <div><span style="background:#f0f0f4"></span>text-primary</div>
-          <div><span style="background:#9a9aa4"></span>text-secondary</div>
-          <div><span style="background:#4ade80"></span>success</div>
-          <div><span style="background:#fbbf24"></span>warning</div>
-          <div><span style="background:#f87171"></span>danger</div>
+        <div class="card"><h3 class="label">Кнопки</h3>
+          <div class="kit-row"><button class="btn btn--primary">Подтвердить</button><button class="btn btn--secondary">Изменить</button><button class="btn btn--quiet">Позже</button><button class="btn btn--danger">Удалить</button></div>
+          <div class="kit-row" style="margin-top:12px"><button class="btn btn--primary btn--sm" disabled>Недоступно</button><button class="btn btn--primary btn--sm"><svg class="mark mark--busy" data-mark></svg>Договариваемся</button></div>
+        </div>
+        <div class="card"><h3 class="label">Поля и выбор</h3>
+          <label class="field"><span>Email</span><input class="input" placeholder="you@example.com" /></label>
+          <label class="field"><span>Пароль</span><input class="input is-error" value="short" /><span class="error">Минимум 8 символов, буквы и цифры</span></label>
+          <div class="kit-row"><div class="segmented" data-segmented><button class="is-on">Сам</button><button>Спрашивать</button><button>Нельзя</button></div><button class="switch is-on" role="switch" aria-checked="true" aria-label="Пример"></button><button class="switch" role="switch" aria-checked="false" aria-label="Пример"></button></div>
+        </div>
+        <div class="card"><h3 class="label">Знак «Точка встречи»</h3>
+          <div class="kit-row" style="gap:28px"><svg class="mark mark--lg" data-mark></svg><svg class="mark mark--lg mark--busy" data-mark></svg><span class="badge badge--voy">вы</span><span class="badge badge--peer">собеседник</span><span class="badge badge--agreed">договорились</span><span class="badge badge--warning">ждёт решения</span></div>
+          <p class="subtle" style="font-size:13px;margin:14px 0 0">Левый круг — вы, правый — собеседник, пересечение — договорённость. Загрузка: круги расходятся и встречаются.</p>
         </div>
       </div>
     </section>
@@ -360,7 +368,16 @@
   </main>
 </div>
 
-<div class="toast" id="toast"></div>
+<!-- мобильная панель вкладок -->
+<nav class="tabbar" aria-label="Разделы">
+  <button class="is-active" data-screen="home"><i data-icon="home"></i>Главная</button>
+  <button data-screen="chat"><i data-icon="message"></i>Selfvoy</button>
+  <button data-screen="negotiation"><i data-icon="handshake"></i>Переговоры</button>
+  <button data-screen="tasks"><i data-icon="check-square"></i>Задачи</button>
+  <button data-screen="contacts"><i data-icon="users"></i>Контакты</button>
+</nav>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>

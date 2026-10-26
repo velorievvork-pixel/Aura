@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 48" role="img" aria-label="Selfvoy">
+  <defs><clipPath id="sw-l"><circle cx="20" cy="24" r="14"/></clipPath></defs>
+  <circle cx="20" cy="24" r="14" fill="#2F3BFF"/>
+  <circle cx="37" cy="24" r="14" fill="#B83A24"/>
+  <circle cx="37" cy="24" r="14" fill="#191712" clip-path="url(#sw-l)"/>
+  <text x="62" y="35" font-family="Literata, Georgia, serif" font-size="38" fill="#191712" letter-spacing="-0.5">selfvoy</text>
+</svg>
